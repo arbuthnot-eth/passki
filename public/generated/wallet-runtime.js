@@ -4735,6 +4735,74 @@
 	      return '';
 	    }
 
+	    function __wkFindWaaPMethodConflict(requiredMethod, address, liveMethod) {
+	      var required = __wkNormalizeWaaPMethod(requiredMethod);
+	      if (!required) return '';
+
+	      var connected = __wkNormalizeWaaPMethod(liveMethod);
+	      if (connected && connected !== required) return connected;
+
+	      var storedMethod = __wkGetWaaPMethodForAddress(address);
+	      if (storedMethod && storedMethod !== required) return storedMethod;
+
+	      var storedLabelMethod = __wkMethodFromWaaPLabel(__wkGetWaaPLabelForAddress(address));
+	      if (storedLabelMethod && storedLabelMethod !== required) return storedLabelMethod;
+	      return '';
+	    }
+
+	    function __wkIsWaaPMethodAllowed(requiredMethod, address, liveMethod) {
+	      return !__wkFindWaaPMethodConflict(requiredMethod, address, liveMethod);
+	    }
+
+	    function __wkCollectKnownWaaPMethods() {
+	      var methods = [];
+	      function push(method) {
+	        var normalized = __wkNormalizeWaaPMethod(method);
+	        if (!normalized) return;
+	        for (var i = 0; i < methods.length; i++) {
+	          if (methods[i] === normalized) return;
+	        }
+	        methods.push(normalized);
+	      }
+
+	      var conn = null;
+	      var connWalletName = '';
+	      try {
+	        conn = SuiWalletKit.$connection.value || null;
+	        connWalletName = __wkGetConnectionWalletName(conn);
+	      } catch (_eConn) {}
+
+	      if (conn && conn.address && __wkWalletNameKey(connWalletName || '') === 'waap') {
+	        push(__wkGetWaaPMethodForAddress(conn.address));
+	        if (conn.account && typeof conn.account.label === 'string') {
+	          push(__wkMethodFromWaaPLabel(conn.account.label));
+	        }
+	      }
+
+	      try {
+	        var session = typeof getWalletSession === 'function' ? getWalletSession() : null;
+	        if (session && session.address) {
+	          var sessionWalletName = session.walletName || connWalletName;
+	          if (__wkWalletNameKey(sessionWalletName || '') === 'waap') {
+	            push(__wkGetWaaPMethodForAddress(session.address));
+	            push(__wkMethodFromWaaPLabel(__wkGetWaaPLabelForAddress(session.address)));
+	          }
+	        }
+	      } catch (_eSession) {}
+
+	      return methods;
+	    }
+
+	    function __wkShouldResetWaaPSessionForMethod(method) {
+	      var requested = __wkNormalizeWaaPMethod(method);
+	      if (!requested) return false;
+	      var known = __wkCollectKnownWaaPMethods();
+	      for (var i = 0; i < known.length; i++) {
+	        if (known[i] && known[i] !== requested) return true;
+	      }
+	      return false;
+	    }
+
 	    function __wkGetWaaPConnectionHint(conn) {
 	      var walletName = __wkGetConnectionWalletName(conn).trim().toLowerCase();
 	      if (walletName !== 'waap') return '';
@@ -4927,6 +4995,14 @@
 	      var requestedMethod = __wkNormalizeWaaPMethod(waapMethod);
 	      __wkRememberPendingWaaPMethod(requestedMethod || waapMethod);
 	      __wkSetRequiredWaaPMethod(requestedMethod);
+	      var shouldResetForMethod = __wkShouldResetWaaPSessionForMethod(requestedMethod);
+	      if (shouldResetForMethod) {
+	        try { if (typeof disconnectWalletSession === 'function') disconnectWalletSession(); } catch (_eDisconnectSessionBefore) {}
+	        try { SuiWalletKit.disconnect(); } catch (_eDisconnectWalletBefore) {}
+	        // Disconnect clears pending/required method state; restore selection intent.
+	        __wkRememberPendingWaaPMethod(requestedMethod || waapMethod);
+	        __wkSetRequiredWaaPMethod(requestedMethod);
+	      }
 	      if (__wkShouldUseWaaPBridge()) {
 	        __wkConnectWaaPViaBridge(requestedMethod || waapMethod, { forceReauth: !!requestedMethod });
 	        return;
@@ -4986,7 +5062,10 @@
 	        if (conn && conn.account && typeof conn.account.label === 'string') {
 	          connectedMethod = __wkMethodFromWaaPLabel(conn.account.label);
 	        }
-	        if (requiredMethod && connectedMethod && connectedMethod !== requiredMethod) {
+	        var connectedAddress = conn && conn.address ? conn.address : '';
+	        var methodAllowed = __wkIsWaaPMethodAllowed(requiredMethod, connectedAddress, connectedMethod);
+	        if (!methodAllowed) {
+	          var conflictMethod = __wkFindWaaPMethodConflict(requiredMethod, connectedAddress, connectedMethod);
 	          __wkPendingWaaPMethod = '';
 	          __wkClearRequiredWaaPMethod();
 	          try { if (typeof disconnectWalletSession === 'function') disconnectWalletSession(); } catch (_eDisconnectSession) {}
@@ -4996,18 +5075,22 @@
 	            var socialSection = __wkModalContainer && __wkModalContainer.querySelector('.wk-social-section');
 	            if (socialSection) {
 	              var expected = __wkWaaPMethodLabels[requiredMethod] || requiredMethod;
-	              var got = __wkWaaPMethodLabels[connectedMethod] || connectedMethod;
+	              var got = __wkWaaPMethodLabels[conflictMethod] || conflictMethod;
 	              __wkShowConnectError(socialSection, { message: 'Expected WaaP ' + expected + ' login, but resumed ' + got + '. Please retry ' + expected + '.' }, 'WaaP');
 	            }
 	          }, 100);
 	          return;
 	        }
 	        if (conn && conn.address) {
-	          __wkPersistPendingWaaPMethod(conn.address);
+	          // Only persist method mapping when we actually know what method connected.
+	          if (connectedMethod) {
+	            __wkSaveWaaPMethodForAddress(conn.address, connectedMethod);
+	          }
 	          if (conn.account && typeof conn.account.label === 'string' && conn.account.label.trim()) {
 	            __wkSaveWaaPLabelForAddress(conn.address, conn.account.label.trim());
 	          }
 	        }
+	        __wkPendingWaaPMethod = '';
 	        __wkSetLastWallet('WaaP');
 	        __wkClearRequiredWaaPMethod();
 	      }).catch(function(err) {
@@ -5081,7 +5164,8 @@
 	            var bridgeMethod = __wkNormalizeWaaPMethod(
 	              (ev.data && (ev.data.method || ev.data.waapMethod || ev.data.preferredMethod || ev.data.provider || ev.data.loginMethod)) || ''
 	            );
-	            if (requiredMethod && bridgeMethod && bridgeMethod !== requiredMethod) {
+	            var bridgeConflictMethod = __wkFindWaaPMethodConflict(requiredMethod, ev.data && ev.data.address ? ev.data.address : '', bridgeMethod);
+	            if (bridgeConflictMethod) {
 	              __wkPendingWaaPMethod = '';
 	              __wkClearRequiredWaaPMethod();
 	              SuiWalletKit.openModal();
@@ -5089,14 +5173,17 @@
 	                var socialSection = __wkModalContainer && __wkModalContainer.querySelector('.wk-social-section');
 	                if (socialSection) {
 	                  var expected = __wkWaaPMethodLabels[requiredMethod] || requiredMethod;
-	                  var got = __wkWaaPMethodLabels[bridgeMethod] || bridgeMethod;
+	                  var got = __wkWaaPMethodLabels[bridgeConflictMethod] || bridgeConflictMethod;
 	                  __wkShowConnectError(socialSection, { message: 'Expected WaaP ' + expected + ' login, but resumed ' + got + '. Please retry ' + expected + '.' }, 'WaaP');
 	                }
 	              }, 100);
 	              return;
 	            }
 	            SuiWalletKit.initFromSession(ev.data.address, 'WaaP');
-	            __wkPersistPendingWaaPMethod(ev.data.address);
+	            if (bridgeMethod) {
+	              __wkSaveWaaPMethodForAddress(ev.data.address, bridgeMethod);
+	            }
+	            __wkPendingWaaPMethod = '';
 	            __wkSetLastWallet('WaaP');
 	            if (typeof connectWalletSession === 'function') {
 	              connectWalletSession('WaaP', ev.data.address);

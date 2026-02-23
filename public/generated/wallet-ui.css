@@ -573,17 +573,19 @@ html.wk-modal-open, body.wk-modal-open { overflow: hidden !important; }
 		margin-right: 0;
 	}
 	.wk-modal-main {
-		grid-template-columns: 1fr;
+		grid-template-columns: minmax(0, 1fr) minmax(132px, 42%);
 		max-width: none;
 		padding: 8px 12px 12px;
 	}
 	.wk-trad-column {
-		grid-column: auto;
-		grid-row: auto;
+		grid-column: 1;
+		grid-row: 1;
+		width: auto;
+		max-width: none;
 	}
 	.wk-waap-column {
-		grid-column: auto;
-		grid-row: auto;
+		grid-column: 2;
+		grid-row: 1;
 		min-height: 0;
 		padding: 10px 8px;
 	}

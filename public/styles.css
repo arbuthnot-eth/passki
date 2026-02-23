@@ -142,6 +142,13 @@ body {
   border-radius: 5px;
 }
 
+.wk-widget-method-dual {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .wk-widget-label-wrap {
   min-width: 0;
   flex: 1;
@@ -297,6 +304,30 @@ body {
   box-shadow:
     0 10px 20px rgba(127, 29, 29, 0.28),
     0 0 0 1px rgba(248, 113, 113, 0.22) inset;
+}
+
+.wk-waap-clear-btn {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 12010;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.68);
+  color: #c7d7ef;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 6px 10px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(2, 6, 23, 0.42);
+}
+
+.wk-waap-clear-btn:hover {
+  border-color: rgba(96, 165, 250, 0.7);
+  background: rgba(30, 58, 138, 0.3);
+  color: #e4efff;
 }
 
 .wallet-profile-btn {

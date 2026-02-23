@@ -6,14 +6,22 @@
     logoGreen: './assets/green_dotski.png',
     suiDrop: './assets/sui-drop.svg',
     xIcon: './assets/x-social-icon.svg',
+    waapIcon: './assets/waap-icon.svg',
     slushIcon: './assets/wallet-slush.svg',
     phantomIcon: './assets/wallet-phantom.svg',
     backpackIcon: './assets/wallet-backpack.svg',
     suietIcon: './assets/wallet-suiet.svg'
   };
+  var WAAP_GOOGLE_ICON_SVG = '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>';
 
   var GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+  var COINGECKO_SUI_PRICE_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd';
   var SUI_COIN_TYPE = '0x2::sui::SUI';
+  var PORTFOLIO_REFRESH_INTERVAL_MS = 25000;
+  var PRICE_CACHE_TTL_MS = 15 * 60 * 1000;
+  var PRICE_ERROR_BACKOFF_MS = 30 * 60 * 1000;
+  var PRICE_CACHE_STORAGE_KEY = 'ski_cached_sui_usd_price_v1';
+  var FOREGROUND_REFRESH_THROTTLE_MS = 30000;
 
   var state = {
     connected: false,
@@ -34,8 +42,13 @@
     lastIkaToastKey: '',
     lastPortfolioFetchMs: 0,
     lastPriceFetchMs: 0,
+    priceFetchBlockedUntilMs: 0,
+    lastForegroundRefreshMs: 0,
     cachedSuiUsdPrice: null,
-    refreshInFlight: false
+    refreshInFlight: false,
+    skiActive: false,
+    skiBusy: false,
+    skiExpiresAtMs: 0
   };
 
   var els = {
@@ -47,9 +60,139 @@
   var modalRendered = false;
   var runtimeBootPromise = null;
   var runtimeBound = false;
+  var priceFetchInFlight = null;
   var toastSeq = 0;
   var suppressDisconnectedFlash = false;
   var bootHydrating = true;
+  var noiseFiltersInstalled = false;
+
+  function isIgnorableWalletNoise(value) {
+    var text = String(value || '').toLowerCase();
+    if (!text) return false;
+    return (
+      text.indexOf('cannot redefine property: ethereum') !== -1
+      || (
+        text.indexOf("failed to execute 'postmessage' on 'window'") !== -1
+        && text.indexOf("invalid target origin ''") !== -1
+      )
+      || text.indexOf('failed to notify account change') !== -1
+    );
+  }
+
+  function installNoiseFilters() {
+    if (noiseFiltersInstalled) return;
+    noiseFiltersInstalled = true;
+
+    try {
+      window.addEventListener('error', function (event) {
+        var message = event && event.message ? String(event.message) : '';
+        var file = event && event.filename ? String(event.filename).toLowerCase() : '';
+        var knownInjector = file.indexOf('evmask.js') !== -1 || file.indexOf('injected.js') !== -1 || file.indexOf('contentscript.js') !== -1;
+        if (!knownInjector && !isIgnorableWalletNoise(message)) return;
+        try { if (event && typeof event.preventDefault === 'function') event.preventDefault(); } catch (_e) {}
+        try { if (event && typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation(); } catch (_e) {}
+        try { if (event && typeof event.stopPropagation === 'function') event.stopPropagation(); } catch (_e) {}
+      }, true);
+    } catch (_e) {}
+  }
+
+  function parseSuiUsdPrice(payload) {
+    var direct = Number(payload && payload.sui && payload.sui.usd);
+    if (Number.isFinite(direct) && direct > 0) return direct;
+    var flat = Number(payload && payload.usd);
+    if (Number.isFinite(flat) && flat > 0) return flat;
+    var nested = Number(payload && payload.price && payload.price.usd);
+    if (Number.isFinite(nested) && nested > 0) return nested;
+    return 0;
+  }
+
+  function loadCachedPrice() {
+    try {
+      var raw = localStorage.getItem(PRICE_CACHE_STORAGE_KEY);
+      if (!raw) return;
+      var parsed = JSON.parse(raw);
+      var price = Number(parsed && parsed.price);
+      var ts = Number(parsed && parsed.ts);
+      if (!Number.isFinite(price) || price <= 0) return;
+      if (!Number.isFinite(ts) || ts <= 0) return;
+      state.cachedSuiUsdPrice = price;
+      state.lastPriceFetchMs = ts;
+    } catch (_e) {}
+  }
+
+  function persistCachedPrice(price) {
+    try {
+      localStorage.setItem(PRICE_CACHE_STORAGE_KEY, JSON.stringify({
+        price: price,
+        ts: Date.now()
+      }));
+    } catch (_e) {}
+  }
+
+  function getPriceEndpointOverride() {
+    try {
+      if (typeof window === 'undefined') return '';
+      if (typeof window.__wkSuiUsdPriceEndpoint === 'string') {
+        return String(window.__wkSuiUsdPriceEndpoint || '').trim();
+      }
+    } catch (_e) {}
+    return '';
+  }
+
+  function canUseDirectCoinGecko() {
+    try {
+      return typeof window !== 'undefined' && window.__wkEnableDirectCoinGecko === true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  function requestSuiUsdPrice() {
+    var now = Date.now();
+    if (Number.isFinite(state.cachedSuiUsdPrice) && (now - state.lastPriceFetchMs) < PRICE_CACHE_TTL_MS) {
+      return Promise.resolve(state.cachedSuiUsdPrice);
+    }
+    if (now < state.priceFetchBlockedUntilMs) return Promise.resolve(0);
+    if (priceFetchInFlight) return priceFetchInFlight;
+
+    var endpoint = getPriceEndpointOverride();
+    var allowDirect = canUseDirectCoinGecko();
+    var url = endpoint || (allowDirect ? COINGECKO_SUI_PRICE_URL : '');
+    if (!url) {
+      state.priceFetchBlockedUntilMs = now + PRICE_ERROR_BACKOFF_MS;
+      return Promise.resolve(0);
+    }
+
+    priceFetchInFlight = fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'omit'
+    })
+      .then(function (response) {
+        if (!response || !response.ok) throw new Error('Price fetch failed');
+        return response.json();
+      })
+      .then(function (payload) {
+        var price = parseSuiUsdPrice(payload);
+        if (!Number.isFinite(price) || price <= 0) {
+          state.priceFetchBlockedUntilMs = Date.now() + PRICE_ERROR_BACKOFF_MS;
+          return 0;
+        }
+        state.cachedSuiUsdPrice = price;
+        state.lastPriceFetchMs = Date.now();
+        state.priceFetchBlockedUntilMs = 0;
+        persistCachedPrice(price);
+        return price;
+      })
+      .catch(function () {
+        state.priceFetchBlockedUntilMs = Date.now() + PRICE_ERROR_BACKOFF_MS;
+        return 0;
+      })
+      .finally(function () {
+        priceFetchInFlight = null;
+      });
+    return priceFetchInFlight;
+  }
 
   function loadRuntimeScript() {
     if (window.SuiWalletKit) return Promise.resolve();
@@ -166,16 +309,6 @@
     if (!normalized) return '';
     if (normalized.slice(-7) === ' wallet') normalized = normalized.slice(0, -7).trim();
     return normalized.replace(/\s+/g, '');
-  }
-
-  function getKnownWalletIcon(walletName) {
-    var key = normalizeWalletName(walletName);
-    if (!key) return '';
-    if (key.indexOf('phantom') !== -1) return ASSETS.phantomIcon;
-    if (key.indexOf('backpack') !== -1) return ASSETS.backpackIcon;
-    if (key.indexOf('suiet') !== -1) return ASSETS.suietIcon;
-    if (key.indexOf('slush') !== -1) return ASSETS.slushIcon;
-    return '';
   }
 
   function isStableWalletIcon(icon) {
@@ -363,10 +496,22 @@
       return '<span class="wk-widget-method-icon"><img src="' + escapeHtml(state.walletIcon) + '" alt="' + escapeHtml(state.walletName || 'Wallet') + '"></span>';
     }
     if (method === 'x') {
+      var waapMethod = getWaaPMethod(state.address);
+      if (waapMethod === 'x') {
+        return '' +
+          '<span class="wk-widget-method-dual">' +
+            '<span class="wk-widget-method-icon"><img src="' + ASSETS.waapIcon + '" alt="WaaP"></span>' +
+            '<span class="wk-widget-method-icon"><img src="' + ASSETS.xIcon + '" alt="X"></span>' +
+          '</span>';
+      }
       return '<span class="wk-widget-method-icon"><img src="' + ASSETS.xIcon + '" alt="X"></span>';
     }
     if (method === 'google') {
-      return '<span class="wk-widget-icon-fallback" title="Google" style="background:#1f2937;font-weight:700;font-size:11px">G</span>';
+      return '' +
+        '<span class="wk-widget-method-dual">' +
+          '<span class="wk-widget-method-icon"><img src="' + ASSETS.waapIcon + '" alt="WaaP"></span>' +
+          '<span class="wk-widget-method-icon" title="Google">' + WAAP_GOOGLE_ICON_SVG + '</span>' +
+        '</span>';
     }
     if (method === 'waap') {
       return '<span class="wk-widget-icon-fallback" title="WaaP" style="background:#0f172a;font-weight:700;font-size:10px;color:#93c5fd">W</span>';
@@ -473,16 +618,119 @@
       });
   }
 
+  function getSkiApi() {
+    var ski = window.SKI;
+    if (!ski || typeof ski !== 'object') return null;
+    if (typeof ski.signIn !== 'function') return null;
+    if (typeof ski.getSession !== 'function') return null;
+    if (typeof ski.signOut !== 'function') return null;
+    return ski;
+  }
+
+  function formatSkiExpiry(ms) {
+    var value = Number(ms);
+    if (!Number.isFinite(value) || value <= 0) return '';
+    var date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit'
+    });
+  }
+
+  function syncSkiSessionState() {
+    var ski = getSkiApi();
+    if (!ski) {
+      state.skiActive = false;
+      state.skiExpiresAtMs = 0;
+      return;
+    }
+    var session = null;
+    try {
+      session = ski.getSession({ address: state.connected ? state.address : '' });
+    } catch (_e) {
+      session = null;
+    }
+    state.skiActive = !!session;
+    state.skiExpiresAtMs = session && Number(session.expiresAtMs) > 0 ? Number(session.expiresAtMs) : 0;
+  }
+
+  function activateSkiSession() {
+    if (state.skiBusy) return;
+    if (!state.connected || !state.address) {
+      showToast('Connect wallet before activating .SKI.');
+      return;
+    }
+    if (state.sessionOnly) {
+      showToast('Switch to an active wallet to sign .SKI.');
+      return;
+    }
+    var ski = getSkiApi();
+    if (!ski) {
+      showToast('.SKI signing layer unavailable.');
+      return;
+    }
+
+    state.skiBusy = true;
+    render();
+
+    Promise.resolve(
+      ski.signIn({
+        address: state.address,
+        statement: 'SKI to activate your local .SKI session.'
+      })
+    )
+      .then(function () {
+        syncSkiSessionState();
+        if (state.skiActive) showToast('.SKI session active.');
+      })
+      .catch(function (error) {
+        var message = error && error.message ? String(error.message) : 'Unable to activate .SKI.';
+        showToast(message);
+      })
+      .finally(function () {
+        state.skiBusy = false;
+        render();
+      });
+  }
+
+  function signOutSkiSession() {
+    var ski = getSkiApi();
+    if (ski) {
+      try { ski.signOut(); } catch (_e) {}
+    }
+    state.skiActive = false;
+    state.skiExpiresAtMs = 0;
+    state.skiBusy = false;
+    showToast('.SKI session signed out.');
+    render();
+  }
+
+  function clearWaaPSocialCache() {
+    try { localStorage.removeItem('sui_ski_waap_method_by_address_v1'); } catch (_e1) {}
+    try { localStorage.removeItem('sui_ski_waap_label_by_address_v1'); } catch (_e2) {}
+    showToast('Cleared WaaP social cache.');
+
+    try {
+      if (window.SuiWalletKit && window.SuiWalletKit.$connection) {
+        updateFromConnection(window.SuiWalletKit.$connection.value || {});
+        return;
+      }
+    } catch (_refreshErr) {}
+    render();
+  }
+
   function refreshPortfolio(options) {
     if (!state.connected || !state.address) return Promise.resolve();
     var force = !!(options && options.force);
     var now = Date.now();
     if (!force && state.refreshInFlight) return Promise.resolve();
-    if (!force && (now - state.lastPortfolioFetchMs) < 25000) return Promise.resolve();
+    if (!force && (now - state.lastPortfolioFetchMs) < PORTFOLIO_REFRESH_INTERVAL_MS) return Promise.resolve();
     var address = state.address;
 
     var balanceQuery = 'query($address:SuiAddress!,$coinType:String!){ address(address:$address){ balance(coinType:$coinType){ totalBalance } } }';
-    var canUseCachedPrice = !force && Number.isFinite(state.cachedSuiUsdPrice) && (now - state.lastPriceFetchMs) < 300000;
 
     state.refreshInFlight = true;
     state.lastPortfolioFetchMs = now;
@@ -490,22 +738,24 @@
       .then(function (data) {
         var mist = Number(data && data.address && data.address.balance && data.address.balance.totalBalance ? data.address.balance.totalBalance : 0);
         state.sui = Number.isFinite(mist) ? mist / 1e9 : 0;
-        if (canUseCachedPrice) return { json: function () { return Promise.resolve({ sui: { usd: state.cachedSuiUsdPrice } }); } };
-        return fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd');
+        if (state.sui <= 0) return 0;
+        return requestSuiUsdPrice();
       })
-      .then(function (r) { return r.json(); })
-      .then(function (json) {
-        var price = Number(json && json.sui && json.sui.usd ? json.sui.usd : 0);
+      .then(function (price) {
         if (Number.isFinite(price) && price > 0) {
-          state.cachedSuiUsdPrice = price;
-          state.lastPriceFetchMs = Date.now();
           state.usd = state.sui * price;
         } else {
-          state.usd = null;
+          state.usd = Number.isFinite(state.cachedSuiUsdPrice) && state.cachedSuiUsdPrice > 0
+            ? state.sui * state.cachedSuiUsdPrice
+            : null;
         }
       })
       .catch(function () {
-        state.usd = null;
+        if (Number.isFinite(state.cachedSuiUsdPrice) && state.cachedSuiUsdPrice > 0) {
+          state.usd = state.sui * state.cachedSuiUsdPrice;
+        } else {
+          state.usd = null;
+        }
       })
       .finally(function () {
         state.refreshInFlight = false;
@@ -513,8 +763,17 @@
       });
   }
 
+  function triggerForegroundRefresh() {
+    if (!state.connected) return;
+    var now = Date.now();
+    if ((now - state.lastForegroundRefreshMs) < FOREGROUND_REFRESH_THROTTLE_MS) return;
+    state.lastForegroundRefreshMs = now;
+    refreshPortfolio({ force: true });
+  }
+
   function renderMenu() {
     if (!els.menuRoot) return;
+    syncSkiSessionState();
     if (!state.connected || !state.menuOpen) {
       els.menuRoot.innerHTML = '';
       return;
@@ -522,18 +781,26 @@
 
     var copiedText = 'Copied! \u2713';
     var addressOrCopied = state.copied ? copiedText : state.address;
+    var skiLabel = state.skiBusy
+      ? 'Activating .SKI...'
+      : (state.skiActive ? 'Sign Out .SKI' : 'Activate .SKI');
+    var skiSuffix = state.skiActive && state.skiExpiresAtMs
+      ? ' (until ' + formatSkiExpiry(state.skiExpiresAtMs) + ')'
+      : '';
 
     els.menuRoot.innerHTML = (
       '<div class="wk-dropdown open">' +
         '<button class="wk-dd-address-banner' + (state.copied ? ' copied' : '') + '" id="wk-dd-address-copy" type="button" title="Copy address">' +
           '<span class="wk-dd-address-text">' + escapeHtml(addressOrCopied) + '</span>' +
         '</button>' +
+        '<button class="wk-dd-item" id="wk-dd-ski" type="button"' + (state.skiBusy ? ' disabled aria-disabled="true"' : '') + '>' + escapeHtml(skiLabel + skiSuffix) + '</button>' +
         '<button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>' +
         '<button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>' +
       '</div>'
     );
 
     var copyBtn = document.getElementById('wk-dd-address-copy');
+    var skiBtn = document.getElementById('wk-dd-ski');
     var switchBtn = document.getElementById('wk-dd-switch');
     var disconnectBtn = document.getElementById('wk-dd-disconnect');
 
@@ -541,6 +808,18 @@
       copyBtn.addEventListener('click', function (event) {
         event.stopPropagation();
         copyAddress();
+      });
+    }
+
+    if (skiBtn) {
+      skiBtn.addEventListener('click', function (event) {
+        event.stopPropagation();
+        if (state.skiBusy) return;
+        if (state.skiActive) {
+          signOutSkiSession();
+          return;
+        }
+        activateSkiSession();
       });
     }
 
@@ -555,6 +834,21 @@
         manualDisconnect(false);
       });
     }
+  }
+
+  function ensureWaaPClearButton() {
+    if (document.getElementById('wk-waap-clear-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'wk-waap-clear-btn';
+    btn.className = 'wk-waap-clear-btn';
+    btn.type = 'button';
+    btn.title = 'Clears remembered WaaP social mapping';
+    btn.textContent = 'Clear WaaP';
+    btn.addEventListener('click', function (event) {
+      event.stopPropagation();
+      clearWaaPSocialCache();
+    });
+    document.body.appendChild(btn);
   }
 
   function renderWidget() {
@@ -678,7 +972,6 @@
 
   function clearLocalWalletIdentity() {
     var keys = [
-      'sui_session_id',
       'sui_wallet_name',
       'sui_wallet_name_address',
       'sui_wallet_address',
@@ -776,17 +1069,22 @@
       ? resolveWalletIcon(conn, state.walletName)
       : '';
     state.method = connected ? inferMethod(conn) : 'wallet';
+    syncSkiSessionState();
 
     if (!connected) {
       state.sessionOnly = false;
       state.menuOpen = false;
       state.copied = false;
       state.lastSessionSyncKey = '';
+      state.skiActive = false;
+      state.skiExpiresAtMs = 0;
+      state.skiBusy = false;
       clearCopiedTimer();
       stopPolling();
       state.sui = 0;
       state.usd = null;
       state.refreshInFlight = false;
+      state.priceFetchBlockedUntilMs = 0;
       render();
       return;
     }
@@ -869,15 +1167,13 @@
     });
 
     window.addEventListener('focus', function () {
-      if (state.connected) {
-        refreshPortfolio({ force: true });
-      }
+      triggerForegroundRefresh();
     });
 
     document.addEventListener('visibilitychange', function () {
       if (!state.connected) return;
       if (document.visibilityState === 'visible') {
-        refreshPortfolio({ force: true });
+        triggerForegroundRefresh();
       }
     });
   }
@@ -944,8 +1240,12 @@
     updateFromConnection(window.SuiWalletKit.$connection.value || {});
   }
 
+  installNoiseFilters();
   hydrateFromLocalSessionSnapshot();
+  loadCachedPrice();
+  syncSkiSessionState();
   bindGlobalEvents();
+  ensureWaaPClearButton();
   render();
   ensureWalletRuntime().catch(function (error) {
     bootHydrating = false;

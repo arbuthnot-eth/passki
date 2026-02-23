@@ -1,5 +1,8 @@
 node_modules/
 .wrangler/
+worker.ts
+wrangler.jsonc
+local-server.mjs
 
 .DS_Store
 *.log
