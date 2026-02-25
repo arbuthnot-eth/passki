@@ -11,8 +11,9 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260304.0",
+    "potrace": "^2.1.8",
     "typescript": "^5.9.3",
-    "wrangler": "4.67.0"
+    "wrangler": "^4.68.1"
   },
   "dependencies": {
     "@fingerprintjs/fingerprintjs": "^5.0.1",

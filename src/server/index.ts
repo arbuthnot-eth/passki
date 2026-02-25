@@ -4,7 +4,7 @@ import { agentsMiddleware } from 'hono-agents';
 const app = new Hono();
 
 // Agents middleware handles WebSocket upgrades and RPC to /agents/*
-app.use('*', agentsMiddleware());
+app.use('/agents/*', agentsMiddleware());
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', version: '2.0.0' }));

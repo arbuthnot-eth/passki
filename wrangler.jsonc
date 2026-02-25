@@ -4,9 +4,15 @@
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  // Custom domain
+  "routes": [
+    { "pattern": "sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" }
+  ],
+
   // Serve public/ as static assets
   "assets": {
-    "directory": "public"
+    "directory": "public",
+    "not_found_handling": "single-page-application"
   },
 
   // Durable Objects

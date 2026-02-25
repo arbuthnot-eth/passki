@@ -122,6 +122,45 @@ export function showToast(msg: string) {
   toast.addEventListener('click', remove);
 }
 
+// ─── SKI SVG dot variant ─────────────────────────────────────────────
+
+let _skiSvgText: string | null = null;
+fetch('./assets/ski.svg').then((r) => r.text()).then((t) => { _skiSvgText = t; }).catch(() => {});
+
+function getInlineSkiSvg(): string {
+  if (!_skiSvgText) {
+    return `<a href="https://sui.ski" target="_blank" rel="noopener" id="ski-modal-brand-link" class="ski-modal-brand-link">
+      <img src="./assets/ski.svg" class="ski-modal-logo" id="ski-modal-svg-fallback">
+    </a>`;
+  }
+  const svgHtml = _skiSvgText.replace('<svg ', '<svg id="ski-modal-svg" class="ski-modal-logo" ');
+  return `<a href="https://sui.ski" target="_blank" rel="noopener" id="ski-modal-brand-link" class="ski-modal-brand-link">${svgHtml}</a>`;
+}
+
+type SkiDotVariant = 'green-circle' | 'blue-square' | 'black-diamond';
+
+function updateSkiDot(variant: SkiDotVariant, suinsName?: string) {
+  const outer  = document.getElementById('ski-dot-outer')  as SVGElement | null;
+  const inner  = document.getElementById('ski-dot-inner')  as SVGElement | null;
+  const circle = document.getElementById('ski-dot-circle') as SVGElement | null;
+  const square = document.getElementById('ski-dot-square') as SVGElement | null;
+  const link   = document.getElementById('ski-modal-brand-link') as HTMLAnchorElement | null;
+
+  if (outer)  outer.style.display  = variant === 'black-diamond' ? '' : 'none';
+  if (inner)  inner.style.display  = variant === 'black-diamond' ? '' : 'none';
+  if (circle) circle.style.display = variant === 'green-circle'  ? '' : 'none';
+  if (square) square.style.display = variant === 'blue-square'   ? '' : 'none';
+
+  if (circle && variant === 'green-circle') circle.setAttribute('fill', '#22c55e');
+  if (square && variant === 'blue-square')  square.setAttribute('fill', '#3b82f6');
+
+  if (link) {
+    link.href = suinsName
+      ? `https://${suinsName.replace(/\.sui$/, '')}.sui.ski`
+      : 'https://sui.ski';
+  }
+}
+
 // ─── Wallet Modal ────────────────────────────────────────────────────
 
 let modalOpen = false;
@@ -129,7 +168,9 @@ const suinsCache: Record<string, string> = {}; // address -> name
 
 function renderModal() {
   if (!els.modal) return;
-  const wallets = getSuiWallets();
+  const wallets = getSuiWallets().slice().sort((a, b) =>
+    (b.accounts.length > 0 ? 1 : 0) - (a.accounts.length > 0 ? 1 : 0)
+  );
 
   if (!modalOpen || !wallets.length) {
     els.modal.innerHTML = '';
@@ -141,7 +182,7 @@ function renderModal() {
       <div class="ski-modal" style="animation:ski-modal-in .2s ease">
         <div class="ski-modal-header">
           <div class="ski-modal-header-left">
-            <img src="./assets/ski.svg" alt=".SKI" class="ski-modal-logo">
+            ${getInlineSkiSvg()}
             <div class="ski-modal-titles">
               <h2 class="ski-modal-title">.Sui Key-In</h2>
               <p class="ski-modal-tagline">once,<br>everywhere</p>
@@ -183,6 +224,14 @@ function renderModal() {
       const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
       const w = wallets[idx];
       if (!w || !detailEl) return;
+
+      // Update dot: green = no accounts, blue = has SuiNS, black = connected but no SuiNS
+      if (!w.accounts.length) {
+        updateSkiDot('green-circle');
+      } else {
+        const cachedName = w.accounts.map((a) => suinsCache[normalizeSuiAddress(a.address)]).find(Boolean);
+        updateSkiDot(cachedName ? 'blue-square' : 'black-diamond', cachedName);
+      }
 
       const DOCS = 'https://docs.sui.io/standards/wallet-standard';
       const LEGACY: Record<string, string> = {
@@ -272,6 +321,8 @@ function renderModal() {
           if (name) {
             suinsCache[addr] = name;
             renderName(name);
+            // Upgrade dot to blue square now that SuiNS is confirmed
+            updateSkiDot('blue-square', name);
           }
         });
       });
@@ -284,6 +335,7 @@ function renderModal() {
 export function openModal() {
   modalOpen = true;
   renderModal();
+  requestAnimationFrame(() => updateSkiDot('green-circle'));
 }
 
 function closeModal() {
