@@ -8,29 +8,22 @@
 </head>
 <body>
   <main class="page">
-    <section class="stage-card">
-      <div class="stage-top">
-        <h1>.SKI Wallet</h1>
-        <p>One-button wallet sign-in with device identity.</p>
+    <div class="demo-stage">
+      <div class="wallet-widget has-black-diamond" id="wallet-widget">
+        <div id="wk-widget"></div>
+
+        <button class="wallet-profile-btn" id="wallet-profile-btn" title="Open wallet menu" aria-label="Open wallet menu" style="display:none">
+          <img
+            class="wallet-profile-logo"
+            src="./assets/black_dotskitxt.png"
+            alt=".SKI"
+            draggable="false"
+          >
+        </button>
+
+        <div id="wallet-menu-root"></div>
       </div>
-
-      <div class="demo-stage">
-        <div class="wallet-widget has-black-diamond" id="wallet-widget">
-          <div id="wk-widget"></div>
-
-          <button class="wallet-profile-btn" id="wallet-profile-btn" title="Open wallet menu" aria-label="Open wallet menu" style="display:none">
-            <img
-              class="wallet-profile-logo"
-              src="./assets/black_dotskitxt.png"
-              alt=".SKI"
-              draggable="false"
-            >
-          </button>
-
-          <div id="wallet-menu-root"></div>
-        </div>
-      </div>
-    </section>
+    </div>
   </main>
 
   <div id="wk-modal"></div>
