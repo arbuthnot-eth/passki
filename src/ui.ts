@@ -15,6 +15,7 @@ import {
   getSuiWallets,
   connect,
   disconnect,
+  signPersonalMessage,
   autoReconnect,
   onWalletsChanged,
   type WalletState,
@@ -61,7 +62,8 @@ const els = {
   wk: document.getElementById('wk-widget'),
   profileBtn: document.getElementById('wallet-profile-btn'),
   menuRoot: document.getElementById('wallet-menu-root'),
-  modal: document.getElementById('wk-modal'),
+  modal: document.getElementById('ski-modal'),
+  signStage: document.getElementById('sign-stage'),
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -123,6 +125,7 @@ export function showToast(msg: string) {
 // ─── Wallet Modal ────────────────────────────────────────────────────
 
 let modalOpen = false;
+const suinsCache: Record<string, string> = {}; // address -> name
 
 function renderModal() {
   if (!els.modal) return;
@@ -134,37 +137,147 @@ function renderModal() {
   }
 
   els.modal.innerHTML = `
-    <div class="wk-modal-overlay open" id="wk-modal-overlay">
-      <div class="wk-modal" style="animation:wk-modal-in .2s ease">
-        <div class="wk-modal-header">
-          <div class="wk-modal-header-left">
-            <h2 style="color:#e6ebf5;font-size:1rem;margin:0">Connect Wallet</h2>
-            <p style="color:#9ca7bb;font-size:0.8rem;margin:4px 0 0">Select a wallet to connect to .SKI</p>
+    <div class="ski-modal-overlay open" id="ski-modal-overlay">
+      <div class="ski-modal" style="animation:ski-modal-in .2s ease">
+        <div class="ski-modal-header">
+          <div class="ski-modal-header-left">
+            <img src="./assets/ski.svg" alt=".SKI" class="ski-modal-logo">
+            <div class="ski-modal-titles">
+              <h2 class="ski-modal-title">.Sui Key-In</h2>
+              <p class="ski-modal-tagline">once,<br>everywhere</p>
+            </div>
           </div>
-          <button id="wk-modal-close" style="background:none;border:none;color:#9ca7bb;font-size:1.4rem;cursor:pointer;padding:4px 8px;line-height:1">&times;</button>
+          <button id="ski-modal-close" style="background:none;border:none;color:#9ca7bb;font-size:1.4rem;cursor:pointer;padding:4px 8px;line-height:1">&times;</button>
         </div>
-        <div style="padding:8px 16px 16px;display:flex;flex-direction:column;gap:6px">
-          ${wallets.map((w, i) => `
-            <button class="wk-dd-item" data-idx="${i}" style="display:flex;align-items:center;gap:10px">
-              ${w.icon ? `<img src="${esc(w.icon)}" alt="" style="width:28px;height:28px;border-radius:6px">` : ''}
-              <span>${esc(w.name)}</span>
-            </button>
-          `).join('')}
+        <div class="ski-modal-body">
+          <div class="ski-modal-col ski-modal-wallets">
+            ${wallets.map((w, i) => `
+              <button class="wk-dd-item" data-idx="${i}" style="display:flex;align-items:center;gap:10px">
+                ${w.icon ? `<img src="${esc(w.icon)}" alt="" style="width:28px;height:28px;border-radius:6px">` : ''}
+                <span>${esc(w.name)}</span>
+              </button>
+            `).join('')}
+          </div>
+          <div class="ski-modal-col ski-modal-detail" id="ski-modal-detail">
+            <div class="ski-detail-empty">Hover a wallet<br>for details</div>
+          </div>
         </div>
       </div>
     </div>
   `;
 
-  document.getElementById('wk-modal-close')?.addEventListener('click', closeModal);
-  document.getElementById('wk-modal-overlay')?.addEventListener('click', (e) => {
-    if ((e.target as HTMLElement).id === 'wk-modal-overlay') closeModal();
+  document.getElementById('ski-modal-close')?.addEventListener('click', closeModal);
+  document.getElementById('ski-modal-overlay')?.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).id === 'ski-modal-overlay') closeModal();
   });
+  const detailEl = document.getElementById('ski-modal-detail');
+
   els.modal.querySelectorAll('[data-idx]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
       const wallet = wallets[idx];
       if (wallet) selectWallet(wallet);
     });
+
+    btn.addEventListener('mouseenter', () => {
+      const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
+      const w = wallets[idx];
+      if (!w || !detailEl) return;
+
+      const DOCS = 'https://docs.sui.io/standards/wallet-standard';
+      const LEGACY: Record<string, string> = {
+        'signTransactionBlock': 'Legacy — use signTransaction',
+        'signAndExecuteTransactionBlock': 'Legacy — use signAndExecuteTransaction',
+      };
+
+      const networks = w.chains.filter((c) => c.startsWith('sui:'));
+      const suiFeatures = Object.keys(w.features)
+        .filter((f) => f.startsWith('sui:'))
+        .map((f) => f.replace(/^sui:/, ''));
+
+      const accountChains = new Set(w.accounts.flatMap((a) => [...a.chains]));
+
+      const networksHtml = networks.map((c) => {
+        const label = c.replace(/^sui:/, '');
+        const isActive = accountChains.has(c);
+        return `<span class="ski-network-tag${isActive ? ' active' : ''}">${esc(label)}</span>`;
+      }).join('');
+
+      const current = suiFeatures.filter((f) => !LEGACY[f]);
+      const legacy = suiFeatures.filter((f) => LEGACY[f]);
+
+      const currentHtml = current.map((f) =>
+        `<a href="${DOCS}#sui${f.toLowerCase()}" target="_blank" rel="noopener" class="ski-feature-tag">${esc(f)}</a>`
+      ).join('');
+
+      const legacyHtml = legacy.map((f) =>
+        `<a href="${DOCS}#sui${f.toLowerCase()}" target="_blank" rel="noopener" class="ski-feature-tag legacy" title="${esc(LEGACY[f]!)}">${esc(f)}</a>`
+      ).join('');
+
+      const retiredSection = legacy.length
+        ? `<details class="ski-detail-retired"><summary class="ski-detail-label">Legacy</summary><div class="ski-feature-list">${legacyHtml}</div></details>`
+        : '';
+
+      const accountsHtml = w.accounts.length
+        ? w.accounts.map((a, ai) => {
+            const addr = normalizeSuiAddress(a.address);
+            const scanUrl = `https://suiscan.xyz/mainnet/account/${addr}`;
+            return `<div class="ski-detail-addr-wrap" data-addr-idx="${ai}" data-full-addr="${esc(addr)}">
+              <span class="ski-detail-suins-slot"></span>
+              <div class="ski-detail-addr-row">
+                <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr)}">${esc(truncAddr(addr))}</a>
+                <button class="ski-copy-btn" title="Copy address">\u2398</button>
+              </div>
+            </div>`;
+          }).join('')
+        : '<div class="ski-detail-addr muted">Connect to reveal</div>';
+
+      detailEl.innerHTML = `
+        ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
+        <div class="ski-detail-name">${esc(w.name)}</div>
+        <div class="ski-detail-row"><span class="ski-detail-label">Address</span>${accountsHtml}</div>
+        ${networks.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Networks</span><div class="ski-feature-list">${networksHtml}</div></div>` : ''}
+        ${current.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Features</span><div class="ski-feature-list">${currentHtml}</div></div>` : ''}
+        ${retiredSection}
+      `;
+
+      // Bind copy buttons
+      detailEl.querySelectorAll('.ski-copy-btn').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const row = (btn as HTMLElement).closest('[data-full-addr]');
+          const addr = row?.getAttribute('data-full-addr') || '';
+          if (addr) navigator.clipboard?.writeText(addr).then(() => {
+            (btn as HTMLElement).textContent = '\u2713';
+            setTimeout(() => { (btn as HTMLElement).textContent = '\u2398'; }, 1500);
+          });
+        });
+      });
+
+      // Resolve SuiNS names: show cached immediately, then refresh
+      w.accounts.forEach((a, ai) => {
+        const addr = normalizeSuiAddress(a.address);
+        const renderName = (name: string) => {
+          const wrap = detailEl.querySelector(`[data-addr-idx="${ai}"]`);
+          const slot = wrap?.querySelector('.ski-detail-suins-slot');
+          if (slot) {
+            const bare = name.replace(/\.sui$/, '');
+            slot.innerHTML = `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-detail-suins">${esc(bare)}</a>`;
+          }
+        };
+        // Show cached name instantly
+        if (suinsCache[addr]) renderName(suinsCache[addr]);
+        // Always refresh from network
+        lookupSuiNS(a.address).then((name: string | null) => {
+          if (name) {
+            suinsCache[addr] = name;
+            renderName(name);
+          }
+        });
+      });
+
+    });
+
   });
 }
 
@@ -181,6 +294,10 @@ function closeModal() {
 async function selectWallet(wallet: Wallet) {
   closeModal();
   try {
+    // Disconnect current wallet first if switching
+    if (getState().wallet) {
+      try { await disconnect(); } catch {}
+    }
     await connect(wallet);
   } catch (err) {
     showToast('Failed to connect: ' + (err instanceof Error ? err.message : 'unknown error'));
@@ -190,6 +307,32 @@ async function selectWallet(wallet: Wallet) {
 // ─── Portfolio (GraphQL balance fetch) ───────────────────────────────
 
 const GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+
+function normalizeSuiAddress(addr: string): string {
+  let hex = addr.startsWith('0x') ? addr.slice(2) : addr;
+  hex = hex.padStart(64, '0');
+  return '0x' + hex;
+}
+
+async function lookupSuiNS(address: string): Promise<string | null> {
+  try {
+    const normalized = normalizeSuiAddress(address);
+    const res = await fetch(GRAPHQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!){ address(address:$a){ defaultNameRecord{domain} } }`,
+        variables: { a: normalized },
+      }),
+    });
+    const json = await res.json();
+    const name = json?.data?.address?.defaultNameRecord?.domain;
+    return (name && typeof name === 'string') ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 let lastPortfolioMs = 0;
 let portfolioInFlight = false;
 
@@ -351,6 +494,66 @@ function renderProfileButton() {
   }
 }
 
+// ─── Sign Message ───────────────────────────────────────────────────
+
+const DEFAULT_MESSAGE = 'Hiroshima was an elegant implementation';
+let signMessageText = DEFAULT_MESSAGE;
+let lastSignResult: { signature: string; bytes: string } | null = null;
+
+function renderSignStage() {
+  if (!els.signStage) return;
+  const ws = getState();
+
+  if (!ws.address) {
+    els.signStage.style.display = 'none';
+    els.signStage.innerHTML = '';
+    lastSignResult = null;
+    return;
+  }
+
+  els.signStage.style.display = '';
+
+  const resultHtml = lastSignResult
+    ? `<div class="sign-result">
+        <div class="sign-result-label">Signature</div>
+        <div class="sign-result-value">${esc(lastSignResult.signature)}</div>
+      </div>`
+    : '';
+
+  els.signStage.innerHTML = `
+    <div class="sign-card">
+      <textarea class="sign-textarea" id="sign-msg-input" rows="2" spellcheck="false">${esc(signMessageText)}</textarea>
+      <div class="sign-action-row">
+        <button class="sign-btn" id="sign-msg-btn" type="button">Sign Message</button>
+        ${resultHtml}
+      </div>
+    </div>`;
+
+  document.getElementById('sign-msg-input')?.addEventListener('input', (e) => {
+    signMessageText = (e.target as HTMLTextAreaElement).value;
+  });
+
+  document.getElementById('sign-msg-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('sign-msg-btn') as HTMLButtonElement;
+    if (!btn) return;
+    btn.disabled = true;
+    btn.textContent = 'Signing\u2026';
+    try {
+      const bytes = new TextEncoder().encode(signMessageText);
+      const result = await signPersonalMessage(bytes);
+      lastSignResult = result;
+      showToast('Message signed');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Signing failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      else showToast('Signing cancelled');
+    }
+    btn.disabled = false;
+    btn.textContent = 'Sign Message';
+    renderSignStage();
+  });
+}
+
 // ─── Render: Dropdown Menu ───────────────────────────────────────────
 
 function renderMenu() {
@@ -363,18 +566,26 @@ function renderMenu() {
   }
 
   const addrDisplay = app.copied ? 'Copied! \u2713' : ws.address;
+  const scanUrl = `https://suiscan.xyz/mainnet/account/${ws.address}`;
 
   els.menuRoot.innerHTML = `
     <div class="wk-dropdown open">
-      <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
-        <span class="wk-dd-address-text">${esc(addrDisplay)}</span>
-      </button>
+      <div class="wk-dd-address-row">
+        <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
+          <span class="wk-dd-address-text">${esc(addrDisplay)}</span>
+        </button>
+        <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
+      </div>
       <button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>
       <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
     </div>`;
 
   document.getElementById('wk-dd-copy')?.addEventListener('click', (e) => { e.stopPropagation(); copyAddress(); });
-  document.getElementById('wk-dd-switch')?.addEventListener('click', () => handleDisconnect(true));
+  document.getElementById('wk-dd-switch')?.addEventListener('click', () => {
+    app.menuOpen = false;
+    render();
+    openModal();
+  });
   document.getElementById('wk-dd-disconnect')?.addEventListener('click', () => handleDisconnect(false));
 }
 
@@ -394,13 +605,14 @@ function render() {
   // no-op: profile button now uses img swap
   renderWidget();
   renderProfileButton();
+  renderSignStage();
   renderMenu();
 
   // Bind pill click
   const pill = document.getElementById('wallet-pill-btn');
   pill?.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (!getState().address) { openModal(); return; }
+    if (!getState().address) { if (modalOpen) closeModal(); else openModal(); return; }
     window.open(profileHref(), '_blank', 'noopener,noreferrer');
   });
 }
@@ -411,6 +623,7 @@ function bindEvents() {
   els.profileBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!getState().address) return;
+    if (modalOpen) { closeModal(); return; }
     app.menuOpen = !app.menuOpen;
     render();
   });

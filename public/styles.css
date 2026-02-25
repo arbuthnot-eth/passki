@@ -57,6 +57,97 @@ body {
   padding: 16px;
 }
 
+/* ─── Sign Message Card ───────────────────────────────────────────── */
+
+.sign-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 680px;
+  margin: 40px auto 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.sign-action-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.sign-action-row .sign-result {
+  flex: 1;
+  min-width: 0;
+}
+
+.sign-textarea {
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
+.sign-textarea:focus {
+  outline: none;
+  border-color: rgba(59, 130, 246, 0.6);
+}
+
+.sign-btn {
+  align-self: flex-start;
+  padding: 8px 20px;
+  border-radius: 8px;
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  background: linear-gradient(135deg, rgba(29, 78, 216, 0.4), rgba(37, 99, 235, 0.3));
+  color: #93c5fd;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.sign-btn:hover {
+  background: linear-gradient(135deg, rgba(29, 78, 216, 0.6), rgba(37, 99, 235, 0.5));
+  border-color: rgba(96, 165, 250, 0.8);
+  color: #bfdbfe;
+}
+
+.sign-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sign-result {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(34, 197, 94, 0.25);
+  background: rgba(34, 197, 94, 0.06);
+}
+
+.sign-result-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #86efac;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sign-result-value {
+  font-size: 0.65rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #a7f3d0;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
 .wallet-widget {
   display: flex;
   gap: 10px;
@@ -218,7 +309,7 @@ body {
 }
 
 .wk-dropdown {
-  width: 270px;
+  width: 202px;
   padding: 8px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -298,7 +389,9 @@ body {
 }
 
 .wk-dd-item:hover {
-  background: rgba(96, 165, 250, 0.12);
+  border-color: rgba(59, 130, 246, 0.86);
+  background: linear-gradient(135deg, rgba(13, 38, 94, 0.66), rgba(10, 24, 56, 0.75));
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2) inset;
 }
 
 .wk-dd-item.disconnect {
@@ -315,6 +408,38 @@ body {
   box-shadow:
     0 10px 20px rgba(127, 29, 29, 0.28),
     0 0 0 1px rgba(248, 113, 113, 0.22) inset;
+}
+
+.wk-dd-address-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.wk-dd-address-row .wk-dd-address-banner {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.wk-dd-explorer-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  color: #9ca7bb;
+  font-size: 0.9rem;
+  padding: 0 10px;
+  text-decoration: none;
+  transition: all 0.15s;
+}
+
+.wk-dd-explorer-btn:hover {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.1);
+  color: #93c5fd;
 }
 
 .wk-waap-clear-btn {
@@ -417,7 +542,7 @@ body {
 
 /* ─── Wallet Connect Modal ─────────────────────────────────────────── */
 
-.wk-modal-overlay {
+.ski-modal-overlay {
   display: none;
   position: fixed;
   inset: 0;
@@ -430,11 +555,11 @@ body {
   padding: 10px;
 }
 
-.wk-modal-overlay.open {
+.ski-modal-overlay.open {
   display: flex;
 }
 
-.wk-modal {
+.ski-modal {
   background: linear-gradient(180deg, #141820, #0e1118 50%, #101520);
   border: 1px solid rgba(160, 200, 240, 0.12);
   border-radius: 12px;
@@ -445,23 +570,250 @@ body {
   box-shadow: 0 28px 84px rgba(2, 6, 23, 0.82), 0 0 38px rgba(180, 210, 240, 0.1);
 }
 
-@keyframes wk-modal-in {
+@keyframes ski-modal-in {
   from { opacity: 0; transform: scale(0.95) translateY(10px); }
   to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
-.wk-modal-header {
+.ski-modal-body {
+  display: flex;
+  gap: 12px;
+  padding: 8px 16px 16px;
+}
+
+.ski-modal-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ski-modal-detail {
+  border-left: 1px solid rgba(160, 200, 240, 0.08);
+  padding-left: 12px;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.ski-detail-empty {
+  color: #555d6e;
+  font-size: 0.7rem;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.ski-detail-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+}
+
+.ski-detail-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #e6ebf5;
+}
+
+.ski-detail-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ski-detail-row.inline {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.ski-detail-label {
+  font-size: 0.58rem;
+  font-weight: 600;
+  color: #555d6e;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ski-detail-value {
+  font-size: 0.66rem;
+  color: #9ca7bb;
+  word-break: break-word;
+  line-height: 1.3;
+}
+
+.ski-detail-addr-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ski-detail-addr-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ski-detail-addr-text {
+  font-size: 0.64rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #9ca7bb;
+  line-height: 1.3;
+  text-decoration: none;
+}
+
+.ski-detail-addr-text:hover {
+  color: #c8d0e0;
+  text-decoration: underline;
+}
+
+.ski-detail-addr.muted {
+  font-size: 0.64rem;
+  color: #555d6e;
+  font-style: italic;
+}
+
+.ski-copy-btn {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: #9ca7bb;
+  font-size: 0.6rem;
+  padding: 1px 4px;
+  cursor: pointer;
+  line-height: 1;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.ski-copy-btn:hover {
+  border-color: rgba(96, 165, 250, 0.5);
+  color: #93c5fd;
+}
+
+.ski-detail-suins {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #93c5fd;
+  text-decoration: none;
+}
+
+.ski-detail-suins:hover {
+  text-decoration: underline;
+}
+
+.ski-feature-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ski-feature-tag {
+  display: inline-block;
+  font-size: 0.58rem;
+  line-height: 1.2;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  color: #93c5fd;
+  text-decoration: none;
+  transition: border-color 0.15s;
+}
+
+.ski-feature-tag:hover {
+  border-color: rgba(96, 165, 250, 0.7);
+}
+
+.ski-feature-tag.legacy {
+  background: rgba(234, 179, 8, 0.1);
+  border-color: rgba(234, 179, 8, 0.3);
+  color: #fde68a;
+  text-decoration: line-through;
+  text-decoration-color: rgba(234, 179, 8, 0.5);
+}
+
+.ski-feature-tag.legacy:hover {
+  border-color: rgba(250, 204, 21, 0.65);
+}
+
+.ski-network-tag {
+  display: inline-block;
+  font-size: 0.58rem;
+  line-height: 1.2;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #555d6e;
+}
+
+.ski-network-tag.active {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #86efac;
+}
+
+.ski-detail-retired {
+  margin: 0;
+}
+
+.ski-detail-retired > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.ski-detail-retired > summary::before {
+  content: '\25B8 ';
+}
+
+.ski-detail-retired[open] > summary::before {
+  content: '\25BE ';
+}
+
+.ski-detail-retired > .ski-feature-list {
+  margin-top: 4px;
+}
+
+.ski-modal-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   padding: 16px 16px 8px;
 }
 
-.wk-modal-header-left {
+.ski-modal-header-left {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex: 1;
+}
+
+.ski-modal-logo {
+  width: 64px;
+  height: auto;
+  flex-shrink: 0;
+}
+
+.ski-modal-titles {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  flex: 1;
+  justify-content: flex-end;
+}
+
+.ski-modal-title {
+  color: #ffffff;
+  font-size: 1rem;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.ski-modal-tagline {
+  color: #9ca7bb;
+  font-size: 0.62rem;
+  margin: 1px 0 0;
+  line-height: 1.25;
 }
 
 @media (max-width: 780px) {

@@ -214,8 +214,21 @@ export async function autoReconnect(): Promise<boolean> {
   }
   if (!savedWallet) return false;
 
-  const wallets = getSuiWallets();
-  const match = wallets.find((w) => w.name === savedWallet);
+  // Check immediately first
+  let match = getSuiWallets().find((w) => w.name === savedWallet);
+
+  // If not found, wait for wallet extensions to register (they inject async)
+  if (!match) {
+    match = await new Promise<Wallet | undefined>((resolve) => {
+      const unsub = walletsApi.on('register', () => {
+        const found = getSuiWallets().find((w) => w.name === savedWallet);
+        if (found) { unsub(); clearTimeout(timeout); resolve(found); }
+      });
+      // Give up after 3 seconds
+      const timeout = setTimeout(() => { unsub(); resolve(undefined); }, 3000);
+    });
+  }
+
   if (!match) return false;
 
   try {
