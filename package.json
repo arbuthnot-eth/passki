@@ -1,13 +1,26 @@
 {
   "name": "dotski",
   "private": true,
-  "version": "0.1.0",
+  "version": "2.0.0",
   "scripts": {
-    "dev": "bun run local-server.mjs",
+    "build": "bun build src/ski.ts --outdir public/dist --target browser --minify",
+    "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch",
     "dev:wrangler": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260304.0",
+    "typescript": "^5.9.3",
     "wrangler": "4.67.0"
+  },
+  "dependencies": {
+    "@fingerprintjs/fingerprintjs": "^5.0.1",
+    "@mysten/sui": "^2.5.0",
+    "@mysten/wallet-standard": "^0.20.1",
+    "@wallet-standard/app": "^1.1.0",
+    "agents": "^0.6.0",
+    "hono": "^4.12.2",
+    "hono-agents": "^3.0.6"
   }
 }

@@ -1,0 +1,28 @@
+{
+  "name": "dotski",
+  "main": "src/server/index.ts",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Serve public/ as static assets
+  "assets": {
+    "directory": "public"
+  },
+
+  // Durable Objects
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SessionAgent",
+        "class_name": "SessionAgent"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SessionAgent"]
+    }
+  ]
+}

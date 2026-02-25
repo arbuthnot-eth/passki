@@ -1,7 +1,9 @@
 node_modules/
 .wrangler/
+dist/
+public/dist/
+
 worker.ts
-wrangler.jsonc
 local-server.mjs
 
 .DS_Store
