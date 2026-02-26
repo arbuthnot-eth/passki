@@ -129,6 +129,36 @@ export function showToast(msg: string) {
   toast.addEventListener('click', remove);
 }
 
+export function showToastWithRetry(msg: string, retryLabel: string, retryFn: () => void) {
+  const text = msg.trim();
+  if (!text) return;
+  let root = document.getElementById('app-toast-root');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'app-toast-root';
+    root.className = 'app-toast-root';
+    document.body.appendChild(root);
+  }
+  const toast = document.createElement('div');
+  const id = 'app-toast-' + ++toastSeq;
+  toast.className = 'app-toast app-toast--action';
+  toast.id = id;
+  toast.setAttribute('role', 'status');
+  const textSpan = document.createElement('span');
+  textSpan.textContent = text;
+  toast.appendChild(textSpan);
+  const btn = document.createElement('button');
+  btn.className = 'app-toast-retry';
+  btn.textContent = retryLabel;
+  toast.appendChild(btn);
+  root.appendChild(toast);
+  requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
+  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
+  btn.addEventListener('click', (e) => { e.stopPropagation(); remove(); retryFn(); });
+  setTimeout(remove, 10000); // longer window for action toasts
+  toast.addEventListener('click', remove);
+}
+
 // ─── SKI SVG dot variant ─────────────────────────────────────────────
 
 let _skiSvgText: string | null = null;
@@ -222,6 +252,8 @@ export function setSkiLift(show: boolean) {
 
 let _faviconVariant: SkiDotVariant | null = null;
 
+const SUI_DROP_PATH = `M240.057 159.914C255.698 179.553 265.052 204.39 265.052 231.407C265.052 258.424 255.414 284.019 239.362 303.768L237.971 305.475L237.608 303.31C237.292 301.477 236.929 299.613 236.502 297.749C228.46 262.421 202.265 232.134 159.148 207.597C130.029 191.071 113.361 171.195 108.985 148.586C106.157 133.972 108.258 119.294 112.318 106.717C116.379 94.1569 122.414 83.6187 127.549 77.2831L144.328 56.7754C147.267 53.1731 152.781 53.1731 155.719 56.7754L240.073 159.914H240.057ZM266.584 139.422L154.155 1.96703C152.007 -0.655678 147.993 -0.655678 145.845 1.96703L33.4316 139.422L33.0683 139.881C12.3868 165.555 0 198.181 0 233.698C0 316.408 67.1635 383.461 150 383.461C232.837 383.461 300 316.408 300 233.698C300 198.181 287.613 165.555 266.932 139.896L266.568 139.438L266.584 139.422ZM60.3381 159.472L70.3866 147.164L70.6868 149.439C70.9237 151.24 71.2239 153.041 71.5715 154.858C78.0809 189.001 101.322 217.456 140.173 239.496C173.952 258.724 193.622 280.828 199.278 305.064C201.648 315.176 202.059 325.129 201.032 333.835L200.969 334.372L200.479 334.609C185.233 342.05 168.09 346.237 149.984 346.237C86.4546 346.237 34.9484 294.826 34.9484 231.391C34.9484 204.153 44.4439 179.142 60.3065 159.44L60.3381 159.472Z`;
+
 function updateFavicon(variant: SkiDotVariant) {
   if (variant === _faviconVariant) return;
   _faviconVariant = variant;
@@ -230,7 +262,7 @@ function updateFavicon(variant: SkiDotVariant) {
   if (variant === 'green-circle') {
     shape = `<circle cx="50" cy="50" r="38" fill="#22c55e" stroke="white" stroke-width="10"/>`;
   } else if (variant === 'blue-square') {
-    shape = `<rect x="10" y="10" width="80" height="80" fill="#3b82f6" stroke="white" stroke-width="10"/>`;
+    shape = `<rect x="0" y="0" width="100" height="100" rx="12" fill="#3b82f6" stroke="white" stroke-width="8"/><g transform="translate(22,14) scale(0.1875)" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
   } else {
     shape = `<polygon points="50,6 94,50 50,94 6,50" fill="#111111" stroke="white" stroke-width="10"/>`;
   }
@@ -239,6 +271,14 @@ function updateFavicon(variant: SkiDotVariant) {
   const link = document.getElementById('ski-favicon') as HTMLLinkElement | null;
   if (link) link.href = url;
 }
+
+window.addEventListener('ski:pre-sign', (e) => {
+  const variant = (e as CustomEvent).detail?.variant as SkiDotVariant | undefined;
+  if (variant) {
+    _faviconVariant = null; // force update even if variant hasn't changed
+    updateFavicon(variant);
+  }
+});
 
 function updateSkiDot(variant: SkiDotVariant, suinsName?: string) {
   const outer  = document.getElementById('ski-dot-outer')  as SVGElement | null;
@@ -404,8 +444,8 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
           <div class="ski-detail-key-column">
             ${activePfpHtml}
           </div>
+          ${stableBal ? `<span class="ski-detail-stable-bal">${esc(stableBal)}</span>` : ''}
         </div>
-        ${stableBal ? `<span class="ski-detail-stable-bal">${esc(stableBal)}</span>` : ''}
         ${activeTextHtml}
       </div>
     </div>
@@ -424,12 +464,9 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
     ` : ''}
   `;
 
-  // Bind diamond pfp: same as pressing Enter on the wallet — connect then sign in
-  detailEl.querySelector('.ski-detail-key-column .ski-key-pfp--diamond')?.addEventListener('click', async (e) => {
+  // Bind diamond pfp: sign in with the currently connected wallet (one signature only)
+  detailEl.querySelector('.ski-detail-key-column .ski-key-pfp--diamond')?.addEventListener('click', (e) => {
     e.preventDefault();
-    if (getState().wallet !== w || getState().status !== 'connected') {
-      await selectWallet(w);
-    }
     window.dispatchEvent(new CustomEvent('ski:request-signin'));
   });
 
@@ -500,9 +537,13 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
 
 /** Returns the SKI shape SVG badge for a wallet list item (right-side indicator). */
 function walletListShape(w: Wallet): string {
+  // Prefer live accounts; fall back to stored keys for wallets not yet authorized
   const liveAddrs = w.accounts.map((a: { address: string }) => a.address);
-  const hasSuins = liveAddrs.some((addr) => suinsCache[addr] || !!localStorage.getItem(`ski:suins:${addr}`));
-  const hasAddrs = liveAddrs.length > 0;
+  const addrs = liveAddrs.length ? liveAddrs : (() => {
+    try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return [] as string[]; }
+  })();
+  const hasSuins = addrs.some((addr) => suinsCache[addr] || !!localStorage.getItem(`ski:suins:${addr}`));
+  const hasAddrs = addrs.length > 0;
   if (hasSuins) {
     return `<span class="ski-list-shape ski-list-shape--blue"><img src="./assets/sui-drop.svg" alt="" class="ski-list-shape-img"></span>`;
   } else if (hasAddrs) {
@@ -907,11 +948,9 @@ function renderSignStage() {
     signMessageText = (e.target as HTMLTextAreaElement).value;
   });
 
-  document.getElementById('sign-msg-btn')?.addEventListener('click', async () => {
+  const doSign = async () => {
     const btn = document.getElementById('sign-msg-btn') as HTMLButtonElement;
-    if (!btn) return;
-    btn.disabled = true;
-    btn.textContent = 'Signing\u2026';
+    if (btn) { btn.disabled = true; btn.textContent = 'Signing\u2026'; }
     try {
       const bytes = new TextEncoder().encode(signMessageText);
       const result = await signPersonalMessage(bytes);
@@ -919,13 +958,19 @@ function renderSignStage() {
       showToast('Message signed');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Signing failed';
-      if (!msg.toLowerCase().includes('reject')) showToast(msg);
-      else showToast('Signing cancelled');
+      if (msg.includes('UserKeyring not found')) {
+        showToastWithRetry('Backpack is locked — enter your password in the popup to sign.', 'Try again', doSign);
+      } else if (!msg.toLowerCase().includes('reject')) {
+        showToast(msg);
+      } else {
+        showToast('Signing cancelled');
+      }
     }
-    btn.disabled = false;
-    btn.textContent = 'Sign Message';
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign Message'; }
     renderSignStage();
-  });
+  };
+
+  document.getElementById('sign-msg-btn')?.addEventListener('click', doSign);
 }
 
 // ─── Render: Dropdown Menu ───────────────────────────────────────────

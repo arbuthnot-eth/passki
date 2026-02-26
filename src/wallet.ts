@@ -209,7 +209,21 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
     if (uiWallet) {
       // silent:true re-acknowledges the already-connected wallet without any UI prompt
       await dappKit.connectWallet({ wallet: uiWallet, silent: true } as Parameters<typeof dappKit.connectWallet>[0]);
-      return dappKit.signPersonalMessage({ message });
+      try {
+        return await dappKit.signPersonalMessage({ message });
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : '';
+        if (errMsg.includes('UserKeyring not found')) {
+          // Backpack's keyring is locked. A non-silent Wallet Standard connect
+          // targets the Sui context directly and should surface the Backpack
+          // popup (unlock screen if locked, account picker otherwise).
+          try {
+            await dappKit.connectWallet({ wallet: uiWallet } as Parameters<typeof dappKit.connectWallet>[0]);
+          } catch { /* user cancelled — sign retry will surface the error */ }
+          return dappKit.signPersonalMessage({ message });
+        }
+        throw e;
+      }
     }
   }
 

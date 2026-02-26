@@ -661,6 +661,31 @@ body {
   transform: translateY(0);
 }
 
+.app-toast--action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.app-toast-retry {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid rgba(96, 165, 250, 0.6);
+  background: rgba(96, 165, 250, 0.15);
+  color: #93c5fd;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.app-toast-retry:hover {
+  background: rgba(96, 165, 250, 0.28);
+}
+
 /* ─── Wallet Connect Modal ─────────────────────────────────────────── */
 
 .ski-modal-overlay {
@@ -746,7 +771,7 @@ body {
 .ski-detail-icons-top {
   display: flex;
   flex-direction: row;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
 }
 
@@ -930,6 +955,15 @@ body {
   display: flex;
   align-items: baseline;
   gap: 6px;
+}
+
+.ski-lockin-label {
+  font-size: 0.58rem;
+  color: #6b7894;
+  text-transform: lowercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+  display: block;
 }
 
 .ski-detail-addr-text {
