@@ -48,13 +48,13 @@ function storeSession(s: StoredSession) {
 const TTL_DEFAULT_MS  = 7 * 24 * 60 * 60 * 1000; //  7 days  — software wallets
 const TTL_KEYSTONE_MS = 1 * 24 * 60 * 60 * 1000; // 24 hours — hardware wallet (QR sign once / day)
 
-function buildSignMessage(address: string, domain: string, ttlMs = TTL_DEFAULT_MS): { message: string; expiresAt: string } {
+function buildSignMessage(address: string, ttlMs = TTL_DEFAULT_MS): { message: string; expiresAt: string } {
   const nonce = crypto.randomUUID();
   const issuedAt = new Date().toISOString();
   const expiresAt = new Date(Date.now() + ttlMs).toISOString();
 
   const message = [
-    `${domain} wants you to .SKI`,
+    `.SKI Once, Everywhere`,
     '',
     address,
     '',
@@ -122,7 +122,7 @@ export async function signIn(isReconnect = false): Promise<boolean> {
   // Fresh connection — need to sign
   const isKeystone = /keystone/i.test(ws.walletName);
   const ttlMs = isKeystone ? TTL_KEYSTONE_MS : TTL_DEFAULT_MS;
-  const { message, expiresAt } = buildSignMessage(address, window.location.host, ttlMs);
+  const { message, expiresAt } = buildSignMessage(address, ttlMs);
   const messageBytes = new TextEncoder().encode(message);
 
   try {
@@ -200,6 +200,11 @@ window.addEventListener('ski:wallet-connected', async (e) => {
 
 window.addEventListener('ski:wallet-disconnected', () => {
   disconnectSession();
+});
+
+window.addEventListener('ski:request-signin', async () => {
+  const ok = await signIn();
+  if (ok) window.open('https://sui.ski', '_blank');
 });
 
 // ─── Boot ────────────────────────────────────────────────────────────

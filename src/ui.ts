@@ -377,9 +377,19 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
     </div>`;
   };
 
-  const activeKeyHtml = displayAddrs.length
-    ? keyCardHtml(displayAddrs[0], 0)
+  const addr0 = displayAddrs[0] ?? '';
+  const suinsName0: string | null = addr0 ? (suinsCache[addr0] || (() => { try { return localStorage.getItem(`ski:suins:${addr0}`); } catch { return null; } })() || null) : null;
+  const scanUrl0 = addr0 ? `https://suiscan.xyz/mainnet/account/${addr0}` : '';
+  const activePfpHtml = addr0
+    ? keyPfpHtml(0, suinsName0)
     : '<div class="ski-key-pfp ski-key-pfp--green-circle"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div>';
+  const activeTextHtml = addr0 ? `<div class="ski-detail-key-text">
+        <span class="ski-detail-suins-slot"></span>
+        <div class="ski-detail-addr-row">
+          <a href="${esc(scanUrl0)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr0)}">${esc(truncAddr(addr0))}</a>
+          <button class="ski-copy-btn" title="Copy address">\u2398</button>
+        </div>
+      </div>` : '';
 
   const otherKeysHtml = displayAddrs.slice(1).map((addr: string, i: number) => keyCardHtml(addr, i + 1)).join('');
 
@@ -388,12 +398,15 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
 
   detailEl.innerHTML = `
     <div class="ski-detail-header">
-      <div class="ski-detail-icon-row">
-        ${w.icon ? `<div class="ski-detail-icon-col"><img src="${esc(w.icon)}" alt="" class="ski-detail-icon"><span class="ski-detail-name">${esc(w.name)}</span></div>` : ''}
-        <div class="ski-detail-key-column">
-          ${stableBal ? `<span class="ski-detail-stable-bal">${esc(stableBal)}</span>` : ''}
-          ${activeKeyHtml}
+      <div class="ski-detail-icon-row"${addr0 ? ` data-addr-idx="0" data-full-addr="${esc(addr0)}"` : ''}>
+        <div class="ski-detail-icons-top">
+          ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
+          <div class="ski-detail-key-column">
+            ${activePfpHtml}
+          </div>
         </div>
+        ${stableBal ? `<span class="ski-detail-stable-bal">${esc(stableBal)}</span>` : ''}
+        ${activeTextHtml}
       </div>
     </div>
     ${otherKeysHtml ? `<div class="ski-detail-row">${otherKeysHtml}</div>` : ''}
@@ -410,6 +423,15 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
       </div>
     ` : ''}
   `;
+
+  // Bind diamond pfp: same as pressing Enter on the wallet — connect then sign in
+  detailEl.querySelector('.ski-detail-key-column .ski-key-pfp--diamond')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (getState().wallet !== w || getState().status !== 'connected') {
+      await selectWallet(w);
+    }
+    window.dispatchEvent(new CustomEvent('ski:request-signin'));
+  });
 
   // Bind gear toggle
   detailEl.querySelector('#ski-gear-btn')?.addEventListener('click', () => {
@@ -474,6 +496,19 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
       }
     });
   });
+}
+
+/** Returns the SKI shape SVG badge for a wallet list item (right-side indicator). */
+function walletListShape(w: Wallet): string {
+  const liveAddrs = w.accounts.map((a: { address: string }) => a.address);
+  const hasSuins = liveAddrs.some((addr) => suinsCache[addr] || !!localStorage.getItem(`ski:suins:${addr}`));
+  const hasAddrs = liveAddrs.length > 0;
+  if (hasSuins) {
+    return `<span class="ski-list-shape ski-list-shape--blue"><img src="./assets/sui-drop.svg" alt="" class="ski-list-shape-img"></span>`;
+  } else if (hasAddrs) {
+    return `<span class="ski-list-shape ski-list-shape--diamond"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg></span>`;
+  }
+  return `<span class="ski-list-shape ski-list-shape--green"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></span>`;
 }
 
 function renderModal(): number | undefined {
@@ -546,6 +581,7 @@ function renderModal(): number | undefined {
               <button class="wk-dd-item${i === defaultIdx ? ' active' : ''}" data-idx="${i}" style="display:flex;align-items:center;gap:10px">
                 ${w.icon ? `<img src="${esc(w.icon)}" alt="" style="width:28px;height:28px;border-radius:6px">` : ''}
                 <span>${esc(w.name)}</span>
+                ${walletListShape(w)}
               </button>
             `).join('')}
           </div>
