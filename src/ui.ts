@@ -464,9 +464,13 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
     ` : ''}
   `;
 
-  // Bind diamond pfp: sign in with the currently connected wallet (one signature only)
-  detailEl.querySelector('.ski-detail-key-column .ski-key-pfp--diamond')?.addEventListener('click', (e) => {
+  // Bind diamond pfp: connect to this wallet if needed, then sign in
+  detailEl.querySelector('.ski-detail-key-column .ski-key-pfp--diamond')?.addEventListener('click', async (e) => {
     e.preventDefault();
+    const ws = getState();
+    if (!ws.wallet || ws.wallet.name !== w.name || ws.status !== 'connected') {
+      await selectWallet(w);
+    }
     window.dispatchEvent(new CustomEvent('ski:request-signin'));
   });
 
