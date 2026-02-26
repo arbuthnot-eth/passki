@@ -638,6 +638,15 @@ body {
   pointer-events: none;
 }
 
+.app-toast-root--top {
+  right: auto;
+  bottom: auto;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+}
+
 .app-toast {
   min-width: 260px;
   max-width: min(420px, calc(100vw - 28px));
@@ -656,8 +665,16 @@ body {
   cursor: pointer;
 }
 
+.app-toast-root--top .app-toast {
+  transform: translateY(-8px);
+}
+
 .app-toast.show {
   opacity: 1;
+  transform: translateY(0);
+}
+
+.app-toast-root--top .app-toast.show {
   transform: translateY(0);
 }
 
@@ -666,6 +683,14 @@ body {
   align-items: center;
   gap: 10px;
   justify-content: space-between;
+}
+
+.app-toast-wallet-icon {
+  width: 47px;
+  height: 47px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  object-fit: contain;
 }
 
 .app-toast-retry {

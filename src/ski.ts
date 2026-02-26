@@ -8,8 +8,8 @@
  *   4. POST to session agent (Cloudflare Durable Object)
  */
 
-import { getState, signPersonalMessage, getSuiWallets, connect, disconnect } from './wallet.js';
-import { initUI, showToast, showToastWithRetry, updateAppState } from './ui.js';
+import { getState, signPersonalMessage, signAndExecuteTransaction, getSuiWallets, connect, disconnect, reconnectWallet } from './wallet.js';
+import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState } from './ui.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
 // Ika is heavy (~150KB), lazy-load only after sign-in
@@ -171,13 +171,18 @@ export async function signIn(isReconnect = false): Promise<boolean> {
       // wallet.ts already attempted a non-silent reconnect to open the Backpack
       // popup — if we're here the wallet is still locked or the Keystone device
       // is genuinely missing.  Give the user an actionable retry button.
-      showToastWithRetry(
-        keystone
-          ? 'Backpack lost your Keystone device. Re-import it in Backpack, or install the Keystone extension.'
-          : 'Backpack is locked — enter your password in the popup to sign.',
-        'Try again',
-        () => signIn(isReconnect),
-      );
+      if (keystone) {
+        showToastWithRetry(
+          'Backpack lost your Keystone device. Re-import it in Backpack, or install the Keystone extension.',
+          'Try again',
+          () => signIn(isReconnect),
+        );
+      } else {
+        showBackpackLockedToast(async () => {
+          try { await reconnectWallet(); } catch { /* user cancelled popup */ }
+          await signIn(isReconnect);
+        });
+      }
       return false;
     }
 
@@ -234,6 +239,40 @@ window.addEventListener('ski:request-signin', async () => {
     } else {
       window.open('https://sui.ski', '_blank');
     }
+  }
+});
+
+// ─── Sign & Execute Transaction ──────────────────────────────────────
+//
+// Any window that imports sui.ski can request a transaction be signed and
+// executed by dispatching 'ski:sign-and-execute-transaction' with a detail of:
+//   { transaction: Transaction, requestId?: string }
+//
+// The result is dispatched back as 'ski:transaction-result' with:
+//   { requestId, success: true,  digest, effects }  — on success
+//   { requestId, success: false, error }             — on failure
+
+window.addEventListener('ski:sign-and-execute-transaction', async (e) => {
+  const { transaction, requestId } = (e as CustomEvent).detail ?? {};
+
+  const dispatch = (result: Record<string, unknown>) =>
+    window.dispatchEvent(new CustomEvent('ski:transaction-result', { detail: { requestId, ...result } }));
+
+  if (!transaction) {
+    dispatch({ success: false, error: 'No transaction provided' });
+    return;
+  }
+
+  if (getState().status !== 'connected') {
+    dispatch({ success: false, error: 'No wallet connected' });
+    return;
+  }
+
+  try {
+    const { digest, effects } = await signAndExecuteTransaction(transaction);
+    dispatch({ success: true, digest, effects });
+  } catch (err) {
+    dispatch({ success: false, error: err instanceof Error ? err.message : 'Transaction failed' });
   }
 });
 

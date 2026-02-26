@@ -129,6 +129,44 @@ export function showToast(msg: string) {
   toast.addEventListener('click', remove);
 }
 
+export function showBackpackLockedToast(retryFn: () => void) {
+  const walletIcon = getState().walletIcon;
+  let root = document.getElementById('app-toast-root-top');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'app-toast-root-top';
+    root.className = 'app-toast-root app-toast-root--top';
+    document.body.appendChild(root);
+  }
+  const toast = document.createElement('div');
+  const id = 'app-toast-' + ++toastSeq;
+  toast.className = 'app-toast app-toast--action';
+  toast.id = id;
+  toast.setAttribute('role', 'status');
+  if (walletIcon) {
+    const img = document.createElement('img');
+    img.className = 'app-toast-wallet-icon';
+    img.src = walletIcon;
+    img.alt = 'Backpack';
+    img.width = 47;
+    img.height = 47;
+    toast.appendChild(img);
+  }
+  const textSpan = document.createElement('span');
+  textSpan.textContent = 'Lock in to Backpack to continue';
+  toast.appendChild(textSpan);
+  const btn = document.createElement('button');
+  btn.className = 'app-toast-retry';
+  btn.textContent = 'Try again';
+  toast.appendChild(btn);
+  root.appendChild(toast);
+  requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
+  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
+  btn.addEventListener('click', (e) => { e.stopPropagation(); remove(); retryFn(); });
+  setTimeout(remove, 10000);
+  toast.addEventListener('click', remove);
+}
+
 export function showToastWithRetry(msg: string, retryLabel: string, retryFn: () => void) {
   const text = msg.trim();
   if (!text) return;
@@ -998,7 +1036,7 @@ function renderSignStage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Signing failed';
       if (msg.includes('UserKeyring not found')) {
-        showToastWithRetry('Backpack is locked — enter your password in the popup to sign.', 'Try again', doSign);
+        showBackpackLockedToast(doSign);
       } else if (!msg.toLowerCase().includes('reject')) {
         showToast(msg);
       } else {
@@ -1034,6 +1072,10 @@ function renderMenu() {
 
     els.menuRoot.innerHTML = `
       <div class="wk-dropdown wk-dropdown--large open">
+        <div class="wk-popout-actions">
+          <button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>
+          <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
+        </div>
         <div class="wk-popout-name-badge">
           <svg viewBox="0 0 100 100" width="16" height="16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="flex-shrink:0"><rect x="6" y="6" width="88" height="88" rx="10" fill="#3b82f6"/></svg>
           <span class="wk-popout-name-text">${esc(bare)}<span class="wk-popout-name-tld">.sui</span></span>
@@ -1049,24 +1091,22 @@ function renderMenu() {
           </button>
           <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
         </div>
-        <div class="wk-popout-actions">
-          <button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>
-          <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
-        </div>
       </div>`;
   } else {
     // Black-diamond state — compact dropdown
     const addrDisplay = app.copied ? 'Copied! \u2713' : ws.address;
     els.menuRoot.innerHTML = `
       <div class="wk-dropdown open">
+        <div class="wk-popout-actions">
+          <button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>
+          <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
+        </div>
         <div class="wk-dd-address-row">
           <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
             <span class="wk-dd-address-text">${esc(addrDisplay)}</span>
           </button>
           <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
         </div>
-        <button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>
-        <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
       </div>`;
   }
 

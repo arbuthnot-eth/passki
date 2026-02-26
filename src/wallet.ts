@@ -242,6 +242,89 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   return signFeature.signPersonalMessage({ message, account });
 }
 
+// ─── Sign & Execute Transaction ──────────────────────────────────────
+
+// dapp-kit-core returns a discriminated union { $kind, Transaction } — normalise to a flat result.
+function normalizeTxResult(r: unknown): { digest: string; effects?: unknown } {
+  const obj = r as Record<string, unknown>;
+  // Nested gRPC-style response
+  if (obj.$kind === 'Transaction' && obj.Transaction) {
+    const tx = obj.Transaction as Record<string, unknown>;
+    return { digest: tx.digest as string, effects: tx.effects };
+  }
+  // Flat Wallet Standard response
+  return { digest: obj.digest as string, effects: obj.effects };
+}
+
+export async function signAndExecuteTransaction(transaction: unknown): Promise<{
+  digest: string;
+  effects?: unknown;
+}> {
+  const { wallet, account } = currentState;
+  if (!wallet || !account) throw new Error('No wallet connected');
+
+  // Backpack routes through its internal keyring — same workaround as signPersonalMessage
+  if (/backpack/i.test(wallet.name)) {
+    const uiWallet = dappKit.stores.$wallets.get().find((w) => w.name === wallet.name);
+    if (uiWallet) {
+      await dappKit.connectWallet({ wallet: uiWallet, silent: true } as Parameters<typeof dappKit.connectWallet>[0]);
+      try {
+        const r = await dappKit.signAndExecuteTransaction({ transaction } as Parameters<typeof dappKit.signAndExecuteTransaction>[0]);
+        return normalizeTxResult(r);
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : '';
+        if (errMsg.includes('UserKeyring not found')) {
+          try {
+            await dappKit.connectWallet({ wallet: uiWallet } as Parameters<typeof dappKit.connectWallet>[0]);
+          } catch { /* user cancelled */ }
+          const r = await dappKit.signAndExecuteTransaction({ transaction } as Parameters<typeof dappKit.signAndExecuteTransaction>[0]);
+          return normalizeTxResult(r);
+        }
+        throw e;
+      }
+    }
+  }
+
+  if (!('sui:signAndExecuteTransaction' in wallet.features)) {
+    throw new Error(`${wallet.name} does not support signAndExecuteTransaction`);
+  }
+
+  const feature = wallet.features['sui:signAndExecuteTransaction'] as {
+    signAndExecuteTransaction: (input: {
+      transaction: unknown;
+      account: WalletAccount;
+      chain: string;
+      options?: { showEffects?: boolean };
+    }) => Promise<{ digest: string; effects?: unknown }>;
+  };
+
+  const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
+  return feature.signAndExecuteTransaction({
+    transaction,
+    account,
+    chain,
+    options: { showEffects: true },
+  });
+}
+
+// ─── Reconnect (open wallet popup) ───────────────────────────────────
+
+/**
+ * Trigger a non-silent wallet connect for the currently-connected wallet.
+ * For Backpack this opens the unlock / password popup when the keyring is locked.
+ */
+export async function reconnectWallet(): Promise<void> {
+  const { wallet } = currentState;
+  if (!wallet || !('standard:connect' in wallet.features)) return;
+
+  const connectFeature = wallet.features['standard:connect'] as {
+    connect: (input?: { silent?: boolean }) => Promise<{ accounts: readonly WalletAccount[] }>;
+  };
+
+  // No silent flag → wallet shows its UI (unlock screen / account picker)
+  await connectFeature.connect();
+}
+
 // ─── Auto-Reconnect ──────────────────────────────────────────────────
 
 export async function autoReconnect(): Promise<boolean> {
