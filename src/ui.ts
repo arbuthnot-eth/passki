@@ -1111,7 +1111,11 @@ function render() {
     e.stopPropagation();
     if (modalOpen) { closeModal(); return; }
     if (!getState().address) { openModal(); return; }
-    window.open(skiHref(), '_blank', 'noopener,noreferrer');
+    if (window.location.hostname === 'sui.ski') {
+      window.location.reload();
+    } else {
+      window.open(skiHref(), '_blank', 'noopener,noreferrer');
+    }
   });
 }
 

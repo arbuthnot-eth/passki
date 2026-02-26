@@ -228,7 +228,13 @@ window.addEventListener('ski:wallet-disconnected', () => {
 
 window.addEventListener('ski:request-signin', async () => {
   const ok = await signIn();
-  if (ok) window.open('https://sui.ski', '_blank');
+  if (ok) {
+    if (window.location.hostname === 'sui.ski') {
+      window.location.reload();
+    } else {
+      window.open('https://sui.ski', '_blank');
+    }
+  }
 });
 
 // ─── Boot ────────────────────────────────────────────────────────────
