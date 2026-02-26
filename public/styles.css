@@ -756,8 +756,8 @@ body {
 
 /* Active key pfp: matches wallet icon size */
 .ski-detail-active-key .ski-key-pfp {
-  width: 36px;
-  height: 36px;
+  width: 47px;
+  height: 47px;
 }
 
 /* Secondary key pfp: smaller */
@@ -771,6 +771,13 @@ body {
 /* Black diamond variant — transparent bg, SVG provides the shape */
 .ski-key-pfp--diamond {
   background: transparent;
+}
+
+/* Green circle variant — shown when no wallet is connected yet */
+.ski-key-pfp--green-circle {
+  background: transparent;
+  width: 47px;
+  height: 47px;
 }
 
 .ski-key-pfp--diamond .ski-key-pfp-ski {
@@ -963,25 +970,67 @@ body {
   color: #86efac;
 }
 
-.ski-detail-retired {
+/* Collapsible sections: Networks / Features / Legacy */
+.ski-collapsible-section {
   margin: 0;
+  margin-left: -16px;
+  margin-right: -16px;
+  padding: 0 16px;
 }
 
-.ski-detail-retired > summary {
+.ski-section-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
   list-style: none;
+  padding: 6px 0;
+  user-select: none;
 }
 
-.ski-detail-retired > summary::before {
-  content: '\25B8 ';
+.ski-section-summary::-webkit-details-marker { display: none; }
+
+.ski-section-summary::before {
+  content: '\25B8';
+  font-size: 0.6rem;
+  color: #555d6e;
+  flex-shrink: 0;
+  transition: transform 0.15s;
 }
 
-.ski-detail-retired[open] > summary::before {
-  content: '\25BE ';
+.ski-collapsible-section[open] > .ski-section-summary::before {
+  transform: rotate(90deg);
 }
 
-.ski-detail-retired > .ski-feature-list {
-  margin-top: 4px;
+.ski-section-label {
+  font-size: 0.58rem;
+  font-weight: 600;
+  color: #555d6e;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.ski-section-count {
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: #3d4558;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+
+.ski-section-line {
+  flex: 1;
+  height: 1px;
+  background: rgba(255,255,255,0.07);
+}
+
+.ski-collapsible-section > .ski-feature-list {
+  padding-bottom: 8px;
 }
 
 .ski-no-wallets {

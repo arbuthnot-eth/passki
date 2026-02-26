@@ -340,9 +340,17 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
     `<a href="${DOCS}#sui${f.toLowerCase()}" target="_blank" rel="noopener" class="ski-feature-tag legacy" title="${esc(LEGACY[f]!)}">${esc(f)}</a>`
   ).join('');
 
-  const retiredSection = legacy.length
-    ? `<details class="ski-detail-retired"><summary class="ski-detail-label">Legacy</summary><div class="ski-feature-list">${legacyHtml}</div></details>`
-    : '';
+  const sectionHtml = (label: string, count: number, content: string) =>
+    `<details class="ski-collapsible-section">
+      <summary class="ski-section-summary">
+        <span class="ski-section-label">${label}</span>
+        <span class="ski-section-count">${count}</span>
+        <span class="ski-section-line"></span>
+      </summary>
+      <div class="ski-feature-list">${content}</div>
+    </details>`;
+
+  const retiredSection = legacy.length ? sectionHtml('Legacy', legacy.length, legacyHtml) : '';
 
   // Build a key card (used for both the active key and secondary keys)
   const keyCardHtml = (addr: string, ai: number): string => {
@@ -363,7 +371,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
 
   const activeKeyHtml = displayAddrs.length
     ? keyCardHtml(displayAddrs[0], 0)
-    : '<div class="ski-detail-addr muted">Connect to reveal</div>';
+    : '<div class="ski-key-pfp ski-key-pfp--green-circle"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="100%" height="100%"><circle cx="50" cy="50" r="42" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div>';
 
   const otherKeysHtml = displayAddrs.slice(1).map((addr: string, i: number) => keyCardHtml(addr, i + 1)).join('');
 
@@ -376,8 +384,8 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
       <div class="ski-detail-name">${esc(w.name)}</div>
     </div>
     ${otherKeysHtml ? `<div class="ski-detail-row"><span class="ski-detail-label">Other Keys</span>${otherKeysHtml}</div>` : ''}
-    ${networks.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Networks</span><div class="ski-feature-list">${networksHtml}</div></div>` : ''}
-    ${current.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Features</span><div class="ski-feature-list">${currentHtml}</div></div>` : ''}
+    ${networks.length ? sectionHtml('Networks', networks.length, networksHtml) : ''}
+    ${current.length ? sectionHtml('Features', current.length, currentHtml) : ''}
     ${retiredSection}
   `;
 
