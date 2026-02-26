@@ -285,9 +285,12 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
   })();
   let displayAddrs = storedAddrs.length ? storedAddrs : liveAddrs;
 
-  // Float the currently connected address to the top
-  if (connectedAddr && displayAddrs.includes(connectedAddr)) {
-    displayAddrs = [connectedAddr, ...displayAddrs.filter((a: string) => a !== connectedAddr)];
+  // Float the wallet's active account to the top (the key it would use if clicked).
+  // For the connected wallet liveAddrs[0] === connectedAddr; for others it's whatever
+  // the extension has selected right now.
+  const activeAddr = liveAddrs[0] ?? connectedAddr;
+  if (activeAddr && displayAddrs.includes(activeAddr)) {
+    displayAddrs = [activeAddr, ...displayAddrs.filter((a: string) => a !== activeAddr)];
   }
 
   // Update dot variant
@@ -334,7 +337,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
 
   const keysHtml = displayAddrs.length
     ? displayAddrs.map((addr: string, ai: number) => {
-        const isConnected = addr === connectedAddr;
+        const isConnected = addr === activeAddr;
         const scanUrl = `https://suiscan.xyz/mainnet/account/${addr}`;
         return `<div class="ski-detail-addr-wrap${isConnected ? ' connected-key' : ''}" data-addr-idx="${ai}" data-full-addr="${esc(addr)}">
           <span class="ski-detail-suins-slot"></span>
