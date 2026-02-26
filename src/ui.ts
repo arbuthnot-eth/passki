@@ -297,7 +297,7 @@ function updateFavicon(variant: SkiDotVariant) {
   const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${shape}</svg>`;
   const url = 'data:image/svg+xml,' + encodeURIComponent(svgStr);
   const link = document.getElementById('ski-favicon') as HTMLLinkElement | null;
-  if (link) link.href = url;
+  if (link) { link.type = 'image/svg+xml'; link.href = url; }
 }
 
 window.addEventListener('ski:pre-sign', (e) => {
@@ -306,13 +306,10 @@ window.addEventListener('ski:pre-sign', (e) => {
     _faviconVariant = null; // force update even if variant hasn't changed
     updateFavicon(variant);
   }
-  // Phantom ignores SVG favicons and caches hosted PNGs aggressively.
-  // Swap both the favicon and apple-touch-icon to a canvas-rendered PNG of
-  // the black diamond — data: URLs bypass HTTP cache entirely.
+  // For wallets that read link tags at sign time (not just at page load),
+  // ensure apple-touch-icon is the diamond PNG data URL to bypass any cache.
   const pngUrl = buildDiamondPng();
   if (pngUrl) {
-    const favicon = document.getElementById('ski-favicon') as HTMLLinkElement | null;
-    if (favicon) { favicon.type = 'image/png'; favicon.href = pngUrl; }
     const touch = document.querySelector('link[rel="apple-touch-icon"]') as HTMLLinkElement | null;
     if (touch) touch.href = pngUrl;
   }
