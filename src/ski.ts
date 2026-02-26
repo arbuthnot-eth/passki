@@ -9,7 +9,7 @@
  */
 
 import { getState, signPersonalMessage, getSuiWallets, connect, disconnect } from './wallet.js';
-import { initUI, showToast, updateAppState } from './ui.js';
+import { initUI, showToast, showToastWithRetry, updateAppState } from './ui.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
 // Ika is heavy (~150KB), lazy-load only after sign-in
@@ -45,13 +45,16 @@ function storeSession(s: StoredSession) {
 
 // ─── Sign-in message builder ─────────────────────────────────────────
 
-function buildSignMessage(address: string, domain: string): { message: string; expiresAt: string } {
+const TTL_DEFAULT_MS  = 7 * 24 * 60 * 60 * 1000; //  7 days  — software wallets
+const TTL_KEYSTONE_MS = 1 * 24 * 60 * 60 * 1000; // 24 hours — hardware wallet (QR sign once / day)
+
+function buildSignMessage(address: string, ttlMs = TTL_DEFAULT_MS): { message: string; expiresAt: string } {
   const nonce = crypto.randomUUID();
   const issuedAt = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
 
   const message = [
-    `${domain} wants you to .SKI`,
+    `.SKI Once, Everywhere`,
     '',
     address,
     '',
@@ -117,8 +120,16 @@ export async function signIn(isReconnect = false): Promise<boolean> {
   }
 
   // Fresh connection — need to sign
-  const { message, expiresAt } = buildSignMessage(address, window.location.host);
+  const isKeystone = /keystone/i.test(ws.walletName);
+  const ttlMs = isKeystone ? TTL_KEYSTONE_MS : TTL_DEFAULT_MS;
+  const { message, expiresAt } = buildSignMessage(address, ttlMs);
   const messageBytes = new TextEncoder().encode(message);
+
+  // Update favicon to match the sign context before the wallet dialog appears
+  const suinsName = (() => { try { return localStorage.getItem(`ski:suins:${address}`); } catch { return null; } })();
+  const hasSignedBefore = (() => { try { return !!localStorage.getItem(`ski:signed:${address}`); } catch { return false; } })();
+  const signVariant = suinsName ? 'blue-square' : (!hasSignedBefore ? 'green-circle' : 'black-diamond');
+  window.dispatchEvent(new CustomEvent('ski:pre-sign', { detail: { variant: signVariant } }));
 
   try {
     const [signResult, deviceId] = await Promise.all([
@@ -131,10 +142,11 @@ export async function signIn(isReconnect = false): Promise<boolean> {
 
     // Persist session so we don't re-prompt on reload
     storeSession({ address, signature, bytes, visitorId, expiresAt });
+    try { localStorage.setItem(`ski:signed:${address}`, '1'); } catch {}
 
     await establishSession(address, signature, bytes, visitorId);
 
-    if (!isReconnect) showToast('.SKI session active');
+    if (!isReconnect) showToast(isKeystone ? 'Keystone session active — valid 24 h' : '.SKI session active');
     console.log('[.SKI] Session established for', address, '| device:', visitorId.slice(0, 8));
     return true;
   } catch (err) {
@@ -153,8 +165,20 @@ export async function signIn(isReconnect = false): Promise<boolean> {
           await disconnect();
           await connect(keystone);
           return signIn(isReconnect);
-        } catch { /* fall through to generic error handling */ }
+        } catch { /* fall through to user-friendly message */ }
       }
+      // No Keystone extension found, or the fallback itself failed.
+      // wallet.ts already attempted a non-silent reconnect to open the Backpack
+      // popup — if we're here the wallet is still locked or the Keystone device
+      // is genuinely missing.  Give the user an actionable retry button.
+      showToastWithRetry(
+        keystone
+          ? 'Backpack lost your Keystone device. Re-import it in Backpack, or install the Keystone extension.'
+          : 'Backpack is locked — enter your password in the popup to sign.',
+        'Try again',
+        () => signIn(isReconnect),
+      );
+      return false;
     }
 
     if (!msg.toLowerCase().includes('reject')) {
@@ -173,14 +197,38 @@ export { forgetDevice, disconnectSession } from './client/session.js';
 window.addEventListener('ski:wallet-connected', async (e) => {
   const detail = (e as CustomEvent).detail;
   if (!detail?.address) return;
-  // Only restore an existing signed session — don't prompt for a new signature on connect.
-  // Signing will be triggered explicitly when the session agent backend is available.
-  const hasStored = !!localStorage.getItem('ski:session');
-  if (hasStored) await signIn(/* isReconnect */ true);
+
+  // Only restore a session when it actually belongs to the address that just
+  // connected.  Checking the raw key without verifying the address would cause
+  // a fresh sign attempt (and an unexpected Backpack popup) whenever the user
+  // switches to an account that has no stored session.
+  const storedRaw = localStorage.getItem('ski:session');
+  const storedAddress = storedRaw ? (() => {
+    try { return JSON.parse(storedRaw).address as string; } catch { return ''; }
+  })() : '';
+
+  if (storedAddress === detail.address) {
+    // Restore silently — no wallet interaction needed.
+    await signIn(/* isReconnect */ true);
+    return;
+  }
+
+  // No stored session for this address.  Don't auto-sign for software wallets
+  // (user must click SKI).  Keystone gets an auto-prompt because QR-signing
+  // costs significant friction and sessions last 24 h.
+  const ws = getState();
+  if (ws.wallet && /keystone/i.test(ws.wallet.name)) {
+    await signIn();
+  }
 });
 
 window.addEventListener('ski:wallet-disconnected', () => {
   disconnectSession();
+});
+
+window.addEventListener('ski:request-signin', async () => {
+  const ok = await signIn();
+  if (ok) window.open('https://sui.ski', '_blank');
 });
 
 // ─── Boot ────────────────────────────────────────────────────────────
