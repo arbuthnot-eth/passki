@@ -8,6 +8,18 @@
 
 import { getWallets } from '@wallet-standard/app';
 import type { Wallet, WalletAccount } from '@wallet-standard/base';
+import { createDAppKit } from '@mysten/dapp-kit-core';
+import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from '@mysten/sui/jsonRpc';
+
+// ─── DApp Kit (chain-aware signing for Backpack + hardware wallets) ───
+
+const dappKit = createDAppKit({
+  networks: ['sui:mainnet' as const],
+  createClient: () => new SuiJsonRpcClient({ url: getJsonRpcFullnodeUrl('mainnet') }),
+  autoConnect: false,
+  slushWalletConfig: null,
+  enableBurnerWallet: false,
+});
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -188,6 +200,20 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   const { wallet, account } = currentState;
   if (!wallet || !account) throw new Error('No wallet connected');
 
+  // Backpack routes signing through its own internal keyring which requires a
+  // chain identifier to resolve the correct entry.  dapp-kit-core calls
+  // getAccountFeature({ account, chain }) which passes `chain` through to the
+  // wallet feature — the missing chain is what causes "UserKeyring not found".
+  if (/backpack/i.test(wallet.name)) {
+    const uiWallet = dappKit.stores.$wallets.get().find((w) => w.name === wallet.name);
+    if (uiWallet) {
+      // silent:true re-acknowledges the already-connected wallet without any UI prompt
+      await dappKit.connectWallet({ wallet: uiWallet, silent: true } as Parameters<typeof dappKit.connectWallet>[0]);
+      return dappKit.signPersonalMessage({ message });
+    }
+  }
+
+  // All other wallets: direct Wallet Standard feature call
   if (!('sui:signPersonalMessage' in wallet.features)) {
     throw new Error(`${wallet.name} does not support personal message signing`);
   }

@@ -236,7 +236,7 @@ function updateFavicon(variant: SkiDotVariant) {
   }
   const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${shape}</svg>`;
   const url = 'data:image/svg+xml,' + encodeURIComponent(svgStr);
-  const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  const link = document.getElementById('ski-favicon') as HTMLLinkElement | null;
   if (link) link.href = url;
 }
 
@@ -370,6 +370,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
       <div class="ski-detail-key-text">
         <span class="ski-detail-suins-slot"></span>
         <div class="ski-detail-addr-row">
+          ${ai === 0 ? `<span class="ski-detail-name">${esc(w.name)}</span>` : ''}
           <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr)}">${esc(truncAddr(addr))}</a>
           <button class="ski-copy-btn" title="Copy address">\u2398</button>
         </div>
@@ -395,9 +396,8 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
           ${activeKeyHtml}
         </div>
       </div>
-      <div class="ski-detail-name">${esc(w.name)}</div>
     </div>
-    ${otherKeysHtml ? `<div class="ski-detail-row"><span class="ski-detail-label">Other Keys</span>${otherKeysHtml}</div>` : ''}
+    ${otherKeysHtml ? `<div class="ski-detail-row">${otherKeysHtml}</div>` : ''}
     ${(networks.length || current.length || retiredSection) ? `
       <div class="ski-gear-row">
         <button class="ski-gear-btn" id="ski-gear-btn" title="Wallet details" aria-expanded="false">
@@ -526,6 +526,8 @@ function renderModal(): number | undefined {
     return;
   }
 
+  const defaultIdx = connectedName ? Math.max(0, wallets.findIndex((w) => w.name === connectedName)) : 0;
+
   els.modal.innerHTML = `
     <div class="ski-modal-overlay open" id="ski-modal-overlay">
       <div class="ski-modal" style="animation:ski-modal-in .2s ease">
@@ -542,7 +544,7 @@ function renderModal(): number | undefined {
         <div class="ski-modal-body">
           <div class="ski-modal-col ski-modal-wallets">
             ${wallets.map((w, i) => `
-              <button class="wk-dd-item${w.name === connectedName ? ' active' : ''}" data-idx="${i}" style="display:flex;align-items:center;gap:10px">
+              <button class="wk-dd-item${i === defaultIdx ? ' active' : ''}" data-idx="${i}" style="display:flex;align-items:center;gap:10px">
                 ${w.icon ? `<img src="${esc(w.icon)}" alt="" style="width:28px;height:28px;border-radius:6px">` : ''}
                 <span>${esc(w.name)}</span>
               </button>
@@ -601,12 +603,10 @@ function renderModal(): number | undefined {
   });
 
   // Auto-show the connected wallet's detail immediately on open (fall back to first wallet)
-  const defaultIdx = connectedName ? wallets.findIndex((w) => w.name === connectedName) : 0;
-  const focusIdx = defaultIdx >= 0 ? defaultIdx : 0;
-  const defaultWallet = wallets[focusIdx];
+  const defaultWallet = wallets[defaultIdx];
   if (defaultWallet && detailEl) showWalletDetail(defaultWallet, detailEl, getState().address);
 
-  return focusIdx;
+  return defaultIdx;
 }
 
 export function openModal(focusFirst = false) {
