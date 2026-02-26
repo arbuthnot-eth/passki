@@ -1,0 +1,17 @@
+{
+  "name": ".SKI",
+  "short_name": ".SKI",
+  "description": ".Sui Key-In — once, everywhere",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "icons": [
+    {
+      "src": "./assets/diamond-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
