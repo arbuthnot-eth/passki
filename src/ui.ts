@@ -33,6 +33,7 @@ const ASSETS = {
 export interface AppState {
   sui: number;
   usd: number | null;
+  stableUsd: number;
   suinsName: string;
   ikaWalletId: string;
   menuOpen: boolean;
@@ -42,6 +43,7 @@ export interface AppState {
 const app: AppState = {
   sui: 0,
   usd: null,
+  stableUsd: 0,
   suinsName: '',
   ikaWalletId: '',
   menuOpen: false,
@@ -92,6 +94,12 @@ function fmtUsd(n: number | null): string {
   if (n < 10_000) return '$' + n.toFixed(0);
   if (n < 1_000_000) return '$' + (n / 1_000).toFixed(1) + 'k';
   return '$' + (n / 1_000_000).toFixed(1) + 'M';
+}
+
+function fmtStable(n: number): string {
+  if (!n || !Number.isFinite(n) || n <= 0) return '';
+  if (n < 0.01) return '< $0.01';
+  return '$' + n.toFixed(2);
 }
 
 // ─── Toast ───────────────────────────────────────────────────────────
@@ -273,7 +281,7 @@ function keyPfpHtml(_ai: number, suinsName: string | null): string {
     const bare = suinsName.replace(/\.sui$/, '');
     return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-key-pfp ski-key-pfp--blue" title="${esc(bare)}.sui.ski"><img src="./assets/sui-drop.svg" class="ski-key-pfp-drop" alt=""></a>`;
   }
-  return `<a href="https://sui.ski" target="_blank" rel="noopener" class="ski-key-pfp ski-key-pfp--diamond" title="sui.ski"><svg class="ski-key-pfp-ski" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="50,5 95,50 50,95 5,50" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg></a>`;
+  return `<a href="https://sui.ski" target="_blank" rel="noopener" class="ski-key-pfp ski-key-pfp--diamond" title="sui.ski"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg></a>`;
 }
 
 function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) {
@@ -371,15 +379,21 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
 
   const activeKeyHtml = displayAddrs.length
     ? keyCardHtml(displayAddrs[0], 0)
-    : '<div class="ski-key-pfp ski-key-pfp--green-circle"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="100%" height="100%"><circle cx="50" cy="50" r="42" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div>';
+    : '<div class="ski-key-pfp ski-key-pfp--green-circle"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div>';
 
   const otherKeysHtml = displayAddrs.slice(1).map((addr: string, i: number) => keyCardHtml(addr, i + 1)).join('');
+
+  const isConnected = displayAddrs[0] === connectedAddr;
+  const stableBal = isConnected ? fmtStable(app.stableUsd) : '';
 
   detailEl.innerHTML = `
     <div class="ski-detail-header">
       <div class="ski-detail-icon-row">
         ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
-        ${activeKeyHtml}
+        <div class="ski-detail-key-column">
+          ${stableBal ? `<span class="ski-detail-stable-bal">${esc(stableBal)}</span>` : ''}
+          ${activeKeyHtml}
+        </div>
       </div>
       <div class="ski-detail-name">${esc(w.name)}</div>
     </div>
@@ -443,7 +457,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
   });
 }
 
-function renderModal() {
+function renderModal(): number | undefined {
   if (!els.modal) return;
   const connectedName = getState().walletName;
   const wallets = getSuiWallets().slice().sort((a, b) => {
@@ -528,6 +542,19 @@ function renderModal() {
   });
   const detailEl = document.getElementById('ski-modal-detail');
 
+  const walletBtns = () => Array.from(els.modal?.querySelectorAll<HTMLElement>('[data-idx]') ?? []);
+
+  const activateWallet = (idx: number) => {
+    const btns = walletBtns();
+    btns.forEach((b) => b.classList.remove('active'));
+    const btn = btns[idx];
+    if (!btn) return;
+    btn.classList.add('active');
+    btn.focus();
+    const w = wallets[idx];
+    if (w && detailEl) showWalletDetail(w, detailEl, getState().address);
+  };
+
   els.modal.querySelectorAll('[data-idx]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
@@ -536,26 +563,43 @@ function renderModal() {
     });
 
     btn.addEventListener('mouseenter', () => {
-      els.modal?.querySelectorAll('[data-idx]').forEach((b) => b.classList.remove('active'));
-      (btn as HTMLElement).classList.add('active');
       const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
-      const w = wallets[idx];
-      if (!w || !detailEl) return;
-      showWalletDetail(w, detailEl, getState().address);
+      activateWallet(idx);
     });
 
+    btn.addEventListener('keydown', (e) => {
+      const btns = walletBtns();
+      const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
+      if ((e as KeyboardEvent).key === 'ArrowDown') {
+        e.preventDefault();
+        activateWallet((idx + 1) % btns.length);
+      } else if ((e as KeyboardEvent).key === 'ArrowUp') {
+        e.preventDefault();
+        activateWallet((idx - 1 + btns.length) % btns.length);
+      }
+    });
   });
 
   // Auto-show the connected wallet's detail immediately on open (fall back to first wallet)
   const defaultIdx = connectedName ? wallets.findIndex((w) => w.name === connectedName) : 0;
-  const defaultWallet = wallets[defaultIdx >= 0 ? defaultIdx : 0];
+  const focusIdx = defaultIdx >= 0 ? defaultIdx : 0;
+  const defaultWallet = wallets[focusIdx];
   if (defaultWallet && detailEl) showWalletDetail(defaultWallet, detailEl, getState().address);
+
+  return focusIdx;
 }
 
-export function openModal() {
+export function openModal(focusFirst = false) {
   modalOpen = true;
   els.widget?.classList.add('ski-modal-active');
-  renderModal();
+  const focusIdx = renderModal() ?? 0;
+  if (focusFirst) {
+    // Defer so the DOM is painted before we try to focus
+    requestAnimationFrame(() => {
+      const btns = Array.from(els.modal?.querySelectorAll<HTMLElement>('[data-idx]') ?? []);
+      btns[focusIdx]?.focus();
+    });
+  }
 }
 
 function closeModal() {
@@ -628,6 +672,7 @@ export async function refreshPortfolio(force = false) {
           address(address:$a){
             defaultNameRecord{domain}
             balance(coinType:"0x2::sui::SUI"){totalBalance}
+            usdc:balance(coinType:"0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"){totalBalance}
           }
         }`,
         variables: { a: fetchedFor },
@@ -641,6 +686,8 @@ export async function refreshPortfolio(force = false) {
     const addr = json?.data?.address;
     const mist = Number(addr?.balance?.totalBalance || 0);
     app.sui = Number.isFinite(mist) ? mist / 1e9 : 0;
+    const usdcRaw = Number(addr?.usdc?.totalBalance || 0);
+    app.stableUsd = Number.isFinite(usdcRaw) ? usdcRaw / 1e6 : 0;
 
     // SuiNS reverse lookup
     const name = addr?.defaultNameRecord?.domain;
@@ -898,9 +945,10 @@ function renderMenu() {
 async function handleDisconnect(reopenModal = false) {
   app.menuOpen = false;
   app.copied = false;
+  closeModal();
   render();
   try { await disconnect(); } catch { /* already gone */ }
-  if (reopenModal) setTimeout(openModal, 180);
+  if (reopenModal) setTimeout(() => openModal(true), 180);
 }
 
 // ─── Master render ───────────────────────────────────────────────────
@@ -938,6 +986,27 @@ function bindEvents() {
     if (modalOpen) { closeModal(); return; }
     app.menuOpen = !app.menuOpen;
     render();
+  });
+
+  els.skiBtn?.addEventListener('keydown', (e) => {
+    const key = (e as KeyboardEvent).key;
+    if (key === 'Enter' || key === ' ' || key === 'ArrowDown') {
+      e.preventDefault();
+      if (modalOpen) { closeModal(); return; }
+      openModal(true);
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if ((e as KeyboardEvent).key !== 'Escape') return;
+    if (getState().address) {
+      e.preventDefault();
+      handleDisconnect(false);
+    } else if (modalOpen) {
+      e.preventDefault();
+      closeModal();
+      els.skiBtn?.focus();
+    }
   });
 
   document.addEventListener('click', (e) => {
@@ -996,6 +1065,7 @@ export function initUI() {
       stopPolling();
       app.sui = 0;
       app.usd = null;
+      app.stableUsd = 0;
       app.suinsName = '';
       app.ikaWalletId = '';
       app.menuOpen = false;

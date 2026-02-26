@@ -731,8 +731,24 @@ body {
 .ski-detail-icon-row {
   display: flex;
   flex-direction: row;
-  align-items: flex-start;
+  align-items: flex-end;
   gap: 8px;
+}
+
+.ski-detail-key-column {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 4px;
+  height: 47px;
+}
+
+.ski-detail-stable-bal {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #e4efff;
+  letter-spacing: 0.01em;
 }
 
 /* Active key card shown in header */
