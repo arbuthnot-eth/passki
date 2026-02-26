@@ -266,6 +266,135 @@ let _hydrating = false;
 let modalOpen = false;
 const suinsCache: Record<string, string> = {}; // address -> name
 
+function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) {
+  // Persist live accounts to storage — merge so previously seen addresses are retained
+  const liveAddrs = w.accounts.map((a: { address: string }) => normalizeSuiAddress(a.address));
+  if (liveAddrs.length) {
+    try {
+      const existing: string[] = JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]');
+      const merged = [...new Set([...existing, ...liveAddrs])];
+      localStorage.setItem(`ski:wallet-keys:${w.name}`, JSON.stringify(merged));
+    } catch {}
+  }
+
+  // Use live accounts if available, otherwise fall back to stored keys
+  const storedAddrs: string[] = (() => {
+    try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]'); } catch { return []; }
+  })();
+  let displayAddrs = liveAddrs.length ? liveAddrs : storedAddrs;
+
+  // Float the currently connected address to the top
+  if (connectedAddr && displayAddrs.includes(connectedAddr)) {
+    displayAddrs = [connectedAddr, ...displayAddrs.filter((a: string) => a !== connectedAddr)];
+  }
+
+  // Update dot variant
+  if (!displayAddrs.length) {
+    updateSkiDot('green-circle');
+  } else {
+    const cachedName = displayAddrs.map((addr: string) => suinsCache[addr]).find(Boolean);
+    updateSkiDot(cachedName ? 'blue-square' : 'black-diamond', cachedName);
+  }
+
+  const DOCS = 'https://docs.sui.io/standards/wallet-standard';
+  const LEGACY: Record<string, string> = {
+    'signTransactionBlock': 'Legacy — use signTransaction',
+    'signAndExecuteTransactionBlock': 'Legacy — use signAndExecuteTransaction',
+  };
+
+  const networks = w.chains.filter((c: string) => c.startsWith('sui:'));
+  const suiFeatures = Object.keys(w.features)
+    .filter((f: string) => f.startsWith('sui:'))
+    .map((f: string) => f.replace(/^sui:/, ''));
+
+  const accountChains = new Set(w.accounts.flatMap((a: { chains: readonly string[] }) => [...a.chains]));
+
+  const networksHtml = networks.map((c: string) => {
+    const label = c.replace(/^sui:/, '');
+    const isActive = accountChains.has(c);
+    return `<span class="ski-network-tag${isActive ? ' active' : ''}">${esc(label)}</span>`;
+  }).join('');
+
+  const current = suiFeatures.filter((f: string) => !LEGACY[f]);
+  const legacy = suiFeatures.filter((f: string) => LEGACY[f]);
+
+  const currentHtml = current.map((f: string) =>
+    `<a href="${DOCS}#sui${f.toLowerCase()}" target="_blank" rel="noopener" class="ski-feature-tag">${esc(f)}</a>`
+  ).join('');
+
+  const legacyHtml = legacy.map((f: string) =>
+    `<a href="${DOCS}#sui${f.toLowerCase()}" target="_blank" rel="noopener" class="ski-feature-tag legacy" title="${esc(LEGACY[f]!)}">${esc(f)}</a>`
+  ).join('');
+
+  const retiredSection = legacy.length
+    ? `<details class="ski-detail-retired"><summary class="ski-detail-label">Legacy</summary><div class="ski-feature-list">${legacyHtml}</div></details>`
+    : '';
+
+  const keysHtml = displayAddrs.length
+    ? displayAddrs.map((addr: string, ai: number) => {
+        const isConnected = addr === connectedAddr;
+        const scanUrl = `https://suiscan.xyz/mainnet/account/${addr}`;
+        return `<div class="ski-detail-addr-wrap${isConnected ? ' connected-key' : ''}" data-addr-idx="${ai}" data-full-addr="${esc(addr)}">
+          <span class="ski-detail-suins-slot"></span>
+          <div class="ski-detail-addr-row">
+            <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr)}">${esc(truncAddr(addr))}</a>
+            <button class="ski-copy-btn" title="Copy address">\u2398</button>
+          </div>
+        </div>`;
+      }).join('')
+    : '<div class="ski-detail-addr muted">Connect to reveal</div>';
+
+  detailEl.innerHTML = `
+    ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
+    <div class="ski-detail-name">${esc(w.name)}</div>
+    <div class="ski-detail-row"><span class="ski-detail-label">Keys</span>${keysHtml}</div>
+    ${networks.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Networks</span><div class="ski-feature-list">${networksHtml}</div></div>` : ''}
+    ${current.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Features</span><div class="ski-feature-list">${currentHtml}</div></div>` : ''}
+    ${retiredSection}
+  `;
+
+  // Bind copy buttons
+  detailEl.querySelectorAll('.ski-copy-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const row = (btn as HTMLElement).closest('[data-full-addr]');
+      const addr = row?.getAttribute('data-full-addr') || '';
+      if (addr) navigator.clipboard?.writeText(addr).then(() => {
+        (btn as HTMLElement).textContent = '\u2713';
+        setTimeout(() => { (btn as HTMLElement).textContent = '\u2398'; }, 1500);
+      });
+    });
+  });
+
+  // Resolve SuiNS names for all displayed addresses
+  displayAddrs.forEach((addr: string, ai: number) => {
+    const renderName = (name: string) => {
+      const wrap = detailEl.querySelector(`[data-addr-idx="${ai}"]`);
+      const slot = wrap?.querySelector('.ski-detail-suins-slot');
+      if (slot) {
+        const bare = name.replace(/\.sui$/, '');
+        slot.innerHTML = `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-detail-suins">${esc(bare)}</a>`;
+      }
+    };
+    if (suinsCache[addr]) {
+      renderName(suinsCache[addr]);
+    } else {
+      try {
+        const stored = localStorage.getItem(`ski:suins:${addr}`);
+        if (stored) { suinsCache[addr] = stored; renderName(stored); }
+      } catch {}
+    }
+    lookupSuiNS(addr).then((name: string | null) => {
+      if (name) {
+        suinsCache[addr] = name;
+        try { localStorage.setItem(`ski:suins:${addr}`, name); } catch {}
+        renderName(name);
+        updateSkiDot('blue-square', name);
+      }
+    });
+  });
+}
+
 function renderModal() {
   if (!els.modal) return;
   const connectedName = getState().walletName;
@@ -359,146 +488,20 @@ function renderModal() {
     });
 
     btn.addEventListener('mouseenter', () => {
-      // Mark active
-      els.modal.querySelectorAll('[data-idx]').forEach((b) => b.classList.remove('active'));
+      els.modal?.querySelectorAll('[data-idx]').forEach((b) => b.classList.remove('active'));
       (btn as HTMLElement).classList.add('active');
       const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
       const w = wallets[idx];
       if (!w || !detailEl) return;
-
-      // Persist live accounts to storage — merge so previously seen addresses are retained
-      const liveAddrs = w.accounts.map((a) => normalizeSuiAddress(a.address));
-      if (liveAddrs.length) {
-        try {
-          const existing: string[] = JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]');
-          const merged = [...new Set([...existing, ...liveAddrs])];
-          localStorage.setItem(`ski:wallet-keys:${w.name}`, JSON.stringify(merged));
-        } catch {}
-      }
-
-      // Use live accounts if available, otherwise fall back to stored keys
-      const storedAddrs: string[] = (() => {
-        try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]'); } catch { return []; }
-      })();
-      const displayAddrs = liveAddrs.length ? liveAddrs : storedAddrs;
-
-      // Update dot variant
-      if (!displayAddrs.length) {
-        updateSkiDot('green-circle');
-      } else {
-        const cachedName = displayAddrs.map((addr) => suinsCache[addr]).find(Boolean);
-        updateSkiDot(cachedName ? 'blue-square' : 'black-diamond', cachedName);
-      }
-
-      const DOCS = 'https://docs.sui.io/standards/wallet-standard';
-      const LEGACY: Record<string, string> = {
-        'signTransactionBlock': 'Legacy — use signTransaction',
-        'signAndExecuteTransactionBlock': 'Legacy — use signAndExecuteTransaction',
-      };
-
-      const networks = w.chains.filter((c) => c.startsWith('sui:'));
-      const suiFeatures = Object.keys(w.features)
-        .filter((f) => f.startsWith('sui:'))
-        .map((f) => f.replace(/^sui:/, ''));
-
-      const accountChains = new Set(w.accounts.flatMap((a) => [...a.chains]));
-
-      const networksHtml = networks.map((c) => {
-        const label = c.replace(/^sui:/, '');
-        const isActive = accountChains.has(c);
-        return `<span class="ski-network-tag${isActive ? ' active' : ''}">${esc(label)}</span>`;
-      }).join('');
-
-      const current = suiFeatures.filter((f) => !LEGACY[f]);
-      const legacy = suiFeatures.filter((f) => LEGACY[f]);
-
-      const currentHtml = current.map((f) =>
-        `<a href="${DOCS}#sui${f.toLowerCase()}" target="_blank" rel="noopener" class="ski-feature-tag">${esc(f)}</a>`
-      ).join('');
-
-      const legacyHtml = legacy.map((f) =>
-        `<a href="${DOCS}#sui${f.toLowerCase()}" target="_blank" rel="noopener" class="ski-feature-tag legacy" title="${esc(LEGACY[f]!)}">${esc(f)}</a>`
-      ).join('');
-
-      const retiredSection = legacy.length
-        ? `<details class="ski-detail-retired"><summary class="ski-detail-label">Legacy</summary><div class="ski-feature-list">${legacyHtml}</div></details>`
-        : '';
-
-      const keysHtml = displayAddrs.length
-        ? displayAddrs.map((addr, ai) => {
-            const scanUrl = `https://suiscan.xyz/mainnet/account/${addr}`;
-            return `<div class="ski-detail-addr-wrap" data-addr-idx="${ai}" data-full-addr="${esc(addr)}">
-              <span class="ski-detail-suins-slot"></span>
-              <div class="ski-detail-addr-row">
-                <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr)}">${esc(truncAddr(addr))}</a>
-                <button class="ski-copy-btn" title="Copy address">\u2398</button>
-              </div>
-            </div>`;
-          }).join('')
-        : '<div class="ski-detail-addr muted">Connect to reveal</div>';
-
-      detailEl.innerHTML = `
-        ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
-        <div class="ski-detail-name">${esc(w.name)}</div>
-        <div class="ski-detail-row"><span class="ski-detail-label">Keys</span>${keysHtml}</div>
-        ${networks.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Networks</span><div class="ski-feature-list">${networksHtml}</div></div>` : ''}
-        ${current.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Features</span><div class="ski-feature-list">${currentHtml}</div></div>` : ''}
-        ${retiredSection}
-      `;
-
-      // Bind copy buttons
-      detailEl.querySelectorAll('.ski-copy-btn').forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const row = (btn as HTMLElement).closest('[data-full-addr]');
-          const addr = row?.getAttribute('data-full-addr') || '';
-          if (addr) navigator.clipboard?.writeText(addr).then(() => {
-            (btn as HTMLElement).textContent = '\u2713';
-            setTimeout(() => { (btn as HTMLElement).textContent = '\u2398'; }, 1500);
-          });
-        });
-      });
-
-      // Resolve SuiNS names for all displayed addresses
-      displayAddrs.forEach((addr, ai) => {
-        const renderName = (name: string) => {
-          const wrap = detailEl.querySelector(`[data-addr-idx="${ai}"]`);
-          const slot = wrap?.querySelector('.ski-detail-suins-slot');
-          if (slot) {
-            const bare = name.replace(/\.sui$/, '');
-            slot.innerHTML = `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-detail-suins">${esc(bare)}</a>`;
-          }
-        };
-        // Show cached name instantly (memory then localStorage)
-        if (suinsCache[addr]) {
-          renderName(suinsCache[addr]);
-        } else {
-          try {
-            const stored = localStorage.getItem(`ski:suins:${addr}`);
-            if (stored) { suinsCache[addr] = stored; renderName(stored); }
-          } catch {}
-        }
-        // Always refresh from network
-        lookupSuiNS(addr).then((name: string | null) => {
-          if (name) {
-            suinsCache[addr] = name;
-            try { localStorage.setItem(`ski:suins:${addr}`, name); } catch {}
-            renderName(name);
-            updateSkiDot('blue-square', name);
-          }
-        });
-      });
-
+      showWalletDetail(w, detailEl, getState().address);
     });
 
   });
 
-  // Auto-show detail for connected wallet on open (fall back to first wallet)
-  const defaultIdx = connectedName
-    ? wallets.findIndex((w) => w.name === connectedName)
-    : 0;
-  const autoBtn = els.modal.querySelector(`[data-idx="${defaultIdx >= 0 ? defaultIdx : 0}"]`) as HTMLElement | null;
-  autoBtn?.dispatchEvent(new MouseEvent('mouseenter'));
+  // Auto-show the connected wallet's detail immediately on open (fall back to first wallet)
+  const defaultIdx = connectedName ? wallets.findIndex((w) => w.name === connectedName) : 0;
+  const defaultWallet = wallets[defaultIdx >= 0 ? defaultIdx : 0];
+  if (defaultWallet && detailEl) showWalletDetail(defaultWallet, detailEl, getState().address);
 }
 
 export function openModal() {
