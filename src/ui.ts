@@ -265,8 +265,10 @@ let _hydrating = false;
 
 let modalOpen = false;
 const suinsCache: Record<string, string> = {}; // address -> name
+let detailGeneration = 0; // incremented on each showWalletDetail call to cancel stale async lookups
 
 function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) {
+  const gen = ++detailGeneration;
   // Persist live accounts to storage — merge so previously seen addresses are retained
   const liveAddrs = w.accounts.map((a: { address: string }) => normalizeSuiAddress(a.address));
   if (liveAddrs.length) {
@@ -385,11 +387,15 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
       } catch {}
     }
     lookupSuiNS(addr).then((name: string | null) => {
-      if (name) {
+      if (name && detailGeneration === gen) {
         suinsCache[addr] = name;
         try { localStorage.setItem(`ski:suins:${addr}`, name); } catch {}
         renderName(name);
         updateSkiDot('blue-square', name);
+      } else if (name) {
+        // Still cache the result even if the panel has moved on
+        suinsCache[addr] = name;
+        try { localStorage.setItem(`ski:suins:${addr}`, name); } catch {}
       }
     });
   });
