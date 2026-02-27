@@ -323,6 +323,8 @@ window.addEventListener('ski:sign-and-execute-transaction', async (e) => {
 
 // ─── Boot ────────────────────────────────────────────────────────────
 
+// Lazy-load WaaP so its ~1.5 MB UI bundle splits into a separate chunk
+import('./waap.js').then(({ registerWaaP }) => registerWaaP()).catch(() => {});
 initUI();
 
 // Handle ?splash= URL param for cross-device Splash sponsorship

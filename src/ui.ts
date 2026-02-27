@@ -893,7 +893,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
       });
     }
 
-    if (sponsorDiv.innerHTML) detailEl.appendChild(sponsorDiv);
+    if (sponsorDiv.innerHTML) (detailEl.querySelector('.ski-detail-header') ?? detailEl).appendChild(sponsorDiv);
   }
 
   // Resolve SuiNS names for all displayed addresses
@@ -965,6 +965,37 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
       });
     });
   }
+}
+
+// ─── Layout preference ───────────────────────────────────────────────
+
+function getModalLayout(): 'splash' | 'list' {
+  try { return (localStorage.getItem('ski:modal-layout') as 'splash' | 'list') || 'splash'; } catch { return 'splash'; }
+}
+
+/** Shape badge for the wallet-list layout (right-side indicator per row). */
+function walletListShape(w: Wallet): string {
+  const liveAddrs = w.accounts.map((a: { address: string }) => a.address);
+  const addrs = liveAddrs.length ? liveAddrs : (() => {
+    try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return [] as string[]; }
+  })();
+  const hasSuins = addrs.some((addr) => suinsCache[addr] || !!localStorage.getItem(`ski:suins:${addr}`));
+  const hasAddrs = addrs.length > 0;
+  const splashState = getSponsorState();
+  const isBeneficiary = addrs.some((addr) => isSponsoredAddress(addr) && splashState.auth?.address !== addr);
+  const dropOverlay = isBeneficiary
+    ? `<span class="splash-drop-badge"><img src="./assets/sui-drop.svg" class="splash-drop-img" alt=""></span>` : '';
+  const isSponsor = !!(splashState.auth?.walletName === w.name && new Date(splashState.auth.expiresAt).getTime() > Date.now());
+  const sponsorClass = isSponsor ? ' ski-list-shape--sponsor' : '';
+  const deviceClass = app.splashSponsor ? ' ski-list-shape--device-sponsor' : '';
+  const hoverDrop = (isSponsor || app.splashSponsor)
+    ? `<img src="./assets/sui-drop.svg" alt="" class="ski-list-shape-hover-drop">` : '';
+  if (hasSuins) {
+    return `<span class="ski-list-shape ski-list-shape--blue${sponsorClass}${deviceClass}">${hoverDrop}${dropOverlay}</span>`;
+  } else if (hasAddrs) {
+    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
+  }
+  return `<span class="ski-list-shape ski-list-shape--green${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>${hoverDrop}</span>`;
 }
 
 /** Legend shown at the bottom-left of the modal: sponsor → covered keys. */
@@ -1119,7 +1150,29 @@ function renderModal(): void {
     return;
   }
 
-  const legendHtml = buildSplashLegend();
+  const layout = getModalLayout();
+  const legendHtml = layout === 'splash' ? buildSplashLegend() : '';
+  const leftColHtml = layout === 'splash'
+    ? `<div class="ski-modal-legend-col${connectedName || legendHtml ? ' ski-modal-legend-col--live' : ''}">
+          <div id="ski-legend-slot">${legendHtml}</div>
+        </div>`
+    : `<div class="ski-modal-legend-col ski-modal-legend-col--live">
+          <div class="ski-modal-wallets">
+            ${wallets.map((w) => `<button class="wk-dd-item${w.name === connectedName ? ' active' : ''}" data-wallet-name="${esc(w.name)}" type="button">
+              ${w.icon ? `<img src="${esc(w.icon)}" alt="" style="width:38px;height:38px;border-radius:8px;flex-shrink:0">` : '<span style="width:38px;height:38px;flex-shrink:0"></span>'}
+              <span class="ski-walletlist-name">${esc(w.name)}</span>
+              ${walletListShape(w)}
+            </button>`).join('')}
+          </div>
+        </div>`;
+
+  const settingsStrip = `<div class="ski-modal-settings-strip">
+      <label class="ski-layout-toggle" title="${layout === 'splash' ? 'Switch to wallet list' : 'Switch to splash view'}">
+        <input type="checkbox" id="ski-layout-check"${layout === 'splash' ? ' checked' : ''}>
+        <span class="ski-layout-track"><span class="ski-layout-thumb"></span></span>
+        <span class="ski-layout-label">Splash</span>
+      </label>
+    </div>`;
 
   els.modal.innerHTML = `
     <div class="ski-modal-overlay open" id="ski-modal-overlay">
@@ -1135,14 +1188,13 @@ function renderModal(): void {
           <button id="ski-modal-close" style="background:none;border:none;color:#9ca7bb;font-size:1.4rem;cursor:pointer;padding:4px 8px;line-height:1">&times;</button>
         </div>
         <div class="ski-modal-body">
-          <div class="ski-modal-legend-col${connectedName || legendHtml ? ' ski-modal-legend-col--live' : ''}">
-            <div id="ski-legend-slot">${legendHtml}</div>
-          </div>
+          ${leftColHtml}
           <div class="ski-modal-right-col">
             <div id="ski-connected-key" class="ski-modal-connected-key"></div>
             <div class="ski-modal-col ski-modal-detail" id="ski-modal-detail">
               <div class="ski-detail-empty">Hover a key<br>for details</div>
             </div>
+            ${settingsStrip}
           </div>
         </div>
       </div>
@@ -1161,17 +1213,36 @@ function renderModal(): void {
     if (wallet) showKeyDetail(wallet, connectedKeyEl, getState().address);
   }
 
-  // Activate the legend row for the connected wallet (or first row as fallback)
-  requestAnimationFrame(() => {
-    const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
-    if (!rows.length) return;
-    let targetIdx = 0;
-    if (connectedName) {
-      const found = rows.findIndex((r) => r.dataset.legendWallet === connectedName);
-      if (found >= 0) targetIdx = found;
-    }
-    activateLegendRow(targetIdx);
+  // Layout toggle — persists preference and re-renders
+  document.getElementById('ski-layout-check')?.addEventListener('change', (e) => {
+    const splash = (e.target as HTMLInputElement).checked;
+    try { localStorage.setItem('ski:modal-layout', splash ? 'splash' : 'list'); } catch {}
+    renderModal();
   });
+
+  if (layout === 'splash') {
+    // Activate the legend row for the connected wallet (or first row as fallback)
+    requestAnimationFrame(() => {
+      const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
+      if (!rows.length) return;
+      let targetIdx = 0;
+      if (connectedName) {
+        const found = rows.findIndex((r) => r.dataset.legendWallet === connectedName);
+        if (found >= 0) targetIdx = found;
+      }
+      activateLegendRow(targetIdx);
+    });
+  } else {
+    // List layout: show the connected wallet's detail immediately
+    requestAnimationFrame(() => {
+      const detailEl = document.getElementById('ski-modal-detail');
+      const first = connectedName
+        ? getSuiWallets().find((w) => w.name === connectedName) ?? getSuiWallets()[0]
+        : getSuiWallets()[0];
+      if (first && detailEl) showKeyDetail(first, detailEl, getState().address);
+      document.querySelector<HTMLElement>(`.wk-dd-item[data-wallet-name="${CSS.escape(first?.name ?? '')}"]`)?.focus();
+    });
+  }
 }
 
 export function openModal(focusFirst = false) {
@@ -1850,12 +1921,31 @@ export function initUI() {
     if (idx >= 0) activateLegendRow(idx);
   });
 
+  // Delegated: wallet-list row hover → show key detail
+  els.modal?.addEventListener('mouseover', (e) => {
+    if (!modalOpen) return;
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('.wk-dd-item[data-wallet-name]');
+    if (!btn) return;
+    document.querySelectorAll('.wk-dd-item').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    const wallet = getSuiWallets().find((w) => w.name === btn.dataset.walletName);
+    const detailEl = document.getElementById('ski-modal-detail');
+    if (wallet && detailEl) showKeyDetail(wallet, detailEl, getState().address);
+  });
+
   // Delegated: legend row click → connect (skip anchor clicks)
+  // Also handles wallet-list row clicks
   els.modal?.addEventListener('click', (e) => {
     if ((e.target as HTMLElement).closest('a')) return;
-    const row = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row');
-    if (row?.dataset.legendWallet) {
-      const wallet = getSuiWallets().find((w) => w.name === row.dataset.legendWallet);
+    const legendRow = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row');
+    if (legendRow?.dataset.legendWallet) {
+      const wallet = getSuiWallets().find((w) => w.name === legendRow.dataset.legendWallet);
+      if (wallet) selectWallet(wallet);
+      return;
+    }
+    const listBtn = (e.target as HTMLElement).closest<HTMLElement>('.wk-dd-item[data-wallet-name]');
+    if (listBtn?.dataset.walletName) {
+      const wallet = getSuiWallets().find((w) => w.name === listBtn.dataset.walletName);
       if (wallet) selectWallet(wallet);
     }
   });

@@ -50,6 +50,7 @@
   },
   "dependencies": {
     "@fingerprintjs/fingerprintjs": "^5.0.1",
+    "@human.tech/waap-sdk": "^1.2.1",
     "@ika.xyz/sdk": "^0.2.7",
     "@mysten/dapp-kit-core": "^1.1.0",
     "@mysten/sui": "^2.5.0",

@@ -1141,6 +1141,72 @@ body {
   position: relative;
 }
 
+/* Wallet-list layout left column */
+.ski-modal-wallets {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 4px 6px;
+}
+.ski-walletlist-name {
+  flex: 1;
+  text-align: left;
+  font-size: 0.9rem;
+  color: #e2e8f0;
+}
+
+/* Settings strip — layout toggle at bottom of right col */
+.ski-modal-settings-strip {
+  padding: 6px 10px 8px;
+  border-top: 1px solid rgba(160, 200, 240, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.ski-layout-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.72rem;
+  color: #64748b;
+}
+.ski-layout-toggle input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.ski-layout-track {
+  width: 32px;
+  height: 18px;
+  background: #1e293b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.2s, border-color 0.2s;
+}
+.ski-layout-toggle input:checked + .ski-layout-track {
+  background: rgba(59, 130, 246, 0.35);
+  border-color: rgba(59, 130, 246, 0.5);
+}
+.ski-layout-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: #475569;
+  border-radius: 50%;
+  transition: left 0.2s, background 0.2s;
+}
+.ski-layout-toggle input:checked + .ski-layout-track .ski-layout-thumb {
+  left: 16px;
+  background: #3b82f6;
+}
+
 /* Detail header: wallet identity + active key side-by-side */
 .ski-detail-header {
   display: flex;
@@ -1160,6 +1226,13 @@ body {
   background: #000 !important;
   border-radius: 8px;
   outline: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Sponsor row inside hero card — flush width, subtle separator */
+.ski-detail-header .ski-detail-sponsor-row {
+  width: 100%;
+  padding: 6px 0 0;
+  border-top: 1px solid rgba(59, 130, 246, 0.15);
 }
 
 /* Blue card only when wallet has at least one key */
