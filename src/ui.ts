@@ -33,6 +33,7 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
+import { fetchOwnedDomains, buildSubnameTx, type OwnedDomain } from './suins.js';
 
 export const grpcClient = new SuiGrpcClient({
   network: 'mainnet',
@@ -123,7 +124,7 @@ function fmtStable(n: number): string {
 
 let toastSeq = 0;
 
-export function showToast(msg: string) {
+export function showToast(msg: string, isHtml = false) {
   const text = msg.trim();
   if (!text) return;
   let root = document.getElementById('app-toast-root');
@@ -138,7 +139,7 @@ export function showToast(msg: string) {
   toast.className = 'app-toast';
   toast.id = id;
   toast.setAttribute('role', 'status');
-  toast.textContent = text;
+  if (isHtml) toast.innerHTML = text; else toast.textContent = text;
   root.appendChild(toast);
   requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
   const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
@@ -458,13 +459,33 @@ function fmtTimeLeft(expiresAt: string): string {
   return hrs > 0 ? `${hrs}h` : '< 1h';
 }
 
-/** Profile-picture indicator for a key: black diamond (no SuiNS) or blue square with sui-drop (has SuiNS). */
-function keyPfpHtml(_ai: number, suinsName: string | null): string {
+/** Profile-picture indicator for a key. Clicking toggles Splash gas sponsorship for that address.
+ *  - Blue square (has SuiNS): amber glow ring when Splash is active for this address.
+ *  - Black diamond (no SuiNS): white sui-drop appears inside when Splash is active.
+ */
+function keyPfpHtml(addr: string, suinsName: string | null): string {
+  const splashOn = isSponsoredAddress(addr);
+  const splashClass = splashOn ? ' ski-key-pfp--splash' : '';
+  const splashTitle = splashOn ? `Splash active — click to remove` : `Splash — click to activate`;
+  const escaped = esc(addr);
   if (suinsName) {
     const bare = suinsName.replace(/\.sui$/, '');
-    return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-key-pfp ski-key-pfp--blue" title="${esc(bare)}.sui.ski"><img src="./assets/sui-drop.svg" class="ski-key-pfp-drop" alt=""></a>`;
+    return `<button type="button" class="ski-key-pfp ski-key-pfp--blue${splashClass}" data-splash-addr="${escaped}" title="${splashTitle} for ${esc(bare)}.sui"><img src="./assets/sui-drop.svg" class="ski-key-pfp-drop" alt=""></button>`;
   }
-  return `<a href="https://sui.ski" target="_blank" rel="noopener" class="ski-key-pfp ski-key-pfp--diamond" title="sui.ski"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg></a>`;
+  const dropOverlay = splashOn ? `<img src="./assets/sui-drop.svg" class="ski-key-pfp-splash-drop" alt="" aria-hidden="true">` : '';
+  return `<button type="button" class="ski-key-pfp ski-key-pfp--diamond${splashClass}" data-splash-addr="${escaped}" title="${splashTitle}"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</button>`;
+}
+
+/** Subname creator column rendered inside each secondary key card. */
+function subnameColHtml(addr: string): string {
+  return `<div class="ski-subname-col" data-subname-target="${esc(addr)}">
+    <input type="text" class="ski-subname-input" placeholder="sublabel" maxlength="50" spellcheck="false" autocomplete="off">
+    <span class="ski-subname-dot">.</span>
+    <select class="ski-subname-select" title="Parent domain"><option value="">\u2026</option></select>
+    <button type="button" class="ski-subname-btn" title="Mint subname">
+      <img src="./assets/ski.svg" alt="" class="ski-subname-btn-icon" aria-hidden="true">
+    </button>
+  </div>`;
 }
 
 function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) {
@@ -543,20 +564,23 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
 
   const retiredSection = legacy.length ? sectionHtml('Legacy', legacy.length, legacyHtml) : '';
 
-  // Build a key card (used for both the active key and secondary keys)
+  // Build a key card (used for secondary keys; ai is always > 0 in practice)
   const keyCardHtml = (addr: string, ai: number): string => {
     const suinsName: string | null = suinsCache[addr] || (() => { try { return localStorage.getItem(`ski:suins:${addr}`); } catch { return null; } })() || null;
     const scanUrl = `https://suiscan.xyz/mainnet/account/${esc(addr)}`;
     const cls = ai === 0 ? 'ski-detail-active-key' : 'ski-detail-addr-wrap';
     return `<div class="${cls}" data-addr-idx="${ai}" data-full-addr="${esc(addr)}">
-      ${keyPfpHtml(ai, suinsName)}
-      <div class="ski-detail-key-text">
-        <span class="ski-detail-suins-slot"></span>
-        <div class="ski-detail-addr-row">
-          <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr)}">${esc(truncAddr(addr))}</a>
-          <button class="ski-copy-btn" title="Copy address">\u2398</button>
+      <div class="ski-detail-addr-main">
+        ${keyPfpHtml(addr, suinsName)}
+        <div class="ski-detail-key-text">
+          <span class="ski-detail-suins-slot"></span>
+          <div class="ski-detail-addr-row">
+            <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr)}">${esc(truncAddr(addr))}</a>
+            <button class="ski-copy-btn" title="Copy address">\u2398</button>
+          </div>
         </div>
       </div>
+      ${ai > 0 ? subnameColHtml(addr) : ''}
     </div>`;
   };
 
@@ -564,7 +588,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
   const suinsName0: string | null = addr0 ? (suinsCache[addr0] || (() => { try { return localStorage.getItem(`ski:suins:${addr0}`); } catch { return null; } })() || null) : null;
   const scanUrl0 = addr0 ? `https://suiscan.xyz/mainnet/account/${addr0}` : '';
   const activePfpHtml = addr0
-    ? keyPfpHtml(0, suinsName0)
+    ? keyPfpHtml(addr0, suinsName0)
     : '<div class="ski-key-pfp ski-key-pfp--green-circle"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div>';
   const activeTextHtml = addr0 ? `<div class="ski-detail-key-text">
         <span class="ski-detail-suins-slot"></span>
@@ -580,10 +604,22 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
   const stableBal = isConnected ? fmtStable(app.stableUsd) : '';
 
   detailEl.innerHTML = `
-    <div class="ski-detail-header">
+    <div class="ski-detail-header${addr0 ? ' ski-detail-header--keyed' : ''}">
       <div class="ski-detail-icon-row"${addr0 ? ` data-addr-idx="0" data-full-addr="${esc(addr0)}"` : ''}>
         <div class="ski-detail-icons-top">
-          ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
+          ${w.icon ? (() => {
+            const splashAuth = getSponsorState().auth;
+            const activated = !!(splashAuth?.walletName === w.name && new Date(splashAuth.expiresAt).getTime() > Date.now());
+            return `<div class="ski-detail-icon-wrap${activated ? ' ski-detail-icon-wrap--activated' : ''}" title="${activated ? `Revoke Splash for ${esc(w.name)}` : `Splash all keys in ${esc(w.name)}`}">
+              <img src="${esc(w.icon)}" alt="" class="ski-detail-icon">
+              <div class="ski-detail-icon-overlay" aria-hidden="true">
+                <img src="./assets/sui-drop.svg" class="ski-detail-icon-overlay-drop" alt="">
+              </div>
+              <div class="ski-detail-icon-revoke-overlay" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg"><line x1="4" y1="4" x2="18" y2="18" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/><line x1="18" y1="4" x2="4" y2="18" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/></svg>
+              </div>
+            </div>`;
+          })() : ''}
           <div class="ski-detail-key-column">
             ${activePfpHtml}
           </div>
@@ -607,15 +643,118 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
     ` : ''}
   `;
 
-  // Bind diamond pfp: connect to this wallet if needed, then sign in
-  detailEl.querySelector('.ski-detail-key-column .ski-key-pfp--diamond')?.addEventListener('click', async (e) => {
-    e.preventDefault();
-    const ws = getState();
-    if (!ws.wallet || ws.wallet.name !== w.name || ws.status !== 'connected') {
-      await selectWallet(w);
+  // Unified click handler — splash toggle AND subname mint.
+  // Uses onclick (not addEventListener) so repeated showWalletDetail calls don't stack listeners.
+  detailEl.onclick = async (e: MouseEvent) => {
+    const el = e.target as HTMLElement;
+
+    // ── Splash toggle ───────────────────────────────────────────────────
+    const splashBtn = el.closest('[data-splash-addr]') as HTMLButtonElement | null;
+    if (splashBtn) {
+      e.preventDefault();
+      const addr = splashBtn.getAttribute('data-splash-addr');
+      if (!addr) return;
+      const ws = getState();
+      if (!ws.wallet || !ws.account) { showToast('Connect a wallet first'); return; }
+      splashBtn.disabled = true;
+      try {
+        if (!isSponsorActive()) {
+          await activateSponsor(ws.wallet, ws.account, addr);
+          await addSponsoredEntry(addr);
+          showToast('<img src="./assets/sui-drop.svg" class="toast-drop" aria-hidden="true"> Splash active', true);
+        } else if (isSponsoredAddress(addr)) {
+          removeSponsoredEntry(addr);
+          showToast('Splash removed for this address');
+        } else {
+          await addSponsoredEntry(addr);
+          showToast('<img src="./assets/sui-drop.svg" class="toast-drop" aria-hidden="true"> Splash added', true);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed';
+        if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      } finally {
+        splashBtn.disabled = false;
+      }
+      // Refresh splash state on all key shape buttons in-place
+      detailEl.querySelectorAll<HTMLButtonElement>('[data-splash-addr]').forEach((btn) => {
+        const a = btn.getAttribute('data-splash-addr')!;
+        const on = isSponsoredAddress(a);
+        btn.classList.toggle('ski-key-pfp--splash', on);
+        btn.setAttribute('title', on ? 'Splash active — click to remove' : 'Splash — click to activate');
+        if (btn.classList.contains('ski-key-pfp--diamond')) {
+          const existing = btn.querySelector('.ski-key-pfp-splash-drop');
+          if (on && !existing) {
+            const img = document.createElement('img');
+            img.src = './assets/sui-drop.svg';
+            img.className = 'ski-key-pfp-splash-drop';
+            img.setAttribute('aria-hidden', 'true');
+            btn.appendChild(img);
+          } else if (!on && existing) {
+            existing.remove();
+          }
+        }
+      });
+      return;
     }
-    window.dispatchEvent(new CustomEvent('ski:request-signin'));
-  });
+
+    // ── Subname mint ────────────────────────────────────────────────────
+    const subnameBtn = el.closest('.ski-subname-btn') as HTMLButtonElement | null;
+    if (subnameBtn) {
+      e.preventDefault();
+      const col = subnameBtn.closest<HTMLElement>('.ski-subname-col');
+      const targetAddr = col?.dataset.subnameTarget ?? '';
+      const sel = col?.querySelector<HTMLSelectElement>('.ski-subname-select');
+      const inp = col?.querySelector<HTMLInputElement>('.ski-subname-input');
+      const parentId = sel?.value ?? '';
+      const label = (inp?.value ?? '').trim().toLowerCase();
+      const selectedOpt = sel?.options[sel.selectedIndex];
+
+      if (!parentId) { showToast('Select a parent domain'); return; }
+      if (!label) { showToast('Enter a subdomain label'); return; }
+      if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(label)) {
+        showToast('Label: lowercase letters, digits, hyphens only');
+        return;
+      }
+
+      const ws = getState();
+      if (!ws.wallet || !ws.account) { showToast('Connect a wallet first'); return; }
+
+      const signAndExec = (ws.wallet.features['sui:signAndExecuteTransaction'] as {
+        signAndExecuteTransaction: (args: {
+          transaction: Uint8Array;
+          account: WalletAccount;
+          chain: string;
+        }) => Promise<{ digest?: string }>;
+      } | undefined)?.signAndExecuteTransaction;
+      if (!signAndExec) { showToast('Wallet does not support signAndExecuteTransaction'); return; }
+
+      const parentDomain: OwnedDomain = {
+        objectId: parentId,
+        name: selectedOpt?.dataset.domainName ?? selectedOpt?.text ?? '',
+        kind: (selectedOpt?.dataset.kind ?? 'nft') as 'nft' | 'cap',
+        allowLeaf: selectedOpt?.dataset.allowLeaf !== 'false',
+        allowNode: selectedOpt?.dataset.allowNode === 'true',
+      };
+      const subnameType: 'leaf' | 'node' = parentDomain.allowLeaf ? 'leaf' : 'node';
+
+      subnameBtn.disabled = true;
+      try {
+        const tx = buildSubnameTx(parentDomain, label, targetAddr, subnameType);
+        const txBytes = await tx.build({ client: grpcClient });
+        const chain = ws.account.chains.find((c: string) => c.startsWith('sui:')) ?? 'sui:mainnet';
+        await signAndExec({ transaction: txBytes, account: ws.account, chain });
+        const cleanParent = (selectedOpt?.dataset.domainName ?? '').replace(/\.sui$/, '');
+        showToast(`Subname created — ${label}.${cleanParent}.sui`);
+        if (inp) inp.value = '';
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed';
+        if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      } finally {
+        subnameBtn.disabled = false;
+      }
+      return;
+    }
+  };
 
   // Bind gear toggle
   detailEl.querySelector('#ski-gear-btn')?.addEventListener('click', () => {
@@ -641,6 +780,53 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
     });
   });
 
+  // Wallet icon wrap: bulk-sign Splash (or revoke if already activated)
+  const walletIconWrapEl = detailEl.querySelector<HTMLElement>('.ski-detail-icon-wrap');
+  if (walletIconWrapEl) {
+    walletIconWrapEl.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      // Already activated → revoke
+      if (walletIconWrapEl.classList.contains('ski-detail-icon-wrap--activated')) {
+        deactivateSponsor();
+        showToast('Splash revoked');
+        render();
+        if (detailEl) showWalletDetail(w, detailEl, connectedAddr);
+        return;
+      }
+      let accounts: readonly WalletAccount[] = w.accounts;
+      if (!accounts.length && 'standard:connect' in w.features) {
+        try {
+          const cf = w.features['standard:connect'] as {
+            connect: (i?: { silent?: boolean }) => Promise<{ accounts: readonly WalletAccount[] }>;
+          };
+          ({ accounts } = await cf.connect({ silent: true }));
+        } catch {}
+      }
+      if (!accounts.length) { showToast('No accounts found'); return; }
+      walletIconWrapEl.style.opacity = '0.5';
+      const allEntries = accounts.map((a) => ({
+        address: a.address,
+        name: suinsCache[a.address] || (() => { try { return localStorage.getItem(`ski:suins:${a.address}`); } catch { return null; } })() || null,
+      }));
+      let signed = 0;
+      try {
+        for (const account of accounts) {
+          await activateSponsor(w, account, undefined, allEntries);
+          signed++;
+        }
+        walletIconWrapEl.classList.add('ski-detail-icon-wrap--activated');
+        showToast(`<img src="./assets/sui-drop.svg" class="toast-drop" aria-hidden="true"> Splash signed \u00b7 ${signed} key${signed > 1 ? 's' : ''}`, true);
+        render();
+        if (detailEl) showWalletDetail(w, detailEl, connectedAddr);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed';
+        if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      } finally {
+        walletIconWrapEl.style.opacity = '';
+      }
+    });
+  }
+
   // ─── Sponsor section (appended below wallet detail) ──────────────────
   {
     const sponsorAuth = getSponsorState().auth;
@@ -656,7 +842,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
       const msLeft = new Date(sponsorAuth!.expiresAt).getTime() - Date.now();
       const daysLeft = Math.max(1, Math.ceil(msLeft / (24 * 60 * 60 * 1000)));
       sponsorDiv.innerHTML = `
-        <span class="ski-detail-sponsor-active">\ud83d\udca7 Splash active &middot; ${daysLeft}d left</span>
+        <span class="ski-detail-sponsor-active"><img src="./assets/sui-drop.svg" class="splash-inline-drop" aria-hidden="true"> Splash active &middot; ${daysLeft}d left</span>
         <button class="ski-detail-sponsor-revoke" type="button">Revoke</button>`;
       sponsorDiv.querySelector('.ski-detail-sponsor-revoke')?.addEventListener('click', () => {
         deactivateSponsor();
@@ -665,7 +851,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
         if (detailEl) showWalletDetail(w, detailEl, connectedAddr);
       });
     } else if (canSponsor) {
-      sponsorDiv.innerHTML = `<button class="ski-detail-sponsor-set" type="button">\ud83d\udca7 Activate Splash</button>`;
+      sponsorDiv.innerHTML = `<button class="ski-detail-sponsor-set" type="button"><img src="./assets/sui-drop.svg" class="splash-inline-drop splash-inline-drop--blue" aria-hidden="true"> Splash</button>`;
       sponsorDiv.querySelector('.ski-detail-sponsor-set')?.addEventListener('click', async (e) => {
         const btn = e.currentTarget as HTMLButtonElement;
         btn.disabled = true; btn.textContent = 'Activating\u2026';
@@ -681,13 +867,13 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
           }
           if (!account) throw new Error('No account available');
           await activateSponsor(w, account);
-          showToast('\ud83d\udca7 Splash active \u00b7 7 days');
+          showToast('<img src="./assets/sui-drop.svg" class="toast-drop" aria-hidden="true"> Splash active &middot; 7 days', true);
           render();
           if (detailEl) showWalletDetail(w, detailEl, connectedAddr);
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Failed';
           if (!msg.toLowerCase().includes('reject')) showToast(msg);
-          btn.disabled = false; btn.textContent = '\ud83d\udca7 Activate Splash';
+          btn.disabled = false; btn.innerHTML = '<img src="./assets/sui-drop.svg" class="splash-inline-drop splash-inline-drop--blue" aria-hidden="true"> Splash';
         }
       });
     }
@@ -723,7 +909,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
         const pfpEl = wrap?.querySelector('.ski-key-pfp');
         if (pfpEl && !pfpEl.classList.contains('ski-key-pfp--blue')) {
           const tmp = document.createElement('div');
-          tmp.innerHTML = keyPfpHtml(ai, name);
+          tmp.innerHTML = keyPfpHtml(addr, name);
           const newPfp = tmp.firstElementChild;
           if (newPfp) pfpEl.replaceWith(newPfp);
         }
@@ -734,6 +920,36 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
       }
     });
   });
+
+  // Populate subname domain dropdowns with domains owned by the connected address.
+  // Only secondary key cards have .ski-subname-col elements.
+  if (detailEl.querySelector('.ski-subname-col')) {
+    const fetchGen = gen;
+    fetchOwnedDomains(normalizeSuiAddress(connectedAddr)).then((domains: OwnedDomain[]) => {
+      if (fetchGen !== detailGeneration) return;
+      detailEl.querySelectorAll<HTMLSelectElement>('.ski-subname-select').forEach((sel) => {
+        if (domains.length) {
+          sel.innerHTML = domains.map((d) => {
+            const bare = d.name.replace(/\.sui$/, '');
+            const suffix = d.kind === 'cap'
+              ? (d.allowLeaf && d.allowNode ? ' [cap]' : d.allowLeaf ? ' [leaf cap]' : ' [node cap]')
+              : '';
+            return `<option value="${esc(d.objectId)}"
+              data-domain-name="${esc(d.name)}"
+              data-kind="${d.kind}"
+              data-allow-leaf="${d.allowLeaf}"
+              data-allow-node="${d.allowNode}"
+            >${esc(bare)}${suffix}</option>`;
+          }).join('');
+        } else {
+          sel.innerHTML = '<option value="" disabled>No domains</option>';
+          sel.disabled = true;
+          const btn = sel.closest('.ski-subname-col')?.querySelector<HTMLButtonElement>('.ski-subname-btn');
+          if (btn) btn.disabled = true;
+        }
+      });
+    });
+  }
 }
 
 /** Returns the SKI shape SVG badge for a wallet list item (right-side indicator). */
@@ -1155,7 +1371,7 @@ function renderSignStage() {
     sponsorCardHtml = `
       <div class="splash-card splash-card--active">
         <div class="splash-header-row">
-          <span class="splash-icon">💧</span>
+          <img src="./assets/sui-drop.svg" class="splash-icon-drop" aria-hidden="true">
           <span class="splash-title">Splash</span>
           <button class="splash-btn splash-btn--deactivate" id="splash-deactivate-btn" type="button">Deactivate</button>
         </div>
@@ -1182,7 +1398,7 @@ function renderSignStage() {
     // No active sponsor — offer to activate Splash.
     sponsorCardHtml = `
       <div class="splash-card splash-card--inactive">
-        <span class="splash-icon">💧</span>
+        <img src="./assets/sui-drop.svg" class="splash-icon-drop" aria-hidden="true">
         <span class="splash-title">Splash</span>
         <button class="splash-btn splash-btn--activate" id="splash-activate-btn" type="button">Activate &middot; 7 days</button>
       </div>`;
@@ -1235,7 +1451,7 @@ function renderSignStage() {
     try {
       const entry = await addSponsoredEntry(raw);
       const label = entry.suinsName ?? truncAddr(entry.address);
-      showToast(`\ud83d\udca7 Added ${label} to Splash`);
+      showToast(`<img src="./assets/sui-drop.svg" class="toast-drop" aria-hidden="true"> Added ${esc(label)} to Splash`, true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed';
       if (!msg.toLowerCase().includes('reject')) showToast(msg);
@@ -1252,7 +1468,7 @@ function renderSignStage() {
       const { wallet, account } = getState();
       if (!wallet || !account) throw new Error('No wallet connected');
       await activateSponsor(wallet, account);
-      showToast('\ud83d\udca7 Splash active \u00b7 7 days');
+      showToast('<img src="./assets/sui-drop.svg" class="toast-drop" aria-hidden="true"> Splash active &middot; 7 days', true);
       render();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed';

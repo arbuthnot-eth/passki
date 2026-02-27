@@ -151,23 +151,77 @@ export function isSponsoredAddress(address: string): boolean {
 
 // ─── Authorization message ────────────────────────────────────────────
 
+/** A single account entry for the bulk-sign message listing. */
+export interface AccountEntry {
+  address: string;
+  name?: string | null;
+}
+
+interface AuthMessageOpts {
+  /** Primary SuiNS name of the sponsor (e.g. "atlas.sui"), if known */
+  sponsorName?: string | null;
+  /** Target/beneficiary address being sponsored, if known at activation time */
+  targetAddress?: string | null;
+  /** Primary SuiNS name of the target, if known */
+  targetName?: string | null;
+  /** Minted SuiNS subname for the target (used when target has no primary name) */
+  targetSubname?: string | null;
+  /**
+   * All accounts to list in the message (bulk wallet-icon signing).
+   * Diamonds (no name) are listed first as plain truncated addresses;
+   * Blues (has name) follow as @name then truncated address.
+   */
+  allAccounts?: AccountEntry[];
+}
+
 function buildAuthMessage(
   sponsorAddress: string,
   expiresAt: string,
   nonce: string,
+  opts: AuthMessageOpts = {},
 ): string {
-  const lines = [
-    `.SKI Splash`,
-    '',
-    `Sponsor Address: ${sponsorAddress}`,
-    `Expires At: ${expiresAt}`,
-    `Nonce: ${nonce}`,
-    '',
-    `By signing, you activate Splash for .SKI — your wallet pays gas for`,
-    `sponsored addresses for the next 7 days.`,
-    `Manage Splash targets at any time in the .SKI interface.`,
-    `No funds are transferred by signing this message. You can revoke at any time.`,
-  ];
+  const TTL_DAYS = Math.round(SPONSOR_TTL_MS / 86_400_000); // 7
+
+  const sponsorDisplay = opts.sponsorName ? opts.sponsorName.replace(/\.sui$/, '') : null;
+  const titleLine = sponsorDisplay
+    ? `.SKI ${TTL_DAYS}d Splash (0.05 \uD83D\uDCA7/tx) by: ${sponsorDisplay}`
+    : `.SKI ${TTL_DAYS}d Splash (0.05 \uD83D\uDCA7/tx)`;
+  const lines: string[] = [titleLine];
+
+  if (opts.allAccounts && opts.allAccounts.length > 0) {
+    // ── Bulk mode: diamonds (no name) first, then blues (@name + addr) ──
+    const diamonds = opts.allAccounts.filter((a) => !a.name);
+    const blues = opts.allAccounts.filter((a) => !!a.name);
+    for (const a of diamonds) lines.push(truncAddr(a.address));
+    for (const a of blues) {
+      lines.push(`@${a.name!.replace(/\.sui$/, '')}`);
+      lines.push(truncAddr(a.address));
+    }
+    // Separator + all full addresses
+    lines.push('');
+    lines.push('\u2500'.repeat(20));
+    for (const a of opts.allAccounts) lines.push(a.address);
+  } else {
+    // ── Single-account mode (per-key button or Activate Splash) ──────
+    lines.push(truncAddr(sponsorAddress));
+    if (opts.targetAddress) {
+      const targetHandle = (opts.targetName ?? opts.targetSubname)?.replace(/\.sui$/, '') ?? null;
+      lines.push(targetHandle ? `@${targetHandle}` : '@ --');
+      lines.push(truncAddr(opts.targetAddress));
+    }
+    // Separator + full hex addresses
+    lines.push('');
+    lines.push('\u2500'.repeat(20));
+    lines.push(sponsorAddress);
+    if (opts.targetAddress) lines.push(opts.targetAddress);
+  }
+
+  // ── Expiry / budget summary ───────────────────────────────────────
+  lines.push('');
+  lines.push(`${TTL_DAYS}d Splash (0.05 \uD83D\uDCA7/tx)`);
+  lines.push(`Expires At: ${expiresAt}`);
+  lines.push(`Nonce: ${nonce}`);
+
   return lines.join('\n');
 }
 
@@ -177,18 +231,33 @@ function buildAuthMessage(
  * Prompt the given wallet to sign a sponsorship authorization message,
  * persist the auth to localStorage, and store the wallet reference in memory.
  * Any existing sponsored list is preserved when re-activating.
+ *
+ * @param targetAddr  Optional address being sponsored (pre-fills beneficiary in the message).
  */
 export async function activateSponsor(
   wallet: Wallet,
   account: WalletAccount,
+  targetAddr?: string,
+  allAccounts?: AccountEntry[],
 ): Promise<SponsorAuth> {
   if (!('sui:signPersonalMessage' in wallet.features)) {
     throw new Error(`${wallet.name} does not support message signing`);
   }
 
+  // Resolve display names concurrently (best-effort, 2s timeout each)
+  const [sponsorName, targetName] = await Promise.all([
+    resolveAddressToName(account.address),
+    targetAddr ? resolveAddressToName(targetAddr) : Promise.resolve(null),
+  ]);
+
   const expiresAt = new Date(Date.now() + SPONSOR_TTL_MS).toISOString();
   const nonce = crypto.randomUUID();
-  const authMessageText = buildAuthMessage(account.address, expiresAt, nonce);
+  const authMessageText = buildAuthMessage(account.address, expiresAt, nonce, {
+    sponsorName,
+    targetAddress: targetAddr ?? null,
+    targetName,
+    allAccounts,
+  });
   const messageBytes = new TextEncoder().encode(authMessageText);
 
   const signFeat = wallet.features['sui:signPersonalMessage'] as {
@@ -260,9 +329,48 @@ export async function restoreSponsor(registeredWallets: Wallet[]): Promise<boole
   } catch { return false; }
 }
 
-// ─── SuiNS name resolution (forward: name → address) ─────────────────
+// ─── SuiNS resolution ─────────────────────────────────────────────────
 
 const GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+
+/** Truncate a Sui address for display: 0x3ca0...5222b */
+function truncAddr(addr: string): string {
+  if (addr.length <= 14) return addr;
+  return `${addr.slice(0, 6)}...${addr.slice(-5)}`;
+}
+
+/**
+ * Reverse SuiNS lookup: address → primary name.
+ * Checks localStorage cache first (populated by UI portfolio fetch), then
+ * falls back to a GraphQL query with a 2-second timeout.
+ */
+async function resolveAddressToName(address: string): Promise<string | null> {
+  try {
+    const cached = localStorage.getItem(`ski:suins:${address}`);
+    if (cached) return cached;
+  } catch {}
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch(GRAPHQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!){ address(address:$a){ defaultNameRecord{domain} } }`,
+        variables: { a: address },
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const json = await res.json() as { data?: { address?: { defaultNameRecord?: { domain: string } | null } } };
+    const name = json?.data?.address?.defaultNameRecord?.domain;
+    if (name && typeof name === 'string') {
+      try { localStorage.setItem(`ski:suins:${address}`, name); } catch {}
+      return name;
+    }
+  } catch { /* timeout or network */ }
+  return null;
+}
 
 /**
  * Resolve a SuiNS name to a Sui address.

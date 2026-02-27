@@ -665,6 +665,14 @@ body {
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2) inset;
 }
 
+/* Switch Wallet — kumo-ui alert banner (warning) colors on hover */
+#wk-dd-switch:hover {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: linear-gradient(135deg, rgba(92, 55, 0, 0.52), rgba(60, 35, 0, 0.5));
+  color: #fcd34d;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.18) inset;
+}
+
 .wk-dd-item.disconnect {
   border-color: rgba(239, 68, 68, 0.45);
   background: linear-gradient(135deg, rgba(80, 15, 25, 0.52), rgba(58, 10, 18, 0.5));
@@ -792,6 +800,7 @@ body {
   display: flex;
   gap: 6px;
   margin-top: 0;
+  margin-bottom: 6px;
 }
 
 .wk-popout-actions .wk-dd-item {
@@ -1017,7 +1026,7 @@ body {
   background: linear-gradient(180deg, #141820, #0e1118 50%, #101520);
   border: 1px solid rgba(160, 200, 240, 0.12);
   border-radius: 12px;
-  max-width: 420px;
+  max-width: 560px;
   width: calc(100% - 20px);
   max-height: calc(100vh - 32px);
   overflow: hidden;
@@ -1063,12 +1072,16 @@ body {
   align-items: flex-start;
   gap: 6px;
   width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+/* Blue card only when wallet has at least one key */
+.ski-detail-header--keyed {
   border: 1px solid rgba(59, 130, 246, 0.86);
   border-radius: 8px;
   background: linear-gradient(135deg, rgba(13, 38, 94, 0.66), rgba(10, 24, 56, 0.75));
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2) inset;
-  padding: 8px 10px;
-  margin-bottom: 8px;
 }
 
 .ski-detail-icon-row {
@@ -1116,6 +1129,13 @@ body {
   flex-shrink: 0;
   border-radius: 8px;
   overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  padding: 0;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1168,6 +1188,55 @@ body {
   transform: translate(0, 0);
 }
 
+/* Splash active: white outline on blue square */
+.ski-key-pfp--blue.ski-key-pfp--splash {
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.25);
+}
+
+/* Splash active: white sui-drop overlay inside diamond */
+.ski-key-pfp-splash-drop {
+  position: absolute;
+  inset: 0;
+  width: 58%;
+  height: 58%;
+  margin: auto;
+  object-fit: contain;
+  filter: brightness(0) invert(1);
+  pointer-events: none;
+}
+
+/* Inline sui-drop in text/buttons (replaces 💧 emoji) */
+.splash-inline-drop {
+  width: 14px;
+  height: 14px;
+  vertical-align: middle;
+  margin-bottom: 1px;
+  filter: brightness(0) invert(1);
+}
+
+/* Blue variant — Sui brand blue ~#4DA2FF */
+.splash-inline-drop--blue {
+  filter: brightness(0) saturate(100%) invert(58%) sepia(90%) saturate(400%) hue-rotate(185deg) brightness(105%);
+}
+
+/* Sui-drop in toast messages */
+.toast-drop {
+  width: 15px;
+  height: 15px;
+  vertical-align: middle;
+  margin-bottom: 2px;
+  filter: brightness(0) invert(1);
+}
+
+/* Sui-drop icon in Splash card header */
+.splash-icon-drop {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  filter: brightness(0) saturate(100%) invert(72%) sepia(60%) saturate(400%) hue-rotate(80deg) brightness(95%);
+}
+
 /* Text block inside each key card */
 .ski-detail-key-text {
   display: flex;
@@ -1177,12 +1246,21 @@ body {
   width: 100%;
 }
 
-/* Secondary key rows: pfp left, text right */
+/* Secondary key rows: stacked — main row on top, subname col below */
 .ski-detail-addr-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+/* Inner row: pfp left, text right */
+.ski-detail-addr-main {
   display: flex;
   flex-direction: row;
   align-items: flex-end;
   gap: 6px;
+  width: 100%;
 }
 
 .ski-detail-empty {
@@ -1221,10 +1299,65 @@ body {
   object-fit: contain;
 }
 
+.ski-detail-icon-wrap {
+  position: relative;
+  width: 47px;
+  height: 47px;
+  flex-shrink: 0;
+  cursor: pointer;
+  border-radius: 8px;
+}
 .ski-detail-icon {
+  display: block;
   width: 47px;
   height: 47px;
   border-radius: 8px;
+  transition: opacity 0.15s;
+}
+.ski-detail-icon-wrap:hover .ski-detail-icon,
+.ski-detail-icon-wrap--activated .ski-detail-icon {
+  opacity: 0;
+}
+.ski-detail-icon-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+.ski-detail-icon-overlay-drop {
+  width: 30px;
+  height: 30px;
+  /* Sui blue ~#4DA2FF */
+  filter: brightness(0) saturate(100%) invert(58%) sepia(90%) saturate(400%) hue-rotate(185deg) brightness(105%);
+}
+.ski-detail-icon-wrap:hover .ski-detail-icon-overlay,
+.ski-detail-icon-wrap--activated .ski-detail-icon-overlay {
+  opacity: 1;
+}
+/* Activated + hover: swap blue drop for red X */
+.ski-detail-icon-wrap--activated:hover .ski-detail-icon-overlay {
+  opacity: 0;
+}
+.ski-detail-icon-revoke-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+.ski-detail-icon-wrap--activated:hover .ski-detail-icon-revoke-overlay {
+  opacity: 1;
 }
 
 .ski-detail-name {
@@ -1548,5 +1681,112 @@ body {
   font-size: 0.62rem;
   margin: 1px 0 0;
   line-height: 1.25;
+}
+
+/* ─── Subname Creator (secondary key cards) ────────────────────────── */
+
+/* Container: indented to align past the 24px pfp + 6px gap */
+.ski-subname-col {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding-left: 30px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Text input for the subdomain label */
+.ski-subname-input {
+  background: rgba(15, 20, 35, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 5px;
+  color: #e2e8f0;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  padding: 3px 6px;
+  width: 60px;
+  min-width: 0;
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.ski-subname-input:focus {
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.12);
+}
+
+.ski-subname-input::placeholder {
+  color: #374151;
+  font-size: 10px;
+}
+
+/* Dot separator between label and parent domain */
+.ski-subname-dot {
+  color: #4b5563;
+  font-size: 13px;
+  flex-shrink: 0;
+  line-height: 1;
+  font-weight: 600;
+}
+
+/* Parent domain dropdown */
+.ski-subname-select {
+  background: rgba(15, 20, 35, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 5px;
+  color: #94a3b8;
+  font-size: 11px;
+  padding: 3px 4px;
+  flex: 1;
+  min-width: 0;
+  max-width: 88px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.ski-subname-select:focus {
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.ski-subname-select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Green circle mint button with ski.svg icon */
+.ski-subname-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #22c55e;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: opacity 0.12s ease, transform 0.1s ease;
+}
+
+.ski-subname-btn:hover {
+  opacity: 0.88;
+  transform: scale(1.07);
+}
+
+.ski-subname-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.ski-subname-btn-icon {
+  width: 11px;
+  height: 11px;
+  filter: brightness(0) invert(1);
+  display: block;
+  flex-shrink: 0;
 }
 

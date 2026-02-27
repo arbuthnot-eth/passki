@@ -272,7 +272,7 @@ window.addEventListener('ski:sign-and-execute-transaction', async (e) => {
     // Use the sponsored flow when a valid gas sponsor is active and the
     // transaction is a Transaction object (needed to build kind bytes).
     if (isSponsorActive() && transaction instanceof Transaction && ws.wallet && ws.account) {
-      showToast('💧 Splash — approve in both wallets');
+      showToast('<img src="./assets/sui-drop.svg" class="toast-drop" aria-hidden="true"> Splash — approve in both wallets', true);
       const kindBytes = await (transaction as Transaction).build({
         client: grpcClient,
         onlyTransactionKind: true,

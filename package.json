@@ -58,6 +58,7 @@
     "@wallet-standard/app": "^1.1.0",
     "agents": "^0.6.0",
     "hono": "^4.12.2",
-    "hono-agents": "^3.0.6"
+    "hono-agents": "^3.0.6",
+    "kumo-ui": "^0.2.1"
   }
 }
