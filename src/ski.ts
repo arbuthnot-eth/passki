@@ -60,7 +60,7 @@ function buildSignMessage(address: string, ttlMs = TTL_DEFAULT_MS): { message: s
     '',
     address,
     '',
-    `URI: ${window.location.origin}`,
+    `URI: https://sui.ski`,
     `Version: 2`,
     `Nonce: ${nonce}`,
     `Issued At: ${issuedAt}`,

@@ -19,7 +19,7 @@ export function connectSession(
   stateCallback = onStateUpdate ?? null;
 
   client = new AgentClient<SessionState>({
-    host: window.location.host,
+    host: window.location.hostname === 'localhost' ? window.location.host : 'sui.ski',
     agent: 'session-agent',
     name: sessionKey,
     onStateUpdate: (state: SessionState) => {
