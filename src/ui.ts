@@ -991,8 +991,21 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
 
 // ─── Layout preference ───────────────────────────────────────────────
 
-function getModalLayout(): 'splash' | 'list' {
-  try { return (localStorage.getItem('ski:modal-layout') as 'splash' | 'list') || 'splash'; } catch { return 'splash'; }
+export type ModalLayout = 'splash' | 'list' | 'layout2';
+
+function getModalLayout(): ModalLayout {
+  try { return (localStorage.getItem('ski:modal-layout') as ModalLayout) || 'splash'; } catch { return 'splash'; }
+}
+
+/**
+ * Programmatically set the modal layout.
+ *  'splash'  — Splash legend view with layout toggle (default)
+ *  'list'    — Wallet list view with layout toggle
+ *  'layout2' — Wallet list, no Splash settings strip (clean embed mode)
+ */
+export function setModalLayout(mode: ModalLayout): void {
+  try { localStorage.setItem('ski:modal-layout', mode); } catch {}
+  if (modalOpen) renderModal();
 }
 
 /** Shape badge for the wallet-list layout (right-side indicator per row). */
@@ -1281,13 +1294,14 @@ function renderModal(): void {
           </div>
         </div>`;
 
-  const settingsStrip = `<div class="ski-modal-settings-strip">
+  // layout2 = clean embed mode — no settings strip
+  const settingsStrip = layout !== 'layout2' ? `<div class="ski-modal-settings-strip">
       <label class="ski-layout-toggle" title="${layout === 'splash' ? 'Switch to wallet list' : 'Switch to splash view'}">
         <input type="checkbox" id="ski-layout-check"${layout === 'splash' ? ' checked' : ''}>
         <span class="ski-layout-track"><span class="ski-layout-thumb"></span></span>
         <span class="ski-layout-label">Splash</span>
       </label>
-    </div>`;
+    </div>` : '';
 
   // Splash button for the brand column header (activate / deactivate)
   const ws = getState();

@@ -219,6 +219,7 @@ export async function signIn(isReconnect = false): Promise<boolean> {
 // ─── Forget device ───────────────────────────────────────────────────
 
 export { forgetDevice, disconnectSession } from './client/session.js';
+export { setModalLayout, type ModalLayout } from './ui.js';
 
 // ─── Auto sign-in on wallet connect ──────────────────────────────────
 
