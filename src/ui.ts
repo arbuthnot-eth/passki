@@ -1231,12 +1231,13 @@ function buildHeaderBalanceHtml(): string {
   if (!ws.address) return '';
   const suiText = fmtSui(app.sui);
   const usdText = fmtUsd(app.usd);
-  const stableText = app.stableUsd > 0 ? fmtStable(app.stableUsd) : '';
-  return `
-    <div class="ski-header-bal-sui">${esc(suiText)}<span class="ski-header-bal-unit"> SUI</span></div>
-    ${usdText ? `<div class="ski-header-bal-usd">${esc(usdText)}</div>` : ''}
-    ${stableText ? `<div class="ski-header-bal-stable">${esc(stableText)}</div>` : ''}
-  `;
+  const suiRow = `<div class="ski-header-bal-sui">${esc(suiText)}<img src="./assets/sui-drop.svg" class="ski-header-bal-sui-icon" alt="SUI" aria-label="SUI"></div>`;
+  const usdRow = usdText ? `<div class="ski-header-bal-usd">${esc(usdText)}</div>` : '';
+  const [primary, secondary] = balView === 'usd' && usdText
+    ? [`<div class="ski-header-bal-primary ski-header-bal-usd">${esc(usdText)}</div>`, `<div class="ski-header-bal-secondary ski-header-bal-sui">${esc(suiText)}<img src="./assets/sui-drop.svg" class="ski-header-bal-sui-icon" alt="SUI" aria-label="SUI"></div>`]
+    : [`<div class="ski-header-bal-primary ski-header-bal-sui">${esc(suiText)}<img src="./assets/sui-drop.svg" class="ski-header-bal-sui-icon" alt="SUI" aria-label="SUI"></div>`, usdRow ? `<div class="ski-header-bal-secondary ski-header-bal-usd">${esc(usdText)}</div>` : ''];
+  void suiRow; // used above via destructure
+  return `${primary}${secondary}`;
 }
 
 function renderModal(): void {
@@ -1542,6 +1543,30 @@ export function enrollAllKnownAddresses(): number {
 let lastPortfolioMs = 0;
 let portfolioInFlight = false;
 
+// SUI/USD price cache — refreshed at most once every 5 minutes
+let suiPriceCache: { price: number; fetchedAt: number } | null = null;
+
+// Balance display preference: 'sui' shows SUI primary, 'usd' shows USD primary
+let balView: 'sui' | 'usd' = (() => {
+  try { return (localStorage.getItem('ski:bal-pref') as 'sui' | 'usd') || 'sui'; } catch { return 'sui'; }
+})();
+
+async function fetchSuiPrice(): Promise<number | null> {
+  const now = Date.now();
+  if (suiPriceCache && now - suiPriceCache.fetchedAt < 5 * 60 * 1000) return suiPriceCache.price;
+  try {
+    const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
+    if (!res.ok) return suiPriceCache?.price ?? null;
+    const { price } = await res.json() as { price: string };
+    const p = parseFloat(price);
+    if (Number.isFinite(p) && p > 0) {
+      suiPriceCache = { price: p, fetchedAt: now };
+      return p;
+    }
+  } catch { /* keep cached */ }
+  return suiPriceCache?.price ?? null;
+}
+
 export async function refreshPortfolio(force = false) {
   const ws = getState();
   if (!ws.address) return;
@@ -1553,11 +1578,12 @@ export async function refreshPortfolio(force = false) {
   const fetchedFor = ws.address; // capture before any await
 
   try {
-    // gRPC for balances — addressBalance is the accumulator-tracked balance
-    const [suiResult, usdcResult, suinsName] = await Promise.all([
+    // gRPC for balances + SUI price in parallel
+    const [suiResult, usdcResult, suinsName, suiPrice] = await Promise.all([
       grpcClient.core.getBalance({ owner: fetchedFor }).catch(() => null),
       grpcClient.core.getBalance({ owner: fetchedFor, coinType: USDC_TYPE }).catch(() => null),
       lookupSuiNS(fetchedFor),
+      fetchSuiPrice(),
     ]);
 
     // Wallet switched while fetch was in-flight — discard stale result
@@ -1568,6 +1594,8 @@ export async function refreshPortfolio(force = false) {
 
     const usdcRaw = Number(usdcResult?.balance?.balance ?? 0);
     app.stableUsd = Number.isFinite(usdcRaw) ? usdcRaw / 1e6 : 0;
+
+    app.usd = suiPrice != null ? app.sui * suiPrice : null;
 
     if (suinsName) {
       app.suinsName = suinsName;
@@ -1999,10 +2027,13 @@ function render() {
     e.stopPropagation();
     if (modalOpen) { closeModal(); return; }
     if (!getState().address) { openModal(); return; }
-    if (window.location.hostname === 'sui.ski') {
+    const href = skiHref();
+    if (app.suinsName) {
+      window.open(href, '_blank', 'noopener,noreferrer');
+    } else if (window.location.hostname === 'sui.ski') {
       window.location.reload();
     } else {
-      window.open(skiHref(), '_blank', 'noopener,noreferrer');
+      window.open(href, '_blank', 'noopener,noreferrer');
     }
   });
 }
@@ -2018,7 +2049,8 @@ function bindEvents() {
       return;
     }
     if (modalOpen) { closeModal(); return; }
-    app.menuOpen = !app.menuOpen;
+    if (app.menuOpen) { app.menuOpen = false; render(); openModal(); return; }
+    app.menuOpen = true;
     render();
   });
 
@@ -2199,10 +2231,20 @@ export function initUI() {
   els.modal?.addEventListener('pointercancel', cancelLongPress as EventListener);
 
   // Delegated: legend row click → connect (skip anchor clicks)
-  // Also handles wallet-list row clicks
+  // Also handles wallet-list row clicks and balance toggle
   els.modal?.addEventListener('click', (e) => {
     if (longPressFired) { longPressFired = false; return; } // long-press consumed this click
     if ((e.target as HTMLElement).closest('a')) return;
+
+    // Balance column toggle: switch between SUI-primary and USD-primary
+    if ((e.target as HTMLElement).closest('#ski-modal-header-balance')) {
+      balView = balView === 'sui' ? 'usd' : 'sui';
+      try { localStorage.setItem('ski:bal-pref', balView); } catch {}
+      const balEl = document.getElementById('ski-modal-header-balance');
+      if (balEl) balEl.innerHTML = buildHeaderBalanceHtml();
+      return;
+    }
+
     const legendRow = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row');
     if (legendRow?.dataset.legendWallet) {
       const wallet = getSuiWallets().find((w) => w.name === legendRow.dataset.legendWallet);

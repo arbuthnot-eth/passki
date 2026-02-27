@@ -1,6 +1,6 @@
 {
   "name": "sui.ski",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": ".SKI — One-button Sui wallet sign-in. Connect once, authenticate everywhere.",
   "type": "module",
   "main": "public/dist/ski.js",
@@ -35,7 +35,7 @@
     "url": "https://github.com/arbuthnot-eth/.SKI"
   },
   "scripts": {
-    "build": "bun build src/ski.ts --outdir public/dist --target browser --minify --splitting --format esm",
+    "build": "rm -rf public/dist && bun build src/ski.ts --outdir public/dist --target browser --minify --splitting --format esm",
     "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch --splitting --format esm",
     "dev:wrangler": "wrangler dev",
     "deploy": "bun run build && npx wrangler deploy",

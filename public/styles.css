@@ -2375,21 +2375,47 @@ body {
   flex-shrink: 0;
   gap: 2px;
   min-width: 80px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: opacity 0.1s;
 }
-.ski-header-bal-sui {
+.ski-modal-header-balance:hover { opacity: 0.8; }
+.ski-modal-header-balance:active { opacity: 0.6; }
+
+/* Primary row: large */
+.ski-header-bal-primary.ski-header-bal-sui,
+.ski-header-bal-primary.ski-header-bal-usd {
   font-size: 1.05rem;
   font-weight: 600;
   color: #e2e8f0;
-  white-space: nowrap;
 }
-.ski-header-bal-unit {
-  font-size: 0.68rem;
-  font-weight: 400;
-  color: #94a3b8;
-}
-.ski-header-bal-usd,
-.ski-header-bal-stable {
+/* Secondary row: small/muted */
+.ski-header-bal-secondary.ski-header-bal-sui,
+.ski-header-bal-secondary.ski-header-bal-usd {
   font-size: 0.7rem;
+  font-weight: 400;
   color: #64748b;
+}
+
+.ski-header-bal-sui {
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ski-header-bal-usd {
+  white-space: nowrap;
+}
+.ski-header-bal-sui-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
+}
+/* Secondary icon slightly smaller */
+.ski-header-bal-secondary .ski-header-bal-sui-icon {
+  width: 11px;
+  height: 11px;
 }
