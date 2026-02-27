@@ -610,14 +610,15 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
           ${w.icon ? (() => {
             const splashAuth = getSponsorState().auth;
             const activated = !!(splashAuth?.walletName === w.name && new Date(splashAuth.expiresAt).getTime() > Date.now());
-            return `<div class="ski-detail-icon-wrap${activated ? ' ski-detail-icon-wrap--activated' : ''}" title="${activated ? `Revoke Splash for ${esc(w.name)}` : `Splash all keys in ${esc(w.name)}`}">
+            return `<div class="ski-detail-icon-wrap${activated ? ' ski-detail-icon-wrap--activated' : ''}"${!activated ? ` title="Splash all keys in ${esc(w.name)}"` : ''}>
               <img src="${esc(w.icon)}" alt="" class="ski-detail-icon">
               <div class="ski-detail-icon-overlay" aria-hidden="true">
                 <img src="./assets/sui-drop.svg" class="ski-detail-icon-overlay-drop" alt="">
               </div>
               <div class="ski-detail-icon-revoke-overlay" aria-hidden="true">
-                <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg"><line x1="4" y1="4" x2="18" y2="18" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/><line x1="18" y1="4" x2="4" y2="18" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/></svg>
+                <svg width="34" height="34" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg"><line x1="3" y1="3" x2="19" y2="19" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/><line x1="19" y1="3" x2="3" y2="19" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/></svg>
               </div>
+              ${activated ? `<div class="ski-revoke-tooltip" aria-hidden="true">Withdraw <span class="ski-revoke-tooltip-name">${esc(w.name)}</span> Splash <img src="./assets/sui-drop.svg" class="ski-revoke-tooltip-drop" alt=""></div>` : ''}
             </div>`;
           })() : ''}
           <div class="ski-detail-key-column">
@@ -925,7 +926,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
   // Only secondary key cards have .ski-subname-col elements.
   if (detailEl.querySelector('.ski-subname-col')) {
     const fetchGen = gen;
-    fetchOwnedDomains(normalizeSuiAddress(connectedAddr)).then((domains: OwnedDomain[]) => {
+    fetchOwnedDomains(getState().address || normalizeSuiAddress(connectedAddr)).then((domains: OwnedDomain[]) => {
       if (fetchGen !== detailGeneration) return;
       detailEl.querySelectorAll<HTMLSelectElement>('.ski-subname-select').forEach((sel) => {
         if (domains.length) {
@@ -962,8 +963,8 @@ function walletListShape(w: Wallet): string {
   const hasSuins = addrs.some((addr) => suinsCache[addr] || !!localStorage.getItem(`ski:suins:${addr}`));
   const hasAddrs = addrs.length > 0;
 
-  // Show sui-drop overlay when this wallet is a Splash beneficiary (not the sponsor)
   const splashState = getSponsorState();
+  // Show sui-drop overlay when this wallet is a Splash beneficiary (not the sponsor)
   const isBeneficiary = addrs.some(
     (addr) => isSponsoredAddress(addr) && splashState.auth?.address !== addr,
   );
@@ -971,10 +972,15 @@ function walletListShape(w: Wallet): string {
     ? `<span class="splash-drop-badge"><img src="./assets/sui-drop.svg" class="splash-drop-img" alt=""></span>`
     : '';
 
+  // White hover drop shown only when this wallet is the active splash sponsor
+  const isSponsor = !!(splashState.auth?.walletName === w.name && new Date(splashState.auth.expiresAt).getTime() > Date.now());
+  const sponsorClass = isSponsor ? ' ski-list-shape--sponsor' : '';
+  const hoverDrop = isSponsor ? `<img src="./assets/sui-drop.svg" alt="" class="ski-list-shape-hover-drop">` : '';
+
   if (hasSuins) {
-    return `<span class="ski-list-shape ski-list-shape--blue"><img src="./assets/sui-drop.svg" alt="" class="ski-list-shape-img">${dropOverlay}</span>`;
+    return `<span class="ski-list-shape ski-list-shape--blue${sponsorClass}">${hoverDrop}${dropOverlay}</span>`;
   } else if (hasAddrs) {
-    return `<span class="ski-list-shape ski-list-shape--diamond"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</span>`;
+    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
   }
   return `<span class="ski-list-shape ski-list-shape--green"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></span>`;
 }
@@ -1310,6 +1316,15 @@ function renderWidget() {
 
 // ─── Render: Profile .SKI button ─────────────────────────────────────
 
+function hasValidSkiSession(address: string): boolean {
+  try {
+    const raw = localStorage.getItem('ski:session');
+    if (!raw) return false;
+    const s = JSON.parse(raw) as { address: string; expiresAt: string };
+    return s.address === address && new Date(s.expiresAt).getTime() > Date.now();
+  } catch { return false; }
+}
+
 function renderSkiBtn() {
   if (!els.skiBtn) return;
   const ws = getState();
@@ -1321,9 +1336,13 @@ function renderSkiBtn() {
   }
 
   const hasPrimary = !!app.suinsName;
+  const keyed = hasValidSkiSession(ws.address);
   els.skiBtn.style.display = '';
   els.skiBtn.classList.toggle('menu-open', app.menuOpen);
-  els.skiBtn.innerHTML = getSkiBtnSvg(hasPrimary ? 'blue-square' : 'black-diamond');
+  const drop = keyed
+    ? `<img src="./assets/sui-drop.svg" class="ski-btn-session-drop" alt="" aria-hidden="true">`
+    : '';
+  els.skiBtn.innerHTML = getSkiBtnSvg(hasPrimary ? 'blue-square' : 'black-diamond') + drop;
 }
 
 // ─── Sign Message ───────────────────────────────────────────────────
