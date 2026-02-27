@@ -1081,8 +1081,7 @@ body {
   align-items: stretch;
 }
 .ski-modal-legend-col {
-  flex: 0 0 auto;
-  min-width: 220px;
+  flex: 0 0 310px;
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
@@ -1151,6 +1150,16 @@ body {
   width: 100%;
   padding: 8px 10px;
   margin-bottom: 8px;
+}
+
+/* Connected-key row hover: hide right-col header, highlight matching addr */
+.ski-detail--key-hover > .ski-detail-header {
+  display: none;
+}
+.ski-detail-addr--highlighted {
+  background: #000 !important;
+  border-radius: 8px;
+  outline: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 /* Blue card only when wallet has at least one key */
@@ -1500,7 +1509,8 @@ body {
   display: block;
 }
 .ski-legend-addr--right {
-  justify-self: start;
+  justify-self: end;
+  text-align: right;
 }
 .ski-legend-addr {
   font-size: 0.75rem;
@@ -1508,8 +1518,8 @@ body {
   font-family: monospace;
   white-space: nowrap;
   text-decoration: none;
-  justify-self: start;
-  text-align: left;
+  justify-self: end;
+  text-align: right;
 }
 .ski-legend-addr:hover {
   text-decoration: underline;

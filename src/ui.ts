@@ -1018,7 +1018,7 @@ function buildSplashLegend(): string {
     const addrCell = `<a href="https://suiscan.xyz/mainnet/account/${esc(e.address)}" target="_blank" rel="noopener" class="ski-legend-addr">${esc(truncAddr(e.address))}</a>`;
     const iconCell = wIcon?.icon ? `<img class="ski-legend-wallet-icon" src="${esc(wIcon.icon)}" alt="${esc(wIcon.name)}">` : `<span></span>`;
     const walletAttr = wIcon ? ` data-legend-wallet="${esc(wIcon.name)}"` : '';
-    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}"${walletAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span>${nameHtml}${addrCell}${iconCell}</div>`;
+    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-addr="${esc(e.address)}"${walletAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span>${nameHtml}${addrCell}${iconCell}</div>`;
     rowIdx++;
     return html;
   }).join('');
@@ -1055,11 +1055,28 @@ function activateLegendRow(idx: number) {
   row.setAttribute('aria-selected', 'true');
   activeLegendIdx = idx;
   const walletName = row.dataset.legendWallet;
+  const detailEl = document.getElementById('ski-modal-detail');
+  const connKey = document.getElementById('ski-connected-key');
+
+  if (walletName === getState().walletName) {
+    // Connected wallet row: hide right-pane header, highlight matching addr in connected key
+    if (detailEl) detailEl.classList.add('ski-detail--key-hover');
+    const addr = row.dataset.legendAddr;
+    if (connKey) {
+      connKey.querySelectorAll<HTMLElement>('[data-full-addr]').forEach((el) => {
+        el.classList.toggle('ski-detail-addr--highlighted', !!addr && el.dataset.fullAddr === addr);
+      });
+    }
+    return;
+  }
+
+  // Non-connected wallet: clear hover effects, update right pane
+  if (detailEl) detailEl.classList.remove('ski-detail--key-hover');
+  if (connKey) {
+    connKey.querySelectorAll('.ski-detail-addr--highlighted').forEach((el) => el.classList.remove('ski-detail-addr--highlighted'));
+  }
   if (walletName) {
-    // Connected wallet's detail is already shown at the top of the right column — skip right pane update
-    if (walletName === getState().walletName) return;
     const wallet = getSuiWallets().find((w) => w.name === walletName);
-    const detailEl = document.getElementById('ski-modal-detail');
     if (wallet && detailEl) showKeyDetail(wallet, detailEl, getState().address);
   }
 }
