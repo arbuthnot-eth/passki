@@ -1441,9 +1441,9 @@ body {
   object-fit: contain;
 }
 
-/* Blue square variant — solid blue with white sui-drop inside */
+/* Blue square variant — solid Sui blue with white sui-drop inside */
 .ski-key-pfp--blue {
-  background: transparent;
+  background: #4da2ff;
   margin-top: 5px;
   outline: 2px solid #ffffff;
   transition: background 0.15s;
@@ -1877,7 +1877,9 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 }
 /* On revoke-hover: hide all splash drops (primary key column + secondary key rows) */
 .ski-detail-icon-wrap--activated:hover ~ .ski-detail-key-column .ski-key-pfp-splash-drop,
-.ski-detail-icon-wrap--activated:hover ~ .ski-detail-key-column .ski-key-pfp--blue .ski-key-pfp-drop {
+.ski-detail-icon-wrap--activated:hover ~ .ski-detail-key-column .ski-key-pfp--blue .ski-key-pfp-drop,
+.ski-detail-icon-wrap--activated:hover .ski-detail-key-column .ski-key-pfp-splash-drop,
+.ski-detail-icon-wrap--activated:hover .ski-detail-key-column .ski-key-pfp--blue .ski-key-pfp-drop {
   opacity: 0;
 }
 .ski-detail-header:has(.ski-detail-icon-wrap--activated:hover) ~ .ski-detail-row .ski-key-pfp-splash-drop {
@@ -2254,7 +2256,7 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   line-height: 1;
   border-radius: 5px;
   position: relative;
-  top: -10px;
+  top: -20px;
   transition: background 0.15s, color 0.15s;
 }
 #ski-modal-close:hover {
@@ -2511,24 +2513,46 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 }
 
 
-/* WaaP social provider badge — covers top-right quarter of wallet icon */
+/* WaaP social provider badge — covers top-left quarter of wallet icon */
 .ski-detail-provider-badge {
   position: absolute;
   top: 0;
-  right: 0;
+  left: 0;
   width: 55%;
   height: 55%;
-  border-radius: 0 2px 0 2px;
+  border-radius: 2px 0 2px 0;
   overflow: hidden;
   pointer-events: none;
   forced-color-adjust: none;
   -webkit-forced-color-adjust: none;
-  z-index: 1;
+  z-index: 2;
 }
 .ski-detail-provider-badge svg {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* key-column overlaid in top-right of WaaP icon wrap */
+.ski-detail-key-column--in-wrap {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 55%;
+  height: 55%;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  z-index: 1;
+  pointer-events: auto;
+  overflow: hidden;
+  border-radius: 0 2px 0 2px;
+}
+.ski-detail-key-column--in-wrap .ski-key-pfp {
+  width: 100% !important;
+  height: 100% !important;
+  margin-top: 0 !important;
+  border-radius: 0 2px 0 2px;
 }
 
 /* Long-press lock: amber ring on locked row */

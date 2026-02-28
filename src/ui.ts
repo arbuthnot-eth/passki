@@ -692,11 +692,10 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
               </div>
               ${activated ? `<div class="ski-revoke-tooltip" aria-hidden="true">Withdraw <span class="ski-revoke-tooltip-name">${esc(w.name)}</span> Splash <img src="./assets/sui-drop.svg" class="ski-revoke-tooltip-drop" alt=""></div>` : ''}
               ${/waap/i.test(w.name) && addr0 ? `<span class="ski-detail-provider-badge" aria-hidden="true">${waapProviderIcon(addr0)}</span>` : ''}
+              ${/waap/i.test(w.name) ? `<div class="ski-detail-key-column ski-detail-key-column--in-wrap">${activePfpHtml}</div>` : ''}
             </div>`;
           })() : ''}
-          <div class="ski-detail-key-column">
-            ${activePfpHtml}
-          </div>
+          ${!/waap/i.test(w.name) || !w.icon ? `<div class="ski-detail-key-column">${activePfpHtml}</div>` : ''}
           ${balanceCyclerHtml}
         </div>
         ${activeTextHtml}
