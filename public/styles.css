@@ -2237,6 +2237,21 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 }
 #ski-modal-close {
   flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #9ca7bb;
+  font-size: 1.4rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  line-height: 1;
+  border-radius: 5px;
+  position: relative;
+  top: -10px;
+  transition: background 0.15s, color 0.15s;
+}
+#ski-modal-close:hover {
+  background: #ef4444;
+  color: #fff;
 }
 
 /* Splash button in brand column header */

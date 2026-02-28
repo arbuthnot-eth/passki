@@ -1381,7 +1381,7 @@ function renderModal(): void {
                 <p class="ski-modal-tagline">once,<br>everywhere</p>
               </div>
             </div>
-            <button id="ski-modal-close" style="background:none;border:none;color:#9ca7bb;font-size:1.4rem;cursor:pointer;padding:4px 8px;line-height:1">&times;</button>
+            <button id="ski-modal-close">&times;</button>
           </div>
           <div class="ski-no-wallets">
             <p class="ski-no-wallets-msg">No Sui wallets detected.</p>
@@ -1471,7 +1471,7 @@ function renderModal(): void {
                   <p class="ski-modal-tagline">once,<br>everywhere</p>
                 </div>
               </div>
-              <button id="ski-modal-close" style="background:none;border:none;color:#9ca7bb;font-size:1.4rem;cursor:pointer;padding:4px 8px;line-height:1">&times;</button>
+              <button id="ski-modal-close">&times;</button>
             </div>
             ${headerSplashHtml}
           </div>
