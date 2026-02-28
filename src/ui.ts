@@ -1225,8 +1225,13 @@ function activateLegendRow(idx: number, fromHover = false) {
   }
 }
 
-/** Middle column of the modal header: current address balance. */
-// Shared inner content for both the header balance column and the detail card cycler
+// ─── Balance cycler ──────────────────────────────────────────────────
+//
+// buildBalanceCyclerRows() renders the inner HTML for the cycler.
+// mountBalanceCycler(el) mounts it onto any external element and keeps
+// it in sync with the live portfolio via the externalCyclers registry
+// (updated on every render() call).
+
 function buildBalanceCyclerRows(): string {
   const suiText = fmtSui(app.sui);
   const usdText = fmtUsd(app.usd);
@@ -1238,13 +1243,52 @@ function buildBalanceCyclerRows(): string {
   return suiEl('ski-header-bal-primary') + (usdText ? usdEl('ski-header-bal-secondary') : '');
 }
 
-function buildHeaderBalanceHtml(): string {
-  if (!getState().address) return '';
-  return buildBalanceCyclerRows();
+function buildDetailBalanceCyclerHtml(): string {
+  return `<button type="button" id="ski-detail-balance-cycler" class="ski-detail-balance-cycler ski-balance-cycler" title="Toggle SUI / USD">${buildBalanceCyclerRows()}</button>`;
 }
 
-function buildDetailBalanceCyclerHtml(): string {
-  return `<button type="button" id="ski-detail-balance-cycler" class="ski-detail-balance-cycler" title="Toggle SUI / USD">${buildBalanceCyclerRows()}</button>`;
+// Registry of externally mounted cycler elements
+const externalCyclers = new Set<HTMLElement>();
+
+/**
+ * Mount a live SUI/USD balance cycler onto any element.
+ * The element becomes a styled, clickable toggle that auto-updates
+ * whenever the portfolio refreshes.
+ *
+ * @returns unmount function — call it to detach and clean up
+ */
+export function mountBalanceCycler(el: HTMLElement): () => void {
+  el.classList.add('ski-balance-cycler');
+  el.setAttribute('role', 'button');
+  el.setAttribute('tabindex', '0');
+  el.setAttribute('title', 'Toggle SUI / USD');
+  el.innerHTML = buildBalanceCyclerRows();
+  externalCyclers.add(el);
+
+  function toggle(e: Event) {
+    e.stopPropagation();
+    balView = balView === 'sui' ? 'usd' : 'sui';
+    try { localStorage.setItem('ski:bal-pref', balView); } catch {}
+    // Update all cycler instances
+    el.innerHTML = buildBalanceCyclerRows();
+    const detailEl = document.getElementById('ski-detail-balance-cycler');
+    if (detailEl) detailEl.innerHTML = buildBalanceCyclerRows();
+    externalCyclers.forEach((ext) => { if (ext !== el) ext.innerHTML = buildBalanceCyclerRows(); });
+  }
+  function onKey(e: KeyboardEvent) { if (e.key === 'Enter' || e.key === ' ') toggle(e); }
+
+  el.addEventListener('click', toggle);
+  el.addEventListener('keydown', onKey as EventListener);
+
+  return () => {
+    externalCyclers.delete(el);
+    el.removeEventListener('click', toggle);
+    el.removeEventListener('keydown', onKey as EventListener);
+    el.classList.remove('ski-balance-cycler');
+    el.removeAttribute('role');
+    el.removeAttribute('tabindex');
+    el.removeAttribute('title');
+  };
 }
 
 function renderModal(): void {
@@ -1348,7 +1392,6 @@ function renderModal(): void {
       <div class="ski-modal" style="animation:ski-modal-in .2s ease">
         <div class="ski-modal-header">
           <div id="ski-connected-key" class="ski-modal-connected-key ski-modal-header-key-col"></div>
-          ${ws.address ? `<div class="ski-modal-header-balance" id="ski-modal-header-balance">${buildHeaderBalanceHtml()}</div>` : ''}
           <div class="ski-modal-header-brand">
             <div class="ski-modal-header-brand-top">
               <div class="ski-modal-header-left">
@@ -2024,11 +2067,13 @@ function render() {
   const ws = getState();
   updateFavicon(!ws.address ? 'green-circle' : (app.suinsName ? 'blue-square' : 'black-diamond'));
 
-  // Live-update balance cyclers without full re-render
-  const modalBalEl = document.getElementById('ski-modal-header-balance');
-  if (modalBalEl) modalBalEl.innerHTML = buildHeaderBalanceHtml();
+  // Live-update all balance cycler instances without full re-render
   const detailCyclerEl = document.getElementById('ski-detail-balance-cycler');
   if (detailCyclerEl) detailCyclerEl.innerHTML = buildBalanceCyclerRows();
+  externalCyclers.forEach((el) => {
+    if (document.contains(el)) { el.innerHTML = buildBalanceCyclerRows(); }
+    else { externalCyclers.delete(el); }
+  });
 
   // Bind pill click
   const pill = document.getElementById('wallet-pill-btn');
@@ -2246,14 +2291,12 @@ export function initUI() {
     if ((e.target as HTMLElement).closest('a')) return;
 
     // Balance cycler toggle: switch between SUI-primary and USD-primary
-    if ((e.target as HTMLElement).closest('#ski-modal-header-balance') ||
-        (e.target as HTMLElement).closest('#ski-detail-balance-cycler')) {
+    if ((e.target as HTMLElement).closest('#ski-detail-balance-cycler')) {
       balView = balView === 'sui' ? 'usd' : 'sui';
       try { localStorage.setItem('ski:bal-pref', balView); } catch {}
-      const balEl = document.getElementById('ski-modal-header-balance');
-      if (balEl) balEl.innerHTML = buildHeaderBalanceHtml();
       const cyclerEl = document.getElementById('ski-detail-balance-cycler');
       if (cyclerEl) cyclerEl.innerHTML = buildBalanceCyclerRows();
+      externalCyclers.forEach((el) => { el.innerHTML = buildBalanceCyclerRows(); });
       return;
     }
 

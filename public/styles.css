@@ -1144,13 +1144,6 @@ body {
   .ski-modal-header-key-col .ski-detail-header--keyed {
     width: 100%;
   }
-  .ski-modal-header-balance {
-    border-right: none;
-    border-bottom: 1px solid rgba(160, 200, 240, 0.08);
-    width: 100%;
-    align-items: flex-start;
-    padding: 8px 14px;
-  }
   .ski-modal-header-brand {
     width: 100%;
     order: -1;
@@ -2364,64 +2357,16 @@ body {
   -webkit-user-select: none;
 }
 
-/* Modal header middle column: address balance */
-.ski-modal-header-balance {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 10px 16px;
-  border-right: 1px solid rgba(160, 200, 240, 0.08);
-  flex-shrink: 0;
-  gap: 2px;
-  min-width: 80px;
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-  transition: opacity 0.1s;
-}
-.ski-modal-header-balance:hover { opacity: 0.8; }
-.ski-modal-header-balance:active { opacity: 0.6; }
+/* ── Balance cycler ─────────────────────────────────────────────────── */
+/* Shared system for #ski-detail-balance-cycler and mountBalanceCycler() */
 
-/* Primary row: large */
-.ski-header-bal-primary.ski-header-bal-sui,
-.ski-header-bal-primary.ski-header-bal-usd {
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: #e2e8f0;
-}
-/* Secondary row: small/muted */
-.ski-header-bal-secondary.ski-header-bal-sui,
-.ski-header-bal-secondary.ski-header-bal-usd {
-  font-size: 0.7rem;
-  font-weight: 400;
-  color: #64748b;
+@keyframes ski-bal-row-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-.ski-header-bal-sui {
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.ski-header-bal-usd {
-  white-space: nowrap;
-}
-.ski-header-bal-sui-icon {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-  forced-color-adjust: none;
-  -webkit-forced-color-adjust: none;
-}
-/* Secondary icon slightly smaller */
-.ski-header-bal-secondary .ski-header-bal-sui-icon {
-  width: 11px;
-  height: 11px;
-}
-
-/* Inline balance cycler in key detail card */
-.ski-detail-balance-cycler {
+/* Any element with this class becomes a self-contained cycler */
+.ski-balance-cycler {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -2433,8 +2378,53 @@ body {
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
-  transition: opacity 0.1s;
+  transition: opacity 0.12s;
+}
+.ski-balance-cycler:hover  { opacity: 0.75; }
+.ski-balance-cycler:active { opacity: 0.45; }
+
+/* Row base */
+.ski-header-bal-sui,
+.ski-header-bal-usd {
+  white-space: nowrap;
+  animation: ski-bal-row-in 0.18s ease both;
+}
+.ski-header-bal-sui {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Primary row: large + bright */
+.ski-header-bal-primary.ski-header-bal-sui,
+.ski-header-bal-primary.ski-header-bal-usd {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+/* Secondary row: small + muted */
+.ski-header-bal-secondary.ski-header-bal-sui,
+.ski-header-bal-secondary.ski-header-bal-usd {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: #64748b;
+  animation-delay: 0.04s;
+}
+
+/* SUI drop icon */
+.ski-header-bal-sui-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
+}
+.ski-header-bal-secondary .ski-header-bal-sui-icon {
+  width: 11px;
+  height: 11px;
+}
+
+/* Detail card instance: push to right edge */
+#ski-detail-balance-cycler {
   margin-left: auto;
 }
-.ski-detail-balance-cycler:hover { opacity: 0.75; }
-.ski-detail-balance-cycler:active { opacity: 0.5; }
