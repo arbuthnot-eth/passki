@@ -1060,8 +1060,26 @@ function buildSplashLegend(): string {
 
   let rowIdx = 0;
 
+  // Shared table wrapper with fixed columns: [38px shape] [auto name] [auto addr] [38px icon]
+  const wrapTable = (rows: string) =>
+    `<table class="ski-legend-table"><colgroup><col class="ski-legend-col-shape-w"><col><col><col class="ski-legend-col-icon-w"></colgroup><tbody>${rows}</tbody></table>`;
+
+  // Build the WaaP "create new" row — always appended at the bottom.
+  // Clicking it opens WaaP's UI to create or switch accounts.
+  const buildWaapCreateRow = () => {
+    const waapWallet = allWallets.find(w => /waap/i.test(w.name));
+    if (!waapWallet) return '';
+    const iconHtml = waapWallet.icon
+      ? `<img class="ski-legend-wallet-icon" src="${esc(waapWallet.icon)}" alt="${esc(waapWallet.name)}">`
+      : `<span></span>`;
+    const html = `<tr class="ski-legend-row ski-legend-row--create-waap" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(waapWallet.name)}" data-legend-create-waap="true" tabindex="0" role="option" aria-selected="false"><td class="ski-legend-col-shape"><span class="ski-legend-shape">${LEGEND_GREEN}</span></td><td class="ski-legend-col-name" colspan="2"><span class="ski-legend-name ski-legend-name--create-waap">+ new WaaP key</span></td><td class="ski-legend-col-icon">${iconHtml}</td></tr>`;
+    rowIdx++;
+    return html;
+  };
+
   // Without Splash: one row per stored address (with SuiNS + hex), green circle for unused wallets.
   // Sorted: diamond (addr, no SuiNS) → blue square (addr + SuiNS) → green circle (never used).
+  // WaaP without address is omitted from regular entries; dedicated WaaP create row handles it.
   if (!splashActive) {
     type Entry = { walletName: string; icon: string; address: string | null; suinsName: string | null; tier: 0 | 1 | 2 };
     const entries: Entry[] = [];
@@ -1070,8 +1088,8 @@ function buildSplashLegend(): string {
       const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
       const addrs = [...new Set([...liveAddrs, ...stored])];
       if (addrs.length === 0) {
-        const tier: 0 | 2 = /waap/i.test(w.name) ? 0 : 2;
-        entries.push({ walletName: w.name, icon: w.icon || '', address: null, suinsName: null, tier });
+        if (/waap/i.test(w.name)) continue; // handled by dedicated WaaP create row
+        entries.push({ walletName: w.name, icon: w.icon || '', address: null, suinsName: null, tier: 2 });
       } else {
         for (const addr of addrs) {
           const suinsName = suinsCache[addr] || (() => { try { return localStorage.getItem(`ski:suins:${addr}`); } catch { return null; } })() || null;
@@ -1089,16 +1107,14 @@ function buildSplashLegend(): string {
     const rows = entries.map((e) => {
       const shapeHtml = e.tier === 0 ? LEGEND_DIAMOND : e.tier === 1 ? LEGEND_BLUE : LEGEND_GREEN;
       const social = socialIconSvg(e.walletName);
-      // Col 2: SuiNS name link, or for non-WaaP social green circle put X badge, else empty
+      // Col 2: SuiNS name link or empty
       const nameHtml = e.suinsName
         ? (() => { const bare = e.suinsName.replace(/\.sui$/, ''); return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-legend-name">${esc(bare)}</a>`; })()
-        : (social && !e.address && !/waap/i.test(e.walletName))
-          ? `<span class="ski-waap-x ski-legend-social-badge" aria-hidden="true">𝕏</span>`
-          : `<span class="ski-legend-name ski-legend-name--empty"></span>`;
-      // Col 3: address link or wallet name
+        : `<span class="ski-legend-name ski-legend-name--empty"></span>`;
+      // Col 3: copy-on-click addr span or wallet name
       const addrCell = e.address
-        ? `<a href="https://suiscan.xyz/mainnet/account/${esc(e.address)}" target="_blank" rel="noopener" class="ski-legend-addr">${esc(truncAddr(e.address))}</a>`
-        : `<span class="ski-legend-name ski-legend-name--wallet ski-legend-addr--right">${esc(e.walletName)}</span>`;
+        ? `<span class="ski-legend-addr" data-copy-addr="${esc(e.address)}" data-scan-addr="${esc(e.address)}" title="${esc(e.address)}">${esc(truncAddr(e.address))}</span>`
+        : `<span class="ski-legend-name ski-legend-name--wallet">${esc(e.walletName)}</span>`;
       // Col 4: WaaP with known address → per-address provider icon; other social → social SVG; else wallet logo
       const iconCell = /waap/i.test(e.walletName) && e.address
         ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${waapProviderIcon(e.address)}</span>`
@@ -1106,20 +1122,15 @@ function buildSplashLegend(): string {
           ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
           : (e.icon ? `<img class="ski-legend-wallet-icon" src="${esc(e.icon)}" alt="${esc(e.walletName)}">` : `<span></span>`);
       const addrAttr = e.address ? ` data-legend-addr="${esc(e.address)}"` : '';
-      return `<div class="ski-legend-row" data-legend-idx="${rowIdx++}" data-legend-wallet="${esc(e.walletName)}"${addrAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span>${nameHtml}${addrCell}${iconCell}</div>`;
+      return `<tr class="ski-legend-row" data-legend-idx="${rowIdx++}" data-legend-wallet="${esc(e.walletName)}"${addrAttr} tabindex="0" role="option" aria-selected="false"><td class="ski-legend-col-shape"><span class="ski-legend-shape">${shapeHtml}</span></td><td class="ski-legend-col-name">${nameHtml}</td><td class="ski-legend-col-addr">${addrCell}</td><td class="ski-legend-col-icon">${iconCell}</td></tr>`;
     }).join('');
     return `<div class="ski-splash-legend">
-    <div class="ski-legend-targets">${rows}</div>
+    <div class="ski-legend-targets">${wrapTable(rows + buildWaapCreateRow())}</div>
   </div>`;
   }
 
   // Splash active — green-circle rows appended at bottom of legend (unconnected wallets only)
-  const greenWallets = allWallets.filter(w => isGreen(w) && !/waap/i.test(w.name)).sort((a, b) => {
-    const aW = /waap/i.test(a.name) ? 0 : 1;
-    const bW = /waap/i.test(b.name) ? 0 : 1;
-    if (aW !== bW) return aW - bW;
-    return a.name.localeCompare(b.name);
-  });
+  const greenWallets = allWallets.filter(w => isGreen(w) && !/waap/i.test(w.name)).sort((a, b) => a.name.localeCompare(b.name));
   const walletRows = greenWallets.map((w) => {
     const social = socialIconSvg(w.name);
     const col2 = social
@@ -1128,7 +1139,7 @@ function buildSplashLegend(): string {
     const iconCell = social
       ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
       : (w.icon ? `<img class="ski-legend-wallet-icon" src="${esc(w.icon)}" alt="${esc(w.name)}">` : `<span></span>`);
-    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(w.name)}" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span>${col2}<span class="ski-legend-name ski-legend-name--wallet ski-legend-addr--right">${esc(w.name)}</span>${iconCell}</div>`;
+    const html = `<tr class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(w.name)}" tabindex="0" role="option" aria-selected="false"><td class="ski-legend-col-shape"><span class="ski-legend-shape">${LEGEND_GREEN}</span></td><td class="ski-legend-col-name">${col2}</td><td class="ski-legend-col-addr"><span class="ski-legend-name ski-legend-name--wallet">${esc(w.name)}</span></td><td class="ski-legend-col-icon">${iconCell}</td></tr>`;
     rowIdx++;
     return html;
   }).join('');
@@ -1172,20 +1183,20 @@ function buildSplashLegend(): string {
       ? (() => { const bare = primaryName.replace(/\.sui$/, ''); return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-legend-name">${esc(bare)}</a>`; })()
       : `<span class="ski-legend-name ski-legend-name--empty"></span>`;
     const wIcon = addrToWallet.get(e.address);
-    const addrCell = `<a href="https://suiscan.xyz/mainnet/account/${esc(e.address)}" target="_blank" rel="noopener" class="ski-legend-addr">${esc(truncAddr(e.address))}</a>`;
+    const addrCell = `<span class="ski-legend-addr" data-copy-addr="${esc(e.address)}" data-scan-addr="${esc(e.address)}" title="${esc(e.address)}">${esc(truncAddr(e.address))}</span>`;
     const social = wIcon ? socialIconSvg(wIcon.name) : null;
     const iconCell = social
       ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
       : (wIcon?.icon ? `<img class="ski-legend-wallet-icon" src="${esc(wIcon.icon)}" alt="${esc(wIcon.name)}">` : `<span></span>`);
     const walletAttr = wIcon ? ` data-legend-wallet="${esc(wIcon.name)}"` : '';
-    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-addr="${esc(e.address)}"${walletAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span>${nameHtml}${addrCell}${iconCell}</div>`;
+    const html = `<tr class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-addr="${esc(e.address)}"${walletAttr} tabindex="0" role="option" aria-selected="false"><td class="ski-legend-col-shape"><span class="ski-legend-shape">${shapeHtml}</span></td><td class="ski-legend-col-name">${nameHtml}</td><td class="ski-legend-col-addr">${addrCell}</td><td class="ski-legend-col-icon">${iconCell}</td></tr>`;
     rowIdx++;
     return html;
   }).join('');
 
   const targetsHtml = annotated.length === 0 && greenWallets.length === 0
     ? `<span class="ski-legend-target ski-legend-target--open">all keys</span>`
-    : sponsoredRows + walletRows;
+    : wrapTable(sponsoredRows + walletRows + buildWaapCreateRow());
 
   return `<div class="ski-splash-legend">
     <div class="ski-legend-header">
@@ -2323,6 +2334,20 @@ export function initUI() {
 
   els.modal?.addEventListener('pointerdown', (e) => {
     longPressFired = false;
+
+    // Addr cell long-press → open suiscan (distinct from row long-press → lock detail)
+    const addrTarget = (e.target as HTMLElement).closest<HTMLElement>('[data-scan-addr]');
+    if (addrTarget?.dataset.scanAddr) {
+      const addr = addrTarget.dataset.scanAddr;
+      longPressX = e.clientX; longPressY = e.clientY;
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        longPressFired = true;
+        window.open(`https://suiscan.xyz/mainnet/account/${addr}`, '_blank', 'noopener');
+      }, 2200);
+      return;
+    }
+
     const row = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row, .wk-dd-item[data-wallet-name]');
     if (!row) return;
     longPressX = e.clientX; longPressY = e.clientY;
@@ -2366,6 +2391,18 @@ export function initUI() {
   els.modal?.addEventListener('click', (e) => {
     if (longPressFired) { longPressFired = false; return; } // long-press consumed this click
     if ((e.target as HTMLElement).closest('a')) return;
+
+    // Copy-on-click for address cells — short click copies, long-press opens suiscan
+    const addrSpan = (e.target as HTMLElement).closest<HTMLElement>('[data-copy-addr]');
+    if (addrSpan?.dataset.copyAddr) {
+      const addr = addrSpan.dataset.copyAddr;
+      navigator.clipboard.writeText(addr).catch(() => {});
+      const orig = addrSpan.textContent || '';
+      addrSpan.textContent = 'Copied';
+      addrSpan.classList.add('ski-legend-addr--copied');
+      setTimeout(() => { addrSpan.textContent = orig; addrSpan.classList.remove('ski-legend-addr--copied'); }, 1500);
+      return;
+    }
 
     // Detail pane keyed header click → sign "Lock in {name/address}"
     const clickedDetailHeader = (e.target as HTMLElement).closest<HTMLElement>('.ski-detail-header--keyed');
