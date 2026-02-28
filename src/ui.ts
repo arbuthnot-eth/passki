@@ -557,6 +557,14 @@ function subnameColHtml(addr: string): string {
   </div>`;
 }
 
+/** Copy the primary pfp shape from the connected-key header into the brand slot. */
+function syncBrandPfp(connKeyEl: HTMLElement) {
+  const slot = document.getElementById('ski-brand-pfp');
+  if (!slot) return;
+  const pfpCol = connKeyEl.querySelector<HTMLElement>('.ski-detail-key-column, .ski-detail-key-column--in-wrap');
+  if (pfpCol) slot.innerHTML = pfpCol.innerHTML;
+}
+
 function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) {
   const gen = (elementGenerations.get(detailEl) ?? 0) + 1;
   elementGenerations.set(detailEl, gen);
@@ -715,6 +723,9 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
       </div>
     ` : ''}
   `;
+
+  // Sync brand pfp slot when this is the connected-key header element
+  if (detailEl.id === 'ski-connected-key') syncBrandPfp(detailEl);
 
   // Unified click handler — splash toggle AND subname mint.
   // Uses onclick (not addEventListener) so repeated showKeyDetail calls don't stack listeners.
@@ -1460,6 +1471,7 @@ function renderModal(): void {
                   <button type="button" id="ski-logo-btn" class="ski-logo-btn" title="Scan to open sui.ski" aria-label="Show QR code for sui.ski">
                     ${getInlineSkiSvg()}
                   </button>
+                  <div id="ski-brand-pfp" class="ski-brand-pfp"></div>
                   <div id="ski-qr-popup" class="ski-qr-popup" hidden>
                     <img src="./assets/sui-ski-qr.svg" alt="sui.ski QR code" class="ski-qr-img">
                     <span class="ski-qr-url">sui.ski</span>
@@ -1517,7 +1529,10 @@ function renderModal(): void {
   // Populate both detail slots immediately — no placeholder flash
   const connectedWallet = connectedName ? getSuiWallets().find((w) => w.name === connectedName) : null;
   const connectedKeyEl = document.getElementById('ski-connected-key');
-  if (connectedKeyEl && connectedWallet) showKeyDetail(connectedWallet, connectedKeyEl, getState().address);
+  if (connectedKeyEl && connectedWallet) {
+    showKeyDetail(connectedWallet, connectedKeyEl, getState().address);
+    syncBrandPfp(connectedKeyEl);
+  }
   const initialDetailEl = document.getElementById('ski-modal-detail');
   if (initialDetailEl && connectedWallet) showKeyDetail(connectedWallet, initialDetailEl, getState().address);
 

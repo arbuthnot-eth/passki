@@ -1193,6 +1193,19 @@ body {
     width: 100%;
   }
 
+  /* Stacked: brand pfp slot appears over ski logo (top-right of center) */
+  .ski-brand-pfp { display: flex; }
+
+  /* Stacked: hide pfp from within the key-col (it lives on the ski logo instead) */
+  .ski-modal-header-key-col .ski-detail-key-column,
+  .ski-modal-header-key-col .ski-detail-key-column--in-wrap { display: none; }
+
+  /* WaaP icon: top-left justify in key-col */
+  .ski-modal-header-key-col .ski-detail-icons-top {
+    justify-content: flex-start;
+    align-items: flex-start;
+  }
+
   /* Stacked brand: svg moves to col2 (right), title to col1 (left of svg, right-aligned text)
      tagline stays col2 row2 — left edge aligns with svg, below the title row */
   .ski-modal-header-brand .ski-logo-btn-wrap {
@@ -2691,6 +2704,24 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   position: relative;
   display: inline-flex;
   flex-shrink: 0;
+}
+
+/* Brand pfp slot: hidden by default, shown in stacked layout over the ski logo */
+.ski-brand-pfp {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  z-index: 5;
+  pointer-events: auto;
+}
+.ski-brand-pfp .ski-key-pfp {
+  width: 100% !important;
+  height: 100% !important;
+  margin-top: 0 !important;
+  border-radius: 2px;
 }
 .ski-logo-btn {
   background: none;
