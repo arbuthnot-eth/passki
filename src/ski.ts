@@ -10,7 +10,7 @@
 
 import { Transaction } from '@mysten/sui/transactions';
 import { getState, signPersonalMessage, signAndExecuteTransaction, getSuiWallets, connect, disconnect } from './wallet.js';
-import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState, grpcClient, enrollAllKnownAddresses } from './ui.js';
+import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState, grpcClient, enrollAllKnownAddresses, SUI_DROP_URI } from './ui.js';
 import { restoreSponsor, isSponsorActive, executeSponsored, initSplashDO, getSponsorState, resolveNameToAddress } from './sponsor.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
@@ -218,7 +218,7 @@ export async function signIn(isReconnect = false): Promise<boolean> {
 // ─── Forget device ───────────────────────────────────────────────────
 
 export { forgetDevice, disconnectSession } from './client/session.js';
-export { setModalLayout, type ModalLayout, mountBalanceCycler } from './ui.js';
+export { setModalLayout, type ModalLayout, mountBalanceCycler, mountSkiButton, openModal } from './ui.js';
 
 // ─── Auto sign-in on wallet connect ──────────────────────────────────
 
@@ -288,7 +288,7 @@ window.addEventListener('ski:sign-and-execute-transaction', async (e) => {
     // Use the sponsored flow when a valid gas sponsor is active and the
     // transaction is a Transaction object (needed to build kind bytes).
     if (isSponsorActive() && transaction instanceof Transaction && ws.wallet && ws.account) {
-      showToast('<img src="./assets/sui-drop.svg" class="toast-drop" aria-hidden="true"> Splash — approve in both wallets', true);
+      showToast(`<img src="${SUI_DROP_URI}" class="toast-drop" aria-hidden="true"> Splash — approve in both wallets`, true);
       const kindBytes = await (transaction as Transaction).build({
         client: grpcClient,
         onlyTransactionKind: true,

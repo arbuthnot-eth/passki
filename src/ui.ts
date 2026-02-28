@@ -36,6 +36,7 @@ import {
 import { fetchOwnedDomains, buildSubnameTx, type OwnedDomain } from './suins.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
+import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
 
 export const grpcClient = new SuiGrpcClient({
   network: 'mainnet',
@@ -44,8 +45,9 @@ export const grpcClient = new SuiGrpcClient({
 
 // ─── Assets ──────────────────────────────────────────────────────────
 
-const SUI_DROP_URI = `data:image/svg+xml,${encodeURIComponent(SUI_DROP_SVG_TEXT)}`;
-const SKI_SVG_URI  = `data:image/svg+xml,${encodeURIComponent(SKI_SVG_TEXT)}`;
+export const SUI_DROP_URI = `data:image/svg+xml,${encodeURIComponent(SUI_DROP_SVG_TEXT)}`;
+const SKI_SVG_URI     = `data:image/svg+xml,${encodeURIComponent(SKI_SVG_TEXT)}`;
+const SUI_SKI_QR_URI  = `data:image/svg+xml,${encodeURIComponent(SUI_SKI_QR_SVG_TEXT)}`;
 
 const ASSETS = {
   suiDrop: SUI_DROP_URI,
@@ -724,7 +726,8 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   detailEl.innerHTML = `
     <div class="ski-detail-header${addr0 ? ' ski-detail-header--keyed' : ''}">
       <div class="ski-detail-icon-row"${addr0 ? ` data-addr-idx="0" data-full-addr="${esc(addr0)}"` : ''}>
-        <div class="ski-detail-icons-top">
+        ${!(/waap/i.test(w.name) && w.icon && detailEl.id === 'ski-connected-key') ? `<div class="ski-detail-icons-top">
+          <div class="ski-detail-key-column">${activePfpHtml}</div>
           ${w.icon ? (() => {
             const splashAuth = getSponsorState().auth;
             const activated = !!(splashAuth?.walletName === w.name && new Date(splashAuth.expiresAt).getTime() > Date.now());
@@ -738,13 +741,12 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
               </div>
               ${activated ? `<div class="ski-revoke-tooltip" aria-hidden="true">Withdraw <span class="ski-revoke-tooltip-name">${esc(w.name)}</span> Splash <img src="${SUI_DROP_URI}" class="ski-revoke-tooltip-drop" alt=""></div>` : ''}
               ${/waap/i.test(w.name) && addr0 ? `<span class="ski-detail-provider-badge" aria-hidden="true">${waapProviderIcon(addr0)}</span>` : ''}
-              ${/waap/i.test(w.name) ? `<div class="ski-detail-key-column ski-detail-key-column--in-wrap">${activePfpHtml}</div>` : ''}
+              ${/waap/i.test(w.name) && detailEl.id !== 'ski-connected-key' ? `<div class="ski-detail-key-column ski-detail-key-column--in-wrap">${activePfpHtml}</div>` : ''}
             </div>`;
           })() : ''}
-          ${!/waap/i.test(w.name) || !w.icon ? `<div class="ski-detail-key-column">${activePfpHtml}</div>` : ''}
           ${balanceCyclerHtml}
-        </div>
-        ${activeTextHtml}
+        </div>` : ''}
+        ${/waap/i.test(w.name) && w.icon && detailEl.id === 'ski-connected-key' && addr0 ? `<div class="ski-detail-addr-main ski-connected-key-addr-row"><div class="ski-detail-key-column ski-detail-key-column--small">${activePfpHtml}</div>${activeTextHtml}</div>` : activeTextHtml}
       </div>
     </div>
     ${otherKeysHtml ? `<div class="ski-detail-row">${otherKeysHtml}</div>` : ''}
@@ -1505,6 +1507,7 @@ function renderModal(): void {
 
   // Splash button for the brand column header (activate / deactivate)
   const ws = getState();
+  const isWaapHeader = /waap/i.test(ws.walletName) && !!ws.walletIcon && !!ws.address;
   const sponsorAuth = getSponsorState().auth;
   const isActiveSponsor = isSponsorActive() && sponsorAuth?.address === ws.address;
   let headerSplashHtml = '';
@@ -1516,7 +1519,7 @@ function renderModal(): void {
           <button class="ski-header-splash-drop-btn" id="ski-header-splash-off" type="button" aria-label="Revoke Splash">
             <img src="${SUI_DROP_URI}" class="ski-header-splash-drop" aria-hidden="true">
           </button>
-          <span class="ski-header-splash-days">${daysLeft}d left</span>
+          <span class="ski-header-splash-days">${daysLeft}d</span>
         </div>`;
     } else if (!isSponsorActive()) {
       headerSplashHtml = `<div class="ski-header-splash">
@@ -1531,19 +1534,21 @@ function renderModal(): void {
     <div class="ski-modal-overlay open" id="ski-modal-overlay">
       <div class="ski-modal" style="animation:ski-modal-in .2s ease">
         <div class="ski-modal-header">
-          <div id="ski-connected-key" class="ski-modal-connected-key ski-modal-header-key-col"></div>
+          <div id="ski-connected-key" class="ski-modal-connected-key ski-modal-header-key-col${isWaapHeader ? ' ski-modal-header-key-col--waap' : ''}"></div>
           <div class="ski-modal-header-brand">
             <div class="ski-modal-header-brand-top">
               <div class="ski-modal-header-left">
                 <div class="ski-brand-logo-row">
                   <div class="ski-logo-btn-wrap">
+                    ${isWaapHeader ? `<div class="ski-header-waap-icon-wrap"><img src="${esc(ws.walletIcon)}" alt="" class="ski-header-waap-icon"><span class="ski-detail-provider-badge" aria-hidden="true">${waapProviderIcon(ws.address)}</span></div>` : ''}
+                    ${headerSplashHtml}
                     <button type="button" id="ski-logo-btn" class="ski-logo-btn" title="Scan to open sui.ski" aria-label="Show QR code for sui.ski">
                       ${getInlineSkiSvg()}
                     </button>
                     <div id="ski-brand-pfp" class="ski-brand-pfp"></div>
                     <div id="ski-brand-balance" class="ski-brand-balance"></div>
                     <div id="ski-qr-popup" class="ski-qr-popup" hidden>
-                      <img src="./assets/sui-ski-qr.svg" alt="sui.ski QR code" class="ski-qr-img">
+                      <img src="${SUI_SKI_QR_URI}" alt="sui.ski QR code" class="ski-qr-img">
                       <span class="ski-qr-url">sui.ski</span>
                     </div>
                   </div>
@@ -1555,7 +1560,6 @@ function renderModal(): void {
               </div>
               <button id="ski-modal-close">&times;</button>
             </div>
-            ${headerSplashHtml}
           </div>
         </div>
         <div class="ski-modal-body">
@@ -1936,23 +1940,22 @@ function hasValidSkiSession(address: string): boolean {
   } catch { return false; }
 }
 
-function renderSkiBtn() {
-  if (!els.skiBtn) return;
+// Registry of externally mounted ski buttons (same pattern as externalCyclers)
+const externalSkiBtns = new Set<HTMLElement>();
+
+function _renderSkiBtnEl(el: HTMLElement) {
   const ws = getState();
 
   if (!ws.address) {
-    els.skiBtn.style.display = '';
-    els.skiBtn.innerHTML = getSkiBtnSvg(_hydrating ? 'black-diamond' : 'green-circle');
+    el.innerHTML = getSkiBtnSvg(_hydrating ? 'black-diamond' : 'green-circle');
     return;
   }
 
   const hasPrimary = !!app.suinsName;
-  els.skiBtn.style.display = '';
-  els.skiBtn.classList.toggle('menu-open', app.menuOpen);
+  el.classList.toggle('menu-open', app.menuOpen);
   const showDrop = app.splashSponsor || hasValidSkiSession(ws.address);
 
   if (hasPrimary) {
-    // Balance display mode: color-shape dot (cycles on click) + balance amount
     const dotSvg = balView === 'usd'
       ? `<svg class="ski-btn-price-icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="#22c55e" stroke="white" stroke-width="3"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">$</text></svg>`
       : `<svg class="ski-btn-price-icon" viewBox="0 0 40 40" aria-hidden="true"><rect x="1" y="1" width="38" height="38" rx="6" fill="#4da2ff" stroke="white" stroke-width="2"/><g transform="translate(10,7) scale(0.067)" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g></svg>`;
@@ -1960,18 +1963,75 @@ function renderSkiBtn() {
     const balLabel = balView === 'usd'
       ? `<span class="ski-btn-price-label ski-btn-price-label--usd">${esc(rawUsd ? rawUsd.replace(/^\$/, '') : '--')}</span>`
       : `<span class="ski-btn-price-label">${esc(fmtSui(app.sui))}</span><img src="${SUI_DROP_URI}" class="ski-btn-inline-drop" alt="" aria-hidden="true">`;
-    const sessionDot = showDrop
-      ? `<img src="${SUI_DROP_URI}" class="ski-btn-inline-drop ski-btn-session-indicator" alt="" aria-hidden="true">`
-      : '';
-    els.skiBtn.innerHTML = `<span class="ski-btn-dot" title="Switch currency" aria-label="Switch USD/SUI">${dotSvg}</span>${balLabel}${sessionDot}`;
+    el.innerHTML = `<span class="ski-btn-dot" title="Switch currency" aria-label="Switch USD/SUI">${dotSvg}</span>${balLabel}`;
     return;
   }
 
-  // Black-diamond state: keep ski SVG
   const drop = showDrop
     ? `<img src="${SUI_DROP_URI}" class="ski-btn-session-drop" alt="" aria-hidden="true">`
     : '';
-  els.skiBtn.innerHTML = getSkiBtnSvg('black-diamond') + drop;
+  el.innerHTML = getSkiBtnSvg('black-diamond') + drop;
+}
+
+function renderSkiBtn() {
+  if (els.skiBtn) {
+    els.skiBtn.style.display = '';
+    _renderSkiBtnEl(els.skiBtn);
+  }
+  externalSkiBtns.forEach((el) => {
+    if (document.contains(el)) _renderSkiBtnEl(el);
+    else externalSkiBtns.delete(el);
+  });
+}
+
+/**
+ * Mount a live SKI wallet button onto any element.
+ * The element gets the same styling and behaviour as the built-in SKI button:
+ * it shows connection state, balance, and opens the wallet menu on click.
+ *
+ * @returns unmount function — call it to detach and clean up
+ */
+export function mountSkiButton(el: HTMLElement): () => void {
+  el.classList.add('wallet-ski-btn');
+  _renderSkiBtnEl(el);
+  externalSkiBtns.add(el);
+
+  function handleClick(e: MouseEvent) {
+    e.stopPropagation();
+    if (!getState().address) {
+      if (modalOpen) { closeModal(); return; }
+      openModal();
+      return;
+    }
+    if (modalOpen) { closeModal(); return; }
+    if (app.menuOpen) { app.menuOpen = false; render(); openModal(); return; }
+    if ((e.target as HTMLElement).closest('.ski-btn-dot') && app.suinsName) {
+      balView = balView === 'usd' ? 'sui' : 'usd';
+      try { localStorage.setItem('ski:bal-pref', balView); } catch {}
+      syncBalanceDisplays();
+      return;
+    }
+    app.menuOpen = true;
+    render();
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (modalOpen) { closeModal(); return; }
+      openModal(true);
+    }
+  }
+
+  el.addEventListener('click', handleClick);
+  el.addEventListener('keydown', handleKeydown);
+
+  return () => {
+    externalSkiBtns.delete(el);
+    el.removeEventListener('click', handleClick);
+    el.removeEventListener('keydown', handleKeydown);
+    el.classList.remove('wallet-ski-btn');
+  };
 }
 
 // ─── Sign Message ───────────────────────────────────────────────────
