@@ -29,12 +29,11 @@ interface StoredSession {
 
 function getStoredSession(address: string): StoredSession | null {
   try {
-    const raw = localStorage.getItem('ski:session');
+    const raw = localStorage.getItem(`ski:session:${address}`);
     if (!raw) return null;
     const s: StoredSession = JSON.parse(raw);
-    if (s.address !== address) return null;
     if (new Date(s.expiresAt).getTime() < Date.now()) {
-      localStorage.removeItem('ski:session');
+      localStorage.removeItem(`ski:session:${address}`);
       return null;
     }
     return s;
@@ -42,7 +41,7 @@ function getStoredSession(address: string): StoredSession | null {
 }
 
 function storeSession(s: StoredSession) {
-  try { localStorage.setItem('ski:session', JSON.stringify(s)); } catch {}
+  try { localStorage.setItem(`ski:session:${s.address}`, JSON.stringify(s)); } catch {}
 }
 
 // ─── Sign-in message builder ─────────────────────────────────────────
@@ -227,17 +226,8 @@ window.addEventListener('ski:wallet-connected', async (e) => {
   const detail = (e as CustomEvent).detail;
   if (!detail?.address) return;
 
-  // Only restore a session when it actually belongs to the address that just
-  // connected.  Checking the raw key without verifying the address would cause
-  // a fresh sign attempt (and an unexpected Backpack popup) whenever the user
-  // switches to an account that has no stored session.
-  const storedRaw = localStorage.getItem('ski:session');
-  const storedAddress = storedRaw ? (() => {
-    try { return JSON.parse(storedRaw).address as string; } catch { return ''; }
-  })() : '';
-
-  if (storedAddress === detail.address) {
-    // Restore silently — no wallet interaction needed.
+  // Restore silently if we have a cached session for this specific address.
+  if (localStorage.getItem(`ski:session:${detail.address}`)) {
     await signIn(/* isReconnect */ true);
     return;
   }

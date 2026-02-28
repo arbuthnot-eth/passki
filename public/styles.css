@@ -2218,19 +2218,17 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   flex: 1;
 }
 
-/* Top row inside brand column: logo + titles + close */
+/* Top row inside brand column: logo + titles stacked above close button */
 .ski-modal-header-brand-top {
   display: flex;
+  flex-direction: column;
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 6px;
+  gap: 2px;
   width: 100%;
-  padding-bottom: 10px;
+  padding-bottom: 6px;
 }
 #ski-modal-close {
-  align-self: flex-end;
   flex-shrink: 0;
-  padding-bottom: 2px;
 }
 
 /* Splash button in brand column header */
@@ -2296,7 +2294,6 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   display: flex;
   align-items: flex-end;
   gap: 5px;
-  flex: 1;
 }
 
 .ski-modal-brand-link {
@@ -2346,6 +2343,8 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   row-gap: 0;
   align-items: end;
   justify-content: end;
+  align-self: stretch;
+  width: 100%;
 }
 /* SVG button wrap spans both text rows, bottom-anchored */
 .ski-modal-header-brand .ski-logo-btn-wrap {
@@ -2588,7 +2587,7 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 }
 .ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-primary.ski-header-bal-sui,
 .ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-primary.ski-header-bal-usd {
-  font-size: 4rem;
+  font-size: 2rem;
   font-weight: 700;
   line-height: 1;
   color: #f1f5f9;

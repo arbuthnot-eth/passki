@@ -584,12 +584,14 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
     displayAddrs = [activeAddr, ...displayAddrs.filter((a: string) => a !== activeAddr)];
   }
 
-  // Update dot variant
+  // Update dot variant — check in-memory cache then localStorage so shape is correct on first render
   if (!displayAddrs.length) {
     updateSkiDot('green-circle');
   } else {
-    const cachedName = displayAddrs.map((addr: string) => suinsCache[addr]).find(Boolean);
-    updateSkiDot(cachedName ? 'blue-square' : 'black-diamond', cachedName);
+    const cachedName = displayAddrs.map((addr: string) =>
+      suinsCache[addr] || (() => { try { return localStorage.getItem(`ski:suins:${addr}`) || ''; } catch { return ''; } })()
+    ).find(Boolean);
+    updateSkiDot(cachedName ? 'blue-square' : 'black-diamond', cachedName || undefined);
   }
 
   const DOCS = 'https://docs.sui.io/standards/wallet-standard';
@@ -1234,6 +1236,9 @@ function activateLegendRow(idx: number, fromHover = false) {
   const detailEl = document.getElementById('ski-modal-detail');
   const connKey = document.getElementById('ski-connected-key');
 
+  // The hovered legend address (if any) is passed as connectedAddr so it floats to top
+  const hoverAddr = row.dataset.legendAddr || getState().address;
+
   if (walletName === getState().walletName) {
     // Connected wallet row: highlight matching addr in header + show its wallet in right pane
     const addr = row.dataset.legendAddr;
@@ -1244,7 +1249,7 @@ function activateLegendRow(idx: number, fromHover = false) {
     }
     if (detailEl) detailEl.classList.remove('ski-detail--key-hover');
     const wallet = getSuiWallets().find((w) => w.name === walletName);
-    if (wallet && detailEl) showKeyDetail(wallet, detailEl, getState().address);
+    if (wallet && detailEl) showKeyDetail(wallet, detailEl, hoverAddr);
     return;
   }
 
@@ -1255,7 +1260,7 @@ function activateLegendRow(idx: number, fromHover = false) {
   }
   if (walletName) {
     const wallet = getSuiWallets().find((w) => w.name === walletName);
-    if (wallet && detailEl) showKeyDetail(wallet, detailEl, getState().address);
+    if (wallet && detailEl) showKeyDetail(wallet, detailEl, hoverAddr);
   }
 }
 
