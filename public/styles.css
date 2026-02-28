@@ -2221,11 +2221,16 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 /* Top row inside brand column: logo + titles + close */
 .ski-modal-header-brand-top {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 6px;
   width: 100%;
   padding-bottom: 10px;
+}
+#ski-modal-close {
+  align-self: flex-end;
+  flex-shrink: 0;
+  padding-bottom: 2px;
 }
 
 /* Splash button in brand column header */
@@ -2291,6 +2296,7 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   display: flex;
   align-items: flex-end;
   gap: 5px;
+  flex: 1;
 }
 
 .ski-modal-brand-link {
@@ -2339,6 +2345,7 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   column-gap: 2px;
   row-gap: 0;
   align-items: end;
+  justify-content: end;
 }
 /* SVG button wrap spans both text rows, bottom-anchored */
 .ski-modal-header-brand .ski-logo-btn-wrap {
