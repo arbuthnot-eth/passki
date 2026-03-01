@@ -306,12 +306,18 @@ async function listNsCoins(
   return objects;
 }
 
-/** Returns the registration price in USD for a `.sui` label (1 year). */
+/** Returns the NS-discounted registration price in USD for a `.sui` label (1 year). */
 export async function fetchDomainPriceUsd(label: string): Promise<number> {
   const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
-  const raw = await suinsClient.calculatePrice({ name: `${label}.sui`, years: 1 });
-  return raw / 1e6;
+  const [rawPrice, discountMap] = await Promise.all([
+    suinsClient.calculatePrice({ name: `${label}.sui`, years: 1 }),
+    suinsClient.getCoinTypeDiscount(),
+  ]);
+  // TypeName stores addresses without 0x prefix
+  const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
+  const discountPct = discountMap.get(nsKey) ?? 0;
+  return (rawPrice * (1 - discountPct / 100)) / 1e6;
 }
 
 export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'splash.sui'): Promise<Uint8Array> {
