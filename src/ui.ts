@@ -15,6 +15,7 @@ import {
   getSuiWallets,
   connect,
   disconnect,
+  activateAccount,
   signPersonalMessage,
   signAndExecuteTransaction,
   autoReconnect,
@@ -1698,6 +1699,7 @@ export function openModal(focusFirst = false) {
   modalOpen = true;
   els.widget?.classList.add('ski-modal-active');
   renderModal();
+  if (getState().address) refreshPortfolio(true);
   if (focusFirst) {
     requestAnimationFrame(() => {
       const active = document.querySelector<HTMLElement>('.ski-legend-row.active')
@@ -1715,6 +1717,54 @@ function closeModal() {
   headerCyclerUnmount = null;
   els.widget?.classList.remove('ski-modal-active');
   if (els.modal) els.modal.innerHTML = '';
+}
+
+/**
+ * WaaP-specific connect path: check for a fingerprint-encrypted cached proof
+ * first.  If the same device previously authenticated as a WaaP address and
+ * WaaP still has that account cached internally, activate directly (no modal).
+ * Falls back to the normal selectWallet() flow if the proof is missing,
+ * expired, or WaaP's own session no longer has the account.
+ */
+async function tryWaapProofConnect(wallet: Wallet): Promise<void> {
+  try {
+    const [{ getDeviceId }, { getWaapProof }] = await Promise.all([
+      import('./fingerprint.js'),
+      import('./waap-proof.js'),
+    ]);
+    const { visitorId } = await getDeviceId();
+    const proof = await getWaapProof(visitorId);
+
+    if (proof) {
+      // Check if WaaP already has the account cached (its own session is alive).
+      type RawAccount = { address: string; chains: readonly string[]; label?: string };
+      const cached = (wallet.accounts as unknown as RawAccount[]).find(
+        (a) => normalizeSuiAddress(a.address) === normalizeSuiAddress(proof.address),
+      );
+
+      if (cached) {
+        // WaaP still holds the session — activate without OAuth modal.
+        closeModal();
+        if (getState().wallet) { try { await disconnect(); } catch {} }
+        activateAccount(wallet, cached as import('@wallet-standard/base').WalletAccount);
+        return;
+      }
+
+      // Account not in WaaP's cache yet — try connect() which will attempt
+      // silent first, then fall back to the OAuth modal only if needed.
+      closeModal();
+      if (getState().wallet) { try { await disconnect(); } catch {} }
+      try {
+        await connect(wallet);
+      } catch (err) {
+        showToast('Failed to connect: ' + (err instanceof Error ? err.message : 'unknown error'));
+      }
+      return;
+    }
+  } catch { /* fingerprint or import failure — fall through */ }
+
+  // No valid proof for this device — normal flow (WaaP modal will open).
+  selectWallet(wallet);
 }
 
 async function selectWallet(wallet: Wallet) {
@@ -2701,7 +2751,10 @@ export function initUI() {
     const legendRow = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row');
     if (legendRow?.dataset.legendWallet) {
       const wallet = getSuiWallets().find((w) => w.name === legendRow.dataset.legendWallet);
-      if (wallet) selectWallet(wallet);
+      if (wallet) {
+        if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
+        else selectWallet(wallet);
+      }
       return;
     }
     const listBtn = (e.target as HTMLElement).closest<HTMLElement>('.wk-dd-item[data-wallet-name]');
@@ -2733,7 +2786,10 @@ export function initUI() {
       const row = rows[activeLegendIdx];
       if (row?.dataset.legendWallet) {
         const wallet = getSuiWallets().find((w) => w.name === row.dataset.legendWallet);
-        if (wallet) selectWallet(wallet);
+        if (wallet) {
+          if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
+          else selectWallet(wallet);
+        }
       }
     }
   });
