@@ -15,6 +15,7 @@ import {
   getSuiWallets,
   connect,
   disconnect,
+  deactivate,
   activateAccount,
   signPersonalMessage,
   signAndExecuteTransaction,
@@ -175,6 +176,26 @@ function fmtUsd(n: number | null): string {
   if (n < 10_000) return '$' + n.toFixed(0);
   if (n < 1_000_000) return '$' + (n / 1_000).toFixed(1) + 'k';
   return '$' + (n / 1_000_000).toFixed(1) + 'M';
+}
+
+/** 3-decimal HTML for the SKI menu balance — integer part full-size, decimals smaller. */
+function fmtMenuBalHtml(n: number | null): string {
+  if (n == null || !Number.isFinite(n) || n < 0) return '--';
+  let whole: string, frac: string, suffix = '';
+  if (n < 1_000) {
+    const s = n.toFixed(3);
+    const dot = s.indexOf('.');
+    whole = s.slice(0, dot); frac = s.slice(dot);
+  } else if (n < 1_000_000) {
+    const s = (n / 1_000).toFixed(3);
+    const dot = s.indexOf('.');
+    whole = s.slice(0, dot); frac = s.slice(dot); suffix = 'k';
+  } else {
+    const s = (n / 1_000_000).toFixed(3);
+    const dot = s.indexOf('.');
+    whole = s.slice(0, dot); frac = s.slice(dot); suffix = 'M';
+  }
+  return `${esc(whole)}<span class="wk-bal-decimals">${esc(frac)}${esc(suffix)}</span>`;
 }
 
 function fmtStable(n: number): string {
@@ -1720,15 +1741,31 @@ function closeModal() {
 }
 
 /**
+ * Soft-deactivate the current wallet without calling its standard:disconnect.
+ * Used internally when we want to switch away while keeping that wallet dormant.
+ */
+function deactivateCurrent(): void {
+  const { walletName } = getState();
+  if (/waap/i.test(walletName)) {
+    deactivate(); // keep WaaP OAuth session alive
+  } else if (getState().wallet) {
+    // fire-and-forget full disconnect for non-WaaP wallets
+    disconnect().catch(() => {});
+  }
+}
+
+/**
  * WaaP-specific connect path: check for a fingerprint-encrypted cached proof
- * first.  If the same device previously authenticated as a WaaP address and
- * WaaP still has that account cached internally, activate directly (no modal).
- * Falls back to the normal selectWallet() flow if the proof is missing,
- * expired, or WaaP's own session no longer has the account.
+ * first.  If the same device previously authenticated as a WaaP address:
+ *   1. If WaaP still has the account in-memory (dormant session) → activate
+ *      directly, zero modals.
+ *   2. If in-memory is empty but we have an OAuth snapshot → restore those
+ *      localStorage keys and try a silent connect (WaaP finds its own session).
+ *   3. If both fail → fall back to normal selectWallet() (OAuth modal opens).
  */
 async function tryWaapProofConnect(wallet: Wallet): Promise<void> {
   try {
-    const [{ getDeviceId }, { getWaapProof }] = await Promise.all([
+    const [{ getDeviceId }, { getWaapProof, restoreWaapOAuth }] = await Promise.all([
       import('./fingerprint.js'),
       import('./waap-proof.js'),
     ]);
@@ -1736,24 +1773,26 @@ async function tryWaapProofConnect(wallet: Wallet): Promise<void> {
     const proof = await getWaapProof(visitorId);
 
     if (proof) {
-      // Check if WaaP already has the account cached (its own session is alive).
       type RawAccount = { address: string; chains: readonly string[]; label?: string };
+
+      // Path 1: WaaP already has the account (session is dormant/alive in-memory).
       const cached = (wallet.accounts as unknown as RawAccount[]).find(
         (a) => normalizeSuiAddress(a.address) === normalizeSuiAddress(proof.address),
       );
-
       if (cached) {
-        // WaaP still holds the session — activate without OAuth modal.
         closeModal();
-        if (getState().wallet) { try { await disconnect(); } catch {} }
+        deactivateCurrent();
         activateAccount(wallet, cached as import('@wallet-standard/base').WalletAccount);
         return;
       }
 
-      // Account not in WaaP's cache yet — try connect() which will attempt
-      // silent first, then fall back to the OAuth modal only if needed.
+      // Path 2: Restore the OAuth snapshot so WaaP can find its own session,
+      // then attempt a silent connect — should succeed without showing the modal.
+      if (proof.oauthSnapshot) {
+        restoreWaapOAuth(proof.oauthSnapshot);
+      }
       closeModal();
-      if (getState().wallet) { try { await disconnect(); } catch {} }
+      deactivateCurrent();
       try {
         await connect(wallet);
       } catch (err) {
@@ -1763,16 +1802,23 @@ async function tryWaapProofConnect(wallet: Wallet): Promise<void> {
     }
   } catch { /* fingerprint or import failure — fall through */ }
 
-  // No valid proof for this device — normal flow (WaaP modal will open).
+  // No valid proof for this device — normal flow (WaaP OAuth modal will open).
   selectWallet(wallet);
 }
 
 async function selectWallet(wallet: Wallet) {
   closeModal();
   try {
-    // Disconnect current wallet first if switching
-    if (getState().wallet) {
-      try { await disconnect(); } catch {}
+    // When switching away from WaaP, use deactivate() (soft) rather than
+    // disconnect() so WaaP's OAuth session stays alive for dormant reuse.
+    // For all other wallets, do a full disconnect.
+    const current = getState();
+    if (current.wallet) {
+      if (/waap/i.test(current.walletName)) {
+        deactivate();
+      } else {
+        try { await disconnect(); } catch {}
+      }
     }
     await connect(wallet);
   } catch (err) {
@@ -2326,16 +2372,14 @@ function renderSkiMenu() {
 
   const scanUrl = `https://suiscan.xyz/mainnet/account/${ws.address}`;
 
-  const suiText = fmtSui(app.sui);
-  const usdText = fmtUsd(app.usd);
   const addrShort = truncAddr(ws.address);
 
   const dotSvg = balView === 'usd'
     ? `<svg class="wk-popout-bal-icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="#22c55e" stroke="white" stroke-width="3"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">$</text></svg>`
     : `<img src="${SUI_DROP_URI}" class="wk-popout-bal-icon" alt="SUI" aria-hidden="true">`;
   const balValHtml = balView === 'usd'
-    ? `<span class="wk-popout-bal-val wk-popout-bal-val--usd">${esc((usdText || '--').replace(/^\$/, ''))}</span>`
-    : `<span class="wk-popout-bal-val wk-popout-bal-val--sui">${esc(suiText || '--')}</span>`;
+    ? `<span class="wk-popout-bal-val wk-popout-bal-val--usd">${fmtMenuBalHtml(app.usd)}</span>`
+    : `<span class="wk-popout-bal-val wk-popout-bal-val--sui">${fmtMenuBalHtml(app.sui)}</span>`;
   const balToggleHtml = `<div class="wk-popout-balance">
         <span class="wk-popout-bal-display">${dotSvg}${balValHtml}</span>
         <label class="ski-layout-toggle wk-popout-bal-toggle" title="Toggle USD / SUI">

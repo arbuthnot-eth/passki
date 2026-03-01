@@ -921,24 +921,29 @@ body {
 }
 
 .wk-popout-bal-icon {
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   flex-shrink: 0;
-  opacity: 0.7;
 }
 
 .wk-popout-bal-val {
-  font-size: 0.82rem;
-  font-weight: 500;
+  font-size: 1.05rem;
+  font-weight: 600;
   white-space: nowrap;
 }
 
 .wk-popout-bal-val--usd {
-  color: rgba(134, 239, 172, 0.65);
+  color: #86efac;
 }
 
 .wk-popout-bal-val--sui {
-  color: rgba(147, 197, 253, 0.65);
+  color: #93c5fd;
+}
+
+.wk-bal-decimals {
+  font-size: 0.68em;
+  opacity: 0.55;
+  font-weight: 500;
 }
 
 /* Balance toggle inside SKI menu — higher-specificity overrides base ski-layout-toggle */
