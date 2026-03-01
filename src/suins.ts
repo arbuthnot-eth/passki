@@ -315,20 +315,58 @@ async function listNsCoins(
 }
 
 /**
- * Returns true if the label is available for .sui registration, false if taken.
- * Falls back to true (assume available) on network error so the UI stays usable.
+ * Check whether a .sui label is available, taken, or owned by the given wallet.
+ * Returns 'available' | 'taken' | 'owned'.
+ * Falls back to 'available' on network error so the UI stays usable.
  */
-export async function checkDomainAvailable(label: string): Promise<boolean> {
+export async function checkDomainStatus(
+  label: string,
+  walletAddress?: string,
+): Promise<'available' | 'taken' | 'owned'> {
   const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
   try {
     const record = await suinsClient.getNameRecord(`${label}.sui`);
-    if (!record) return true;
-    if (record.expirationTimestampMs && record.expirationTimestampMs < Date.now()) return true;
-    return false;
+    if (!record) return 'available';
+    if (record.expirationTimestampMs && record.expirationTimestampMs < Date.now()) return 'available';
+    // Taken — check if current wallet owns the NFT
+    if (walletAddress && record.nftId) {
+      const res = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($id: SuiAddress!) {
+            object(address: $id) {
+              owner { ... on AddressOwner { owner { address } } }
+            }
+          }`,
+          variables: { id: record.nftId },
+        }),
+      });
+      const json = await res.json() as {
+        data?: { object?: { owner?: { owner?: { address?: string } } } };
+      };
+      const ownerAddr = json?.data?.object?.owner?.owner?.address ?? '';
+      if (ownerAddr && normalizeSuiAddress(ownerAddr) === normalizeSuiAddress(walletAddress)) {
+        return 'owned';
+      }
+    }
+    return 'taken';
   } catch {
-    return true;
+    return 'available';
   }
+}
+
+/** Build a PTB that sets `domain` as the wallet's default reverse-lookup name. */
+export async function buildSetDefaultNsTx(rawAddress: string, domain: string): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+  const suinsTx = new SuinsTransaction(suinsClient, tx);
+  suinsTx.setDefault(domain);
+  return tx.build({ client: transport as never });
 }
 
 /** Returns the NS-discounted registration price in USD for a `.sui` label (1 year). */

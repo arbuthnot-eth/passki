@@ -36,7 +36,7 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainAvailable, type OwnedDomain } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, type OwnedDomain } from './suins.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
@@ -2137,7 +2137,7 @@ let nsLabel = 'splash';
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
-let nsAvail: null | 'available' | 'taken' = null;
+let nsAvail: null | 'available' | 'taken' | 'owned' = null;
 
 async function fetchAndShowNsPrice(label: string) {
   if (label.length < 3) {
@@ -2149,15 +2149,14 @@ async function fetchAndShowNsPrice(label: string) {
   nsPriceFetchFor = label;
   nsAvail = null;
   _patchNsStatus();
-  const [priceResult, availResult] = await Promise.allSettled([
+  const ws = getState();
+  const [priceResult, statusResult] = await Promise.allSettled([
     fetchDomainPriceUsd(label),
-    checkDomainAvailable(label),
+    checkDomainStatus(label, ws.address || undefined),
   ]);
   if (nsPriceFetchFor !== label) return; // stale
   nsPriceUsd = priceResult.status === 'fulfilled' ? priceResult.value : null;
-  nsAvail = availResult.status === 'fulfilled'
-    ? (availResult.value ? 'available' : 'taken')
-    : null;
+  nsAvail = statusResult.status === 'fulfilled' ? statusResult.value : null;
   _patchNsPrice();
   _patchNsStatus();
 }
@@ -2188,6 +2187,8 @@ function _patchNsStatus() {
     ? 'black-diamond'
     : nsAvail === 'available' ? 'green-circle' : 'blue-square';
   icon.innerHTML = _nsStatusSvg(variant);
+  icon.style.cursor = nsAvail === 'owned' ? 'pointer' : 'default';
+  icon.title = nsAvail === 'owned' ? 'Set as primary name' : '';
 }
 
 function _nsPriceHtml(): string {
@@ -2524,6 +2525,28 @@ function renderSkiMenu() {
     _patchNsStatus();
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
     if (val.length >= 3) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), 400);
+  });
+
+  document.getElementById('wk-ns-status')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (nsAvail !== 'owned') return;
+    const ws2 = getState();
+    if (!ws2.address) return;
+    const label = nsLabel.trim();
+    if (!label) return;
+    const domain = label.endsWith('.sui') ? label : `${label}.sui`;
+    const icon = document.getElementById('wk-ns-status');
+    if (icon) icon.style.opacity = '0.4';
+    try {
+      const tx = await buildSetDefaultNsTx(ws2.address, domain);
+      await signAndExecuteTransaction(tx);
+      showToast(`${domain} set as primary \u2713`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+    } finally {
+      if (icon) icon.style.opacity = '';
+    }
   });
 
   document.getElementById('wk-dd-ns-register')?.addEventListener('click', async (e) => {
