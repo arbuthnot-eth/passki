@@ -34,7 +34,7 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, type OwnedDomain } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, type OwnedDomain } from './suins.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
@@ -2035,6 +2035,42 @@ export function mountSkiButton(el: HTMLElement): () => void {
   };
 }
 
+// ─── NS registration row (SKI menu) ─────────────────────────────────
+
+let nsLabel = 'splash';
+let nsPriceUsd: number | null = null;
+let nsPriceFetchFor = '';
+let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
+
+async function fetchAndShowNsPrice(label: string) {
+  if (label.length < 3) { nsPriceUsd = null; nsPriceFetchFor = ''; _patchNsPrice(); return; }
+  if (label === nsPriceFetchFor && nsPriceUsd != null) return;
+  nsPriceFetchFor = label;
+  try {
+    const usd = await fetchDomainPriceUsd(label);
+    if (nsPriceFetchFor !== label) return; // stale
+    nsPriceUsd = usd;
+  } catch {
+    if (nsPriceFetchFor === label) nsPriceUsd = null;
+  }
+  _patchNsPrice();
+}
+
+function _patchNsPrice() {
+  const chip = document.getElementById('wk-ns-price-chip');
+  if (chip) chip.innerHTML = _nsPriceHtml();
+}
+
+function _nsPriceHtml(): string {
+  if (nsLabel.length < 3) return '';
+  if (nsPriceUsd == null) return `<span class="wk-ns-price-loading"></span>`;
+  if (balView === 'sui' && suiPriceCache) {
+    const sui = nsPriceUsd / suiPriceCache.price;
+    return `<span class="wk-ns-price-val">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI" aria-hidden="true"></span>`;
+  }
+  return `<span class="wk-ns-price-val">$${nsPriceUsd % 1 === 0 ? nsPriceUsd.toFixed(0) : nsPriceUsd.toFixed(2)}</span>`;
+}
+
 // ─── Sign Message ───────────────────────────────────────────────────
 
 const DEFAULT_MESSAGE = 'Hiroshima was an elegant implementation';
@@ -2136,11 +2172,6 @@ function renderSignStage() {
         <button class="sign-btn" id="sign-msg-btn" type="button">Sign Message</button>
         ${resultHtml}
       </div>
-    </div>
-    <div class="sign-card">
-      <div class="sign-action-row">
-        <button class="sign-btn sign-btn--ns" id="register-splash-btn" type="button">Register splash.sui &middot; NS</button>
-      </div>
     </div>`;
 
   // ─── Splash button bindings ───────────────────────────────────────────
@@ -2230,24 +2261,6 @@ function renderSignStage() {
 
   document.getElementById('sign-msg-btn')?.addEventListener('click', doSign);
 
-  // ─── Register splash.sui · NS ─────────────────────────────────────────
-  document.getElementById('register-splash-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('register-splash-btn') as HTMLButtonElement;
-    const ws = getState();
-    if (!ws.address) { showToast('Connect a wallet first'); return; }
-    if (btn) { btn.disabled = true; btn.textContent = 'Building tx\u2026'; }
-    try {
-      const tx = await buildRegisterSplashNsTx(ws.address);
-      if (btn) btn.textContent = 'Signing\u2026';
-      const { digest } = await signAndExecuteTransaction(tx);
-      showToast(`splash.sui registered \u2713 ${digest ? digest.slice(0, 8) + '\u2026' : ''}`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed';
-      if (!msg.toLowerCase().includes('reject')) showToast(msg);
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = 'Register splash.sui \u00b7 NS'; }
-    }
-  });
 }
 
 // ─── Render: SKI Menu ────────────────────────────────────────────────
@@ -2281,6 +2294,16 @@ function renderSkiMenu() {
         </label>
       </div>`;
 
+  const nsRowHtml = `
+      <div class="wk-dd-ns-section">
+        <div class="wk-dd-ns-domain-row">
+          <input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="name">
+          <span class="wk-ns-dot-sui">.sui</span>
+          <span id="wk-ns-price-chip" class="wk-ns-price-chip">${_nsPriceHtml()}</span>
+          <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn" type="button" title="Register via NS">\u2192</button>
+        </div>
+      </div>`;
+
   // Blue-square state (SuiNS name) — big profile popout
   if (app.suinsName) {
     const bare = app.suinsName.replace(/\.sui$/, '');
@@ -2303,6 +2326,7 @@ function renderSkiMenu() {
           </button>
           <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
         </div>
+        ${nsRowHtml}
       </div>`;
   } else {
     // Black-diamond state — compact dropdown
@@ -2320,6 +2344,7 @@ function renderSkiMenu() {
           </button>
           <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
         </div>
+        ${nsRowHtml}
       </div>`;
   }
 
@@ -2336,6 +2361,43 @@ function renderSkiMenu() {
     try { localStorage.setItem('ski:bal-pref', balView); } catch {}
     syncBalanceDisplays();
   });
+
+  // ─── NS domain row bindings ─────────────────────────────────────────
+  const nsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+  nsInput?.addEventListener('click', (e) => e.stopPropagation());
+  nsInput?.addEventListener('input', (e) => {
+    const val = (e.target as HTMLInputElement).value.trim().toLowerCase();
+    nsLabel = val;
+    nsPriceUsd = null;
+    _patchNsPrice();
+    if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
+    if (val.length >= 3) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), 400);
+  });
+
+  document.getElementById('wk-dd-ns-register')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
+    const ws2 = getState();
+    if (!ws2.address) { showToast('Connect a wallet first'); return; }
+    const label = nsLabel.trim();
+    if (!label) { showToast('Enter a domain label'); return; }
+    const domain = label.endsWith('.sui') ? label : `${label}.sui`;
+    if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+    try {
+      const tx = await buildRegisterSplashNsTx(ws2.address, domain);
+      if (btn) btn.textContent = '\u270f';
+      const { digest } = await signAndExecuteTransaction(tx);
+      showToast(`${domain} registered \u2713 ${digest ? digest.slice(0, 8) + '\u2026' : ''}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '\u2192'; }
+    }
+  });
+
+  // Kick initial price fetch for default/current label
+  if (nsLabel.length >= 3 && nsPriceFetchFor !== nsLabel) fetchAndShowNsPrice(nsLabel);
 }
 
 // ─── Disconnect handler ──────────────────────────────────────────────

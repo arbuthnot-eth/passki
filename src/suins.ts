@@ -306,7 +306,15 @@ async function listNsCoins(
   return objects;
 }
 
-export async function buildRegisterSplashNsTx(rawAddress: string): Promise<Uint8Array> {
+/** Returns the registration price in USD for a `.sui` label (1 year). */
+export async function fetchDomainPriceUsd(label: string): Promise<number> {
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const raw = await suinsClient.calculatePrice({ name: `${label}.sui`, years: 1 });
+  return raw / 1e6;
+}
+
+export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'splash.sui'): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: GRPC_URL });
 
@@ -341,11 +349,11 @@ export async function buildRegisterSplashNsTx(rawAddress: string): Promise<Uint8
   // priceInfoIds[0] is a string object ID; generateReceipt calls tx.object() on it.
   const priceInfoObjectId = priceInfoIds[0];
 
-  // Register splash.sui for 1 year, paying with the first NS coin.
+  // Register domain for 1 year, paying with the first NS coin.
   // maxAmount defaults to MAX_U64 inside handlePayment — no slippage guard needed
   // for a simple one-shot registration, but you may pass a bigint here if desired.
   const nft = suinsTx.register({
-    domain: 'splash.sui',
+    domain,
     years: 1,
     coinConfig: mainPackage.mainnet.coins.NS,
     coin: coins[0].objectId,
@@ -355,8 +363,8 @@ export async function buildRegisterSplashNsTx(rawAddress: string): Promise<Uint8
   // Set the name's target address to the connected wallet.
   suinsTx.setTargetAddress({ nft, address: walletAddress });
 
-  // Set splash.sui as the default reverse-lookup name for the wallet.
-  suinsTx.setDefault('splash.sui');
+  // Set domain as the default reverse-lookup name for the wallet.
+  suinsTx.setDefault(domain);
 
   // Deliver the SuinsRegistration NFT to the connected wallet.
   tx.transferObjects([nft], tx.pure.address(walletAddress));
