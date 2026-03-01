@@ -195,7 +195,7 @@ function fmtMenuBalHtml(n: number | null): string {
     const dot = s.indexOf('.');
     whole = s.slice(0, dot); frac = s.slice(dot); suffix = 'M';
   }
-  return `${esc(whole)}<span class="wk-bal-decimals">${esc(frac)}${esc(suffix)}</span>`;
+  return `<span class="wk-bal-whole">${esc(whole)}</span><span class="wk-bal-decimals">${esc(frac)}${esc(suffix)}</span>`;
 }
 
 function fmtStable(n: number): string {
@@ -2405,7 +2405,7 @@ function renderSkiMenu() {
     els.skiMenu.innerHTML = `
       <div class="wk-dropdown wk-dropdown--large open">
         <div class="wk-popout-actions">
-          <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
+          <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Deactivate</button>
           <button class="wk-dd-item wk-dd-ski" id="wk-dd-switch">Lockin</button>
         </div>
         <div class="wk-popout-name-badge">
@@ -2428,7 +2428,7 @@ function renderSkiMenu() {
     els.skiMenu.innerHTML = `
       <div class="wk-dropdown open">
         <div class="wk-popout-actions">
-          <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
+          <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Deactivate</button>
           <button class="wk-dd-item wk-dd-ski" id="wk-dd-switch">Lockin</button>
         </div>
         ${balToggleHtml}

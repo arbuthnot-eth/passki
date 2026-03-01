@@ -940,9 +940,12 @@ body {
   color: #93c5fd;
 }
 
+.wk-bal-whole {
+  color: #ffffff;
+}
+
 .wk-bal-decimals {
-  font-size: 0.68em;
-  opacity: 0.55;
+  font-size: 0.78em;
   font-weight: 500;
 }
 
