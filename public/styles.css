@@ -771,25 +771,18 @@ body {
 
 .wk-ns-status {
   flex-shrink: 0;
-  font-size: 0.6rem;
-  line-height: 1;
-  width: 12px;
-  text-align: center;
-  transition: color 0.2s;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.wk-ns-status--diamond {
-  color: #010101;
-  -webkit-text-stroke: 1.5px rgba(255, 255, 255, 0.85);
-  paint-order: stroke fill;
-}
-
-.wk-ns-status--available {
-  color: #22c55e;
-}
-
-.wk-ns-status--taken {
-  color: #60a5fa;
+.wk-ns-status-svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+  overflow: visible;
 }
 
 .wk-ns-label-input {

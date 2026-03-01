@@ -2167,19 +2167,27 @@ function _patchNsPrice() {
   if (chip) chip.innerHTML = _nsPriceHtml();
 }
 
+function _nsStatusSvg(variant: SkiDotVariant): string {
+  if (!_skiSvgText) {
+    const ch = variant === 'green-circle' ? '●' : variant === 'blue-square' ? '■' : '◆';
+    const col = variant === 'green-circle' ? '#22c55e' : variant === 'blue-square' ? '#60a5fa' : '#fff';
+    return `<span style="color:${col};font-size:0.6rem">${ch}</span>`;
+  }
+  let s = _buildSkiSvg('nss-svg', 'wk-ns-status-svg', 'nss', variant, false);
+  // Hide SKI text and crop viewBox to just the dot area
+  s = s
+    .replace('id="nss-text"', 'id="nss-text" style="display:none"')
+    .replace('viewBox="0 460 1214 387"', 'viewBox="20 490 350 340"');
+  return s;
+}
+
 function _patchNsStatus() {
   const icon = document.getElementById('wk-ns-status');
   if (!icon) return;
-  if (nsLabel.length < 3 || nsAvail === null) {
-    icon.className = 'wk-ns-status wk-ns-status--diamond';
-    icon.textContent = '◆';
-  } else if (nsAvail === 'available') {
-    icon.className = 'wk-ns-status wk-ns-status--available';
-    icon.textContent = '●';
-  } else {
-    icon.className = 'wk-ns-status wk-ns-status--taken';
-    icon.textContent = '■';
-  }
+  const variant: SkiDotVariant = nsLabel.length < 3 || nsAvail === null
+    ? 'black-diamond'
+    : nsAvail === 'available' ? 'green-circle' : 'blue-square';
+  icon.innerHTML = _nsStatusSvg(variant);
 }
 
 function _nsPriceHtml(): string {
@@ -2413,16 +2421,13 @@ function renderSkiMenu() {
         </label>
       </div>`;
 
-  const _nsStatusClass = nsLabel.length < 3 || nsAvail === null
-    ? 'wk-ns-status--diamond'
-    : nsAvail === 'available' ? 'wk-ns-status--available' : 'wk-ns-status--taken';
-  const _nsStatusChar = nsLabel.length < 3 || nsAvail === null
-    ? '◆'
-    : nsAvail === 'available' ? '●' : '■';
+  const _nsInitVariant: SkiDotVariant = nsLabel.length < 3 || nsAvail === null
+    ? 'black-diamond'
+    : nsAvail === 'available' ? 'green-circle' : 'blue-square';
   const nsRowHtml = `
       <div class="wk-dd-ns-section">
         <div class="wk-dd-ns-domain-row">
-          <span id="wk-ns-status" class="wk-ns-status ${_nsStatusClass}">${_nsStatusChar}</span>
+          <span id="wk-ns-status" class="wk-ns-status">${_nsStatusSvg(_nsInitVariant)}</span>
           <input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="name">
           <span class="wk-ns-dot-sui">.sui</span>
           <span id="wk-ns-price-chip" class="wk-ns-price-chip">${_nsPriceHtml()}</span>
