@@ -165,6 +165,20 @@ export async function signIn(isReconnect = false): Promise<boolean> {
     storeSession({ address, signature, bytes, visitorId, expiresAt });
     try { localStorage.setItem(`ski:signed:${address}`, '1'); } catch {}
 
+    // Cache WaaP proof encrypted by this device's fingerprint so subsequent
+    // clicks on the WaaP legend row can activate without re-opening the OAuth modal.
+    // Also snapshot WaaP's own localStorage keys so the OAuth session survives
+    // a browser storage clear (restored before the next silent-connect attempt).
+    if (/waap/i.test(ws.walletName)) {
+      const provider = (() => {
+        try { return localStorage.getItem(`ski:waap-provider:${address}`) || 'x'; } catch { return 'x'; }
+      })();
+      import('./waap-proof.js').then(({ storeWaapProof, snapshotWaapOAuth }) => {
+        const oauthSnapshot = snapshotWaapOAuth();
+        return storeWaapProof({ address, provider, expiresAt, oauthSnapshot }, visitorId);
+      }).catch(() => {});
+    }
+
     await establishSession(address, signature, bytes, visitorId);
 
     if (!isReconnect) showToast(isKeystone ? 'Keystone session active — valid 24 h' : '.SKI session active');

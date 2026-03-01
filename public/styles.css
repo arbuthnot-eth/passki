@@ -654,7 +654,7 @@ body {
 }
 
 .wk-dd-address-text {
-  font-size: 0.72rem;
+  font-size: 0.83rem;
   line-height: 1.25;
   color: #dbe2f0;
   word-break: break-all;
@@ -665,7 +665,7 @@ body {
 .wk-dd-address-banner.copied .wk-dd-address-text {
   color: #60a5fa;
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  font-size: 0.82rem;
+  font-size: 0.94rem;
   font-weight: 600;
   word-break: normal;
   text-align: center;
@@ -878,7 +878,7 @@ body {
 }
 
 .wk-popout-name-text {
-  font-size: 0.95rem;
+  font-size: 1.09rem;
   font-weight: 600;
   color: #ffffff;
   white-space: nowrap;
@@ -927,7 +927,7 @@ body {
 }
 
 .wk-popout-bal-val {
-  font-size: 1.05rem;
+  font-size: 1.21rem;
   font-weight: 600;
   white-space: nowrap;
 }

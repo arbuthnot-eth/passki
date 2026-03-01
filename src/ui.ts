@@ -2532,6 +2532,7 @@ function render() {
     else { externalCyclers.delete(el); }
   });
   renderModalLogo();
+  if (modalOpen) renderModal();
 
   // Bind pill click
   const pill = document.getElementById('wallet-pill-btn');

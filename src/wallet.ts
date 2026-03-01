@@ -378,6 +378,66 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
   });
 }
 
+// ─── Deactivate (soft — keeps wallet OAuth session alive) ────────────
+
+/**
+ * Clear SKI's active-wallet state WITHOUT calling the wallet's
+ * standard:disconnect feature.  Use this when switching AWAY from a wallet
+ * you want to keep dormant (e.g. WaaP), so its OAuth session stays intact and
+ * re-activation via activateAccount() can skip the OAuth modal entirely.
+ *
+ * Use the regular disconnect() only for explicit user-initiated sign-out.
+ */
+export function deactivate(): void {
+  if (walletChangeUnsub) { walletChangeUnsub(); walletChangeUnsub = null; }
+  // Keep last-wallet so autoReconnect can restore on reload
+  setState({
+    status: 'disconnected',
+    wallet: null,
+    account: null,
+    address: '',
+    walletName: '',
+    walletIcon: '',
+  });
+}
+
+// ─── Activate from cache (no connect() call) ─────────────────────────
+
+/**
+ * Directly activate a wallet account that is already known (e.g. from a
+ * cached WaaP proof) without triggering the wallet's connect/OAuth flow.
+ * Sets up the change-event listener and fires the normal state update so
+ * the ski:wallet-connected event fires exactly as if connect() had succeeded.
+ */
+export function activateAccount(wallet: Wallet, account: WalletAccount): void {
+  if (walletChangeUnsub) walletChangeUnsub();
+  if ('standard:events' in wallet.features) {
+    const eventsFeature = wallet.features['standard:events'] as {
+      on: (event: 'change', listener: (e: { accounts: readonly WalletAccount[] }) => void) => () => void;
+    };
+    walletChangeUnsub = eventsFeature.on('change', (event) => {
+      if (event.accounts && currentState.wallet === wallet) {
+        const updated = event.accounts[0];
+        if (updated) setState({ account: updated, address: updated.address });
+      }
+    });
+  }
+
+  setState({
+    status: 'connected',
+    wallet,
+    account,
+    address: account.address,
+    walletName: wallet.name,
+    walletIcon: wallet.icon || '',
+  });
+
+  try {
+    localStorage.setItem('ski:last-wallet', wallet.name);
+    localStorage.setItem('ski:last-address', account.address);
+  } catch {}
+}
+
 // ─── Reconnect (open wallet popup) ───────────────────────────────────
 
 /**
