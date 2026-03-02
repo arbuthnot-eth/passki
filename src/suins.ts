@@ -302,6 +302,33 @@ export function buildCreateLeafSubnameTx(
 
 type AnyTransportClient = SuiGrpcClient | SuiGraphQLClient;
 
+/** Fetch SUI/USD price by racing four exchanges — returns null only if all fail. */
+async function fetchSuiUsdPrice(): Promise<number | null> {
+  const valid = (v: unknown): number => {
+    const n = typeof v === 'string' ? parseFloat(v) : Number(v);
+    if (!Number.isFinite(n) || n <= 0) throw new Error('invalid');
+    return n;
+  };
+  try {
+    return await Promise.any([
+      fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT')
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then((d: { price: string }) => valid(d.price)),
+      fetch('https://api.coinbase.com/v2/prices/SUI-USD/spot')
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then((d: { data?: { amount?: string } }) => valid(d.data?.amount)),
+      fetch('https://api.bybit.com/v5/market/tickers?category=spot&symbol=SUIUSDT')
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then((d: { result?: { list?: Array<{ lastPrice: string }> } }) => valid(d.result?.list?.[0]?.lastPrice)),
+      fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd')
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then((d: { sui?: { usd?: number } }) => valid(d.sui?.usd)),
+    ]);
+  } catch {
+    return null;
+  }
+}
+
 async function listCoinsOfType(
   client: AnyTransportClient,
   owner: string,
@@ -338,58 +365,43 @@ function makeDeepBook(address: string): DeepBookContract {
  * Returns 'available' | 'taken' | 'owned'.
  * Falls back to 'available' on network error so the UI stays usable.
  */
+export type DomainStatusResult = {
+  avail: 'available' | 'taken' | 'owned';
+  targetAddress: string | null;
+};
+
 export async function checkDomainStatus(
   label: string,
   walletAddress?: string,
-): Promise<'available' | 'taken' | 'owned'> {
+): Promise<DomainStatusResult> {
   const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
   try {
     const record = await suinsClient.getNameRecord(`${label}.sui`);
-    if (!record) return 'available';
-    if (record.expirationTimestampMs && record.expirationTimestampMs < Date.now()) return 'available';
-    // Taken — check if current wallet owns the SuinsRegistration NFT for this domain
-    if (walletAddress) {
-      const domainName = `${label}.sui`;
+    if (!record) return { avail: 'available', targetAddress: null };
+    if (record.expirationTimestampMs && record.expirationTimestampMs < Date.now()) return { avail: 'available', targetAddress: null };
+    const targetAddress = record.targetAddress ?? null;
+    // Check ownership via the nftId on the record — one targeted query, no pagination issues
+    if (walletAddress && record.nftId) {
       const res = await fetch(GQL_URL, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          query: `
-            query($owner: SuiAddress!) {
-              address(address: $owner) {
-                objects(filter: { type: "${SUINS_REG_TYPE}" }) {
-                  nodes {
-                    asMoveObject { contents { json } }
-                  }
-                }
-              }
-            }
-          `,
-          variables: { owner: normalizeSuiAddress(walletAddress) },
+          query: `query($id: SuiAddress!) { object(address: $id) { owner { ... on AddressOwner { owner { address } } } } }`,
+          variables: { id: record.nftId },
         }),
       });
       const json = await res.json() as {
-        data?: { address?: { objects?: { nodes?: Array<{
-          asMoveObject?: { contents?: { json?: Record<string, unknown> } };
-        }> } } };
+        data?: { object?: { owner?: { owner?: { address?: string } } } };
       };
-      const nodes = json?.data?.address?.objects?.nodes ?? [];
-      const now = Date.now();
-      for (const node of nodes) {
-        const data = node.asMoveObject?.contents?.json;
-        if (!data) continue;
-        const expiry = Number(data['expiration_timestamp_ms'] ?? 0);
-        if (expiry > 0 && expiry < now) continue;
-        const dn = data['domain_name'] as string | undefined;
-        if (!dn) continue;
-        const normalized = dn.endsWith('.sui') ? dn : `${dn}.sui`;
-        if (normalized === domainName) return 'owned';
+      const ownerAddr = json?.data?.object?.owner?.owner?.address;
+      if (ownerAddr && ownerAddr.toLowerCase() === normalizeSuiAddress(walletAddress).toLowerCase()) {
+        return { avail: 'owned', targetAddress };
       }
     }
-    return 'taken';
+    return { avail: 'taken', targetAddress };
   } catch {
-    return 'available';
+    return { avail: 'available', targetAddress: null };
   }
 }
 
@@ -455,11 +467,14 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
 
   // ── 2. Pre-fetch price data shared across both swap paths ─────────
-  const [rawPrice, discountMap, extraRecord] = await Promise.all([
+  const [rawPrice, discountMap, extraRecord, fetchedSuiPrice] = await Promise.all([
     suinsClient.calculatePrice({ name: domain, years: 1 }),
     suinsClient.getCoinTypeDiscount(),
     suinsClient.getNameRecord('extra.sui'),
+    (suiPrice && suiPrice > 0) ? Promise.resolve(suiPrice) : fetchSuiUsdPrice(),
   ]);
+  const resolvedSuiPrice = fetchedSuiPrice;
+  if (!resolvedSuiPrice) throw new Error('Unable to fetch SUI/USD price from any source');
   const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
   const discountPct = discountMap.get(nsKey) ?? 0;
   const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
@@ -482,12 +497,12 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     );
 
     const poolKey = method === 'USDC' ? 'NS_USDC' : 'NS_SUI';
-    // USDC: 20% buffer (stablecoin, minimal slippage).
-    // SUI:  use actual price if available, otherwise assume $0.50 floor (conservative).
-    //       1.5x buffer for slippage + oracle lag.
-    const suiFloor = suiPrice && suiPrice > 0 ? suiPrice * 0.9 : 0.50;
+    // SUI amount needed = registration_price_usd / sui_usd_price  (NS price cancels out).
+    // Add 5% buffer for DeepBook pool slippage and minor oracle price lag.
+    // USDC path: flat 10¢ buffer (stablecoin, effectively no slippage).
+    const suiUsd = resolvedSuiPrice;
     const swapAmount = method === 'SUI'
-      ? Math.max(20, Math.ceil(discountedUsd / suiFloor) + 0.1)
+      ? Math.round((discountedUsd / suiUsd) * 1.05 * 1000) / 1000
       : discountedUsd + 0.10;
 
     const db = makeDeepBook(walletAddress);

@@ -806,7 +806,7 @@ body {
 
 .wk-ns-dot-sui {
   font-size: 0.72rem;
-  color: rgba(192, 132, 252, 0.6);
+  color: rgba(255, 255, 255, 0.2);
   font-weight: 500;
   white-space: nowrap;
   flex-shrink: 0;
@@ -828,6 +828,73 @@ body {
   font-weight: 600;
   color: #a78bfa;
   white-space: nowrap;
+}
+
+.wk-dd-ns-section--owned .wk-ns-dot-sui {
+  color: rgba(192, 132, 252, 0.6);
+}
+
+.wk-dd-ns-section--owned .wk-ns-price-val {
+  color: #a78bfa;
+}
+
+.wk-dd-ns-section--owned .wk-dd-ns-register-btn {
+  border-color: rgba(168, 85, 247, 0.45);
+  background: linear-gradient(135deg, rgba(88, 28, 135, 0.4), rgba(126, 34, 206, 0.35));
+  color: #c4b5fd;
+}
+
+.wk-dd-ns-section--available .wk-ns-dot-sui {
+  color: rgba(147, 197, 253, 0.6);
+}
+
+.wk-dd-ns-section--available .wk-ns-price-val {
+  color: rgba(147, 197, 253, 0.6);
+}
+
+.wk-dd-ns-section--available .wk-dd-ns-register-btn {
+  border: 1px solid white;
+  background: #4da2ff;
+  color: white;
+}
+
+.wk-dd-ns-section--available .wk-dd-ns-register-btn:hover {
+  background: #6db6ff;
+  border-color: white;
+  color: white;
+}
+
+.wk-dd-ns-section--taken .wk-ns-dot-sui {
+  color: rgba(251, 146, 60, 0.6);
+}
+
+.wk-dd-ns-section--taken .wk-ns-price-val {
+  color: rgba(251, 146, 60, 0.85);
+}
+
+.wk-dd-ns-section--taken .wk-dd-ns-register-btn {
+  border-color: rgba(251, 146, 60, 0.45);
+  background: linear-gradient(135deg, rgba(120, 53, 15, 0.6), rgba(180, 83, 9, 0.5));
+  color: rgba(251, 146, 60, 0.9);
+}
+
+.wk-dd-ns-section--taken .wk-dd-ns-register-btn:hover {
+  border-color: rgba(251, 146, 60, 0.75);
+  background: linear-gradient(135deg, rgba(120, 53, 15, 0.8), rgba(180, 83, 9, 0.7));
+  color: #fed7aa;
+}
+
+/* Target address matches connected wallet — .sui + button go purple */
+.wk-dd-ns-section--self-target .wk-ns-dot-sui {
+  color: rgba(192, 132, 252, 0.6);
+}
+.wk-dd-ns-section--self-target .wk-ns-price-val {
+  color: #a78bfa;
+}
+.wk-dd-ns-section--self-target .wk-dd-ns-register-btn {
+  border-color: rgba(168, 85, 247, 0.45);
+  background: linear-gradient(135deg, rgba(88, 28, 135, 0.4), rgba(126, 34, 206, 0.35));
+  color: rgba(192, 132, 252, 0.8);
 }
 
 .wk-ns-price-drop {
@@ -856,18 +923,18 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: 6px;
-  border: 1px solid rgba(168, 85, 247, 0.45);
-  background: linear-gradient(135deg, rgba(88, 28, 135, 0.4), rgba(126, 34, 206, 0.3));
-  color: #d8b4fe;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.2);
   font-size: 0.85rem;
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .wk-dd-ns-register-btn:hover {
-  border-color: rgba(192, 132, 252, 0.75);
-  background: linear-gradient(135deg, rgba(88, 28, 135, 0.6), rgba(126, 34, 206, 0.5));
-  color: #f3e8ff;
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.4);
 }
 
 .wk-dd-ns-register-btn:disabled {
@@ -876,7 +943,9 @@ body {
 }
 
 .wk-ns-route-wrap {
-  min-height: 14px;
+  display: flex;
+  justify-content: flex-start;
+  padding-left: 26px; /* 22px icon + 4px gap = aligns with input left edge */
 }
 
 .wk-ns-route {
@@ -906,7 +975,7 @@ body {
 }
 
 .wk-ns-route-warn {
-  color: rgba(251, 146, 60, 0.7);
+  color: rgba(239, 68, 68, 0.85);
   font-size: 0.58rem;
   margin-left: 2px;
 }
