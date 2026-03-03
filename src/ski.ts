@@ -44,6 +44,40 @@ function storeSession(s: StoredSession) {
   try { localStorage.setItem(`ski:session:${s.address}`, JSON.stringify(s)); } catch {}
 }
 
+// ─── Cross-domain session cookie (shared across sui.ski + all *.sui.ski) ─────
+// Domain=sui.ski (RFC 6265, no leading dot) covers the root domain and every
+// subdomain — sui.ski, splash.sui.ski, brandon.sui.ski, etc. — making it the
+// common session point for all names. All StoredSession fields are ASCII-safe
+// (hex/base64/ISO) so plain btoa() works without any encoding tricks.
+
+const XDOMAIN_COOKIE = 'ski_xdomain';
+const XDOMAIN_DOMAIN = 'sui.ski';
+
+function writeSharedSession(s: StoredSession): void {
+  try {
+    const b64 = btoa(JSON.stringify(s));
+    const maxAge = Math.max(0, Math.floor((new Date(s.expiresAt).getTime() - Date.now()) / 1000));
+    document.cookie = `${XDOMAIN_COOKIE}=${b64}; domain=${XDOMAIN_DOMAIN}; path=/; max-age=${maxAge}; secure; samesite=lax`;
+  } catch {}
+}
+
+function readSharedSession(address: string): StoredSession | null {
+  try {
+    const entry = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith(`${XDOMAIN_COOKIE}=`));
+    if (!entry) return null;
+    const s: StoredSession = JSON.parse(atob(entry.slice(XDOMAIN_COOKIE.length + 1)));
+    if (s.address !== address) return null;
+    if (new Date(s.expiresAt).getTime() < Date.now()) return null;
+    return s;
+  } catch { return null; }
+}
+
+function clearSharedSession(): void {
+  try {
+    document.cookie = `${XDOMAIN_COOKIE}=; domain=${XDOMAIN_DOMAIN}; path=/; max-age=0; secure; samesite=lax`;
+  } catch {}
+}
+
 // ─── Sign-in message builder ─────────────────────────────────────────
 
 const TTL_DEFAULT_MS  = 7 * 24 * 60 * 60 * 1000; //  7 days  — software wallets
@@ -130,9 +164,11 @@ export async function signIn(isReconnect = false): Promise<boolean> {
 
   const address = ws.address;
 
-  // Check for existing valid session (skip re-signing on page reload)
-  const stored = getStoredSession(address);
+  // Check for existing valid session — local first, then cross-subdomain cookie
+  const stored = getStoredSession(address) || readSharedSession(address);
   if (stored) {
+    // If restored from cross-domain cookie, cache locally so future loads skip the cookie read
+    try { if (!localStorage.getItem(`ski:session:${address}`)) storeSession(stored); } catch {}
     console.log('[.SKI] Restoring session for', address);
     await establishSession(address, stored.signature, stored.bytes, stored.visitorId);
     // Ensure splash drop on session restore (non-blocking)
@@ -161,8 +197,9 @@ export async function signIn(isReconnect = false): Promise<boolean> {
     const { signature, bytes } = signResult;
     const { visitorId } = deviceId;
 
-    // Persist session so we don't re-prompt on reload
+    // Persist session locally and in cross-domain cookie for *.sui.ski auto-restore
     storeSession({ address, signature, bytes, visitorId, expiresAt });
+    writeSharedSession({ address, signature, bytes, visitorId, expiresAt });
     try { localStorage.setItem(`ski:signed:${address}`, '1'); } catch {}
 
     // Cache WaaP proof encrypted by this device's fingerprint so subsequent
@@ -232,7 +269,7 @@ export async function signIn(isReconnect = false): Promise<boolean> {
 // ─── Forget device ───────────────────────────────────────────────────
 
 export { forgetDevice, disconnectSession } from './client/session.js';
-export { setModalLayout, type ModalLayout, mountBalanceCycler, mountSkiButton, openModal } from './ui.js';
+export { setModalLayout, type ModalLayout, mountBalanceCycler, mountSkiButton, mountDotButton, openModal } from './ui.js';
 
 // ─── Auto sign-in on wallet connect ──────────────────────────────────
 
@@ -257,6 +294,7 @@ window.addEventListener('ski:wallet-connected', async (e) => {
 
 window.addEventListener('ski:wallet-disconnected', () => {
   disconnectSession();
+  clearSharedSession();
   updateAppState({ splashSponsor: false });
 });
 

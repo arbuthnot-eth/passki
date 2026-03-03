@@ -19,6 +19,7 @@ import {
   activateAccount,
   signPersonalMessage,
   signAndExecuteTransaction,
+  reconnectWallet,
   autoReconnect,
   preloadStoredWallet,
   onWalletsChanged,
@@ -37,7 +38,7 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, type OwnedDomain } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, type OwnedDomain, type DomainStatusResult } from './suins.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
@@ -144,13 +145,13 @@ export function updateAppState(patch: Partial<AppState>) {
 // ─── DOM ─────────────────────────────────────────────────────────────
 
 const els = {
-  widget: document.getElementById('wallet-widget'),
-  wk: document.getElementById('wk-widget'),
-  skiDotBtn: document.getElementById('ski-dot-btn'),
-  skiBtn: document.getElementById('wallet-ski-btn'),
-  skiMenu: document.getElementById('ski-menu-root'),
-  modal: document.getElementById('ski-modal'),
-  signStage: document.getElementById('sign-stage'),
+  widget:    document.getElementById('ski-wallet') || document.getElementById('wallet-widget'),
+  profile:   document.getElementById('ski-profile') || document.getElementById('wk-widget'),
+  skiDot:    document.getElementById('ski-dot') || document.getElementById('ski-dot-btn'),
+  skiBtn:    document.getElementById('ski-btn') || document.getElementById('wallet-ski-btn'),
+  skiMenu:   document.getElementById('ski-menu') || document.getElementById('ski-menu-root'),
+  modal:     document.getElementById('ski-modal'),
+  signStage: document.getElementById('ski-sign'),
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -160,8 +161,8 @@ function esc(s: string): string {
 }
 
 function truncAddr(addr: string): string {
-  if (!addr || addr.length <= 16) return addr;
-  return addr.slice(0, 7) + '\u2026' + addr.slice(-5);
+  if (!addr || addr.length <= 20) return addr;
+  return addr.slice(0, 10) + '\u2026' + addr.slice(-8);
 }
 
 function fmtSui(n: number): string {
@@ -394,7 +395,7 @@ export function showToastWithRetry(msg: string, retryLabel: string, retryFn: () 
 
 let _skiSvgText: string | null = SKI_SVG_TEXT;
 
-type SkiDotVariant = 'green-circle' | 'blue-square' | 'black-diamond';
+type SkiDotVariant = 'green-circle' | 'blue-square' | 'black-diamond' | 'red-hexagon';
 
 /**
  * Generic SVG string builder. Renames all internal IDs to `{idPrefix}-*` so
@@ -797,7 +798,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   detailEl.innerHTML = `
     <div class="ski-detail-header${addr0 ? ' ski-detail-header--keyed' : ''}">
       <div class="ski-detail-icon-row"${addr0 ? ` data-addr-idx="0" data-full-addr="${esc(addr0)}"` : ''}>
-        ${!(/waap/i.test(w.name) && w.icon && detailEl.id === 'ski-connected-key') ? `<div class="ski-detail-icons-top">
+        <div class="ski-detail-icons-top">
           <div class="ski-detail-key-column">${activePfpHtml}</div>
           ${w.icon ? (() => {
             const splashAuth = getSponsorState().auth;
@@ -812,32 +813,52 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
               </div>
               ${activated ? `<div class="ski-revoke-tooltip" aria-hidden="true">Withdraw <span class="ski-revoke-tooltip-name">${esc(w.name)}</span> Splash <img src="${SUI_DROP_URI}" class="ski-revoke-tooltip-drop" alt=""></div>` : ''}
               ${/waap/i.test(w.name) && addr0 ? `<span class="ski-detail-provider-badge" aria-hidden="true">${waapProviderIcon(addr0)}</span>` : ''}
-              ${/waap/i.test(w.name) && detailEl.id !== 'ski-connected-key' ? `<div class="ski-detail-key-column ski-detail-key-column--in-wrap">${activePfpHtml}</div>` : ''}
+              ${/waap/i.test(w.name) ? `<div class="ski-detail-key-column ski-detail-key-column--in-wrap">${activePfpHtml}</div>` : ''}
             </div>`;
           })() : ''}
           ${balanceCyclerHtml}
-        </div>` : ''}
-        ${/waap/i.test(w.name) && w.icon && detailEl.id === 'ski-connected-key' && addr0 ? `<div class="ski-detail-addr-main ski-connected-key-addr-row"><div class="ski-detail-key-column ski-detail-key-column--small">${activePfpHtml}</div>${activeTextHtml}</div>` : activeTextHtml}
+        </div>
+        ${activeTextHtml}
       </div>
     </div>
-    ${otherKeysHtml ? `<div class="ski-detail-row">${otherKeysHtml}</div>` : ''}
-    ${(networks.length || current.length || retiredSection) ? `
-      <div class="ski-gear-row">
-        <button class="ski-gear-btn" id="ski-gear-btn" title="Wallet details" aria-expanded="false">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-      </div>
-      <div class="ski-gear-sections" id="ski-gear-sections" hidden>
-        ${networks.length ? sectionHtml('Networks', networks.length, networksHtml) : ''}
-        ${current.length ? sectionHtml('Features', current.length, currentHtml) : ''}
-        ${retiredSection}
-      </div>
-    ` : ''}
   `;
 
-  // Sync brand slots when this is the connected-key header element
-  if (detailEl.id === 'ski-connected-key') {
-    syncBrandPfp(detailEl);
+  // Render other keys (black diamonds) into the slot below the legend
+  const otherKeysSlot = document.getElementById('ski-other-keys-slot');
+  if (otherKeysSlot) {
+    otherKeysSlot.innerHTML = otherKeysHtml ? `<div class="ski-detail-row">${otherKeysHtml}</div>` : '';
+    // Bind copy buttons in other keys
+    otherKeysSlot.querySelectorAll('.ski-copy-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const row = (btn as HTMLElement).closest('[data-full-addr]');
+        const addr = row?.getAttribute('data-full-addr') || '';
+        if (addr) navigator.clipboard?.writeText(addr).then(() => {
+          (btn as HTMLElement).textContent = '\u2713';
+          setTimeout(() => { (btn as HTMLElement).textContent = '\u2398'; }, 1500);
+        });
+      });
+    });
+  }
+
+  // Render gear sections into the dedicated slot above the settings strip
+  const gearSlot = document.getElementById('ski-gear-slot');
+  const gearRowStrip = document.getElementById('ski-gear-row-strip');
+  if (gearSlot) {
+    gearSlot.innerHTML = (networks.length || current.length || retiredSection)
+      ? `<div class="ski-gear-sections" id="ski-gear-sections" hidden>
+          ${networks.length ? sectionHtml('Networks', networks.length, networksHtml) : ''}
+          ${current.length ? sectionHtml('Features', current.length, currentHtml) : ''}
+          ${retiredSection}
+        </div>`
+      : '';
+  }
+  if (gearRowStrip) {
+    gearRowStrip.innerHTML = (networks.length || current.length || retiredSection)
+      ? `<button class="ski-gear-btn" id="ski-gear-btn" title="Wallet details" aria-expanded="false">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>`
+      : '';
   }
 
   // Unified click handler — splash toggle AND subname mint.
@@ -872,8 +893,9 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
       } finally {
         splashBtn.disabled = false;
       }
-      // Refresh splash state on all key shape buttons in-place
-      detailEl.querySelectorAll<HTMLButtonElement>('[data-splash-addr]').forEach((btn) => {
+      // Refresh splash state on all key shape buttons in-place (detail + other keys)
+      const splashRoot = detailEl.closest('.ski-modal') ?? detailEl;
+      splashRoot.querySelectorAll<HTMLButtonElement>('[data-splash-addr]').forEach((btn) => {
         const a = btn.getAttribute('data-splash-addr')!;
         const on = isSponsoredAddress(a);
         btn.classList.toggle('ski-key-pfp--splash', on);
@@ -953,10 +975,13 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
     }
   };
 
-  // Bind gear toggle
-  detailEl.querySelector('#ski-gear-btn')?.addEventListener('click', () => {
-    const sections = detailEl.querySelector('#ski-gear-sections') as HTMLElement | null;
-    const btn = detailEl.querySelector('#ski-gear-btn') as HTMLElement | null;
+  // Share the same click handler on the other-keys slot (splash toggle + subname mint)
+  if (otherKeysSlot) otherKeysSlot.onclick = detailEl.onclick;
+
+  // Bind gear toggle (button in settings strip, sections in gear slot)
+  document.getElementById('ski-gear-btn')?.addEventListener('click', () => {
+    const sections = document.getElementById('ski-gear-sections');
+    const btn = document.getElementById('ski-gear-btn');
     if (!sections) return;
     const open = !sections.hidden;
     sections.hidden = open;
@@ -1185,9 +1210,8 @@ function buildSplashLegend(): string {
 
   let rowIdx = 0;
 
-  // Shared table wrapper with fixed columns: [38px shape] [auto name] [auto addr] [38px icon]
-  const wrapTable = (rows: string) =>
-    `<table class="ski-legend-table"><colgroup><col class="ski-legend-col-shape-w"><col><col><col class="ski-legend-col-icon-w"></colgroup><tbody>${rows}</tbody></table>`;
+  const wrapScroll = (items: string) =>
+    `<div class="ski-legend-scroll">${items}</div>`;
 
   // Build the WaaP "create new" row — always appended at the bottom.
   // Clicking it opens WaaP's UI to create or switch accounts.
@@ -1197,7 +1221,7 @@ function buildSplashLegend(): string {
     const iconHtml = waapWallet.icon
       ? `<img class="ski-legend-wallet-icon" src="${esc(waapWallet.icon)}" alt="${esc(waapWallet.name)}">`
       : `<span></span>`;
-    const html = `<tr class="ski-legend-row ski-legend-row--create-waap" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(waapWallet.name)}" data-legend-create-waap="true" tabindex="0" role="option" aria-selected="false"><td class="ski-legend-col-shape"><span class="ski-legend-shape">${LEGEND_GREEN}</span></td><td class="ski-legend-col-name" colspan="2"><span class="ski-legend-name ski-legend-name--create-waap">+ new WaaP key</span></td><td class="ski-legend-col-icon">${iconHtml}</td></tr>`;
+    const html = `<div class="ski-legend-row ski-legend-row--create-waap" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(waapWallet.name)}" data-legend-create-waap="true" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span><span class="ski-legend-row-mid"><span class="ski-legend-name ski-legend-name--create-waap">+ new WaaP key</span></span>${iconHtml}</div>`;
     rowIdx++;
     return html;
   };
@@ -1229,28 +1253,47 @@ function buildSplashLegend(): string {
       if (aW !== bW) return aW - bW;
       return a.walletName.localeCompare(b.walletName);
     });
-    const rows = entries.map((e) => {
+    const buildEntryRow = (e: Entry) => {
       const shapeHtml = e.tier === 0 ? LEGEND_DIAMOND : e.tier === 1 ? LEGEND_BLUE : LEGEND_GREEN;
       const social = socialIconSvg(e.walletName);
-      // Col 2: SuiNS name link or empty
       const nameHtml = e.suinsName
         ? (() => { const bare = e.suinsName.replace(/\.sui$/, ''); return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-legend-name">${esc(bare)}</a>`; })()
         : `<span class="ski-legend-name ski-legend-name--empty"></span>`;
-      // Col 3: copy-on-click addr span or wallet name
       const addrCell = e.address
         ? `<span class="ski-legend-addr" data-copy-addr="${esc(e.address)}" data-scan-addr="${esc(e.address)}" title="${esc(e.address)}">${esc(truncAddr(e.address))}</span>`
         : `<span class="ski-legend-name ski-legend-name--wallet">${esc(e.walletName)}</span>`;
-      // Col 4: WaaP with known address → per-address provider icon; other social → social SVG; else wallet logo
       const iconCell = /waap/i.test(e.walletName) && e.address
         ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${waapProviderIcon(e.address)}</span>`
         : social
           ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
           : (e.icon ? `<img class="ski-legend-wallet-icon" src="${esc(e.icon)}" alt="${esc(e.walletName)}">` : `<span></span>`);
       const addrAttr = e.address ? ` data-legend-addr="${esc(e.address)}"` : '';
-      return `<tr class="ski-legend-row" data-legend-idx="${rowIdx++}" data-legend-wallet="${esc(e.walletName)}"${addrAttr} tabindex="0" role="option" aria-selected="false"><td class="ski-legend-col-shape"><span class="ski-legend-shape">${shapeHtml}</span></td><td class="ski-legend-col-name">${nameHtml}</td><td class="ski-legend-col-addr">${addrCell}</td><td class="ski-legend-col-icon">${iconCell}</td></tr>`;
-    }).join('');
+      return `<div class="ski-legend-row" data-legend-idx="${rowIdx++}" data-legend-wallet="${esc(e.walletName)}"${addrAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span><span class="ski-legend-row-mid">${nameHtml}</span>${addrCell}${iconCell}</div>`;
+    };
+
+    // Group entries by tier with collapsible arrows
+    const ARROW = `<button class="ski-legend-group-arrow" type="button" aria-label="Expand group">\u25B8</button>`;
+    const tierGroups = new Map<number, Entry[]>();
+    for (const e of entries) { const arr = tierGroups.get(e.tier) ?? []; arr.push(e); tierGroups.set(e.tier, arr); }
+    let allHtml = '';
+    for (const tier of [0, 1, 2]) {
+      const group = tierGroups.get(tier);
+      // For green (tier 2): prepend WaaP create row
+      const extraBefore = tier === 2 ? buildWaapCreateRow() : '';
+      if (!group || group.length === 0) {
+        if (extraBefore) allHtml += extraBefore;
+        continue;
+      }
+      const rowsHtml = group.map(buildEntryRow);
+      if (extraBefore) rowsHtml.unshift(extraBefore);
+      if (rowsHtml.length === 1) {
+        allHtml += rowsHtml[0];
+      } else {
+        allHtml += `<div class="ski-legend-group"><div class="ski-legend-group-head">${ARROW}${rowsHtml[0]}</div><div class="ski-legend-group-body"><div class="ski-legend-group-inner">${rowsHtml.slice(1).join('')}</div></div></div>`;
+      }
+    }
     return `<div class="ski-splash-legend">
-    <div class="ski-legend-targets">${wrapTable(rows + buildWaapCreateRow())}</div>
+    <div class="ski-legend-targets">${wrapScroll(allHtml)}</div>
   </div>`;
   }
 
@@ -1264,7 +1307,7 @@ function buildSplashLegend(): string {
     const iconCell = social
       ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
       : (w.icon ? `<img class="ski-legend-wallet-icon" src="${esc(w.icon)}" alt="${esc(w.name)}">` : `<span></span>`);
-    const html = `<tr class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(w.name)}" tabindex="0" role="option" aria-selected="false"><td class="ski-legend-col-shape"><span class="ski-legend-shape">${LEGEND_GREEN}</span></td><td class="ski-legend-col-name">${col2}</td><td class="ski-legend-col-addr"><span class="ski-legend-name ski-legend-name--wallet">${esc(w.name)}</span></td><td class="ski-legend-col-icon">${iconCell}</td></tr>`;
+    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(w.name)}" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span><span class="ski-legend-row-mid">${col2}<span class="ski-legend-name ski-legend-name--wallet">${esc(w.name)}</span></span>${iconCell}</div>`;
     rowIdx++;
     return html;
   }).join('');
@@ -1302,7 +1345,7 @@ function buildSplashLegend(): string {
     return aW - bW;
   });
 
-  const sponsoredRows = annotated.map(({ entry: e, primaryName, tier }) => {
+  const buildSponsoredRow = ({ entry: e, primaryName, tier }: LegendEntry) => {
     const shapeHtml = tier === 2 ? LEGEND_GREEN : tier === 1 ? LEGEND_BLUE : LEGEND_DIAMOND;
     const nameHtml = primaryName
       ? (() => { const bare = primaryName.replace(/\.sui$/, ''); return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-legend-name">${esc(bare)}</a>`; })()
@@ -1314,14 +1357,30 @@ function buildSplashLegend(): string {
       ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
       : (wIcon?.icon ? `<img class="ski-legend-wallet-icon" src="${esc(wIcon.icon)}" alt="${esc(wIcon.name)}">` : `<span></span>`);
     const walletAttr = wIcon ? ` data-legend-wallet="${esc(wIcon.name)}"` : '';
-    const html = `<tr class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-addr="${esc(e.address)}"${walletAttr} tabindex="0" role="option" aria-selected="false"><td class="ski-legend-col-shape"><span class="ski-legend-shape">${shapeHtml}</span></td><td class="ski-legend-col-name">${nameHtml}</td><td class="ski-legend-col-addr">${addrCell}</td><td class="ski-legend-col-icon">${iconCell}</td></tr>`;
+    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-addr="${esc(e.address)}"${walletAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span><span class="ski-legend-row-mid">${nameHtml}</span>${addrCell}${iconCell}</div>`;
     rowIdx++;
     return html;
-  }).join('');
+  };
+
+  // Group sponsored entries by tier with collapsible arrows
+  const ARROW_S = `<button class="ski-legend-group-arrow" type="button" aria-label="Expand group">\u25B8</button>`;
+  const sTierGroups = new Map<number, LegendEntry[]>();
+  for (const le of annotated) { const arr = sTierGroups.get(le.tier) ?? []; arr.push(le); sTierGroups.set(le.tier, arr); }
+  let sponsoredHtml = '';
+  for (const tier of [0, 1, 2]) {
+    const group = sTierGroups.get(tier);
+    if (!group || group.length === 0) continue;
+    const rowsHtml = group.map(buildSponsoredRow);
+    if (rowsHtml.length === 1) {
+      sponsoredHtml += rowsHtml[0];
+    } else {
+      sponsoredHtml += `<div class="ski-legend-group"><div class="ski-legend-group-head">${ARROW_S}${rowsHtml[0]}</div><div class="ski-legend-group-body"><div class="ski-legend-group-inner">${rowsHtml.slice(1).join('')}</div></div></div>`;
+    }
+  }
 
   const targetsHtml = annotated.length === 0 && greenWallets.length === 0
     ? `<span class="ski-legend-target ski-legend-target--open">all keys</span>`
-    : wrapTable(sponsoredRows + walletRows + buildWaapCreateRow());
+    : wrapScroll(sponsoredHtml + buildWaapCreateRow() + walletRows);
 
   return `<div class="ski-splash-legend">
     <div class="ski-legend-header">
@@ -1357,30 +1416,11 @@ function activateLegendRow(idx: number, fromHover = false) {
   activeLegendIdx = idx;
   const walletName = row.dataset.legendWallet;
   const detailEl = document.getElementById('ski-modal-detail');
-  const connKey = document.getElementById('ski-connected-key');
 
   // The hovered legend address (if any) is passed as connectedAddr so it floats to top
   const hoverAddr = row.dataset.legendAddr || getState().address;
 
-  if (walletName === getState().walletName) {
-    // Connected wallet row: highlight matching addr in header + show its wallet in right pane
-    const addr = row.dataset.legendAddr;
-    if (connKey) {
-      connKey.querySelectorAll<HTMLElement>('[data-full-addr]').forEach((el) => {
-        el.classList.toggle('ski-detail-addr--highlighted', !!addr && el.dataset.fullAddr === addr);
-      });
-    }
-    if (detailEl) detailEl.classList.remove('ski-detail--key-hover');
-    const wallet = getSuiWallets().find((w) => w.name === walletName);
-    if (wallet && detailEl) showKeyDetail(wallet, detailEl, hoverAddr);
-    return;
-  }
-
-  // Non-connected wallet: clear hover effects, update right pane
   if (detailEl) detailEl.classList.remove('ski-detail--key-hover');
-  if (connKey) {
-    connKey.querySelectorAll('.ski-detail-addr--highlighted').forEach((el) => el.classList.remove('ski-detail-addr--highlighted'));
-  }
   if (walletName) {
     const wallet = getSuiWallets().find((w) => w.name === walletName);
     if (wallet && detailEl) showKeyDetail(wallet, detailEl, hoverAddr);
@@ -1570,6 +1610,7 @@ function renderModal(): void {
 
   // layout2 = clean embed mode — no settings strip
   const settingsStrip = layout !== 'layout2' ? `<div class="ski-modal-settings-strip">
+      <div class="ski-gear-row" id="ski-gear-row-strip"></div>
       <label class="ski-layout-toggle" title="${layout === 'splash' ? 'Switch to wallet list' : 'Switch to splash view'}">
         <input type="checkbox" id="ski-layout-check"${layout === 'splash' ? ' checked' : ''}>
         <span class="ski-layout-track"><span class="ski-layout-thumb"></span></span>
@@ -1605,6 +1646,7 @@ function renderModal(): void {
   els.modal.innerHTML = `
     <div class="ski-modal-overlay open" id="ski-modal-overlay">
       <div class="ski-modal" style="animation:ski-modal-in .2s ease">
+        <button id="ski-modal-close">&times;</button>
         <div class="ski-modal-header">
           <div class="ski-modal-header-brand">
             <div class="ski-modal-header-brand-top">
@@ -1629,26 +1671,15 @@ function renderModal(): void {
                   <p class="ski-modal-tagline">once,<br>everywhere</p>
                 </div>
               </div>
-              <button id="ski-modal-close">&times;</button>
             </div>
-            ${ws.address ? `<div class="ski-detail-addr-main ski-connected-key-addr-row">
-              <div class="ski-detail-key-column ski-detail-key-column--small">${keyPfpHtml(ws.address, app.suinsName || null)}</div>
-              <div class="ski-detail-key-text">
-                ${app.suinsName ? `<span class="ski-detail-suins-slot">${esc(app.suinsName)}</span>` : ''}
-                <div class="ski-detail-addr-row">
-                  <a href="https://suiscan.xyz/mainnet/account/${esc(ws.address)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(ws.address)}">${esc(truncAddr(ws.address))}</a>
-                  <button class="ski-copy-btn" id="ski-header-copy" title="Copy address">\u2398</button>
-                </div>
-              </div>
-            </div>` : ''}
           </div>
         </div>
         <div class="ski-modal-body">
+          <div class="ski-modal-col ski-modal-detail" id="ski-modal-detail"></div>
           ${leftColHtml}
-          <div class="ski-modal-right-col">
-            <div class="ski-modal-col ski-modal-detail" id="ski-modal-detail"></div>
-          </div>
+          <div id="ski-other-keys-slot"></div>
         </div>
+        <div id="ski-gear-slot"></div>
         ${settingsStrip}
       </div>
     </div>
@@ -1658,8 +1689,6 @@ function renderModal(): void {
   document.getElementById('ski-modal-overlay')?.addEventListener('click', (e) => {
     if ((e.target as HTMLElement).id === 'ski-modal-overlay') closeModal();
   });
-  document.getElementById('ski-header-copy')?.addEventListener('click', (e) => { e.stopPropagation(); copyAddress(); });
-
   // Mount balance cycler on the brand balance slot
   headerCyclerUnmount?.();
   const headerBalEl = document.getElementById('ski-brand-balance');
@@ -2099,12 +2128,12 @@ function skiHref(): string {
 // ─── Render: Widget Pill ─────────────────────────────────────────────
 
 function renderWidget() {
-  if (!els.wk) return;
+  if (!els.profile) return;
   const ws = getState();
 
-  // Disconnected: hide wk-widget — profile button handles connect
+  // Disconnected: hide profile — SKI button handles connect
   if (!ws.address) {
-    els.wk.innerHTML = '';
+    els.profile.innerHTML = '';
     return;
   }
 
@@ -2126,7 +2155,7 @@ function renderWidget() {
     ? '<span class="wk-widget-ika-badge" title="Ika dWallet active">ika</span>'
     : '';
 
-  els.wk.innerHTML = `
+  els.profile.innerHTML = `
     <div class="wk-widget">
       <button class="wk-widget-btn connected" id="wallet-pill-btn" type="button" title="Open profile">
         ${iconHtml}
@@ -2153,6 +2182,7 @@ function hasValidSkiSession(address: string): boolean {
 
 // Registry of externally mounted ski buttons (same pattern as externalCyclers)
 const externalSkiBtns = new Set<HTMLElement>();
+const externalDotBtns = new Set<HTMLElement>();
 
 function _renderSkiBtnEl(el: HTMLElement) {
   const ws = getState();
@@ -2185,13 +2215,21 @@ function _renderSkiBtnEl(el: HTMLElement) {
 }
 
 function _renderDotBtn() {
-  const btn = els.skiDotBtn;
+  const btn = els.skiDot;
   if (!btn) return;
   const ws = getState();
   if (!ws.address) { btn.style.display = 'none'; return; }
   btn.style.display = '';
   const variant: SkiDotVariant = app.suinsName ? 'blue-square' : 'black-diamond';
   btn.innerHTML = _shapeOnlySvg(variant, 31);
+}
+
+function _renderDotBtnEl(el: HTMLElement) {
+  const ws = getState();
+  if (!ws.address) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  const variant: SkiDotVariant = app.suinsName ? 'blue-square' : 'black-diamond';
+  el.innerHTML = _shapeOnlySvg(variant, 31);
 }
 
 function renderSkiBtn() {
@@ -2204,6 +2242,10 @@ function renderSkiBtn() {
     if (document.contains(el)) _renderSkiBtnEl(el);
     else externalSkiBtns.delete(el);
   });
+  externalDotBtns.forEach((el) => {
+    if (document.contains(el)) _renderDotBtnEl(el);
+    else externalDotBtns.delete(el);
+  });
 }
 
 /**
@@ -2214,7 +2256,7 @@ function renderSkiBtn() {
  * @returns unmount function — call it to detach and clean up
  */
 export function mountSkiButton(el: HTMLElement): () => void {
-  el.classList.add('wallet-ski-btn');
+  el.classList.add('ski-btn');
   _renderSkiBtnEl(el);
   externalSkiBtns.add(el);
 
@@ -2247,7 +2289,35 @@ export function mountSkiButton(el: HTMLElement): () => void {
     externalSkiBtns.delete(el);
     el.removeEventListener('click', handleClick);
     el.removeEventListener('keydown', handleKeydown);
-    el.classList.remove('wallet-ski-btn');
+    el.classList.remove('ski-btn');
+  };
+}
+
+/**
+ * Mount a live dot status button onto any element.
+ * Shows a blue square (SuiNS name set) or black diamond (connected, no name),
+ * and is hidden while disconnected. Clicking opens the SKI modal.
+ *
+ * @returns unmount function — call it to detach and clean up
+ */
+export function mountDotButton(el: HTMLElement): () => void {
+  el.classList.add('ski-btn', 'ski-dot');
+  _renderDotBtnEl(el);
+  externalDotBtns.add(el);
+
+  function handleClick(e: MouseEvent) {
+    e.stopPropagation();
+    if (modalOpen) { closeModal(); return; }
+    if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:menu-open', '0'); } catch {} render(); }
+    openModal();
+  }
+
+  el.addEventListener('click', handleClick);
+
+  return () => {
+    externalDotBtns.delete(el);
+    el.removeEventListener('click', handleClick);
+    el.classList.remove('ski-btn', 'ski-dot');
   };
 }
 
@@ -2259,16 +2329,98 @@ let nsLabel = (() => { try { return localStorage.getItem('ski:ns-label') || 'spl
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
-let nsAvail: null | 'available' | 'taken' | 'owned' = null;
+let nsAvail: null | 'available' | 'taken' | 'owned' | 'grace' = null;
+let nsGraceEndMs = 0;
 let nsTargetAddress: string | null = null; // resolved address for the current label (if registered)
 let nsLastDigest = ''; // digest from last successful registration; shown in route area
+let nsSubnameParent: OwnedDomain | null = null; // when set, we're in subname-creation mode
+let nsShowTargetInput = false; // target-address inline editor open
+let nsNewTargetAddr = ''; // value in the target-address input
+let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
+let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
+let nsRealOwnerAddr = ''; // discovered on-chain owner address (WaaP wallets differ from wallet address)
+
+// ─── Wishlist (black-diamond names the user is watching) ─────────────
+let nsWishlist: string[] = (() => {
+  try { const v = localStorage.getItem('ski:ns-wishlist'); return v ? JSON.parse(v) : []; } catch { return []; }
+})();
+
+function _addToWishlist(label: string) {
+  const bare = label.replace(/\.sui$/, '').toLowerCase();
+  if (!bare || nsWishlist.includes(bare)) return;
+  nsWishlist.push(bare);
+  try { localStorage.setItem('ski:ns-wishlist', JSON.stringify(nsWishlist)); } catch {}
+}
+
+function _removeFromWishlist(label: string) {
+  const bare = label.replace(/\.sui$/, '').toLowerCase();
+  nsWishlist = nsWishlist.filter(n => n !== bare);
+  try { localStorage.setItem('ski:ns-wishlist', JSON.stringify(nsWishlist)); } catch {}
+}
+
+// ─── Owned domains localStorage cache ────────────────────────────────
+function _cacheOwnedDomains(addr: string, domains: OwnedDomain[]) {
+  try {
+    const data = { ts: Date.now(), domains };
+    localStorage.setItem(`ski:ns-owned:${addr}`, JSON.stringify(data));
+  } catch { /* quota exceeded — ignore */ }
+}
+
+function _loadCachedOwnedDomains(addr: string): OwnedDomain[] | null {
+  try {
+    const raw = localStorage.getItem(`ski:ns-owned:${addr}`);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as { ts: number; domains: OwnedDomain[] };
+    // Cache valid for 10 minutes
+    if (Date.now() - data.ts > 10 * 60 * 1000) return null;
+    return data.domains;
+  } catch { return null; }
+}
 let ns5CharPriceUsd: number | null = (() => {
   try { const v = localStorage.getItem('ski:ns5-price'); return v ? parseFloat(v) : null; } catch { return null; }
 })(); // loaded once, reused for all 5+ char names; persisted to localStorage
 
+/**
+ * If a checkDomainStatus result reveals an NFT owner for a self-target domain,
+ * store it as the real on-chain owner address (for WaaP wallets where wallet ≠ owner).
+ */
+function _maybeDiscoverRealOwner(result: DomainStatusResult) {
+  if (nsRealOwnerAddr) return;
+  if (!result.nftOwner || !result.targetAddress) return;
+  const walletAddr = getState().address;
+  if (!walletAddr) return;
+  if (result.targetAddress.toLowerCase() !== walletAddr.toLowerCase()) return;
+  nsRealOwnerAddr = result.nftOwner;
+  nsOwnedFetchedFor = '';
+  _fetchOwnedDomains();
+  if (nsAvail === 'taken') nsAvail = 'owned';
+}
+
+/** Discover the real on-chain owner address using a known SuiNS name. */
+async function _discoverRealOwner() {
+  if (nsRealOwnerAddr) return;
+  const ws = getState();
+  if (!ws.address) return;
+  const name = app.suinsName || suinsCache[ws.address];
+  if (!name) return;
+  try {
+    const owner = await lookupNftOwner(name);
+    if (owner && owner.toLowerCase() !== ws.address.toLowerCase()) {
+      nsRealOwnerAddr = owner;
+      nsOwnedFetchedFor = '';
+      _fetchOwnedDomains();
+      // Re-check current domain if one is being viewed
+      if (nsLabel.length >= 3 && isValidNsLabel(nsLabel)) {
+        nsPriceFetchFor = '';
+        fetchAndShowNsPrice(nsLabel);
+      }
+    }
+  } catch {}
+}
+
 async function fetchAndShowNsPrice(label: string) {
   if (label.length < 3) {
-    nsPriceUsd = null; nsPriceFetchFor = ''; nsAvail = null;
+    nsPriceUsd = null; nsPriceFetchFor = ''; nsAvail = null; nsGraceEndMs = 0;
     _patchNsPrice(); _patchNsStatus();
     return;
   }
@@ -2283,18 +2435,23 @@ async function fetchAndShowNsPrice(label: string) {
       nsPriceUsd = ns5CharPriceUsd;
       _patchNsPrice();
       const ws = getState();
-      const result = await checkDomainStatus(label, ws.address || undefined);
+      const _extra = nsRealOwnerAddr ? [nsRealOwnerAddr] : undefined;
+      const result = await checkDomainStatus(label, ws.address || undefined, _extra);
       if (nsPriceFetchFor !== label) return;
       nsAvail = result.avail;
+      nsGraceEndMs = result.graceEndMs ?? 0;
       nsTargetAddress = result.targetAddress;
+      _maybeDiscoverRealOwner(result);
+      _patchNsPrice();
       _patchNsStatus();
       return;
     }
     // First 5+ char lookup — fetch price once, then cache it
     const ws = getState();
+    const _extra = nsRealOwnerAddr ? [nsRealOwnerAddr] : undefined;
     const [priceResult, statusResult] = await Promise.allSettled([
       fetchDomainPriceUsd(label),
-      checkDomainStatus(label, ws.address || undefined),
+      checkDomainStatus(label, ws.address || undefined, _extra),
     ]);
     if (nsPriceFetchFor !== label) return;
     if (priceResult.status === 'fulfilled') {
@@ -2304,7 +2461,9 @@ async function fetchAndShowNsPrice(label: string) {
     nsPriceUsd = priceResult.status === 'fulfilled' ? priceResult.value : null;
     const sr5 = statusResult.status === 'fulfilled' ? statusResult.value : null;
     nsAvail = sr5?.avail ?? null;
+    nsGraceEndMs = sr5?.graceEndMs ?? 0;
     nsTargetAddress = sr5?.targetAddress ?? null;
+    if (sr5) _maybeDiscoverRealOwner(sr5);
     _patchNsPrice();
     _patchNsStatus();
     return;
@@ -2312,15 +2471,18 @@ async function fetchAndShowNsPrice(label: string) {
 
   // 3–4 char names have variable pricing — fetch both in parallel
   const ws = getState();
+  const _extra = nsRealOwnerAddr ? [nsRealOwnerAddr] : undefined;
   const [priceResult, statusResult] = await Promise.allSettled([
     fetchDomainPriceUsd(label),
-    checkDomainStatus(label, ws.address || undefined),
+    checkDomainStatus(label, ws.address || undefined, _extra),
   ]);
   if (nsPriceFetchFor !== label) return;
   nsPriceUsd = priceResult.status === 'fulfilled' ? priceResult.value : null;
   const sr = statusResult.status === 'fulfilled' ? statusResult.value : null;
   nsAvail = sr?.avail ?? null;
+  nsGraceEndMs = sr?.graceEndMs ?? 0;
   nsTargetAddress = sr?.targetAddress ?? null;
+  if (sr) _maybeDiscoverRealOwner(sr);
   _patchNsPrice();
   _patchNsStatus();
 }
@@ -2332,34 +2494,167 @@ function _patchNsPrice() {
 }
 
 function _nsRouteHtml(): string {
+  // Target-address inline editor
+  if (nsShowTargetInput) {
+    return `<span class="wk-ns-route wk-ns-route--target-edit"><input id="wk-ns-target-input" class="wk-ns-target-input" type="text" value="${esc(nsNewTargetAddr)}" placeholder="0x…" spellcheck="false" autocomplete="off"><button id="wk-ns-target-submit" class="wk-ns-target-submit" type="button" title="Set target address">\u2192</button><button id="wk-ns-target-cancel" class="wk-ns-unpin-btn" type="button" title="Cancel">\u2715</button></span>`;
+  }
+
+  // Subname mode: show parent badge + unpin
+  if (nsSubnameParent) {
+    const parentBare = nsSubnameParent.name.replace(/\.sui$/, '');
+    return `<span class="wk-ns-route"><span class="wk-ns-subname-badge">${esc(parentBare)}.sui</span><button id="wk-ns-unpin-btn" class="wk-ns-unpin-btn" type="button" title="Exit subname mode">\u2715</button></span>`;
+  }
+
   // After a successful registration, show the tx digest instead of the route indicator
   if (nsLastDigest) {
     const short = nsLastDigest.slice(0, 8) + '…' + nsLastDigest.slice(-4);
-    return `<span class="wk-ns-route"><span class="wk-ns-digest" id="wk-ns-digest-copy" title="Copy transaction hash" style="cursor:pointer">${short}</span></span>`;
+    return `<span class="wk-ns-route"><a class="wk-ns-digest" id="wk-ns-digest-link" href="https://suiscan.xyz/mainnet/tx/${nsLastDigest}" target="_blank" rel="noopener" title="View on SuiScan" style="cursor:pointer;color:inherit;text-decoration:none">${short} \u2197</a></span>`;
   }
 
   const walletAddr = getState().address?.toLowerCase() ?? '';
+  const walletAddrRaw = getState().address ?? '';
   const isOwnerAddr = nsTargetAddress
     ? nsTargetAddress.toLowerCase() === walletAddr
     : false;
-  const addrHtml = nsTargetAddress
-    ? `<span class="wk-ns-route-addr" id="wk-ns-route-addr" title="${nsTargetAddress}" style="cursor:pointer;font-family:monospace;font-size:0.75em;${isOwnerAddr ? 'color:rgba(192,132,252,0.85)' : 'opacity:0.6'}">${nsTargetAddress.slice(0, 6)}…${nsTargetAddress.slice(-4)}</span>`
-    : '';
 
-  // Owned: prompt the user to click the blue square to set as primary
-  if (nsAvail === 'owned') {
-    return `<span class="wk-ns-route">${addrHtml}<span class="wk-ns-route-owned-hint">click ◼ to set primary</span></span>`;
+  // Resolve the display address: use target if known, user's own for available names, or placeholder
+  let displayAddr = nsTargetAddress;
+  if (!displayAddr && nsAvail === 'available' && walletAddrRaw) displayAddr = walletAddrRaw;
+
+  // Always show the row — dim placeholder while resolving
+  if (!displayAddr) {
+    if (!nsLabel || nsLabel.length < 3) return '';
+    return `<div class="wk-ns-target-row wk-ns-target-row--loading"><span class="wk-ns-target-icon">\u25ce</span><span class="wk-ns-target-addr">resolving\u2026</span></div>`;
   }
 
-  // Show address alone if no balance concern
-  if (!nsPriceUsd || !appBalanceFetched) return addrHtml ? `<span class="wk-ns-route">${addrHtml}</span>` : '';
-  const usdcOk = app.stableUsd >= nsPriceUsd * 1.05;
-  if (usdcOk) return addrHtml ? `<span class="wk-ns-route">${addrHtml}</span>` : '';
-  const suiUsdPrice = suiPriceCache?.price ?? 0;
-  if (suiUsdPrice === 0) return addrHtml ? `<span class="wk-ns-route">${addrHtml}</span>` : '';
-  if (app.sui * suiUsdPrice >= nsPriceUsd * 1.2) return addrHtml ? `<span class="wk-ns-route">${addrHtml}</span>` : '';
+  const shortAddr = `${displayAddr.slice(0, 7)}\u2026${displayAddr.slice(-5)}`;
 
-  return `<span class="wk-ns-route">${addrHtml}<span class="wk-ns-route-warn">insufficient balance</span></span>`;
+  // Check if current name is listed in a kiosk (Tradeport)
+  const bareLabel = nsLabel.toLowerCase();
+  const isKioskName = nsOwnedDomains.some(d => d.inKiosk && d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);
+
+  // Color by color name — purple = self-target (address points to your wallet)
+  let colorClass = 'wk-ns-target-row--blue'; // default: blue (taken by someone else)
+  if (isKioskName) colorClass = 'wk-ns-target-row--orange';
+  else if (nsAvail === 'grace') colorClass = 'wk-ns-target-row--red';
+  else if (isOwnerAddr) colorClass = 'wk-ns-target-row--purple';
+  else if (nsAvail === 'available') colorClass = 'wk-ns-target-row--green';
+
+  // Self-target (purple) rows are clickable to edit target address
+  const clickId = isOwnerAddr ? ' id="wk-ns-target-btn"' : '';
+  const clickTitle = isOwnerAddr ? ' title="Change target address"' : ` title="${displayAddr}"`;
+
+  let extra = '';
+  if (nsAvail === 'grace') extra = `<span class="wk-ns-target-grace">${_graceEndDate()}</span>`;
+  if (!nsPriceUsd || !appBalanceFetched) { /* no balance concern */ }
+  else {
+    const usdcOk = app.stableUsd >= nsPriceUsd * 1.05;
+    const suiUsdPrice = suiPriceCache?.price ?? 0;
+    if (!usdcOk && (suiUsdPrice === 0 || app.sui * suiUsdPrice < nsPriceUsd * 1.2)) {
+      extra = `<span class="wk-ns-route-warn" style="margin-left:auto">low balance</span>`;
+    }
+  }
+
+  return `<div class="wk-ns-target-row ${colorClass}"${clickId}${clickTitle}><span class="wk-ns-target-icon">\u25ce</span><span class="wk-ns-target-addr">${shortAddr}</span>${extra}</div>`;
+}
+
+function _nsOwnedListHtml(): string {
+  // Sort owned: kiosk first → expiration ascending → no-expiry last
+  const sorted = [...nsOwnedDomains].sort((a, b) => {
+    if (a.inKiosk !== b.inKiosk) return a.inKiosk ? -1 : 1;
+    const ea = a.expirationMs ?? Infinity;
+    const eb = b.expirationMs ?? Infinity;
+    return ea - eb;
+  });
+
+  // Filter wishlist: exclude names already in owned list
+  const ownedNames = new Set(sorted.map(d => d.name.replace(/\.sui$/, '').toLowerCase()));
+  const wishItems = nsWishlist.filter(w => !ownedNames.has(w));
+
+  const totalOwned = sorted.length;
+  const totalAll = totalOwned + wishItems.length;
+  if (totalAll === 0) return '';
+
+  const now = Date.now();
+
+  // Build chip HTML for each owned domain with shape SVG
+  const chips: string[] = sorted.map(d => {
+    const bare = d.name.replace(/\.sui$/, '');
+    // Pick shape: kiosk → blue-square, cap → black-diamond, nft → blue-square
+    const shape: SkiDotVariant = d.kind === 'cap' ? 'black-diamond' : 'blue-square';
+    const shapeSvg = _shapeOnlySvg(shape, 12);
+    let expiryHtml = '';
+    if (d.expirationMs) {
+      const daysLeft = Math.max(0, Math.ceil((d.expirationMs - now) / 86_400_000));
+      let cls = 'wk-ns-owned-expiry';
+      if (daysLeft <= 30) cls += ' wk-ns-owned-expiry--urgent';
+      else if (daysLeft <= 90) cls += ' wk-ns-owned-expiry--warn';
+      expiryHtml = `<span class="${cls}">${daysLeft}d</span>`;
+    }
+    let badge = '';
+    if (d.inKiosk) badge = '<span class="wk-ns-owned-kiosk">listed</span>';
+    else if (d.kind === 'cap') badge = '<span class="wk-ns-owned-cap">cap</span>';
+    const kioskCls = d.inKiosk ? ' wk-ns-owned-chip--kiosk' : '';
+    return `<button class="wk-ns-owned-chip${kioskCls}" data-domain="${esc(bare)}" type="button" title="${esc(d.name)}">${shapeSvg}${esc(bare)}${badge}${expiryHtml}</button>`;
+  });
+
+  // Wishlist chips (black-diamond)
+  for (const w of wishItems) {
+    const wishSvg = _shapeOnlySvg('black-diamond', 12);
+    chips.push(`<button class="wk-ns-owned-chip wk-ns-owned-chip--wish" data-domain="${esc(w)}" data-wish="1" type="button" title="${esc(w)}.sui">${wishSvg}${esc(w)}<span class="wk-ns-wish-rm" data-wish-rm="${esc(w)}" title="Remove">\u2715</span></button>`);
+  }
+
+  // Estimate yearly renewal cost (SuiNS base pricing: 3ch=$500, 4ch=$100, 5+ch=$20)
+  let yearlyUsd = 0;
+  for (const d of sorted) {
+    if (d.kind === 'cap') continue; // subname caps have no renewal
+    const bare = d.name.replace(/\.sui$/, '');
+    const len = bare.length;
+    yearlyUsd += len === 3 ? 500 : len === 4 ? 100 : 20;
+  }
+  const savingsUsd = Math.round(yearlyUsd * 0.25);
+
+  // Count header with renewal + savings pills
+  const countLabel = totalOwned === 1 ? '1 name' : `${totalOwned} names`;
+  let renewalHtml = '';
+  if (yearlyUsd > 0) {
+    renewalHtml = `<span class="wk-ns-owned-renewal">$${yearlyUsd}/yr</span><span class="wk-ns-owned-savings">-$${savingsUsd}/yr</span>`;
+  }
+  const header = `<div class="wk-ns-owned-header">${_shapeOnlySvg('blue-square', 10)}<span class="wk-ns-owned-count">${countLabel}</span>${renewalHtml}</div>`;
+
+  return `${header}<div class="wk-ns-owned-grid">${chips.join('')}</div>`;
+}
+
+function _patchNsOwnedList() {
+  const el = document.getElementById('wk-ns-owned-list');
+  if (!el) return;
+  el.innerHTML = _nsOwnedListHtml();
+}
+
+/** Fetch owned SuiNS domains for the connected wallet (cached per address). */
+async function _fetchOwnedDomains() {
+  const ws = getState();
+  if (!ws.address) return;
+  const fetchAddr = nsRealOwnerAddr || ws.address;
+  if (nsOwnedFetchedFor === fetchAddr) return; // already fetched
+  nsOwnedFetchedFor = fetchAddr;
+
+  // Try localStorage cache first for instant render
+  const cached = _loadCachedOwnedDomains(fetchAddr);
+  if (cached) {
+    nsOwnedDomains = cached;
+    _patchNsOwnedList();
+  }
+
+  // Always fetch fresh in background and update
+  try {
+    const fresh = await fetchOwnedDomains(fetchAddr);
+    nsOwnedDomains = fresh;
+    _cacheOwnedDomains(fetchAddr, fresh);
+    _patchNsOwnedList();
+  } catch {
+    // Silently fail — cached data (if any) still showing
+  }
 }
 
 function _patchNsRoute() {
@@ -2392,6 +2687,14 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
     const tsw = Math.max(1, Math.round(s * 0.07));
     return `<svg ${base}><rect x="${pad}" y="${pad}" width="${inner}" height="${inner}" rx="${rx}" fill="#4da2ff" stroke="white" stroke-width="${tsw}"/></svg>`;
   }
+  if (variant === 'red-hexagon') {
+    const r = half - pad;
+    const pts = Array.from({ length: 6 }, (_, i) => {
+      const a = (Math.PI / 3) * i;
+      return `${half + r * Math.cos(a)},${half + r * Math.sin(a)}`;
+    }).join(' ');
+    return `<svg ${base}><polygon points="${pts}" fill="#ef4444" stroke="white" stroke-width="${sw}"/></svg>`;
+  }
   // black-diamond: white diamond outline using evenodd fill-rule so the center is transparent
   // (avoids background-color dependency that broke on mobile/dark-mode environments)
   const outerPad = pad;
@@ -2413,6 +2716,7 @@ function isValidNsLabel(label: string): boolean {
 /** Derive the status icon variant from current nsLabel + nsAvail state. */
 function _nsVariant(): SkiDotVariant {
   if (nsAvail === 'available') return 'green-circle';
+  if (nsAvail === 'grace') return 'red-hexagon';
   if (nsAvail === 'taken' || nsAvail === 'owned') return 'blue-square';
   // Pending check — show green optimistically for valid names > 3 chars
   if (nsLabel.length > 3 && isValidNsLabel(nsLabel)) return 'green-circle';
@@ -2432,20 +2736,54 @@ function _patchNsStatus() {
   sec?.classList.toggle('wk-dd-ns-section--available',    looksAvailable);
   sec?.classList.toggle('wk-dd-ns-section--owned',        nsAvail === 'owned');
   sec?.classList.toggle('wk-dd-ns-section--taken',        nsAvail === 'taken');
+  sec?.classList.toggle('wk-dd-ns-section--grace',        nsAvail === 'grace');
   sec?.classList.toggle('wk-dd-ns-section--self-target',  isSelfTarget);
-  icon.style.cursor = isSelfTarget ? 'pointer' : 'default';
-  icon.title = isSelfTarget ? `Set ${nsLabel.trim()}.sui as primary name` : '';
+  const isOwned = nsAvail === 'owned';
+  icon.style.cursor = (isSelfTarget || isOwned) ? 'pointer' : 'default';
+  icon.title = isSelfTarget ? `Set ${nsLabel.trim()}.sui as primary name` : isOwned ? `Manage ${nsLabel.trim()}.sui` : '';
   const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
   if (btn) {
-    btn.disabled = variant === 'black-diamond';
+    const isPurple = isOwned || isSelfTarget;
+    const disabled = variant === 'black-diamond' || variant === 'red-hexagon' || (isPurple && !nsSubnameParent);
+    btn.disabled = disabled;
     if (variant === 'black-diamond') btn.title = 'Invalid SuiNS name';
+    else if (variant === 'red-hexagon') btn.title = `Grace period ends ${_graceEndDate()}`;
+    else if (isPurple && !nsSubnameParent) btn.title = 'Already registered';
   }
   _patchNsRoute();
 }
 
+/** Format grace countdown: "12d" when ≥1 day, "5h 23m" when <1 day. */
+function _graceCountdown(): string {
+  const ms = nsGraceEndMs - Date.now();
+  if (ms <= 0) return '0m';
+  const totalMin = Math.floor(ms / 60000);
+  const days = Math.floor(totalMin / 1440);
+  if (days >= 1) return `${days}d`;
+  const hrs = Math.floor(totalMin / 60);
+  const mins = totalMin % 60;
+  return hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+}
+
+/** Format grace end in EST, e.g. "Mar 15, 3:42 PM EST". */
+function _graceEndDate(): string {
+  if (!nsGraceEndMs) return '';
+  const tz = 'America/New_York';
+  const d = new Date(nsGraceEndMs);
+  const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: tz });
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: tz });
+  return `${date} ${time} EST`;
+}
+
 function _nsPriceHtml(): string {
   if (nsLabel.length < 3) return '';
-  if (_nsVariant() === 'black-diamond') return ''; // invalid label — no spinner
+  const variant = _nsVariant();
+  if (variant === 'black-diamond') return ''; // invalid label — no spinner
+  if (nsAvail === 'grace') return `<span class="wk-ns-price-val wk-ns-grace-pill">${_graceCountdown()}</span>`;
+  // Don't show price for owned or self-target names — they can't be re-registered
+  if (nsAvail === 'owned') return '';
+  const _walletAddr = getState().address?.toLowerCase() ?? '';
+  if (nsTargetAddress && nsTargetAddress.toLowerCase() === _walletAddr) return '';
   if (nsPriceUsd == null) return `<span class="wk-ns-price-loading"></span>`;
   if (balView === 'sui' && suiPriceCache) {
     const sui = nsPriceUsd / suiPriceCache.price;
@@ -2646,6 +2984,31 @@ function renderSignStage() {
 
 }
 
+// ─── SKI Menu actions ─────────────────────────────────────────────────
+
+function menuCopyAddress(e: Event) {
+  e.stopPropagation();
+  copyAddress();
+}
+
+function menuLockin() {
+  app.skiMenuOpen = false;
+  try { localStorage.setItem('ski:menu-open', '0'); } catch {}
+  render();
+  openModal();
+}
+
+function menuDisconnect() {
+  handleDisconnect(false);
+}
+
+function menuToggleBalance(e: Event) {
+  e.stopPropagation();
+  balView = (e.target as HTMLInputElement).checked ? 'usd' : 'sui';
+  try { localStorage.setItem('ski:bal-pref', balView); } catch {}
+  syncBalanceDisplays();
+}
+
 // ─── Render: SKI Menu ────────────────────────────────────────────────
 
 function renderSkiMenu() {
@@ -2679,37 +3042,53 @@ function renderSkiMenu() {
   const _nsInitLooksAvailable = nsAvail === 'available' || (nsAvail === null && _nsInitVariant === 'green-circle');
   const _nsInitWalletAddr = getState().address?.toLowerCase() ?? '';
   const _nsInitSelfTarget = !!nsTargetAddress && nsTargetAddress.toLowerCase() === _nsInitWalletAddr;
-  const _nsInitSectionClass = (nsAvail === 'taken' ? ' wk-dd-ns-section--taken'
+  const _nsInitSectionClass = (nsAvail === 'grace' ? ' wk-dd-ns-section--grace'
+    : nsAvail === 'taken' ? ' wk-dd-ns-section--taken'
     : nsAvail === 'owned' ? ' wk-dd-ns-section--owned'
     : _nsInitLooksAvailable ? ' wk-dd-ns-section--available'
     : '') + (_nsInitSelfTarget ? ' wk-dd-ns-section--self-target' : '');
+  const _subnameMode = !!nsSubnameParent;
+  const _parentBare = nsSubnameParent ? nsSubnameParent.name.replace(/\.sui$/, '') : '';
+  const _dotSuiText = _subnameMode ? `.${_parentBare}.sui` : '.sui';
+  const _inputPlaceholder = _subnameMode ? 'subname' : 'name';
+  const _registerTitle = _subnameMode
+    ? (nsLabel ? `Create ${esc(nsLabel)}.${_parentBare}.sui` : 'Create subname')
+    : (_nsInitVariant === 'black-diamond' && nsLabel ? 'Invalid SuiNS name' : _nsInitVariant === 'red-hexagon' ? `Grace period ends ${_graceEndDate()}` : nsLabel ? `Mint ${esc(nsLabel)}.sui` : 'Mint .sui');
+  const _registerDisabled = _subnameMode ? false : (_nsInitVariant === 'black-diamond' || _nsInitVariant === 'red-hexagon');
+  const _inputHtml = _subnameMode
+    ? `<input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}">`
+    : `<div class="wk-ns-input-wrap"><input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}"><button id="wk-ns-pin-btn" class="wk-ns-pin-btn" type="button" title="Create subname">\u25b8</button></div>`;
+  const _nsRouteInitHtml = _nsRouteHtml();
   const nsRowHtml = `
-      <div id="wk-dd-ns-section" class="wk-dd-ns-section${_nsInitSectionClass}">
+      <div id="wk-dd-ns-section" class="wk-dd-ns-section${_nsInitSectionClass}${_subnameMode ? ' wk-dd-ns-section--subname' : ''}">
+        <div id="wk-ns-route" class="wk-ns-route-wrap" style="${_nsRouteInitHtml ? '' : 'display:none'}">${_nsRouteInitHtml}</div>
         <div class="wk-dd-ns-domain-row">
-          <span id="wk-ns-status" class="wk-ns-status">${_nsStatusSvg(_nsInitVariant)}</span>
-          <input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="name">
-          <span class="wk-ns-dot-sui">.sui</span>
-          <span id="wk-ns-price-chip" class="wk-ns-price-chip">${_nsPriceHtml()}</span>
-          <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn" type="button"${_nsInitVariant === 'black-diamond' ? ' disabled' : ''} title="${_nsInitVariant === 'black-diamond' && nsLabel ? 'Invalid SuiNS name' : nsLabel ? `Mint ${esc(nsLabel)}.sui` : 'Mint .sui'}">\u2192</button>
+          <span id="wk-ns-status" class="wk-ns-status">${_nsStatusSvg(_subnameMode ? 'blue-square' : _nsInitVariant)}</span>
+          ${_inputHtml}
+          <span class="wk-ns-dot-sui">${esc(_dotSuiText)}</span>
+          <span id="wk-ns-price-chip" class="wk-ns-price-chip">${_subnameMode ? '' : _nsPriceHtml()}</span>
+          <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn" type="button"${_registerDisabled ? ' disabled' : ''} title="${_registerTitle}">\u2192</button>
         </div>
-        <div id="wk-ns-route" class="wk-ns-route-wrap" style="${_nsRouteHtml() ? '' : 'display:none'}">${_nsRouteHtml()}</div>
+        <div id="wk-ns-owned-list" class="wk-ns-owned-list">${_nsOwnedListHtml()}</div>
       </div>`;
 
-  // Blue-square state (SuiNS name) — big profile popout
-  if (app.suinsName) {
+  // Unified menu — same layout for both states; name badge only when SuiNS name exists
+  const nameBadgeHtml = app.suinsName ? (() => {
     const bare = app.suinsName.replace(/\.sui$/, '');
+    return `<div class="wk-popout-name-badge">
+          <svg viewBox="0 0 100 100" width="16" height="16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="flex-shrink:0"><rect x="6" y="6" width="88" height="88" rx="10" fill="#4da2ff" stroke="#ffffff" stroke-width="6"/></svg>
+          <span class="wk-popout-name-text">${esc(bare)}<span class="wk-popout-name-tld">.sui</span></span>
+          <a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="wk-popout-name-link" title="View .ski profile">\u2197</a>
+        </div>`;
+  })() : '';
 
-    els.skiMenu.innerHTML = `
+  els.skiMenu.innerHTML = `
       <div class="wk-dropdown wk-dropdown--large open">
         <div class="wk-popout-actions">
           <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Deactivate</button>
           <button class="wk-dd-item wk-dd-ski" id="wk-dd-switch">Lockin</button>
         </div>
-        <div class="wk-popout-name-badge">
-          <svg viewBox="0 0 100 100" width="16" height="16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="flex-shrink:0"><rect x="6" y="6" width="88" height="88" rx="10" fill="#4da2ff" stroke="#ffffff" stroke-width="6"/></svg>
-          <span class="wk-popout-name-text">${esc(bare)}<span class="wk-popout-name-tld">.sui</span></span>
-          <a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="wk-popout-name-link" title="View .ski profile">\u2197</a>
-        </div>
+        ${nameBadgeHtml}
         ${balToggleHtml}
         <div class="wk-dd-address-row">
           <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
@@ -2719,42 +3098,11 @@ function renderSkiMenu() {
         </div>
         ${nsRowHtml}
       </div>`;
-  } else {
-    // Black-diamond state — no primary SuiNS name
-    // Show ◆ + full copyable address, then NS registration row below
-    const addrDisplay = app.copied ? 'Copied! \u2713' : ws.address;
-    els.skiMenu.innerHTML = `
-      <div class="wk-dropdown open">
-        <div class="wk-popout-actions">
-          <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Deactivate</button>
-          <button class="wk-dd-item wk-dd-ski" id="wk-dd-switch">Lockin</button>
-        </div>
-        ${balToggleHtml}
-        <div class="wk-dd-address-row wk-dd-address-row--with-dot">
-          <span class="wk-ns-status" style="flex-shrink:0">${_nsStatusSvg('black-diamond')}</span>
-          <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
-            <span class="wk-dd-address-text">${esc(addrDisplay)}</span>
-          </button>
-          <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
-        </div>
-        ${nsRowHtml}
-      </div>`;
-  }
 
-  document.getElementById('wk-dd-copy')?.addEventListener('click', (e) => { e.stopPropagation(); copyAddress(); });
-  document.getElementById('wk-dd-switch')?.addEventListener('click', () => {
-    app.skiMenuOpen = false;
-    try { localStorage.setItem('ski:menu-open', '0'); } catch {}
-    render();
-    openModal();
-  });
-  document.getElementById('wk-dd-disconnect')?.addEventListener('click', () => handleDisconnect(false));
-  document.getElementById('wk-bal-toggle')?.addEventListener('change', (e) => {
-    e.stopPropagation();
-    balView = (e.target as HTMLInputElement).checked ? 'usd' : 'sui';
-    try { localStorage.setItem('ski:bal-pref', balView); } catch {}
-    syncBalanceDisplays();
-  });
+  document.getElementById('wk-dd-copy')?.addEventListener('click', menuCopyAddress);
+  document.getElementById('wk-dd-switch')?.addEventListener('click', menuLockin);
+  document.getElementById('wk-dd-disconnect')?.addEventListener('click', menuDisconnect);
+  document.getElementById('wk-bal-toggle')?.addEventListener('change', menuToggleBalance);
 
   // ─── NS domain row bindings ─────────────────────────────────────────
   const nsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -2762,11 +3110,13 @@ function renderSkiMenu() {
   nsInput?.addEventListener('focus', (e) => {
     e.stopPropagation();
     if (skipNextFocusClear) { skipNextFocusClear = false; return; }
+    if (nsSubnameParent) return; // In subname mode, don't clear on focus
     const input = e.target as HTMLInputElement;
     input.value = '';
     nsLabel = '';
     nsPriceUsd = null;
     nsAvail = null;
+    nsGraceEndMs = 0;
     nsTargetAddress = null;
     nsLastDigest = '';
     nsPriceFetchFor = '';
@@ -2784,11 +3134,19 @@ function renderSkiMenu() {
   nsInput?.addEventListener('input', (e) => {
     const val = (e.target as HTMLInputElement).value.trim().toLowerCase();
     nsLabel = val;
+    if (nsSubnameParent) {
+      // Subname mode — no price fetch, just update register button title
+      const parentBare = nsSubnameParent.name.replace(/\.sui$/, '');
+      const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
+      if (btn) btn.title = val ? `Create ${val}.${parentBare}.sui` : 'Create subname';
+      return;
+    }
     const validLabel = isValidNsLabel(val);
     try { if (validLabel) localStorage.setItem('ski:ns-label', val); } catch {}
     // For 5+ char names use cached price instantly — no spinner needed
     nsPriceUsd = (validLabel && val.length >= 5 && ns5CharPriceUsd != null) ? ns5CharPriceUsd : null;
     nsAvail = null;
+    nsGraceEndMs = 0;
     nsTargetAddress = null;
     nsLastDigest = '';
     _patchNsPrice();
@@ -2802,34 +3160,168 @@ function renderSkiMenu() {
   document.getElementById('wk-ns-route')?.addEventListener('click', (e) => {
     e.stopPropagation();
     const target = e.target as HTMLElement;
-    if (target.id === 'wk-ns-digest-copy' && nsLastDigest) {
-      navigator.clipboard.writeText(nsLastDigest).catch(() => {});
-      showCopyableToast(nsLastDigest, nsLastDigest, 4000);
+    if (target.id === 'wk-ns-digest-link') {
+      return;
     }
-    if (target.id === 'wk-ns-route-addr' && nsTargetAddress) {
-      navigator.clipboard.writeText(nsTargetAddress).catch(() => {});
-      showCopyableToast(nsTargetAddress, nsTargetAddress, 3000);
+    // Target row — click to open inline address editor
+    if (target.closest('#wk-ns-target-btn')) {
+      nsShowTargetInput = true;
+      nsNewTargetAddr = '';
+      _patchNsRoute();
+      setTimeout(() => document.getElementById('wk-ns-target-input')?.focus(), 30);
+    }
+    // Target cancel
+    if (target.id === 'wk-ns-target-cancel') {
+      nsShowTargetInput = false;
+      nsNewTargetAddr = '';
+      _patchNsRoute();
+    }
+    // Unpin subname mode
+    if (target.id === 'wk-ns-unpin-btn') {
+      const parentBare = nsSubnameParent?.name.replace(/\.sui$/, '') ?? '';
+      nsSubnameParent = null;
+      nsLabel = parentBare;
+      nsAvail = null;
+      nsPriceUsd = null;
+      nsPriceFetchFor = '';
+      nsLastDigest = '';
+      renderSkiMenu();
+      if (parentBare) fetchAndShowNsPrice(parentBare);
+    }
+  });
+
+  // Target-address submit (inside route area)
+  document.getElementById('wk-ns-route')?.addEventListener('input', (e) => {
+    const target = e.target as HTMLElement;
+    if (target.id === 'wk-ns-target-input') {
+      nsNewTargetAddr = (target as HTMLInputElement).value.trim();
+    }
+  });
+  document.getElementById('wk-ns-route')?.addEventListener('keydown', (e) => {
+    const target = e.target as HTMLElement;
+    if (target.id === 'wk-ns-target-input' && (e as KeyboardEvent).key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('wk-ns-target-submit')?.click();
+    }
+    if (target.id === 'wk-ns-target-input' && (e as KeyboardEvent).key === 'Escape') {
+      nsShowTargetInput = false;
+      nsNewTargetAddr = '';
+      _patchNsRoute();
+    }
+  });
+  // Target-submit uses click delegation on route area (button is created dynamically by _patchNsRoute)
+  let _targetSubmitBusy = false;
+  document.getElementById('wk-ns-route')?.addEventListener('click', async (ev) => {
+    const t = ev.target as HTMLElement;
+    if (t.id !== 'wk-ns-target-submit') return;
+    ev.stopPropagation();
+    if (_targetSubmitBusy) return;
+    const ws2 = getState();
+    if (!ws2.address) return;
+    const addr = nsNewTargetAddr.trim();
+    if (!/^0x[0-9a-fA-F]{1,64}$/.test(addr)) { showToast('Enter a valid Sui address (0x\u2026)'); return; }
+    const label = nsLabel.trim();
+    if (!label) return;
+    const domain = label.endsWith('.sui') ? label : `${label}.sui`;
+    const submitBtn = document.getElementById('wk-ns-target-submit') as HTMLButtonElement | null;
+    _targetSubmitBusy = true;
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '\u2026'; }
+    try {
+      const txBytes = await buildSetTargetAddressTx(ws2.address, domain, addr, nsRealOwnerAddr || undefined);
+      let b64 = '';
+      for (let i = 0; i < txBytes.length; i++) b64 += String.fromCharCode(txBytes[i]);
+      b64 = btoa(b64);
+      await signAndExecuteTransaction(b64);
+      nsTargetAddress = addr;
+      nsShowTargetInput = false;
+      nsNewTargetAddr = '';
+      _patchNsRoute();
+      _patchNsStatus();
+      showToast(`Target set to ${addr.slice(0, 6)}\u2026${addr.slice(-4)} \u2713`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+    } finally {
+      _targetSubmitBusy = false;
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '\u2192'; }
+    }
+  });
+
+  // Pin button — enter subname mode
+  document.getElementById('wk-ns-pin-btn')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const ws2 = getState();
+    if (!ws2.address) return;
+    const label = nsLabel.trim();
+    if (!label) return;
+    const domain = label.endsWith('.sui') ? label : `${label}.sui`;
+    const pinBtn = document.getElementById('wk-ns-pin-btn');
+    if (pinBtn) pinBtn.style.opacity = '0.4';
+    try {
+      const owned = await fetchOwnedDomains(nsRealOwnerAddr || ws2.address);
+      const found = owned.find(d => d.name === domain && d.kind === 'nft');
+      if (!found) { showToast(`No NFT found for ${domain}`); return; }
+      nsSubnameParent = found;
+      nsLabel = '';
+      nsPriceUsd = null;
+      nsAvail = null;
+      nsGraceEndMs = 0;
+      nsPriceFetchFor = '';
+      nsLastDigest = '';
+      renderSkiMenu();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      showToast(msg);
+    } finally {
+      if (pinBtn) pinBtn.style.opacity = '';
     }
   });
 
   document.getElementById('wk-ns-status')?.addEventListener('click', async (e) => {
     e.stopPropagation();
     const ws2 = getState();
-    if (!ws2.address || !nsTargetAddress) return;
-    const isSelfTarget = nsTargetAddress.toLowerCase() === ws2.address.toLowerCase();
-    if (!isSelfTarget) return;
+    if (!ws2.address) return;
     const label = nsLabel.trim();
+
+    // Green circle (available) → add to wishlist
+    if (nsAvail === 'available' && label) {
+      _addToWishlist(label);
+      _patchNsOwnedList();
+      showToast(`${label}.sui added to watchlist`);
+      return;
+    }
+
+    // Allow click when owned OR when target matches wallet (self-target)
+    const isSelfTarget = !!nsTargetAddress && nsTargetAddress.toLowerCase() === ws2.address.toLowerCase();
+    if (!isSelfTarget && nsAvail !== 'owned') return;
     if (!label) return;
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     const icon = document.getElementById('wk-ns-status');
     if (icon) icon.style.opacity = '0.4';
     try {
-      const tx = await buildSetDefaultNsTx(ws2.address, domain);
       if (icon) icon.style.opacity = '0.1';
-      await signAndExecuteTransaction(tx);
+      // Try signing — if it fails with "Invalid user signature" (stale WaaP session),
+      // force a non-silent reconnect to refresh the OAuth/MPC session and retry once.
+      let signed = false;
+      for (let attempt = 0; attempt < 2 && !signed; attempt++) {
+        try {
+          const txBytes = await buildSetDefaultNsTx(ws2.address, domain);
+          await signAndExecuteTransaction(txBytes);
+          signed = true;
+        } catch (signErr) {
+          const sm = signErr instanceof Error ? signErr.message : '';
+          if (attempt === 0 && sm.toLowerCase().includes('invalid') && sm.toLowerCase().includes('signature')) {
+            showToast('Refreshing wallet session\u2026');
+            await reconnectWallet();
+          } else {
+            throw signErr;
+          }
+        }
+      }
       app.suinsName = domain;
       suinsCache[ws2.address] = domain;
       try { localStorage.setItem(`ski:suins:${ws2.address}`, domain); } catch {}
+      nsLastDigest = '';
       updateSkiDot('blue-square', domain);
       renderSkiBtn();
       renderSkiMenu();
@@ -2915,7 +3407,32 @@ function renderSkiMenu() {
     const ws2 = getState();
     if (!ws2.address) { showToast('Connect a wallet first'); return; }
     const label = nsLabel.trim();
-    if (!label) { showToast('Enter a domain label'); return; }
+    if (!label) { showToast(nsSubnameParent ? 'Enter a subname label' : 'Enter a domain label'); return; }
+
+    // ── Subname mode: create leaf subname ──
+    if (nsSubnameParent) {
+      const parentBare = nsSubnameParent.name.replace(/\.sui$/, '');
+      const fullName = `${label}.${parentBare}.sui`;
+      if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+      try {
+        const tx = await buildSubnameTxBytes(ws2.address, nsSubnameParent, label, ws2.address, 'leaf');
+        if (btn) btn.textContent = '\u270f';
+        await signAndExecuteTransaction(tx);
+        showToast(`${fullName} created \u2713`);
+        // Clear input for another subname
+        nsLabel = '';
+        const input = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+        if (input) input.value = '';
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed';
+        if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '\u2192'; }
+      }
+      return;
+    }
+
+    // ── Normal mode: register domain ──
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
     try {
@@ -2924,6 +3441,7 @@ function renderSkiMenu() {
       const { digest } = await signAndExecuteTransaction(tx);
       // Update NS row: blue square status + show tx digest
       nsAvail = 'owned';
+      nsTargetAddress = ws2.address;
       nsLastDigest = digest ?? '';
       _patchNsStatus();
       _patchNsRoute();
@@ -2932,12 +3450,14 @@ function renderSkiMenu() {
       suinsCache[ws2.address] = app.suinsName;
       try { localStorage.setItem(`ski:suins:${ws2.address}`, app.suinsName); } catch {}
       updateSkiDot('blue-square', app.suinsName);
+      nsOwnedFetchedFor = ''; // force re-fetch of owned domains list
+      _fetchOwnedDomains();
       showToast(`${domain} registered \u2713 ${digest ? digest.slice(0, 8) + '\u2026' : ''}`);
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       if (!raw.toLowerCase().includes('reject')) {
         const { display, full } = parseNsError(raw);
-        showCopyableToast(display, display);
+        showCopyableToast(display, full);
       }
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '\u2192'; }
@@ -2951,6 +3471,55 @@ function renderSkiMenu() {
   }
   // Kick availability check (and price if not cached yet)
   if (nsLabel.length >= 3 && nsPriceFetchFor !== nsLabel) fetchAndShowNsPrice(nsLabel);
+
+  // Discover real on-chain owner for WaaP wallets, then fetch owned SuiNS domains
+  _discoverRealOwner();
+  _fetchOwnedDomains();
+
+  // Owned domain list — click to populate input or remove wishlist
+  document.getElementById('wk-ns-owned-list')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const t = e.target as HTMLElement;
+    // Wishlist remove button
+    const rmBtn = t.closest('.wk-ns-wish-rm') as HTMLElement | null;
+    if (rmBtn) {
+      e.preventDefault();
+      const label = rmBtn.dataset.wishRm;
+      if (label) { _removeFromWishlist(label); _patchNsOwnedList(); }
+      return;
+    }
+    const btn = t.closest('.wk-ns-owned-chip') as HTMLElement | null;
+    if (!btn) return;
+    const domain = btn.dataset.domain;
+    if (!domain) return;
+    nsLabel = domain;
+    nsAvail = null;
+    nsPriceUsd = null;
+    nsPriceFetchFor = '';
+    nsGraceEndMs = 0;
+    nsTargetAddress = null;
+    nsLastDigest = '';
+    nsSubnameParent = null;
+    nsShowTargetInput = false;
+    skipNextFocusClear = true;
+    const input = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+    if (input) { input.value = domain; input.focus(); }
+    _patchNsPrice();
+    _patchNsStatus();
+    fetchAndShowNsPrice(domain);
+  });
+
+  // Horizontal wheel scroll for owned names grid
+  const ownedGrid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
+  if (ownedGrid) {
+    ownedGrid.addEventListener('wheel', (e) => {
+      if (ownedGrid.scrollWidth > ownedGrid.clientWidth) {
+        e.preventDefault();
+        ownedGrid.scrollLeft += e.deltaY || e.deltaX;
+      }
+    }, { passive: false });
+  }
+
 }
 
 // ─── Disconnect handler ──────────────────────────────────────────────
@@ -2959,6 +3528,11 @@ async function handleDisconnect(reopenModal = false) {
   app.skiMenuOpen = false;
   try { localStorage.setItem('ski:menu-open', '0'); } catch {}
   app.copied = false;
+  nsOwnedDomains = [];
+  nsOwnedFetchedFor = '';
+  nsRealOwnerAddr = '';
+  nsSubnameParent = null;
+  nsShowTargetInput = false;
   closeModal();
   render();
   try { await disconnect(); } catch { /* already gone */ }
@@ -3014,7 +3588,7 @@ function render() {
 // ─── Global event bindings ───────────────────────────────────────────
 
 function bindEvents() {
-  els.skiDotBtn?.addEventListener('click', (e) => {
+  els.skiDot?.addEventListener('click', (e) => {
     e.stopPropagation();
     if (modalOpen) { closeModal(); return; }
     if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:menu-open', '0'); } catch {} render(); }
@@ -3059,7 +3633,7 @@ function bindEvents() {
 
   document.addEventListener('click', (e) => {
     if (!app.skiMenuOpen) return;
-    if (els.skiDotBtn?.contains(e.target as Node)) return;
+    if (els.skiDot?.contains(e.target as Node)) return;
     if (els.skiBtn?.contains(e.target as Node)) return;
     if (els.skiMenu?.contains(e.target as Node)) return;
     app.skiMenuOpen = false;
@@ -3134,40 +3708,37 @@ export function initUI() {
     render();
   });
 
-  // Re-render when sponsor state changes (badge, sign-stage card, legend)
+  // Re-render when sponsor state changes (badge, ski-sign card, legend)
   subscribeSponsor(() => {
     render();
     const slot = document.getElementById('ski-legend-slot');
     if (slot) slot.innerHTML = buildSplashLegend();
-    // Refresh connected key (sponsor state affects splash toggle display)
-    const connKeyEl = document.getElementById('ski-connected-key');
+    // Refresh active card (sponsor state affects splash toggle display)
+    const detailEl = document.getElementById('ski-modal-detail');
     const ws = getState();
-    if (connKeyEl && ws.walletName) {
+    if (detailEl && ws.walletName) {
       const wallet = getSuiWallets().find((w) => w.name === ws.walletName);
-      if (wallet) showKeyDetail(wallet, connKeyEl, ws.address);
+      if (wallet) showKeyDetail(wallet, detailEl, ws.address);
     }
   });
 
-  // Delegated: legend row mouseover → highlight + show key detail (respects lock)
+  // Delegated: legend row mouseover → highlight only (no detail update)
   els.modal?.addEventListener('mouseover', (e) => {
     if (!modalOpen) return;
     const row = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row');
     if (!row) return;
-    const idx = parseInt(row.dataset.legendIdx || '-1', 10);
-    if (idx >= 0) activateLegendRow(idx, true);
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
+    rows.forEach((r) => r.classList.remove('active'));
+    row.classList.add('active');
   });
 
-  // Delegated: wallet-list row hover → show key detail (respects lock)
+  // Delegated: wallet-list row hover → highlight only (no detail update)
   els.modal?.addEventListener('mouseover', (e) => {
     if (!modalOpen) return;
     const btn = (e.target as HTMLElement).closest<HTMLElement>('.wk-dd-item[data-wallet-name]');
     if (!btn) return;
     document.querySelectorAll('.wk-dd-item').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
-    if (detailLocked) return;
-    const wallet = getSuiWallets().find((w) => w.name === btn.dataset.walletName);
-    const detailEl = document.getElementById('ski-modal-detail');
-    if (wallet && detailEl) showKeyDetail(wallet, detailEl, getState().address);
   });
 
   // Long-press (2200ms) on any row to lock/unlock the detail pane
@@ -3264,19 +3835,33 @@ export function initUI() {
       return;
     }
 
-    const legendRow = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row');
-    if (legendRow?.dataset.legendWallet) {
-      const wallet = getSuiWallets().find((w) => w.name === legendRow.dataset.legendWallet);
-      if (wallet) {
-        if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
-        else selectWallet(wallet);
+    // Group arrow click → toggle collapsible group AND activate the head row
+    const arrowBtn = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-group-arrow');
+    if (arrowBtn) {
+      const group = arrowBtn.closest('.ski-legend-group');
+      if (group) group.classList.toggle('ski-legend-group--open');
+      // Also activate the head row as the active wallet
+      const headRow = arrowBtn.closest('.ski-legend-group-head')?.querySelector<HTMLElement>('.ski-legend-row');
+      if (headRow) {
+        const idx = parseInt(headRow.dataset.legendIdx || '-1', 10);
+        if (idx >= 0) activateLegendRow(idx);
       }
       return;
     }
+
+    // Legend row click → show wallet in detail pane (active card)
+    const legendRow = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row');
+    if (legendRow) {
+      const idx = parseInt(legendRow.dataset.legendIdx || '-1', 10);
+      if (idx >= 0) activateLegendRow(idx);
+      return;
+    }
+    // Wallet-list row click → show wallet in detail pane (active card)
     const listBtn = (e.target as HTMLElement).closest<HTMLElement>('.wk-dd-item[data-wallet-name]');
     if (listBtn?.dataset.walletName) {
       const wallet = getSuiWallets().find((w) => w.name === listBtn.dataset.walletName);
-      if (wallet) selectWallet(wallet);
+      const detailEl = document.getElementById('ski-modal-detail');
+      if (wallet && detailEl) showKeyDetail(wallet, detailEl, getState().address);
     }
   });
 

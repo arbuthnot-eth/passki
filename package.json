@@ -54,14 +54,14 @@
     "@human.tech/waap-sdk": "^1.2.1",
     "@ika.xyz/sdk": "^0.2.7",
     "@mysten/dapp-kit-core": "^1.1.1",
-    "@mysten/deepbook-v3": "^1.1.1",
+    "@mysten/deepbook-v3": "^1.1.2",
     "@mysten/sui": "^2.5.0",
     "@mysten/suins": "^1.0.2",
     "@mysten/wallet-standard": "^0.20.1",
     "@wallet-standard/app": "^1.1.0",
     "agents": "^0.6.0",
     "hono": "^4.12.3",
-    "hono-agents": "^3.0.6",
+    "hono-agents": "^3.0.7",
     "kumo-ui": "^0.2.1",
     "qrcode": "^1.5.4"
   }

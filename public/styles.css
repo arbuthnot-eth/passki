@@ -50,7 +50,7 @@ body {
   font-size: 0.9rem;
 }
 
-.demo-stage {
+.ski-header {
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
@@ -58,11 +58,11 @@ body {
 }
 @media (max-width: 600px) {
   body { padding: 10px; }
-  .demo-stage { padding: 8px; }
+  .ski-header { padding: 8px; }
 }
 @media (max-width: 400px) {
   body { padding: 4px; }
-  .demo-stage { padding: 4px; }
+  .ski-header { padding: 4px; }
 }
 
 /* ─── Splash Card ─────────────────────────────────────────────────── */
@@ -428,14 +428,14 @@ body {
   line-height: 1.4;
 }
 
-.wallet-widget {
+.ski-wallet {
   display: flex;
   gap: 10px;
   align-items: center;
   position: relative;
 }
 
-.wallet-widget.ski-modal-active {
+.ski-wallet.ski-modal-active {
   z-index: 13001;
 }
 
@@ -619,7 +619,7 @@ body {
   display: block;
 }
 
-#ski-menu-root {
+#ski-menu {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
@@ -884,6 +884,28 @@ body {
   color: #fed7aa;
 }
 
+/* Grace period — red hexagon, days-left pill */
+.wk-dd-ns-section--grace .wk-ns-dot-sui {
+  color: rgba(239, 68, 68, 0.6);
+}
+.wk-dd-ns-section--grace .wk-dd-ns-register-btn {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(127, 29, 29, 0.35);
+  color: rgba(239, 68, 68, 0.5);
+  cursor: not-allowed;
+}
+.wk-ns-grace-pill {
+  color: #ef4444 !important;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.wk-ns-grace-date {
+  color: rgba(239, 68, 68, 0.55);
+  font-size: 0.68em;
+  font-family: monospace;
+}
+
 /* Target address matches connected wallet — .sui + button go purple */
 .wk-dd-ns-section--self-target .wk-ns-dot-sui {
   color: rgba(192, 132, 252, 0.6);
@@ -945,7 +967,7 @@ body {
 .wk-ns-route-wrap {
   display: flex;
   justify-content: flex-start;
-  padding-left: 26px; /* 22px icon + 4px gap = aligns with input left edge */
+  margin-bottom: 4px;
 }
 
 .wk-ns-route {
@@ -996,12 +1018,73 @@ body {
   user-select: all;
 }
 
-.wk-ns-route-owned-hint {
-  color: #4da2ff;
-  font-size: 0.60rem;
-  font-weight: 500;
-  opacity: 0.8;
+/* ─── Status-colored address row (target / taken / available / grace) ── */
+.wk-ns-target-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
 }
+.wk-ns-target-row:hover { filter: brightness(1.2); }
+.wk-ns-target-icon {
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+.wk-ns-target-addr {
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Purple — self-target (address points to your wallet) */
+.wk-ns-target-row--purple {
+  border: 1px solid rgba(168, 85, 247, 0.18);
+  background: rgba(168, 85, 247, 0.06);
+}
+.wk-ns-target-row--purple .wk-ns-target-icon { color: rgba(192, 132, 252, 0.7); }
+.wk-ns-target-row--purple .wk-ns-target-addr { color: rgba(192, 132, 252, 0.85); }
+/* Blue — taken by someone else */
+.wk-ns-target-row--blue {
+  border: 1px solid rgba(77, 162, 255, 0.18);
+  background: rgba(77, 162, 255, 0.06);
+}
+.wk-ns-target-row--blue .wk-ns-target-icon { color: rgba(77, 162, 255, 0.7); }
+.wk-ns-target-row--blue .wk-ns-target-addr { color: rgba(77, 162, 255, 0.85); }
+/* Green — available */
+.wk-ns-target-row--green {
+  border: 1px solid rgba(34, 197, 94, 0.18);
+  background: rgba(34, 197, 94, 0.06);
+}
+.wk-ns-target-row--green .wk-ns-target-icon { color: rgba(34, 197, 94, 0.7); }
+.wk-ns-target-row--green .wk-ns-target-addr { color: rgba(34, 197, 94, 0.85); }
+/* Red — grace period */
+.wk-ns-target-row--red {
+  border: 1px solid rgba(239, 68, 68, 0.18);
+  background: rgba(239, 68, 68, 0.06);
+}
+.wk-ns-target-row--red .wk-ns-target-icon { color: rgba(239, 68, 68, 0.7); }
+.wk-ns-target-row--red .wk-ns-target-addr { color: rgba(239, 68, 68, 0.85); }
+/* Orange — kiosk / Tradeport (#FF794B) */
+.wk-ns-target-row--orange {
+  border: 1px solid rgba(255, 121, 75, 0.18);
+  background: rgba(255, 121, 75, 0.06);
+}
+.wk-ns-target-row--orange .wk-ns-target-icon { color: rgba(255, 121, 75, 0.7); }
+.wk-ns-target-row--orange .wk-ns-target-addr { color: rgba(255, 121, 75, 0.85); }
+/* Loading / resolving placeholder */
+.wk-ns-target-row--loading {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+.wk-ns-target-row--loading .wk-ns-target-icon { color: rgba(255, 255, 255, 0.2); }
+.wk-ns-target-row--loading .wk-ns-target-addr { color: rgba(255, 255, 255, 0.3); }
 
 .wk-ns-status[style*="pointer"] svg rect {
   animation: ns-owned-pulse 2s ease-in-out infinite;
@@ -1011,6 +1094,266 @@ body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
 }
+
+/* ─── Pin button (enter subname mode) ──────────────────────────────── */
+.wk-ns-input-wrap {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+}
+.wk-ns-input-wrap .wk-ns-label-input {
+  flex: 1;
+  min-width: 0;
+  padding-right: 24px;
+}
+.wk-ns-pin-btn {
+  display: none;
+  position: absolute;
+  right: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 3px;
+  background: rgba(168, 85, 247, 0.35);
+  color: rgba(192, 132, 252, 0.9);
+  font-size: 0.7rem;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+  transition: background 0.15s;
+}
+.wk-dd-ns-section--owned .wk-ns-pin-btn,
+.wk-dd-ns-section--self-target .wk-ns-pin-btn { display: flex; }
+.wk-ns-pin-btn:hover { background: rgba(168, 85, 247, 0.55); }
+
+/* ─── Target address editor ────────────────────────────────────────── */
+.wk-ns-route--target-edit {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+}
+.wk-ns-target-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(1, 1, 1, 0.88);
+  color: #fff;
+  font-size: 0.62rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  outline: none;
+  caret-color: #fff;
+}
+.wk-ns-target-input::placeholder { color: rgba(255, 255, 255, 0.32); }
+.wk-ns-target-input:focus { border-color: rgba(255, 255, 255, 0.8); }
+.wk-ns-target-submit {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+  font-size: 0.7rem;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s;
+}
+.wk-ns-target-submit:hover {
+  border-color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ─── Subname mode ─────────────────────────────────────────────────── */
+.wk-ns-subname-badge {
+  color: rgba(192, 132, 252, 0.85);
+  font-weight: 600;
+  font-size: 0.62rem;
+}
+.wk-ns-unpin-btn {
+  border: none;
+  background: none;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.65rem;
+  cursor: pointer;
+  padding: 0 2px;
+  transition: color 0.15s;
+}
+.wk-ns-unpin-btn:hover { color: rgba(255, 255, 255, 0.8); }
+
+.wk-dd-ns-section--subname .wk-ns-dot-sui {
+  color: rgba(192, 132, 252, 0.6);
+}
+.wk-dd-ns-section--subname .wk-dd-ns-register-btn {
+  border-color: rgba(168, 85, 247, 0.45);
+  background: linear-gradient(135deg, rgba(88, 28, 135, 0.4), rgba(126, 34, 206, 0.35));
+  color: #c4b5fd;
+}
+
+/* ─── Owned SuiNS domains list (flex-wrap, horizontal scroll) ──────── */
+.wk-ns-owned-list {
+  margin-top: 6px;
+}
+.wk-ns-owned-list:empty { display: none; }
+.wk-ns-owned-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.wk-ns-owned-header svg { flex-shrink: 0; }
+.wk-ns-owned-count {
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: rgba(77, 162, 255, 0.85);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  letter-spacing: 0.03em;
+  border: 1px solid rgba(77, 162, 255, 0.25);
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: rgba(77, 162, 255, 0.08);
+}
+.wk-ns-owned-renewal {
+  font-size: 0.55rem;
+  font-weight: 600;
+  color: rgba(239, 68, 68, 0.75);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: rgba(239, 68, 68, 0.06);
+}
+.wk-ns-owned-savings {
+  font-size: 0.55rem;
+  font-weight: 600;
+  color: rgba(34, 197, 94, 0.85);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: rgba(34, 197, 94, 0.06);
+  margin-left: auto;
+}
+.wk-ns-owned-grid {
+  display: flex;
+  flex-flow: column wrap;
+  gap: 4px;
+  max-height: 162px; /* ~6 rows */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.25) transparent;
+}
+.wk-ns-owned-grid::-webkit-scrollbar {
+  height: 6px;
+}
+.wk-ns-owned-grid::-webkit-scrollbar-track {
+  background: transparent;
+}
+.wk-ns-owned-grid::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 3px;
+}
+.wk-ns-owned-grid::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+.wk-ns-owned-chip svg { flex-shrink: 0; }
+.wk-ns-owned-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(77, 162, 255, 0.2);
+  border-radius: 5px;
+  background: rgba(77, 162, 255, 0.06);
+  padding: 4px 7px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.wk-ns-owned-chip:hover {
+  border-color: rgba(77, 162, 255, 0.5);
+  background: rgba(77, 162, 255, 0.14);
+}
+/* Kiosk / Tradeport listed — orange #FF794B */
+.wk-ns-owned-chip--kiosk {
+  border-color: rgba(255, 121, 75, 0.3);
+  background: rgba(255, 121, 75, 0.08);
+}
+.wk-ns-owned-chip--kiosk:hover {
+  border-color: rgba(255, 121, 75, 0.5);
+  background: rgba(255, 121, 75, 0.16);
+}
+/* Wishlist (black-diamond) chips */
+.wk-ns-owned-chip--wish {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+  color: rgba(255, 255, 255, 0.4);
+}
+.wk-ns-owned-chip--wish:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.6);
+}
+.wk-ns-owned-cap {
+  font-size: 0.45rem;
+  color: rgba(192, 132, 252, 0.7);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.wk-ns-owned-kiosk {
+  font-size: 0.45rem;
+  color: rgba(255, 121, 75, 0.9);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.wk-ns-owned-expiry {
+  display: inline-block;
+  font-size: 0.48rem;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  padding: 1px 4px;
+  white-space: nowrap;
+}
+.wk-ns-owned-expiry--warn {
+  color: rgba(251, 191, 36, 0.9);
+  background: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.25);
+}
+.wk-ns-owned-expiry--urgent {
+  color: rgba(239, 68, 68, 0.9);
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.25);
+}
+.wk-ns-wish-rm {
+  color: rgba(255, 255, 255, 0.2);
+  font-size: 0.5rem;
+  cursor: pointer;
+  margin-left: 2px;
+  transition: color 0.15s;
+  line-height: 1;
+}
+.wk-ns-wish-rm:hover { color: rgba(239, 68, 68, 0.8); }
 
 /* ─── Big Popout (blue-square / SuiNS profile card) ──────────────── */
 
@@ -1190,7 +1533,7 @@ body {
   color: #e4efff;
 }
 
-.wallet-ski-btn {
+.ski-btn {
   min-height: 26px;
   border-radius: 10px;
   display: inline-flex;
@@ -1207,7 +1550,7 @@ body {
   position: relative;
 }
 
-.ski-dot-btn {
+.ski-dot {
   padding: 3px;
   min-width: 30px;
 }
@@ -1265,8 +1608,8 @@ body {
   flex-shrink: 0;
 }
 
-.wallet-ski-btn:hover,
-.wallet-ski-btn.ski-menu-open {
+.ski-btn:hover,
+.ski-btn.ski-menu-open {
   transform: translateY(-1px);
   border-color: rgba(59, 130, 246, 0.86);
   box-shadow:
@@ -1274,14 +1617,14 @@ body {
     0 0 0 1px rgba(59, 130, 246, 0.2) inset;
 }
 
-.wallet-ski-btn svg,
+.ski-btn svg,
 .wk-ski-btn-logo {
   height: 31px;
   width: auto;
   display: block;
 }
 
-.wallet-widget.has-black-diamond .wk-widget-btn.connected {
+.ski-wallet.has-black-diamond .wk-widget-btn.connected {
   background: linear-gradient(135deg, rgba(8, 8, 16, 0.95), rgba(16, 16, 30, 0.94));
   border-color: rgba(198, 170, 98, 0.62);
   box-shadow:
@@ -1461,7 +1804,7 @@ body {
   background: linear-gradient(180deg, #141820, #0e1118 50%, #101520);
   border: 1px solid rgba(160, 200, 240, 0.12);
   border-radius: 12px;
-  max-width: 620px;
+  max-width: 340px;
   width: calc(100% - 20px);
   max-height: calc(100vh - 32px);
   overflow: hidden;
@@ -1491,13 +1834,13 @@ body {
 
 .ski-modal-body {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0;
   padding: 0 0 16px;
-  align-items: stretch;
 }
 .ski-modal-legend-col {
-  flex: 0 0 310px;
+  flex: none;
+  width: 100%;
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
@@ -1522,7 +1865,6 @@ body {
   background: #ffffff;
 }
 .ski-modal-legend-col--live {
-  border-right: 1px solid rgba(160, 200, 240, 0.08);
 }
 .ski-modal-connected-key {
   display: flex;
@@ -1533,43 +1875,7 @@ body {
 .ski-modal-connected-key:empty {
   display: none;
 }
-@media (max-width: 560px) {
-  .ski-modal-legend-col {
-    flex: 1 0 100%;
-    min-width: 0;
-    border-right: none;
-    border-bottom: 1px solid rgba(160, 200, 240, 0.08);
-    overflow-y: visible;
-  }
-  .ski-modal-legend-col--live {
-    border-right: none;
-  }
-  .ski-modal-right-col {
-    flex: 1 1 100%;
-    order: -1;
-  }
-  /* Narrow: header stays flex-row — key-col and brand share the same row */
-  .ski-modal-header-key-col {
-    border-right: none;
-  }
-
-  /* Brand pfp slot appears over ski logo */
-  .ski-brand-pfp { display: flex; }
-
-  /* Strip the blue card from the connected-key detail in the header row */
-  .ski-modal-header-key-col .ski-detail-header--keyed {
-    background: none;
-    border: none;
-    box-shadow: none;
-    border-radius: 0;
-  }
-
-  /* WaaP icon: top-left justify in key-col */
-  .ski-modal-header-key-col .ski-detail-icons-top {
-    justify-content: flex-start;
-    align-items: flex-start;
-  }
-}
+/* Single-column layout — no narrow breakpoint overrides needed */
 
 .ski-modal-col {
   display: flex;
@@ -1580,11 +1886,9 @@ body {
 }
 
 .ski-modal-right-col {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid rgba(160, 200, 240, 0.08);
 }
 
 .ski-modal-detail {
@@ -1592,6 +1896,13 @@ body {
   align-items: flex-start;
   gap: 8px;
   position: relative;
+}
+
+/* Other keys slot below legend */
+#ski-other-keys-slot:empty { display: none; }
+#ski-other-keys-slot {
+  border-top: 1px solid rgba(160, 200, 240, 0.06);
+  padding: 4px 10px 0;
 }
 
 /* Wallet-list layout left column */
@@ -1614,7 +1925,7 @@ body {
   border-top: 1px solid rgba(160, 200, 240, 0.06);
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   width: 100%;
 }
 .ski-layout-toggle {
@@ -1958,67 +2269,108 @@ body {
   color: #64748b;
   font-style: italic;
 }
+/* Legend — vertical list with collapsible shape groups */
 .ski-legend-targets {
-  padding-left: 8px;
-  padding-right: 4px;
+  padding: 0 4px 0 0;
 }
-table.ski-legend-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-table.ski-legend-table col.ski-legend-col-shape-w { width: 38px; }
-table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
-.ski-legend-col-shape {
-  width: 38px;
-  padding: 0 2px 0 4px;
-  text-align: center;
-  vertical-align: middle;
-}
-.ski-legend-col-name {
-  padding: 0 4px;
-  vertical-align: middle;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ski-legend-col-addr {
-  padding: 0 4px;
-  vertical-align: middle;
-  text-align: right;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ski-legend-col-icon {
-  width: 38px;
-  padding: 0 4px 0 2px;
-  text-align: center;
-  vertical-align: middle;
+.ski-legend-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 .ski-legend-row {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 4px 0 16px;
+  gap: 3px;
   cursor: pointer;
   outline: none;
-}
-.ski-legend-row td {
-  height: 36px;
+  white-space: nowrap;
+  border-radius: 6px;
   transition: background 0.1s;
+  flex-shrink: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
-.ski-legend-row:hover td,
-.ski-legend-row.active td {
+.ski-legend-row:hover,
+.ski-legend-row.active {
   background: rgba(59, 130, 246, 0.09);
 }
-.ski-legend-row td:first-child { border-radius: 6px 0 0 6px; }
-.ski-legend-row td:last-child  { border-radius: 0 6px 6px 0; }
-.ski-legend-row:focus-visible td {
+.ski-legend-row:focus-visible {
   box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.35);
 }
 .ski-legend-shape {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   forced-color-adjust: none;
   -webkit-forced-color-adjust: none;
+}
+/* Push content between shape (left) and icon (right) */
+.ski-legend-row-mid {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+.ski-legend-wallet-icon,
+.ski-legend-social-icon {
+  margin-left: auto;
+}
+
+/* ── Collapsible shape-category groups ── */
+.ski-legend-group {
+  border-radius: 8px;
+  margin-bottom: 1px;
+}
+.ski-legend-group-head {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+.ski-legend-group-arrow {
+  width: 16px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #ffffff;
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transform: rotate(0deg);
+  transform-origin: center;
+}
+.ski-legend-group-arrow:hover {
+  color: #ffffff;
+}
+.ski-legend-group--open > .ski-legend-group-head > .ski-legend-group-arrow {
+  transform: rotate(90deg);
+}
+.ski-legend-group-head > .ski-legend-row {
+  flex: 1;
+  min-width: 0;
+  padding-left: 0;
+}
+.ski-legend-group-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.ski-legend-group--open > .ski-legend-group-body {
+  grid-template-rows: 1fr;
+}
+.ski-legend-group-inner {
+  overflow: hidden;
+  min-height: 0;
 }
 .ski-legend-target {
   grid-column: 1 / -1;
@@ -2084,7 +2436,7 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   text-align: right;
 }
 .ski-legend-addr {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   color: #cbd5e1;
   font-family: monospace;
   white-space: nowrap;
@@ -2092,6 +2444,10 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   cursor: pointer;
   display: inline-block;
   transition: color 0.1s;
+  flex-shrink: 0;
+  width: 19ch;
+  text-align: left;
+  overflow: hidden;
 }
 .ski-legend-addr:hover {
   text-decoration: underline;
@@ -2427,11 +2783,8 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   color: #86efac;
 }
 
-/* Gear toggle — fixed to bottom-right of detail panel */
+/* Gear toggle — inline in settings strip */
 .ski-gear-row {
-  position: absolute;
-  bottom: 0;
-  right: 0;
   display: flex;
   align-items: center;
 }
@@ -2551,65 +2904,30 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 
 .ski-modal-header {
   display: flex;
-  align-items: stretch;
+  flex-direction: row;
+  justify-content: flex-end;
   border-bottom: 1px solid rgba(160, 200, 240, 0.08);
+  position: relative;
 }
 
-/* Left column: connected key identity (ski-detail-header--keyed only) */
-.ski-modal-header-key-col {
-  flex: 1;
-  min-width: 0;
-  border-right: 1px solid rgba(160, 200, 240, 0.08);
-}
-.ski-modal-header-key-col:empty {
-  display: none;
-}
-/* Suppress the border-bottom that was for body positioning */
-.ski-modal-header-key-col.ski-modal-connected-key:not(:empty) {
-  border-bottom: none;
-}
-/* Hide everything except the detail header inside the header slot */
-.ski-modal-header-key-col .ski-detail-row,
-.ski-modal-header-key-col .ski-gear-row,
-.ski-modal-header-key-col .ski-gear-sections {
-  display: none;
-}
-.ski-modal-header-key-col .ski-detail-header {
-  margin-bottom: 0;
-  height: 100%;
-  box-sizing: border-box;
-}
-
-/* WaaP wallet in header: key-col shrinks to content, brand column expands */
-.ski-modal-header-key-col--waap {
-  flex: 0 0 auto;
-}
-.ski-modal-header-key-col--waap ~ .ski-modal-header-brand {
-  flex: 1;
-}
-
-/* Brand column now spans the full header */
+/* Brand column in header — right-aligned */
 .ski-modal-header-brand {
-  flex: 1;
-  min-width: 0;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  padding: 9px 14px 0 12px;
+  align-items: flex-end;
+  padding: 9px 14px 6px 12px;
   gap: 0;
 }
 
-/* Top row inside brand column: logo + titles stacked above close button */
+/* Top row inside brand column: logo + titles */
 .ski-modal-header-brand-top {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 2px;
-  width: 100%;
-  padding-bottom: 6px;
 }
 #ski-modal-close {
-  flex-shrink: 0;
   background: none;
   border: none;
   color: #9ca7bb;
@@ -2618,8 +2936,10 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   padding: 4px 8px;
   line-height: 1;
   border-radius: 5px;
-  position: relative;
-  top: -20px;
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
   transition: background 0.15s, color 0.15s;
 }
 #ski-modal-close:hover {
@@ -2661,29 +2981,6 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 .ski-header-splash-drop-btn:disabled {
   opacity: 0.4;
   cursor: default;
-}
-
-/* Header key-col: full-width, strip card styling, icons top / text bottom */
-.ski-modal-header-key-col .ski-detail-header--keyed {
-  width: 100%;
-  border: none;
-  background: none;
-  box-shadow: none;
-  border-radius: 0;
-}
-/* Push icons to top of key-col, suins + hex rows to bottom */
-#ski-connected-key .ski-detail-icon-row {
-  height: 100%;
-  justify-content: space-between;
-}
-/* Suins name: own full-width row */
-#ski-connected-key .ski-detail-suins-slot {
-  display: block;
-  width: 100%;
-}
-/* Hex address row: own full-width row */
-#ski-connected-key .ski-detail-addr-row {
-  width: 100%;
 }
 
 .ski-modal-header-left {
@@ -3020,36 +3317,9 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   margin-left: auto;
 }
 
-/* Header key-col balance: merged single instance, large hero number */
-.ski-modal-header-key-col #ski-detail-balance-cycler {
-  padding: 0 4px;
-  margin-right: -13px;
-}
-.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-primary.ski-header-bal-sui,
-.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-primary.ski-header-bal-usd {
-  font-size: 1.5rem;
-  font-weight: 700;
-  line-height: 1;
-  color: #f1f5f9;
-}
-.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-primary .ski-header-bal-sui-icon {
-  width: 28px;
-  height: 28px;
-}
-.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-secondary.ski-header-bal-sui,
-.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-secondary.ski-header-bal-usd {
-  font-size: 0.72rem;
-  font-weight: 400;
-  color: #475569;
-}
-.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-secondary .ski-header-bal-sui-icon {
-  width: 10px;
-  height: 10px;
-}
-
-/* Remove black background from the icon-row div inside the header key-col */
-#ski-connected-key > .ski-detail-header.ski-detail-header--keyed > div {
-  background: none;
+/* Active card slot in header — compact for single-column */
+#ski-modal-detail .ski-detail-header {
+  margin-bottom: 0;
 }
 
 /* Modal header balance column (mountBalanceCycler instance) */

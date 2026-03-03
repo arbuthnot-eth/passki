@@ -395,6 +395,42 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
   });
 }
 
+/**
+ * Sign a transaction WITHOUT executing — returns raw bytes + signature.
+ * Useful when we want to execute via our own transport (bypasses WaaP server-side execution bugs).
+ */
+export async function signTransaction(transaction: unknown): Promise<{ bytes: string; signature: string }> {
+  const { wallet, account } = currentState;
+  if (!wallet || !account) throw new Error('No wallet connected');
+
+  if (!('sui:signTransaction' in wallet.features)) {
+    throw new Error(`${wallet.name} does not support signTransaction`);
+  }
+
+  const feature = wallet.features['sui:signTransaction'] as {
+    signTransaction: (input: {
+      transaction: unknown;
+      account: WalletAccount;
+      chain: string;
+    }) => Promise<{ bytes: string; signature: string }>;
+  };
+
+  const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
+
+  let txArg: unknown = transaction;
+  if (transaction instanceof Uint8Array) {
+    let b64 = '';
+    for (let i = 0; i < transaction.length; i++) b64 += String.fromCharCode(transaction[i]);
+    b64 = btoa(b64);
+    const aug = transaction as Uint8Array & { serialize?: () => string; toJSON?: () => string };
+    aug.serialize = () => b64;
+    aug.toJSON = () => b64;
+    txArg = aug;
+  }
+
+  return feature.signTransaction({ transaction: txArg, account, chain });
+}
+
 // ─── Deactivate (soft — keeps wallet OAuth session alive) ────────────
 
 /**
