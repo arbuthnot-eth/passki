@@ -814,10 +814,17 @@ body {
 
 .wk-ns-price-chip {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
+  flex-direction: column;
   flex-shrink: 0;
   min-width: 32px;
-  justify-content: flex-end;
+}
+.wk-ns-low-bal {
+  font-size: 0.5rem;
+  font-weight: 600;
+  color: rgba(239, 68, 68, 0.85);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  white-space: nowrap;
 }
 
 .wk-ns-price-val {
@@ -899,6 +906,9 @@ body {
   font-size: 0.72em;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+.wk-ns-kiosk-pill {
+  color: rgba(255, 121, 75, 0.95) !important;
 }
 .wk-ns-grace-date {
   color: rgba(239, 68, 68, 0.55);
@@ -997,6 +1007,23 @@ body {
 
 @keyframes wk-spin { to { transform: rotate(360deg); } }
 
+/* Instant pricing tier hint (shown while async price loads) */
+.wk-ns-price-tier {
+  opacity: 0.45;
+  font-style: italic;
+  font-size: 0.72em;
+  letter-spacing: 0.01em;
+}
+.wk-ns-price-yr {
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+/* Shade countdown monospace for ticking seconds */
+.wk-shade-pill {
+  font-variant-numeric: tabular-nums;
+}
+
 .wk-dd-ns-register-btn {
   flex-shrink: 0;
   width: 26px;
@@ -1086,15 +1113,18 @@ body {
   width: 100%;
   padding: 6px 10px;
   border-radius: 8px;
-  cursor: pointer;
   transition: all 0.15s;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
 }
-.wk-ns-target-row:hover { filter: brightness(1.2); }
 .wk-ns-target-icon {
   font-size: 0.85rem;
   flex-shrink: 0;
+  transition: opacity 0.15s;
 }
+.wk-ns-target-icon--editable {
+  cursor: pointer;
+}
+.wk-ns-target-icon--editable:hover { opacity: 0.6; }
 .wk-ns-target-addr {
   font-size: 0.83rem;
   font-weight: 500;
@@ -1102,6 +1132,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.wk-ns-target-row--copy {
+  cursor: pointer;
+}
+.wk-ns-target-row--copy:hover { filter: brightness(1.2); }
+.wk-ns-target-row--copied {
+  opacity: 0.5;
 }
 /* Purple — self-target (address points to your wallet) */
 .wk-ns-target-row--purple {
@@ -1138,6 +1175,13 @@ body {
 }
 .wk-ns-target-row--orange .wk-ns-target-icon { color: rgba(255, 121, 75, 0.7); }
 .wk-ns-target-row--orange .wk-ns-target-addr { color: rgba(255, 121, 75, 0.85); }
+/* Dim idle placeholder (no name typed yet) */
+.wk-ns-target-row--dim {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.015);
+}
+.wk-ns-target-row--dim .wk-ns-target-icon { color: rgba(255, 255, 255, 0.15); }
+.wk-ns-target-row--dim .wk-ns-target-addr { color: rgba(255, 255, 255, 0.25); }
 /* Loading / resolving placeholder */
 .wk-ns-target-row--loading {
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -1265,44 +1309,46 @@ body {
   margin-top: 6px;
 }
 .wk-ns-owned-list:empty { display: none; }
+.wk-ns-owned-list--hidden { display: none; }
 .wk-ns-owned-header {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-end;
+  justify-content: space-between;
   margin-bottom: 5px;
 }
-.wk-ns-owned-header svg { flex-shrink: 0; }
-.wk-ns-owned-count {
-  font-size: 0.6rem;
+.wk-ns-owned-title {
+  font-size: 0.65rem;
   font-weight: 700;
   color: rgba(77, 162, 255, 0.85);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   letter-spacing: 0.03em;
-  border: 1px solid rgba(77, 162, 255, 0.25);
-  border-radius: 4px;
-  padding: 1px 6px;
-  background: rgba(77, 162, 255, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.wk-ns-owned-tally {
+  font-size: 0.5rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.35);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+}
+.wk-ns-owned-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
 }
 .wk-ns-owned-renewal {
   font-size: 0.55rem;
   font-weight: 600;
   color: rgba(239, 68, 68, 0.75);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  border-radius: 4px;
-  padding: 1px 6px;
-  background: rgba(239, 68, 68, 0.06);
 }
 .wk-ns-owned-savings {
   font-size: 0.55rem;
   font-weight: 600;
   color: rgba(34, 197, 94, 0.85);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  border: 1px solid rgba(34, 197, 94, 0.2);
-  border-radius: 4px;
-  padding: 1px 6px;
-  background: rgba(34, 197, 94, 0.06);
-  margin-left: auto;
 }
 .wk-ns-owned-grid {
   display: flex;
@@ -1312,7 +1358,7 @@ body {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.25) transparent;
+  scrollbar-color: #ffffff transparent;
 }
 .wk-ns-owned-grid::-webkit-scrollbar {
   height: 6px;
@@ -1321,11 +1367,11 @@ body {
   background: transparent;
 }
 .wk-ns-owned-grid::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.25);
+  background: #ffffff;
   border-radius: 3px;
 }
 .wk-ns-owned-grid::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.4);
+  background: #ffffff;
 }
 .wk-ns-owned-chip svg { flex-shrink: 0; }
 .wk-ns-owned-chip {
@@ -1348,6 +1394,9 @@ body {
 .wk-ns-owned-chip:hover {
   border-color: rgba(77, 162, 255, 0.5);
   background: rgba(77, 162, 255, 0.14);
+}
+.wk-ns-owned-chip--dim {
+  opacity: 0.25;
 }
 /* Kiosk / Tradeport listed — orange #FF794B */
 .wk-ns-owned-chip--kiosk {
@@ -1414,6 +1463,117 @@ body {
   line-height: 1;
 }
 .wk-ns-wish-rm:hover { color: rgba(239, 68, 68, 0.8); }
+
+/* ─── NFT Card Popover (roster chip hover) ────────────────────────── */
+
+.ski-nft-popover {
+  position: fixed;
+  z-index: 99999;
+  pointer-events: auto;
+  animation: ski-nft-in 0.15s ease;
+}
+.ski-nft-popover[hidden] { display: none; }
+@keyframes ski-nft-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.ski-nft-card {
+  background: #000000;
+  border: 1px solid rgba(96, 165, 250, 0.25);
+  border-radius: 14px;
+  padding: 14px;
+  width: 192px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.8), 0 0 24px rgba(96, 165, 250, 0.08);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+}
+
+.ski-nft-qr {
+  width: 148px;
+  height: 148px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0d1117;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ski-nft-qr svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.ski-nft-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+}
+
+.ski-nft-domain {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: 0.01em;
+}
+.ski-nft-tld {
+  color: rgba(96, 165, 250, 0.7);
+  font-weight: 600;
+}
+
+.ski-nft-link {
+  font-size: 0.55rem;
+  font-weight: 500;
+  color: rgba(96, 165, 250, 0.6);
+  text-decoration: none;
+  letter-spacing: 0.02em;
+  transition: color 0.15s;
+}
+.ski-nft-link:hover {
+  color: #93c5fd;
+}
+
+.ski-nft-expiry {
+  font-size: 0.5rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: 0.02em;
+}
+.ski-nft-expiry--warn { color: rgba(251, 191, 36, 0.7); }
+.ski-nft-expiry--urgent { color: rgba(239, 68, 68, 0.7); }
+
+.ski-nft-owner {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.ski-nft-owner-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: #ffffff;
+  background: linear-gradient(135deg, rgba(96, 165, 250, 0.25), rgba(59, 130, 246, 0.2));
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 6px;
+  padding: 3px 10px;
+  letter-spacing: 0.02em;
+}
+
+.ski-nft-owner-addr {
+  font-size: 0.5rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.3);
+  letter-spacing: 0.02em;
+}
 
 /* ─── Big Popout (blue-square / SuiNS profile card) ──────────────── */
 
@@ -1873,8 +2033,8 @@ body {
   scrollbar-width: thin;
   position: absolute;
   top: 61px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 0;
+  /* top & right are overridden inline by renderModal() to anchor below the SKI button */
   box-shadow: 0 28px 84px rgba(2, 6, 23, 0.82), 0 0 38px rgba(180, 210, 240, 0.1);
   /* Prevent OS brightness adaptation and forced-color override */
   color-scheme: dark;
@@ -1888,8 +2048,8 @@ body {
 .ski-modal::-webkit-scrollbar-thumb:hover { background: #ffffff; }
 
 @keyframes ski-modal-in {
-  from { opacity: 0; transform: translateX(-50%) scale(0.95) translateY(10px); }
-  to { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 .ski-modal-body {
@@ -2501,12 +2661,12 @@ body {
   font-family: monospace;
   white-space: nowrap;
   text-decoration: none;
+  margin-left: auto;
   cursor: pointer;
   display: inline-block;
   transition: color 0.1s;
   flex-shrink: 0;
-  width: 19ch;
-  text-align: left;
+  text-align: right;
   overflow: hidden;
 }
 .ski-legend-addr:hover {
@@ -3122,18 +3282,18 @@ body {
   padding-left: 1px;
   position: relative;
   top: -10px;
-  font-size: 1.53rem;
+  font-size: 2.3rem;
 }
-/* Tagline: row 2, left-justified, grows to fill remaining height */
+/* Tagline: row 2, left-justified, anchored to bottom of brand area */
 .ski-modal-header-brand .ski-modal-tagline {
   grid-column: 2;
   grid-row: 2;
   text-align: left;
-  align-self: stretch;
-  margin-top: 1px;
+  align-self: end;
+  margin: 0;
+  padding-bottom: 2px;
   position: relative;
-  top: -1px;
-  left: 1px;
+  left: 2px;
   font-size: 0.95rem;
   line-height: 1.2;
 }

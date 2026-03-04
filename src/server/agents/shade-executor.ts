@@ -94,10 +94,27 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     ownerAddress: string;
     depositMist: string;
   }): Promise<{ success: boolean; error?: string }> {
-    // Idempotent — skip if already tracked
+    // Idempotent — skip if this exact objectId is already tracked
     if (this.state.orders.some(o => o.objectId === params.objectId)) {
       return { success: true };
     }
+
+    // Prevent duplicates — only one active order per domain per address
+    const existingActive = this.state.orders.find(
+      o => o.domain === params.domain
+        && (o.status === 'pending' || o.status === 'executing'),
+    );
+    if (existingActive) {
+      return {
+        success: false,
+        error: `Active order already exists for ${params.domain} (${existingActive.objectId})`,
+      };
+    }
+
+    // Prune completed/failed orders for this domain (allow retry with new order)
+    const pruned = this.state.orders.filter(
+      o => !(o.domain === params.domain && (o.status === 'completed' || o.status === 'failed')),
+    );
 
     const order: ShadeExecutorOrder = {
       ...params,
@@ -106,7 +123,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       createdAt: Date.now(),
     };
 
-    this.setState({ orders: [...this.state.orders, order] });
+    this.setState({ orders: [...pruned, order] });
     this.scheduleNextAlarm();
     return { success: true };
   }
