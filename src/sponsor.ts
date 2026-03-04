@@ -52,6 +52,10 @@ export interface SponsorAuth {
   authMessage?: string;
   /** ISO date — when the sponsorship authorization expires */
   expiresAt: string;
+  /** When true, server-side keeper keypair handles gas signing (sponsor can close browser) */
+  keeperMode?: boolean;
+  /** Derived Sui address of the keeper keypair (gasOwner when keeper mode is active) */
+  keeperAddress?: string;
   /**
    * List of sponsored beneficiaries.
    * Empty array = open sponsorship (any sender may use sponsored gas).
@@ -131,6 +135,56 @@ export function isSponsorActive(): boolean {
   return !!(auth && wallet && account && new Date(auth.expiresAt).getTime() > Date.now());
 }
 
+/**
+ * Returns true if keeper-mode sponsorship is active — no browser wallet required.
+ * The keeper keypair on the server handles the gas owner signature.
+ */
+export function isKeeperSponsorActive(): boolean {
+  const { auth } = _state;
+  return !!(auth && auth.keeperMode && auth.keeperAddress && new Date(auth.expiresAt).getTime() > Date.now());
+}
+
+/**
+ * Enable keeper mode: calls the DO to activate server-side signing,
+ * then updates localStorage auth with keeper state.
+ */
+export async function activateKeeperMode(): Promise<{ success: boolean; error?: string }> {
+  if (!_state.auth) return { success: false, error: 'No active sponsorship' };
+
+  try {
+    const { enableKeeperMode: doEnable } = await import('./client/sponsor.js');
+    const result = await doEnable();
+    if (!result.success) return { success: false, error: result.error };
+
+    const newAuth: SponsorAuth = {
+      ..._state.auth,
+      keeperMode: true,
+      keeperAddress: result.keeperAddress,
+    };
+    saveAuth(newAuth);
+    setState({ auth: newAuth });
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Failed to enable keeper mode' };
+  }
+}
+
+/**
+ * Disable keeper mode: reverts to browser-wallet sponsor signing.
+ */
+export async function deactivateKeeperMode(): Promise<void> {
+  if (!_state.auth) return;
+
+  try {
+    const { disableKeeperMode: doDisable } = await import('./client/sponsor.js');
+    await doDisable();
+  } catch { /* best-effort */ }
+
+  const newAuth: SponsorAuth = { ..._state.auth, keeperMode: false, keeperAddress: undefined };
+  saveAuth(newAuth);
+  setState({ auth: newAuth });
+}
+
 /** Active (non-expired) entries in the sponsored list. */
 export function getActiveSponsoredList(): SponsoredEntry[] {
   const auth = _state.auth;
@@ -145,7 +199,8 @@ export function getActiveSponsoredList(): SponsoredEntry[] {
  * - Sponsored list is empty (open) OR the address is in the active list
  */
 export function isSponsoredAddress(address: string): boolean {
-  if (!isSponsorActive()) return false;
+  const active = isSponsorActive() || isKeeperSponsorActive();
+  if (!active) return false;
   const list = getActiveSponsoredList();
   return list.length === 0 || list.some((e) => e.address === address);
 }

@@ -1005,10 +1005,17 @@ export async function buildCreateShadeOrderTx(
   const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
 
-  // Calculate deposit: domain base price in USD / SUI price * 1.20 buffer
-  const rawPrice = await suinsClient.calculatePrice({ name: `${domain}.sui`, years: 1 });
-  const basePriceUsd = rawPrice / 1e6;
-  const depositMist = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.20 * 1e9));
+  // Calculate deposit: NS-discounted price / SUI price * 1.10 buffer
+  // Executor does SUI→USDC→NS two-hop swap via DeepBook for 25% NS discount.
+  // Buffer covers two-hop slippage + gas.
+  const [rawPrice, discountMap] = await Promise.all([
+    suinsClient.calculatePrice({ name: `${domain}.sui`, years: 1 }),
+    suinsClient.getCoinTypeDiscount(),
+  ]);
+  const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
+  const discountPct = discountMap.get(nsKey) ?? 0;
+  const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
+  const depositMist = BigInt(Math.ceil(discountedUsd / suiPrice * 1.10 * 1e9));
 
   // Generate salt and build commitment
   const salt = generateSalt();
@@ -1140,41 +1147,43 @@ export async function buildCancelShadeOrderTx(
  * This is the reliable path — wallet `effects` shapes vary across providers.
  */
 export async function findCreatedShadeOrderId(digest: string): Promise<string | null> {
-  try {
-    const res = await fetch(GQL_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        query: `query($digest: String!) {
-          transactionBlock(digest: $digest) {
-            effects {
-              objectChanges {
-                nodes {
-                  outputState { ... on MoveObject { address contents { type { repr } } } }
-                }
-              }
-            }
+  const query = `query($digest: String!) {
+    transactionBlock(digest: $digest) {
+      effects {
+        objectChanges {
+          nodes {
+            outputState { ... on MoveObject { address contents { type { repr } } } }
           }
-        }`,
-        variables: { digest },
-      }),
-    });
-    const json = await res.json() as {
-      data?: { transactionBlock?: { effects?: { objectChanges?: { nodes?: Array<{
-        outputState?: { address?: string; contents?: { type?: { repr?: string } } };
-      }> } } } };
-    };
-    const nodes = json?.data?.transactionBlock?.effects?.objectChanges?.nodes ?? [];
-    for (const node of nodes) {
-      const typeRepr = node.outputState?.contents?.type?.repr ?? '';
-      if (typeRepr.includes('shade::ShadeOrder')) {
-        return node.outputState?.address ?? null;
+        }
       }
     }
-    return null;
-  } catch {
-    return null;
+  }`;
+  // Retry up to 4 times with increasing delays — indexer may lag behind execution
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1500));
+    try {
+      const res = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query, variables: { digest } }),
+      });
+      const json = await res.json() as {
+        data?: { transactionBlock?: { effects?: { objectChanges?: { nodes?: Array<{
+          outputState?: { address?: string; contents?: { type?: { repr?: string } } };
+        }> } } } };
+      };
+      const nodes = json?.data?.transactionBlock?.effects?.objectChanges?.nodes ?? [];
+      for (const node of nodes) {
+        const typeRepr = node.outputState?.contents?.type?.repr ?? '';
+        if (typeRepr.includes('shade::ShadeOrder')) {
+          return node.outputState?.address ?? null;
+        }
+      }
+      // If tx block was found but no ShadeOrder in it, don't retry — it won't appear
+      if (json?.data?.transactionBlock) return null;
+    } catch { /* retry */ }
   }
+  return null;
 }
 
 // ─── Shade order localStorage tracking ───────────────────────────────
@@ -1204,6 +1213,45 @@ export function removeShadeOrder(address: string, objectId: string): void {
 /** Find a shade order for a specific domain owned by this address. */
 export function findShadeOrder(address: string, domain: string): ShadeOrderInfo | null {
   return getShadeOrders(address).find(o => o.domain === domain) ?? null;
+}
+
+/**
+ * Query on-chain ShadeOrders owned by an address.
+ * Returns minimal info (objectId + depositMist) for orders not tracked in localStorage.
+ * This is the fallback when findCreatedShadeOrderId failed to extract the ID after creation.
+ */
+export async function fetchOnChainShadeOrders(rawAddress: string): Promise<Array<{ objectId: string; depositMist: string }>> {
+  const address = normalizeSuiAddress(rawAddress);
+  try {
+    // ShadeOrders are shared objects — query by type, filter by owner field in contents
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($type: String!) {
+          objects(filter: { type: $type }) {
+            nodes { address asMoveObject { contents { json } } }
+          }
+        }`,
+        variables: {
+          type: `${SHADE_PACKAGE}::shade::ShadeOrder`,
+        },
+      }),
+    });
+    const json = await res.json() as {
+      data?: { objects?: { nodes?: Array<{
+        address: string;
+        asMoveObject?: { contents?: { json?: { owner?: string; deposit?: string } } };
+      }> } };
+    };
+    // Filter to only orders owned by this address
+    return (json?.data?.objects?.nodes ?? [])
+      .filter(n => normalizeSuiAddress(n.asMoveObject?.contents?.json?.owner ?? '') === address)
+      .map(n => ({
+        objectId: n.address,
+        depositMist: n.asMoveObject?.contents?.json?.deposit ?? '0',
+      }));
+  } catch { return []; }
 }
 
 /**

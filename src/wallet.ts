@@ -406,6 +406,26 @@ export async function signTransaction(transaction: unknown): Promise<{ bytes: st
   const { wallet, account } = currentState;
   if (!wallet || !account) throw new Error('No wallet connected');
 
+  // Backpack routes through its internal keyring — same workaround as signAndExecuteTransaction
+  if (/backpack/i.test(wallet.name)) {
+    const uiWallet = dappKit.stores.$wallets.get().find((w) => w.name === wallet.name);
+    if (uiWallet) {
+      await dappKit.connectWallet({ wallet: uiWallet, silent: true } as Parameters<typeof dappKit.connectWallet>[0]);
+      try {
+        return await dappKit.signTransaction({ transaction } as Parameters<typeof dappKit.signTransaction>[0]);
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : '';
+        if (errMsg.includes('UserKeyring not found')) {
+          try {
+            await dappKit.connectWallet({ wallet: uiWallet } as Parameters<typeof dappKit.connectWallet>[0]);
+          } catch { /* user cancelled */ }
+          return dappKit.signTransaction({ transaction } as Parameters<typeof dappKit.signTransaction>[0]);
+        }
+        throw e;
+      }
+    }
+  }
+
   if (!('sui:signTransaction' in wallet.features)) {
     throw new Error(`${wallet.name} does not support signTransaction`);
   }

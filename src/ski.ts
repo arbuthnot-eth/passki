@@ -9,9 +9,9 @@
  */
 
 import { Transaction } from '@mysten/sui/transactions';
-import { getState, signPersonalMessage, signAndExecuteTransaction, getSuiWallets, connect, disconnect } from './wallet.js';
+import { getState, signPersonalMessage, signAndExecuteTransaction, signTransaction, getSuiWallets, connect, disconnect } from './wallet.js';
 import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState, grpcClient, enrollAllKnownAddresses, SUI_DROP_URI } from './ui.js';
-import { restoreSponsor, isSponsorActive, executeSponsored, initSplashDO, getSponsorState, resolveNameToAddress } from './sponsor.js';
+import { restoreSponsor, isSponsorActive, isKeeperSponsorActive, executeSponsored, initSplashDO, getSponsorState, resolveNameToAddress } from './sponsor.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
 // Ika is heavy (~150KB), lazy-load only after sign-in
@@ -337,6 +337,27 @@ window.addEventListener('ski:sign-and-execute-transaction', async (e) => {
   }
 
   try {
+    // Keeper-mode: server signs gas automatically, user signs via their wallet — only ONE popup
+    if (isKeeperSponsorActive() && transaction instanceof Transaction) {
+      showToast(`<img src="${SUI_DROP_URI}" class="toast-drop" aria-hidden="true"> Splash (Keeper)`, true);
+      const sponsorAddr = getSponsorState().auth?.address ?? '';
+      const { connectToSponsor, requestKeeperSponsoredTransaction } = await import('./client/sponsor.js');
+      connectToSponsor(sponsorAddr);
+      const { digest } = await requestKeeperSponsoredTransaction({
+        tx: transaction,
+        senderAddress: ws.address,
+        sponsorAddress: sponsorAddr,
+        signTransaction: async (txBytes: Uint8Array) => {
+          // Return BOTH bytes and signature — the wallet may re-serialize,
+          // so we need the actual bytes it signed for keeper to match.
+          return signTransaction(txBytes);
+        },
+        grpcClient,
+      });
+      dispatch({ success: true, digest });
+      return;
+    }
+
     // Use the sponsored flow when a valid gas sponsor is active and the
     // transaction is a Transaction object (needed to build kind bytes).
     if (isSponsorActive() && transaction instanceof Transaction && ws.wallet && ws.account) {

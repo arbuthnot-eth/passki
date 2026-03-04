@@ -13,6 +13,7 @@
 
 import { Agent, callable } from 'agents';
 import { verifyPersonalMessageSignature } from '@mysten/sui/verify';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 
 export interface GasCoin {
   objectId: string;
@@ -46,9 +47,15 @@ export interface SponsorState {
   totalSponsored: number;
   /** Resolved Sui addresses allowed to request sponsorship. Empty = open (any sender). */
   approvedList: string[];
+  /** When true, the server-side keeper keypair auto-signs sponsor gas instead of the browser wallet. */
+  keeperMode: boolean;
+  /** Derived Sui address of the keeper keypair (set when keeperMode is enabled). */
+  keeperAddress: string;
 }
 
-interface Env {}
+interface Env {
+  SHADE_KEEPER_PRIVATE_KEY?: string;
+}
 
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — mirrors .SKI session TTL
 const MAX_PENDING = 20;                   // cap queue length
@@ -66,6 +73,8 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     pendingRequests: [],
     totalSponsored: 0,
     approvedList: [],
+    keeperMode: false,
+    keeperAddress: '',
   };
 
   // ─── Sponsor Registration ────────────────────────────────────────────
@@ -127,6 +136,96 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     return { success: true };
   }
 
+  // ─── Keeper Mode ────────────────────────────────────────────────────
+
+  @callable()
+  async enableKeeperMode(): Promise<{ success: boolean; keeperAddress?: string; error?: string }> {
+    if (!this.state.active) return { success: false, error: 'Sponsor not active' };
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
+      return { success: false, error: 'No keeper private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)' };
+    }
+
+    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keeperAddress = keypair.toSuiAddress();
+
+    // Fetch keeper gas coins via GraphQL so getGasCoins() returns them
+    const coins = await this.fetchKeeperGasCoins(keeperAddress);
+
+    this.setState({
+      ...this.state,
+      keeperMode: true,
+      keeperAddress,
+      gasCoins: coins,
+      gasCoinsRefreshedAt: Date.now(),
+    });
+
+    return { success: true, keeperAddress };
+  }
+
+  @callable()
+  async disableKeeperMode(): Promise<{ success: boolean }> {
+    this.setState({
+      ...this.state,
+      keeperMode: false,
+      keeperAddress: '',
+    });
+    return { success: true };
+  }
+
+  private async fetchKeeperGasCoins(keeperAddress: string): Promise<GasCoin[]> {
+    const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!){
+          address(address:$a){
+            coins(type:"0x2::sui::SUI",first:3){
+              nodes{ address version digest }
+            }
+          }
+        }`,
+        variables: { a: keeperAddress },
+      }),
+    });
+    const json = await res.json() as {
+      data?: { address?: { coins?: { nodes?: Array<{ address: string; version: number; digest: string }> } } };
+    };
+    const nodes = json?.data?.address?.coins?.nodes ?? [];
+    return nodes.map((c) => ({
+      objectId: c.address,
+      version: String(c.version),
+      digest: c.digest,
+    }));
+  }
+
+  private async signWithKeeper(requestId: string): Promise<void> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return;
+
+    const idx = this.state.pendingRequests.findIndex(r => r.id === requestId);
+    if (idx === -1) return;
+
+    const req = this.state.pendingRequests[idx];
+    if (req.sponsorSig) return;
+
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const txBytes = Uint8Array.from(atob(req.txBytes), c => c.charCodeAt(0));
+      const { signature: sponsorSig } = await keypair.signTransaction(txBytes);
+
+      const updated: SponsorRequest = {
+        ...req,
+        sponsorSig,
+        status: req.userSig ? 'ready' : 'sponsor_signed',
+      };
+      const requests = [...this.state.pendingRequests];
+      requests[idx] = updated;
+      this.setState({ ...this.state, pendingRequests: requests });
+    } catch (err) {
+      console.error('[SponsorAgent] Keeper signing failed:', err);
+    }
+  }
+
   // ─── Gas Coin Management ─────────────────────────────────────────────
 
   @callable()
@@ -147,6 +246,21 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
       this.setState({ ...this.state, active: false });
       return null;
     }
+
+    // In keeper mode, auto-refresh coins if stale (>30s)
+    if (this.state.keeperMode && this.state.keeperAddress) {
+      const staleMs = 30_000;
+      if (Date.now() - this.state.gasCoinsRefreshedAt > staleMs) {
+        const coins = await this.fetchKeeperGasCoins(this.state.keeperAddress);
+        this.setState({
+          ...this.state,
+          gasCoins: coins,
+          gasCoinsRefreshedAt: Date.now(),
+        });
+        return { coins, refreshedAt: Date.now() };
+      }
+    }
+
     return { coins: this.state.gasCoins, refreshedAt: this.state.gasCoinsRefreshedAt };
   }
 
@@ -189,6 +303,11 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
       ...this.state,
       pendingRequests: [...this.state.pendingRequests, request],
     });
+
+    // In keeper mode, auto-sign the sponsor's gas signature immediately
+    if (this.state.keeperMode) {
+      await this.signWithKeeper(requestId);
+    }
 
     return { requestId };
   }

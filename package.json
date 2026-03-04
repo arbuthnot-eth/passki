@@ -62,7 +62,7 @@
     "@mysten/wallet-standard": "^0.20.1",
     "@wallet-standard/app": "^1.1.0",
     "agents": "^0.6.0",
-    "hono": "^4.12.4",
+    "hono": "^4.12.5",
     "hono-agents": "^3.0.7",
     "kumo-ui": "^0.2.1",
     "qrcode": "^1.5.4"

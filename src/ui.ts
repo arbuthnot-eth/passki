@@ -39,8 +39,8 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, pruneShadeOrders, findCreatedShadeOrderId, executeSignedTx, resolveSuiNSName, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo } from './suins.js';
-import { connectShadeExecutor, scheduleShadeExecution, disconnectShadeExecutor } from './client/shade.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, pruneShadeOrders, findCreatedShadeOrderId, getShadeOrders, fetchOnChainShadeOrders, executeSignedTx, resolveSuiNSName, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo } from './suins.js';
+import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
@@ -2494,6 +2494,7 @@ let nsShadeOrder: ShadeOrderInfo | null = null; // active shade order for curren
 let nsShadeOrdersPruned = false; // true once we've validated orders against on-chain state
 let nsRosterOpen = false; // SKI roster collapsed by default
 let _shadeCountdownTimer: ReturnType<typeof setInterval> | null = null; // live ticking countdown
+let _shadeDoState: ShadeExecutorState | null = null; // live DO state from WebSocket
 
 // ─── Wishlist (black-diamond names the user is watching) ─────────────
 let nsWishlist: string[] = (() => {
@@ -3071,8 +3072,9 @@ function _patchNsStatus() {
   sec?.classList.toggle('wk-dd-ns-section--grace',        nsAvail === 'grace');
   sec?.classList.toggle('wk-dd-ns-section--self-target',  isSelfTarget);
   const isOwned = nsAvail === 'owned';
-  icon.style.cursor = (isSelfTarget || isOwned) ? 'pointer' : 'default';
-  icon.title = isSelfTarget ? `Set ${nsLabel.trim()}.sui as primary name` : isOwned ? `Manage ${nsLabel.trim()}.sui` : '';
+  const isGrace = nsAvail === 'grace';
+  icon.style.cursor = (isSelfTarget || isOwned || isGrace) ? 'pointer' : 'default';
+  icon.title = isGrace ? `Cancel all Shade orders` : isSelfTarget ? `Set ${nsLabel.trim()}.sui as primary name` : isOwned ? `Manage ${nsLabel.trim()}.sui` : '';
   const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
   if (btn) {
     const isPurple = isOwned || isSelfTarget;
@@ -3087,6 +3089,44 @@ function _patchNsStatus() {
       // Remove old shade classes
       btn.classList.remove('wk-shade-ready', 'wk-shade-active', 'wk-shade-execute');
 
+      // If localStorage has no order, check on-chain (async) — handles cases
+      // where findCreatedShadeOrderId failed after tx submission
+      if (!nsShadeOrder && addr) {
+        fetchOnChainShadeOrders(addr).then(onChain => {
+          if (onChain.length > 0 && nsAvail === 'grace') {
+            // Found on-chain order(s) — use the first one as a generic cancel target
+            nsShadeOrder = {
+              objectId: onChain[0].objectId,
+              domain: nsLabel.trim(),
+              executeAfterMs: nsGraceEndMs,
+              targetAddress: addr,
+              salt: '',
+              depositMist: onChain[0].depositMist,
+            };
+            // Re-render the button now that we know about the on-chain order
+            _patchNsStatus();
+          }
+        }).catch(() => {});
+      }
+
+      // Also check DO state for an active order on this domain (covers cases
+      // where localStorage was cleared but the DO still tracks the order)
+      if (!nsShadeOrder && _shadeDoState) {
+        const doMatch = _shadeDoState.orders.find(
+          o => o.domain === nsLabel.trim() && o.ownerAddress === addr && (o.status === 'pending' || o.status === 'executing'),
+        );
+        if (doMatch) {
+          nsShadeOrder = {
+            objectId: doMatch.objectId,
+            domain: doMatch.domain,
+            executeAfterMs: doMatch.executeAfterMs,
+            targetAddress: doMatch.targetAddress,
+            salt: doMatch.salt,
+            depositMist: doMatch.depositMist,
+          };
+        }
+      }
+
       if (!nsShadeOrder) {
         // No order → amber pulsing crosshair — "Set up Shade"
         btn.disabled = false;
@@ -3100,10 +3140,10 @@ function _patchNsStatus() {
         btn.title = `Execute Shade — register ${nsLabel.trim()}.sui now`;
         btn.classList.add('wk-shade-execute');
       } else {
-        // Order exists + grace active → green check — "Shaded!" + live countdown
+        // Order exists + grace active → cancel button — "Cancel Shade"
         btn.disabled = false;
-        btn.textContent = '\u2713'; // ✓ check
-        btn.title = `Shaded! ${_graceCountdownPrecise()} remaining`;
+        btn.textContent = '\u2715'; // ✕ delete
+        btn.title = `Cancel Shade \u2014 refund ${(Number(nsShadeOrder.depositMist) / 1e9).toFixed(2)} SUI`;
         btn.classList.add('wk-shade-active');
         _startShadeCountdown();
       }
@@ -3163,10 +3203,39 @@ function _graceCountdownPrecise(): string {
   return `${mins}m ${String(secs).padStart(2, '0')}s`;
 }
 
-/** Start live countdown that ticks every second when Shade is active + grace running. */
+/** Start live countdown that ticks every second when Shade is active + grace running.
+ *  Also connects to ShadeExecutorAgent DO for real-time state updates. */
 function _startShadeCountdown() {
   _stopShadeCountdown();
   if (!nsShadeOrder || !nsGraceEndMs || nsGraceEndMs <= Date.now()) return;
+
+  // Connect to DO for live state updates (order status, execution results)
+  const addr = getState().address;
+  if (addr) {
+    try {
+      connectShadeExecutor(addr, (state: ShadeExecutorState) => {
+        _shadeDoState = state;
+        // If the DO reports the order completed/failed, refresh the UI
+        if (nsShadeOrder) {
+          const doOrder = state.orders.find(o => o.objectId === nsShadeOrder!.objectId);
+          if (doOrder?.status === 'completed') {
+            nsShadeOrder = null;
+            _stopShadeCountdown();
+            nsAvail = 'owned';
+            _patchNsStatus();
+            _patchNsPrice();
+            showToast(`${nsLabel.trim()}.sui auto-registered \u2713 ${doOrder.digest ? doOrder.digest.slice(0, 8) + '\u2026' : ''}`);
+            return;
+          }
+          if (doOrder?.status === 'failed') {
+            _patchNsStatus();
+            return;
+          }
+        }
+      });
+    } catch { /* non-blocking */ }
+  }
+
   _shadeCountdownTimer = setInterval(() => {
     const now = Date.now();
     // Update the pill text
@@ -3178,6 +3247,11 @@ function _startShadeCountdown() {
     // Update button title
     const btn = document.getElementById('wk-dd-ns-register');
     if (btn?.classList.contains('wk-shade-active')) btn.title = `Shaded! ${_graceCountdownPrecise()} remaining`;
+    // Show DO order status in title if available
+    if (btn?.classList.contains('wk-shade-active') && _shadeDoState && nsShadeOrder) {
+      const doOrder = _shadeDoState.orders.find(o => o.objectId === nsShadeOrder!.objectId);
+      if (doOrder?.status === 'executing') btn.title = `Executing\u2026 ${_graceCountdownPrecise()}`;
+    }
     // Auto-flip to "ready/execute" when countdown hits zero
     if (now >= nsGraceEndMs) {
       _stopShadeCountdown();
@@ -3189,6 +3263,7 @@ function _startShadeCountdown() {
 
 function _stopShadeCountdown() {
   if (_shadeCountdownTimer) { clearInterval(_shadeCountdownTimer); _shadeCountdownTimer = null; }
+  _shadeDoState = null;
 }
 
 function _nsPriceHtml(): string {
@@ -3202,10 +3277,14 @@ function _nsPriceHtml(): string {
       if (graceExpired) return `<span class="wk-ns-price-val wk-shade-pill wk-shade-pill--ready">ready</span>`;
       return `<span class="wk-ns-price-val wk-shade-pill">${_graceCountdownPrecise()}</span>`;
     }
-    // No shade order — show estimated SUI cost to shade
-    if (nsPriceUsd != null && suiPriceCache) {
-      const sui = nsPriceUsd / suiPriceCache.price * 1.20;
-      return `<span class="wk-ns-price-val wk-ns-grace-pill">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI" aria-hidden="true"></span>`;
+    // No shade order — show estimated cost to shade (NS-discounted price)
+    if (nsPriceUsd != null) {
+      const discounted = nsPriceUsd * 0.75; // 25% NS discount via DeepBook
+      if (balView === 'sui' && suiPriceCache) {
+        const sui = discounted / suiPriceCache.price * 1.05;
+        return `<span class="wk-ns-price-val wk-ns-grace-pill">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI" aria-hidden="true"></span>`;
+      }
+      return `<span class="wk-ns-price-val wk-ns-grace-pill">$${discounted.toFixed(2)}</span>`;
     }
     return `<span class="wk-ns-price-val wk-ns-grace-pill">${_graceCountdown()}</span>`;
   }
@@ -3805,6 +3884,47 @@ function renderSkiMenu() {
       return;
     }
 
+    // Red hexagon (grace) → cancel ALL on-chain shade orders for this wallet
+    if (nsAvail === 'grace') {
+      const icon = document.getElementById('wk-ns-status');
+      if (icon) icon.style.opacity = '0.4';
+      try {
+        const allOnChain = await fetchOnChainShadeOrders(ws2.address);
+        if (allOnChain.length === 0) {
+          showToast('No shade orders found on-chain');
+          return;
+        }
+        let totalRefund = 0;
+        let cancelled = 0;
+        for (const o of allOnChain) {
+          try {
+            const tx = await buildCancelShadeOrderTx(ws2.address, o.objectId);
+            if (icon) icon.style.opacity = `${0.2 + 0.6 * (cancelled / allOnChain.length)}`;
+            const { digest } = await signAndExecuteTransaction(tx);
+            removeShadeOrder(ws2.address, o.objectId);
+            try { cancelShadeExecution(o.objectId); } catch { /* best-effort */ }
+            totalRefund += Number(o.depositMist) / 1e9;
+            cancelled++;
+          } catch (err) {
+            const raw = err instanceof Error ? err.message : String(err);
+            if (raw.toLowerCase().includes('reject')) break;
+          }
+        }
+        nsShadeOrder = null;
+        _patchNsStatus();
+        _patchNsPrice();
+        if (cancelled > 0) {
+          showToast(`${cancelled} shade order${cancelled > 1 ? 's' : ''} cancelled \u2014 ${totalRefund.toFixed(2)} SUI refunded`);
+        }
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        if (!raw.toLowerCase().includes('reject')) showToast(raw);
+      } finally {
+        if (icon) icon.style.opacity = '1';
+      }
+      return;
+    }
+
     // Allow click when owned OR when target matches wallet (self-target)
     const isSelfTarget = !!nsTargetAddress && nsTargetAddress.toLowerCase() === ws2.address.toLowerCase();
     if (!isSelfTarget && nsAvail !== 'owned') return;
@@ -3977,7 +4097,25 @@ function renderSkiMenu() {
     // ── Shade mode: grace-period domain ──
     if (nsAvail === 'grace') {
       const graceExpired = nsGraceEndMs > 0 && Date.now() >= nsGraceEndMs;
-      const existingOrder = findShadeOrder(ws2.address, label);
+      // Use nsShadeOrder (populated by on-chain fallback) OR localStorage
+      let existingOrder = nsShadeOrder ?? findShadeOrder(ws2.address, label);
+      // Last resort: check on-chain before creating a new order
+      if (!existingOrder) {
+        if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+        const onChain = await fetchOnChainShadeOrders(ws2.address);
+        if (onChain.length > 0) {
+          existingOrder = {
+            objectId: onChain[0].objectId,
+            domain: label,
+            executeAfterMs: nsGraceEndMs,
+            targetAddress: ws2.address,
+            salt: '',
+            depositMist: onChain[0].depositMist,
+          };
+          nsShadeOrder = existingOrder;
+        }
+        if (btn) { btn.disabled = false; }
+      }
 
       if (!existingOrder) {
         // No shade order → create one (lock funds for grace expiry)
@@ -3996,8 +4134,19 @@ function renderSkiMenu() {
             nsShadeOrder = fullOrder;
             // Schedule auto-execution with ShadeExecutorAgent DO
             try {
-              connectShadeExecutor(ws2.address);
-              await scheduleShadeExecution({
+              connectShadeExecutor(ws2.address, (state: ShadeExecutorState) => {
+                _shadeDoState = state;
+                const doOrder = state.orders.find(o => o.objectId === orderId);
+                if (doOrder?.status === 'completed') {
+                  nsShadeOrder = null;
+                  _stopShadeCountdown();
+                  nsAvail = 'owned';
+                  _patchNsStatus();
+                  _patchNsPrice();
+                  showToast(`${fullOrder.domain}.sui auto-registered \u2713 ${doOrder.digest ? doOrder.digest.slice(0, 8) + '\u2026' : ''}`);
+                }
+              });
+              const schedResult = await scheduleShadeExecution({
                 objectId: orderId,
                 domain: fullOrder.domain,
                 executeAfterMs: fullOrder.executeAfterMs,
@@ -4006,7 +4155,14 @@ function renderSkiMenu() {
                 ownerAddress: ws2.address,
                 depositMist: String(fullOrder.depositMist),
               });
-            } catch { /* DO scheduling is best-effort — user can still execute manually */ }
+              if (!schedResult.success) {
+                console.warn('[Shade] DO scheduling failed:', schedResult.error);
+                showToast(`Auto-execute scheduling issue: ${schedResult.error ?? 'unknown'}`);
+              }
+            } catch (schedErr) {
+              console.warn('[Shade] DO scheduling error:', schedErr);
+              showToast('Auto-execute scheduling failed \u2014 you can execute manually when grace expires');
+            }
           }
           _patchNsStatus();
           _patchNsPrice();
@@ -4060,8 +4216,40 @@ function renderSkiMenu() {
         return;
       }
 
-      // Shade order + grace still active → show countdown toast
-      showToast(`Shaded! ${_graceCountdownPrecise()} remaining`);
+      // Shade order + grace still active → cancel ALL shade orders (refund deposits)
+      if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+      try {
+        // Fetch all on-chain orders to cancel them all in sequence
+        const allOnChain = await fetchOnChainShadeOrders(ws2.address);
+        const ordersToCxl = allOnChain.length > 0 ? allOnChain : [{ objectId: existingOrder.objectId, depositMist: existingOrder.depositMist }];
+        let totalRefund = 0;
+        let lastDigest = '';
+        for (const o of ordersToCxl) {
+          try {
+            const tx = await buildCancelShadeOrderTx(ws2.address, o.objectId);
+            if (btn) btn.textContent = `\u270f ${ordersToCxl.indexOf(o) + 1}/${ordersToCxl.length}`;
+            const { digest } = await signAndExecuteTransaction(tx);
+            removeShadeOrder(ws2.address, o.objectId);
+            try { cancelShadeExecution(o.objectId); } catch { /* best-effort */ }
+            totalRefund += Number(o.depositMist) / 1e9;
+            if (digest) lastDigest = digest;
+          } catch (err) {
+            const raw = err instanceof Error ? err.message : String(err);
+            if (raw.toLowerCase().includes('reject')) break; // user rejected — stop
+          }
+        }
+        nsShadeOrder = null;
+        _patchNsStatus();
+        _patchNsPrice();
+        if (totalRefund > 0) {
+          showToast(`${ordersToCxl.length} shade order${ordersToCxl.length > 1 ? 's' : ''} cancelled \u2014 ${totalRefund.toFixed(2)} SUI refunded ${lastDigest ? lastDigest.slice(0, 8) + '\u2026' : ''}`);
+        }
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        if (!raw.toLowerCase().includes('reject')) showToast(raw);
+      } finally {
+        if (btn) { btn.disabled = false; _patchNsStatus(); }
+      }
       return;
     }
 
@@ -4110,11 +4298,47 @@ function renderSkiMenu() {
   _fetchOwnedDomains();
 
   // Prune stale shade orders (consumed/cancelled) on first menu open
+  // + auto-schedule any unscheduled orders with the ShadeExecutorAgent DO
   if (!nsShadeOrdersPruned && ws.address) {
     nsShadeOrdersPruned = true;
     pruneShadeOrders(ws.address).catch(() => {});
-    // Also look up shade order for the current label
     nsShadeOrder = findShadeOrder(ws.address, nsLabel.trim());
+
+    // Auto-schedule recovery — ensure all pending orders are registered with the DO
+    const allOrders = getShadeOrders(ws.address);
+    if (allOrders.length > 0) {
+      (async () => {
+        try {
+          connectShadeExecutor(ws.address, (state: ShadeExecutorState) => {
+            _shadeDoState = state;
+            // If DO reports a completed order, refresh the UI
+            for (const doOrder of state.orders) {
+              if (doOrder.status === 'completed' && nsShadeOrder?.objectId === doOrder.objectId) {
+                nsShadeOrder = null;
+                _stopShadeCountdown();
+                nsAvail = 'owned';
+                _patchNsStatus();
+                _patchNsPrice();
+                showToast(`${doOrder.domain}.sui auto-registered \u2713 ${doOrder.digest ? doOrder.digest.slice(0, 8) + '\u2026' : ''}`);
+              }
+            }
+          });
+          for (const o of allOrders) {
+            try {
+              await scheduleShadeExecution({
+                objectId: o.objectId,
+                domain: o.domain,
+                executeAfterMs: o.executeAfterMs,
+                targetAddress: o.targetAddress,
+                salt: o.salt,
+                ownerAddress: ws.address,
+                depositMist: String(o.depositMist),
+              });
+            } catch { /* idempotent — DO skips if already tracked */ }
+          }
+        } catch { /* connection failed — will retry next menu open */ }
+      })();
+    }
   }
 
   // Owned domain list — click to populate input or remove wishlist

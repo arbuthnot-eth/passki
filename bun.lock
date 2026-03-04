@@ -922,7 +922,7 @@
 
     "help-me": ["help-me@5.0.0", "", {}, "sha512-7xgomUX6ADmcYzFik0HzAxh/73YlKR9bmFzf51CZwR+b6YtzU2m0u49hQCqV6SvlqIqsaxovfwdvbnsw3b/zpg=="],
 
-    "hono": ["hono@4.12.4", "", {}, "sha512-ooiZW1Xy8rQ4oELQ++otI2T9DsKpV0M6c6cO6JGx4RTfav9poFFLlet9UMXHZnoM1yG0HWGlQLswBGX3RZmHtg=="],
+    "hono": ["hono@4.12.5", "", {}, "sha512-3qq+FUBtlTHhtYxbxheZgY8NIFnkkC/MR8u5TTsr7YZ3wixryQ3cCwn3iZbg8p8B88iDBBAYSfZDS75t8MN7Vg=="],
 
     "hono-agents": ["hono-agents@3.0.7", "", { "peerDependencies": { "agents": "^0.7.0", "hono": "^4.6.17" } }, "sha512-55qE3n3fouQm/SNZ0CgQMSn34PBKHqvvWLfXZjvnmbXrVh1ddBthF8vy8ehEg0q0lhI+/fpciA4IQiI2ZPBUaw=="],
 

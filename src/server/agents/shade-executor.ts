@@ -27,8 +27,21 @@ const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 const FULLNODE_URL = 'https://fullnode.mainnet.sui.io:443';
 const SHADE_PACKAGE = '0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff';
 
+// DeepBook v3 — swap pools for NS registration discount
+const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
+const DB_NS_SUI_POOL = '0x27c4fdb3b846aa3ae4a65ef5127a309aa3c1f466671471a806d8912a18b253e8';
+const DB_NS_SUI_POOL_ISV = 414947421;
+const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
+const DB_SUI_USDC_POOL_ISV = 389750322;
+const DB_NS_USDC_POOL = '0x0c0fdd4008740d81a8a7d4281322aee71a1b62c449eb5b142656753d89ebc060';
+const DB_NS_USDC_POOL_ISV = 414947421;
+const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+const SUI_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
+const NS_PYTH_PRICE_INFO = '0xc6352e1ea55d7b5acc3ed690cc3cdf8007978071d7bfd6a189445018cfb366e0';
+const NS_PYTH_PRICE_INFO_ISV = 417086474;
+
 const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 60_000; // 1 minute between retries
+const RETRY_DELAYS_MS = [5_000, 15_000, 60_000]; // aggressive first retry, then back off
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -81,6 +94,37 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   initialState: ShadeExecutorState = {
     orders: [],
   };
+
+  // Handle HTTP requests (poke/status) — called by cron trigger or manual API
+  async onRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname.endsWith('/poke') || url.searchParams.has('poke')) {
+      const result = await this.poke();
+      return new Response(JSON.stringify(result), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.pathname.endsWith('/status') || url.searchParams.has('status')) {
+      return new Response(JSON.stringify({ orders: this.state.orders }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if ((url.pathname.endsWith('/schedule') || url.searchParams.has('schedule')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as Parameters<typeof this.schedule>[0];
+        const result = await this.schedule(params);
+        return new Response(JSON.stringify(result), {
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    }
+    return super.onRequest(request);
+  }
 
   // ─── Schedule an order for auto-execution ───────────────────────────
 
@@ -151,26 +195,53 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     return this.state.orders.find(o => o.objectId === params.objectId) ?? null;
   }
 
+  // ─── Poke — external trigger to re-check and re-schedule ──────────
+
+  @callable()
+  async poke(): Promise<{ pending: number; nextAlarmMs: number | null; orders: Array<{ domain: string; status: string; executeAfterMs: number; retries: number; error?: string }> }> {
+    const pending = this.state.orders.filter(o => o.status === 'pending');
+    const nextAlarmMs = pending.length > 0
+      ? Math.max(pending.sort((a, b) => a.executeAfterMs - b.executeAfterMs)[0].executeAfterMs, Date.now() + 1000)
+      : null;
+    this.scheduleNextAlarm();
+    return {
+      pending: pending.length,
+      nextAlarmMs,
+      orders: this.state.orders.map(o => ({
+        domain: o.domain,
+        status: o.status,
+        executeAfterMs: o.executeAfterMs,
+        retries: o.retries,
+        ...(o.error ? { error: o.error } : {}),
+      })),
+    };
+  }
+
   // ─── DO Alarm — fires at grace expiry ───────────────────────────────
 
   async alarm() {
-    const now = Date.now();
+    try {
+      const now = Date.now();
 
-    // Find orders ready to execute (grace period expired)
-    const readyOrders = this.state.orders
-      .filter(o => o.status === 'pending' && o.executeAfterMs <= now)
-      .sort((a, b) => a.executeAfterMs - b.executeAfterMs);
+      // Find orders ready to execute (grace period expired)
+      const readyOrders = this.state.orders
+        .filter(o => o.status === 'pending' && o.executeAfterMs <= now)
+        .sort((a, b) => a.executeAfterMs - b.executeAfterMs);
 
-    if (readyOrders.length === 0) {
+      if (readyOrders.length === 0) {
+        this.scheduleNextAlarm();
+        return;
+      }
+
+      // Execute the earliest ready order
+      await this.executeOrder(readyOrders[0]);
+    } catch (err) {
+      // Unexpected error — always reschedule so we don't lose track
+      console.error('[ShadeExecutor] alarm() unexpected error:', err);
+    } finally {
+      // ALWAYS reschedule — never let a crash orphan pending orders
       this.scheduleNextAlarm();
-      return;
     }
-
-    // Execute the earliest ready order
-    await this.executeOrder(readyOrders[0]);
-
-    // Schedule alarm for next pending order
-    this.scheduleNextAlarm();
   }
 
   // ─── Core execution logic ──────────────────────────────────────────
@@ -189,63 +260,50 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     try {
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
-
-      // Derive keeper keypair from secret (bech32 suiprivkey1... string)
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
       const keeperAddress = keypair.toSuiAddress();
 
-      // ── Build the execute + register PTB ────────────────────────────
-
-      const tx = new Transaction();
-      tx.setSender(keeperAddress);
-
-      // 1. shade::execute → Coin<SUI> (permissionless — anyone with preimage can call)
       const domainBytes = Array.from(new TextEncoder().encode(order.domain));
       const saltBytes = Array.from(hexToBytes(order.salt));
       const targetAddr = normalizeSuiAddress(order.targetAddress);
-
-      const [releasedCoin] = tx.moveCall({
-        target: `${SHADE_PACKAGE}::shade::execute`,
-        arguments: [
-          tx.object(order.objectId),
-          tx.pure.vector('u8', domainBytes),
-          tx.pure.u64(order.executeAfterMs),
-          tx.pure.address(targetAddr),
-          tx.pure.vector('u8', saltBytes),
-          tx.object.clock(),
-        ],
-      });
-
-      // 2. Pyth SUI/USD price info for SuiNS registration fee
-      const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-        tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
-      );
-
-      // 3. Register the domain with released SUI from the shade order
       const fullDomain = `${order.domain}.sui`;
-      const suinsTx = new SuinsTransaction(suinsClient, tx);
-      const nft = suinsTx.register({
-        domain: fullDomain,
-        years: 1,
-        coinConfig: mainPackage.mainnet.coins.SUI,
-        coin: releasedCoin,
-        priceInfoObjectId,
-      });
 
-      // 4. Set forward resolution (target address) — uses NFT as auth
-      suinsTx.setTargetAddress({ nft, address: targetAddr });
+      // Build all routes in parallel — submit the fastest, skip dry-runs for speed.
+      // Every millisecond matters: a competing bot could register first.
+      const buildArgs = [transport, suinsClient, keeperAddress, order, domainBytes, saltBytes, targetAddr, fullDomain] as const;
 
-      // 5. Transfer NFT to user
-      tx.transferObjects([nft], tx.pure.address(targetAddr));
+      const [routeA, routeB] = await Promise.allSettled([
+        this.buildRouteA(...buildArgs),
+        this.buildRouteB(...buildArgs),
+      ]);
 
-      // 6. Send excess deposit back to user (not keeper)
-      tx.transferObjects([releasedCoin], tx.pure.address(targetAddr));
+      // Try routes in priority order: A (direct SUI→NS) → B (SUI→USDC→NS) → fallback (SUI, no discount)
+      // No dry-run — submit directly, fall back on actual tx failure.
+      const routes: Array<{ name: string; bytes: Uint8Array | null }> = [
+        { name: 'A (SUI→NS)', bytes: routeA.status === 'fulfilled' ? routeA.value : null },
+        { name: 'B (SUI→USDC→NS)', bytes: routeB.status === 'fulfilled' ? routeB.value : null },
+      ];
 
-      // ── Build, sign, submit ─────────────────────────────────────────
+      let digest: string | null = null;
+      for (const route of routes) {
+        if (!route.bytes) continue;
+        try {
+          const { signature } = await keypair.signTransaction(route.bytes);
+          digest = await this.submitTransaction(route.bytes, signature);
+          console.log(`[ShadeExecutor] Route ${route.name} submitted: ${digest}`);
+          break;
+        } catch (err) {
+          console.warn(`[ShadeExecutor] Route ${route.name} submit failed:`, err);
+        }
+      }
 
-      const txBytes = await tx.build({ client: transport as never });
-      const { signature } = await keypair.signTransaction(txBytes);
-      const digest = await this.submitTransaction(txBytes, signature);
+      // Last resort — direct SUI payment (no discount)
+      if (!digest) {
+        const fallbackBytes = await this.buildRouteFallback(...buildArgs);
+        const { signature } = await keypair.signTransaction(fallbackBytes);
+        digest = await this.submitTransaction(fallbackBytes, signature);
+        console.log(`[ShadeExecutor] Fallback (SUI direct) submitted: ${digest}`);
+      }
 
       this.updateOrder(order.objectId, {
         status: 'completed',
@@ -263,14 +321,230 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
           retries,
         });
       } else {
-        // Retry with backoff
+        const delay = RETRY_DELAYS_MS[retries - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
         this.updateOrder(order.objectId, {
           status: 'pending',
           retries,
           error: `Retry ${retries}/${MAX_RETRIES}: ${errorMsg}`,
         });
-        this.ctx.storage.setAlarm(Date.now() + RETRY_DELAY_MS * retries);
+        this.ctx.storage.setAlarm(Date.now() + delay);
       }
+    }
+  }
+
+  // ─── Shared: shade::execute preamble ────────────────────────────────
+
+  private shadeExecute(
+    tx: Transaction,
+    order: ShadeExecutorOrder,
+    domainBytes: number[],
+    saltBytes: number[],
+    targetAddr: string,
+  ) {
+    return tx.moveCall({
+      target: `${SHADE_PACKAGE}::shade::execute`,
+      arguments: [
+        tx.object(order.objectId),
+        tx.pure.vector('u8', domainBytes),
+        tx.pure.u64(order.executeAfterMs),
+        tx.pure.address(targetAddr),
+        tx.pure.vector('u8', saltBytes),
+        tx.object.clock(),
+      ],
+    });
+  }
+
+  // ─── Shared: NS Pyth price info (hardcoded ref, no RPC) ───────────
+
+  private nsPriceInfoRef(tx: Transaction) {
+    return tx.sharedObjectRef({
+      objectId: NS_PYTH_PRICE_INFO,
+      initialSharedVersion: NS_PYTH_PRICE_INFO_ISV,
+      mutable: false,
+    });
+  }
+
+  // ─── Shared: register with NS + transfer NFT to user ─────────────
+
+  private registerWithNs(
+    tx: Transaction,
+    suinsClient: InstanceType<typeof SuinsClient>,
+    fullDomain: string,
+    nsCoin: ReturnType<Transaction['moveCall']>[0],
+    priceInfoObjectId: ReturnType<Transaction['sharedObjectRef']>,
+    targetAddr: string,
+  ) {
+    const suinsTx = new SuinsTransaction(suinsClient, tx);
+    const nft = suinsTx.register({
+      domain: fullDomain,
+      years: 1,
+      coinConfig: mainPackage.mainnet.coins.NS,
+      coin: nsCoin,
+      priceInfoObjectId,
+    });
+    suinsTx.setTargetAddress({ nft, address: targetAddr });
+    suinsTx.setDefault(fullDomain);
+    tx.transferObjects([nft], tx.pure.address(targetAddr));
+    return nsCoin; // still alive — has remainder after register splits what it needs
+  }
+
+  // ─── Route A: SUI → NS (direct DeepBook) → register with 25% discount
+
+  private async buildRouteA(
+    transport: SuiGraphQLClient,
+    suinsClient: InstanceType<typeof SuinsClient>,
+    keeperAddress: string,
+    order: ShadeExecutorOrder,
+    domainBytes: number[],
+    saltBytes: number[],
+    targetAddr: string,
+    fullDomain: string,
+  ): Promise<Uint8Array> {
+    const tx = new Transaction();
+    tx.setSender(keeperAddress);
+
+    // 1. shade::execute → Coin<SUI>
+    const [releasedCoin] = this.shadeExecute(tx, order, domainBytes, saltBytes, targetAddr);
+
+    // 2. Swap SUI → NS via DeepBook NS/SUI pool (NS=base, SUI=quote)
+    const nsSuiPool = tx.sharedObjectRef({
+      objectId: DB_NS_SUI_POOL,
+      initialSharedVersion: DB_NS_SUI_POOL_ISV,
+      mutable: true,
+    });
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const [nsCoin, suiChange, deepChange] = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+      typeArguments: [mainPackage.mainnet.coins.NS.type, SUI_TYPE],
+      arguments: [nsSuiPool, releasedCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock()],
+    });
+
+    // 3. Register with NS at 25% discount
+    this.registerWithNs(tx, suinsClient, fullDomain, nsCoin, this.nsPriceInfoRef(tx), targetAddr);
+
+    // 4. Return change — NS dust to 0x0, SUI change to user
+    tx.transferObjects([nsCoin], tx.pure.address('0x0'));
+    tx.transferObjects([suiChange], tx.pure.address(targetAddr));
+    tx.transferObjects([deepChange], tx.pure.address('0x0'));
+
+    return tx.build({ client: transport as never });
+  }
+
+  // ─── Route B: SUI → USDC → NS (two-hop DeepBook) → register with 25% discount
+
+  private async buildRouteB(
+    transport: SuiGraphQLClient,
+    suinsClient: InstanceType<typeof SuinsClient>,
+    keeperAddress: string,
+    order: ShadeExecutorOrder,
+    domainBytes: number[],
+    saltBytes: number[],
+    targetAddr: string,
+    fullDomain: string,
+  ): Promise<Uint8Array> {
+    const tx = new Transaction();
+    tx.setSender(keeperAddress);
+
+    // 1. shade::execute → Coin<SUI>
+    const [releasedCoin] = this.shadeExecute(tx, order, domainBytes, saltBytes, targetAddr);
+
+    // 2. Swap SUI → USDC via DeepBook (SUI=base, USDC=quote)
+    const suiUsdcPool = tx.sharedObjectRef({
+      objectId: DB_SUI_USDC_POOL,
+      initialSharedVersion: DB_SUI_USDC_POOL_ISV,
+      mutable: true,
+    });
+    const [zeroDEEP1] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const [usdcOut, suiChange, deepChange1] = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
+      arguments: [suiUsdcPool, releasedCoin, zeroDEEP1, tx.pure.u64(0), tx.object.clock()],
+    });
+
+    // 3. Swap USDC → NS via DeepBook (NS=base, USDC=quote)
+    const nsUsdcPool = tx.sharedObjectRef({
+      objectId: DB_NS_USDC_POOL,
+      initialSharedVersion: DB_NS_USDC_POOL_ISV,
+      mutable: true,
+    });
+    const [zeroDEEP2] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const [nsCoin, usdcChange, deepChange2] = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+      typeArguments: [mainPackage.mainnet.coins.NS.type, mainPackage.mainnet.coins.USDC.type],
+      arguments: [nsUsdcPool, usdcOut, zeroDEEP2, tx.pure.u64(0), tx.object.clock()],
+    });
+
+    // 4. Register with NS at 25% discount
+    this.registerWithNs(tx, suinsClient, fullDomain, nsCoin, this.nsPriceInfoRef(tx), targetAddr);
+
+    // 5. Return change — NS dust to 0x0, SUI+USDC change to user
+    tx.transferObjects([nsCoin], tx.pure.address('0x0'));
+    tx.transferObjects([suiChange, usdcChange], tx.pure.address(targetAddr));
+    tx.transferObjects([deepChange1, deepChange2], tx.pure.address('0x0'));
+
+    return tx.build({ client: transport as never });
+  }
+
+  // ─── Fallback: SUI → register directly (no discount) ─────────────
+
+  private async buildRouteFallback(
+    transport: SuiGraphQLClient,
+    suinsClient: InstanceType<typeof SuinsClient>,
+    keeperAddress: string,
+    order: ShadeExecutorOrder,
+    domainBytes: number[],
+    saltBytes: number[],
+    targetAddr: string,
+    fullDomain: string,
+  ): Promise<Uint8Array> {
+    const tx = new Transaction();
+    tx.setSender(keeperAddress);
+
+    const [releasedCoin] = this.shadeExecute(tx, order, domainBytes, saltBytes, targetAddr);
+
+    const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
+      tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
+    );
+
+    const suinsTx = new SuinsTransaction(suinsClient, tx);
+    const nft = suinsTx.register({
+      domain: fullDomain,
+      years: 1,
+      coinConfig: mainPackage.mainnet.coins.SUI,
+      coin: releasedCoin,
+      priceInfoObjectId,
+    });
+    suinsTx.setTargetAddress({ nft, address: targetAddr });
+    suinsTx.setDefault(fullDomain);
+    tx.transferObjects([nft], tx.pure.address(targetAddr));
+    tx.transferObjects([releasedCoin], tx.pure.address(targetAddr));
+
+    return tx.build({ client: transport as never });
+  }
+
+  // ─── Dry-run transaction to verify it would succeed ────────────────
+
+  private async dryRunTransaction(txBytes: Uint8Array): Promise<void> {
+    const res = await fetch(FULLNODE_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'sui_dryRunTransactionBlock',
+        params: [uint8ToBase64(txBytes)],
+      }),
+    });
+
+    const json = await res.json() as {
+      result?: { effects?: { status?: { status?: string; error?: string } } };
+      error?: { message?: string };
+    };
+
+    if (json.error) throw new Error(`Dry-run RPC error: ${json.error.message}`);
+    const status = json.result?.effects?.status;
+    if (status?.status !== 'success') {
+      throw new Error(`Dry-run failed: ${status?.error ?? JSON.stringify(status)}`);
     }
   }
 
@@ -326,8 +600,8 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       .sort((a, b) => a.executeAfterMs - b.executeAfterMs);
 
     if (pendingOrders.length > 0) {
-      // Schedule for the earliest pending order (at least 1s from now)
-      const nextMs = Math.max(pendingOrders[0].executeAfterMs, Date.now() + 1000);
+      // Schedule exactly at expiry — every ms counts in a name race
+      const nextMs = Math.max(pendingOrders[0].executeAfterMs, Date.now());
       this.ctx.storage.setAlarm(nextMs);
     }
   }

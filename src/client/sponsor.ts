@@ -161,7 +161,13 @@ export async function requestSponsoredTransaction(params: {
 
   if (!client) throw new Error('Not connected to sponsor agent');
 
-  // 1. Get sponsor gas coins from DO
+  // 1. Get DO state to detect keeper mode
+  const doState = await client.call<SponsorState>('getSponsorState', []);
+  const gasOwner = doState.keeperMode && doState.keeperAddress
+    ? doState.keeperAddress
+    : sponsorAddress;
+
+  // 2. Get sponsor gas coins from DO
   const gasData = await client.call<{ coins: GasCoin[]; refreshedAt: number } | null>(
     'getGasCoins', [],
   );
@@ -169,13 +175,13 @@ export async function requestSponsoredTransaction(params: {
     throw new Error('Sponsor has no gas coins — ask them to refresh');
   }
 
-  // 2. Build kind-only bytes (no gas, no sender)
+  // 3. Build kind-only bytes (no gas, no sender)
   const kindBytes = await tx.build({ client: grpcClient, onlyTransactionKind: true });
 
-  // 3. Reconstruct as sponsored transaction
+  // 4. Reconstruct as sponsored transaction
   const sponsoredTx = Transaction.fromKind(kindBytes);
   sponsoredTx.setSender(senderAddress);
-  sponsoredTx.setGasOwner(sponsorAddress);
+  sponsoredTx.setGasOwner(gasOwner);
   sponsoredTx.setGasPayment(gasData.coins);
 
   // 4. Build the final bytes — both parties sign exactly these
@@ -253,6 +259,94 @@ export async function removeSplashTarget(address: string): Promise<void> {
   await client.call('removeEntry', [{ address }]);
 }
 
+/**
+ * Keeper-mode sponsored transaction: user signs first, keeper signs the exact
+ * same bytes on the server, then we submit with both signatures.
+ *
+ * Unlike requestSponsoredTransaction (where the DO gets bytes first and the
+ * sponsor browser-wallet signs later), this flow guarantees byte-match by
+ * letting the wallet produce the canonical bytes via sign, then forwarding
+ * those to the keeper.
+ */
+export async function requestKeeperSponsoredTransaction(params: {
+  tx: Transaction;
+  senderAddress: string;
+  sponsorAddress: string;
+  /** Must return BOTH the base64 bytes the wallet signed AND the signature */
+  signTransaction: (txBytes: Uint8Array) => Promise<{ bytes: string; signature: string }>;
+  grpcClient: SuiGrpcClient;
+}): Promise<{ digest: string }> {
+  const { tx, senderAddress, sponsorAddress, signTransaction, grpcClient } = params;
+
+  if (!client) throw new Error('Not connected to sponsor agent');
+
+  // 1. Get DO state — need keeper address for gasOwner
+  const doState = await client.call<SponsorState>('getSponsorState', []);
+  if (!doState.keeperMode || !doState.keeperAddress) {
+    throw new Error('Keeper mode not active on DO');
+  }
+
+  // 2. Get keeper gas coins
+  const gasData = await client.call<{ coins: GasCoin[]; refreshedAt: number } | null>(
+    'getGasCoins', [],
+  );
+  if (!gasData || gasData.coins.length === 0) {
+    throw new Error('Keeper has no gas coins');
+  }
+
+  // 3. Build the sponsored transaction
+  const kindBytes = await tx.build({ client: grpcClient, onlyTransactionKind: true });
+  const sponsoredTx = Transaction.fromKind(kindBytes);
+  sponsoredTx.setSender(senderAddress);
+  sponsoredTx.setGasOwner(doState.keeperAddress);
+  sponsoredTx.setGasPayment(gasData.coins);
+
+  const txBytes = await sponsoredTx.build({ client: grpcClient });
+
+  // 4. USER SIGNS FIRST — get the actual bytes the wallet signed
+  const { bytes: walletBytesB64, signature: userSig } = await signTransaction(txBytes);
+  const walletBytes = fromBase64(walletBytesB64);
+
+  // 5. Send the wallet-signed bytes to DO → keeper signs the SAME bytes
+  const walletBase64 = toBase64(walletBytes);
+  const requestResult = await client.call<{ requestId: string } | { error: string }>(
+    'requestSponsorship',
+    [{ senderAddress, txBytes: walletBase64 }],
+  );
+  if ('error' in requestResult) throw new Error(requestResult.error);
+  const { requestId } = requestResult;
+
+  // Submit user sig (keeper already auto-signed in requestSponsorship)
+  await client.call('submitUserSignature', [{ requestId, userSig }]);
+
+  // 6. Poll for keeper sig (should be immediate since keeper auto-signs)
+  const ready = await pollForReady(requestId, 30_000);
+  if (!ready.sponsorSig) throw new Error('Keeper signature not received');
+
+  // 7. Submit with both signatures — use walletBytes (what both parties signed)
+  const result = await grpcClient.core.executeTransaction({
+    transaction: walletBytes,
+    signatures: [userSig, ready.sponsorSig],
+  });
+
+  const digest = (result as { digest?: string; Transaction?: { digest?: string } }).digest
+    ?? (result as { Transaction?: { digest?: string } }).Transaction?.digest
+    ?? '';
+
+  await client.call('markSubmitted', [{ requestId, digest }]);
+  return { digest };
+}
+
+export async function enableKeeperMode(): Promise<{ success: boolean; keeperAddress?: string; error?: string }> {
+  if (!client) throw new Error('Not connected to sponsor agent');
+  return client.call<{ success: boolean; keeperAddress?: string; error?: string }>('enableKeeperMode', []);
+}
+
+export async function disableKeeperMode(): Promise<{ success: boolean }> {
+  if (!client) throw new Error('Not connected to sponsor agent');
+  return client.call<{ success: boolean }>('disableKeeperMode', []);
+}
+
 let _autoSignInterval: ReturnType<typeof setInterval> | null = null;
 
 /** Poll for pending requests and auto-sign them every 5 seconds. */
@@ -263,6 +357,9 @@ export function startAutoSigning(
   _autoSignInterval = setInterval(async () => {
     if (!client) { clearInterval(_autoSignInterval!); _autoSignInterval = null; return; }
     try {
+      // Skip browser-wallet auto-signing when keeper mode handles it server-side
+      const state = await client.call<SponsorState>('getSponsorState', []);
+      if (state.keeperMode) return;
       await processPendingRequests({ signTransaction: signFn });
     } catch { /* non-blocking */ }
   }, 5_000);
