@@ -27,6 +27,7 @@ use sui::clock::Clock;
 use sui::hash::keccak256;
 use sui::bcs;
 use sui::sui::SUI;
+use sui::event;
 
 // ─── Errors ──────────────────────────────────────────────────────────
 
@@ -34,6 +35,35 @@ const ENotOwner: u64 = 0;
 const ETooEarly: u64 = 1;
 const EInvalidCommitment: u64 = 2;
 const EZeroDeposit: u64 = 3;
+
+// ─── Events ─────────────────────────────────────────────────────────
+
+public struct OrderCreated has copy, drop {
+    order_id: ID,
+    owner: address,
+    deposit: u64,
+}
+
+public struct OrderExecuted has copy, drop {
+    order_id: ID,
+    executor: address,
+    domain: vector<u8>,
+    target_address: address,
+    deposit: u64,
+}
+
+public struct OrderCancelled has copy, drop {
+    order_id: ID,
+    owner: address,
+    deposit: u64,
+}
+
+public struct OrderToppedUp has copy, drop {
+    order_id: ID,
+    owner: address,
+    added: u64,
+    new_total: u64,
+}
 
 // ─── Structs ─────────────────────────────────────────────────────────
 
@@ -77,6 +107,11 @@ entry fun create(
         commitment,
         sealed_payload,
     };
+    event::emit(OrderCreated {
+        order_id: object::id(&order),
+        owner: order.owner,
+        deposit: order.deposit.value(),
+    });
     transfer::share_object(order);
 }
 
@@ -110,6 +145,15 @@ public fun execute(
     let hash = keccak256(&preimage);
     assert!(hash == order.commitment, EInvalidCommitment);
 
+    // Emit before consuming
+    event::emit(OrderExecuted {
+        order_id: object::id(&order),
+        executor: ctx.sender(),
+        domain,
+        target_address,
+        deposit: order.deposit.value(),
+    });
+
     // Consume order → coin
     let ShadeOrder { id, owner: _, deposit, commitment: _, sealed_payload: _ } = order;
     id.delete();
@@ -121,6 +165,11 @@ public fun execute(
 /// Owner-only refund. Destroys the order and returns escrowed SUI.
 entry fun cancel(order: ShadeOrder, ctx: &mut TxContext) {
     assert!(ctx.sender() == order.owner, ENotOwner);
+    event::emit(OrderCancelled {
+        order_id: object::id(&order),
+        owner: order.owner,
+        deposit: order.deposit.value(),
+    });
     let ShadeOrder { id, owner: _, deposit, commitment: _, sealed_payload: _ } = order;
     id.delete();
     let coin = coin::from_balance(deposit, ctx);
@@ -132,7 +181,14 @@ entry fun cancel(order: ShadeOrder, ctx: &mut TxContext) {
 /// Owner adds more SUI if the price moved since the order was created.
 entry fun top_up(order: &mut ShadeOrder, coin: Coin<SUI>, ctx: &TxContext) {
     assert!(ctx.sender() == order.owner, ENotOwner);
+    let added = coin.value();
     order.deposit.join(coin.into_balance());
+    event::emit(OrderToppedUp {
+        order_id: object::id(order),
+        owner: order.owner,
+        added,
+        new_total: order.deposit.value(),
+    });
 }
 
 // ─── Seal access policy ──────────────────────────────────────────────

@@ -95,6 +95,18 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     orders: [],
   };
 
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // The Agent base class sets `this.alarm` as an instance property in its
+    // constructor (for its cf_agents_schedules system), which shadows any
+    // prototype alarm() method.  Chain our shade alarm after the agent's.
+    const agentAlarm = this.alarm.bind(this);
+    this.alarm = async () => {
+      await agentAlarm();
+      await this._shadeAlarm();
+    };
+  }
+
   // Handle HTTP requests (poke/status) — called by cron trigger or manual API
   async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -219,7 +231,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
   // ─── DO Alarm — fires at grace expiry ───────────────────────────────
 
-  async alarm() {
+  private async _shadeAlarm() {
     try {
       const now = Date.now();
 
@@ -520,32 +532,6 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     tx.transferObjects([releasedCoin], tx.pure.address(targetAddr));
 
     return tx.build({ client: transport as never });
-  }
-
-  // ─── Dry-run transaction to verify it would succeed ────────────────
-
-  private async dryRunTransaction(txBytes: Uint8Array): Promise<void> {
-    const res = await fetch(FULLNODE_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'sui_dryRunTransactionBlock',
-        params: [uint8ToBase64(txBytes)],
-      }),
-    });
-
-    const json = await res.json() as {
-      result?: { effects?: { status?: { status?: string; error?: string } } };
-      error?: { message?: string };
-    };
-
-    if (json.error) throw new Error(`Dry-run RPC error: ${json.error.message}`);
-    const status = json.result?.effects?.status;
-    if (status?.status !== 'success') {
-      throw new Error(`Dry-run failed: ${status?.error ?? JSON.stringify(status)}`);
-    }
   }
 
   // ─── Submit transaction via fullnode JSON-RPC ───────────────────────

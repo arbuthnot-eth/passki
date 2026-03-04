@@ -45,14 +45,6 @@ export async function authenticate(params: {
 }
 
 /**
- * Get current session state from the agent.
- */
-export async function getSession(): Promise<SessionState | null> {
-  if (!client) return null;
-  return client.call<SessionState>('getSession', []);
-}
-
-/**
  * Tell the agent to forget this device-wallet binding.
  */
 export async function forgetDevice(): Promise<void> {
@@ -69,8 +61,4 @@ export function disconnectSession(): void {
     client = null;
   }
   stateCallback = null;
-}
-
-export function getSessionClient(): AgentClient<SessionState> | null {
-  return client;
 }

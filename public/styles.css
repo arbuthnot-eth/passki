@@ -936,9 +936,26 @@ body {
   cursor: pointer !important;
   border-color: rgba(34, 197, 94, 0.5) !important;
   background: linear-gradient(135deg, rgba(20, 83, 45, 0.7), rgba(22, 101, 52, 0.6)) !important;
-  color: #4ade80 !important;
+  color: transparent !important;
   box-shadow: 0 0 6px rgba(34, 197, 94, 0.25);
+  position: relative;
 }
+.wk-shade-active::after {
+  content: '\2713';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #4ade80;
+  font-size: 16px;
+}
+.wk-shade-active:hover {
+  border-color: rgba(239, 68, 68, 0.6) !important;
+  background: linear-gradient(135deg, rgba(127, 29, 29, 0.7), rgba(153, 27, 27, 0.6)) !important;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.3);
+}
+.wk-shade-active:hover::after { content: '\2715'; color: #f87171; }
 
 /* Shade execute — order exists, grace expired, bright green arrow */
 .wk-shade-execute {
@@ -1480,6 +1497,22 @@ body {
   line-height: 1;
 }
 .wk-ns-wish-rm:hover { color: rgba(239, 68, 68, 0.8); }
+/* Shade order chips — red #ef4444 */
+.wk-ns-owned-chip--shade {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+}
+.wk-ns-owned-chip--shade:hover {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.16);
+}
+.wk-ns-owned-shade {
+  font-size: 0.45rem;
+  color: rgba(239, 68, 68, 0.7);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 
 /* ─── NFT Card Popover (roster chip hover) ────────────────────────── */
 

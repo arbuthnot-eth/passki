@@ -14,10 +14,8 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 
-const GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
-
-const GRPC_URL   = 'https://fullnode.mainnet.sui.io:443';
 const GQL_URL    = 'https://graphql.mainnet.sui.io/graphql';
+const GRPC_URL   = 'https://fullnode.mainnet.sui.io:443';
 
 // ─── Contract constants ────────────────────────────────────────────────
 
@@ -83,7 +81,7 @@ async function fetchNftDomains(address: string): Promise<OwnedDomain[]> {
     const now = Date.now();
     let cursor: string | null = null;
     do {
-      const res = await fetch(GRAPHQL_URL, {
+      const res = await fetch(GQL_URL, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -139,7 +137,7 @@ async function fetchNftDomains(address: string): Promise<OwnedDomain[]> {
 /** Fetch SubnameCap objects owned by the address. */
 async function fetchSubnameCaps(address: string): Promise<OwnedDomain[]> {
   try {
-    const res = await fetch(GRAPHQL_URL, {
+    const res = await fetch(GQL_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -189,7 +187,7 @@ async function fetchSubnameCaps(address: string): Promise<OwnedDomain[]> {
 async function fetchKioskDomains(address: string): Promise<OwnedDomain[]> {
   try {
     // Step 1: find KioskOwnerCap objects → extract kiosk IDs
-    const capRes = await fetch(GRAPHQL_URL, {
+    const capRes = await fetch(GQL_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -221,7 +219,7 @@ async function fetchKioskDomains(address: string): Promise<OwnedDomain[]> {
     // Step 2: for each kiosk, query dynamic fields for SuinsRegistration items
     const domains: OwnedDomain[] = [];
     for (const kioskId of kioskIds) {
-      const dfRes = await fetch(GRAPHQL_URL, {
+      const dfRes = await fetch(GQL_URL, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -1143,8 +1141,43 @@ export async function buildCancelShadeOrderTx(
 }
 
 /**
+ * Extract ShadeOrder object ID from transaction effects (instant — no indexer lag).
+ * Effects shape varies by wallet/transport, so we check multiple known layouts.
+ */
+export function extractShadeOrderIdFromEffects(effects: unknown): string | null {
+  if (!effects || typeof effects !== 'object') return null;
+  const eff = effects as Record<string, unknown>;
+  // Sui effects v1 JSON: { created: [{ owner: { Shared: ... }, reference: { objectId } }] }
+  const created = (eff.created ?? eff.createdObjects) as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(created)) {
+    for (const obj of created) {
+      const owner = obj.owner as Record<string, unknown> | undefined;
+      if (owner && ('Shared' in owner || 'shared' in owner)) {
+        const ref = (obj.reference ?? obj) as Record<string, unknown>;
+        const id = ref.objectId ?? ref.object_id;
+        if (typeof id === 'string') return id;
+      }
+    }
+  }
+  // gRPC V2 effects: { changedObjects: [{ objectId, outputState: { objectWrite: { owner: { shared } } } }] }
+  const changed = eff.changedObjects as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(changed)) {
+    for (const ch of changed) {
+      const out = (ch.outputState ?? ch.output_state) as Record<string, unknown> | undefined;
+      const write = (out?.objectWrite ?? out?.object_write) as Record<string, unknown> | undefined;
+      const owner = write?.owner as Record<string, unknown> | undefined;
+      if (owner && ('shared' in owner || 'Shared' in owner)) {
+        const id = ch.objectId ?? ch.object_id;
+        if (typeof id === 'string') return id;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Query a transaction digest to find the created ShadeOrder object ID.
- * This is the reliable path — wallet `effects` shapes vary across providers.
+ * Fallback when effects parsing didn't yield a result (indexer may lag).
  */
 export async function findCreatedShadeOrderId(digest: string): Promise<string | null> {
   const query = `query($digest: String!) {
@@ -1193,8 +1226,18 @@ const SHADE_STORAGE_PREFIX = 'ski:shade-orders:';
 export function getShadeOrders(address: string): ShadeOrderInfo[] {
   try {
     const raw = localStorage.getItem(`${SHADE_STORAGE_PREFIX}${address}`);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    // depositMist is stored as string (BigInt can't be JSON-serialized) — restore to bigint
+    return (JSON.parse(raw) as Array<Record<string, unknown>>).map(o => ({
+      ...o,
+      depositMist: BigInt(o.depositMist as string | number ?? 0),
+    })) as ShadeOrderInfo[];
   } catch { return []; }
+}
+
+/** Serialize a ShadeOrderInfo for JSON storage (BigInt → string). */
+function shadeOrderToJson(order: ShadeOrderInfo): Record<string, unknown> {
+  return { ...order, depositMist: String(order.depositMist) };
 }
 
 export function addShadeOrder(address: string, order: ShadeOrderInfo): void {
@@ -1202,12 +1245,17 @@ export function addShadeOrder(address: string, order: ShadeOrderInfo): void {
   // Avoid duplicates by objectId
   if (orders.some(o => o.objectId === order.objectId)) return;
   orders.push(order);
-  try { localStorage.setItem(`${SHADE_STORAGE_PREFIX}${address}`, JSON.stringify(orders)); } catch {}
+  try { localStorage.setItem(`${SHADE_STORAGE_PREFIX}${address}`, JSON.stringify(orders.map(shadeOrderToJson))); } catch {}
 }
 
 export function removeShadeOrder(address: string, objectId: string): void {
   const orders = getShadeOrders(address).filter(o => o.objectId !== objectId);
-  try { localStorage.setItem(`${SHADE_STORAGE_PREFIX}${address}`, JSON.stringify(orders)); } catch {}
+  try { localStorage.setItem(`${SHADE_STORAGE_PREFIX}${address}`, JSON.stringify(orders.map(shadeOrderToJson))); } catch {}
+}
+
+export function removeShadeOrderByDomain(address: string, domain: string): void {
+  const orders = getShadeOrders(address).filter(o => o.domain !== domain);
+  try { localStorage.setItem(`${SHADE_STORAGE_PREFIX}${address}`, JSON.stringify(orders.map(shadeOrderToJson))); } catch {}
 }
 
 /** Find a shade order for a specific domain owned by this address. */

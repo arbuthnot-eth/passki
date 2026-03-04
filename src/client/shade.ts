@@ -95,8 +95,4 @@ export function disconnectShadeExecutor(): void {
   stateCallback = null;
 }
 
-export function getShadeExecutorClient(): AgentClient<ShadeExecutorState> | null {
-  return client;
-}
-
 export type { ShadeExecutorOrder, ShadeExecutorState };

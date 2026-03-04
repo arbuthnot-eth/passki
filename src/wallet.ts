@@ -235,6 +235,46 @@ export async function disconnect(): Promise<void> {
   });
 }
 
+// ─── Backpack + Uint8Array helpers ────────────────────────────────────
+
+/**
+ * Backpack routes signing through dapp-kit-core's internal keyring.
+ * A silent reconnect primes the correct chain context; if the keyring
+ * is locked a non-silent connect surfaces Backpack's unlock popup.
+ */
+async function withBackpackRetry<T>(fn: () => Promise<T>): Promise<T> {
+  const { wallet } = currentState;
+  if (!wallet || !/backpack/i.test(wallet.name)) return fn();
+  const uiWallet = dappKit.stores.$wallets.get().find((w) => w.name === wallet.name);
+  if (!uiWallet) return fn();
+
+  await dappKit.connectWallet({ wallet: uiWallet, silent: true } as Parameters<typeof dappKit.connectWallet>[0]);
+  try {
+    return await fn();
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : '';
+    if (errMsg.includes('UserKeyring not found')) {
+      try {
+        await dappKit.connectWallet({ wallet: uiWallet } as Parameters<typeof dappKit.connectWallet>[0]);
+      } catch { /* user cancelled */ }
+      return fn();
+    }
+    throw e;
+  }
+}
+
+/** Augment Uint8Array with serialize/toJSON so Phantom/WaaP accept it as a tx arg. */
+function augmentBytes(transaction: unknown): unknown {
+  if (!(transaction instanceof Uint8Array)) return transaction;
+  let b64 = '';
+  for (let i = 0; i < transaction.length; i++) b64 += String.fromCharCode(transaction[i]);
+  b64 = btoa(b64);
+  const aug = transaction as Uint8Array & { serialize?: () => string; toJSON?: () => string };
+  aug.serialize = () => b64;
+  aug.toJSON = () => b64;
+  return aug;
+}
+
 // ─── Sign Personal Message ───────────────────────────────────────────
 
 export async function signPersonalMessage(message: Uint8Array): Promise<{
@@ -244,77 +284,16 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   const { wallet, account } = currentState;
   if (!wallet || !account) throw new Error('No wallet connected');
 
-  // Backpack routes signing through its own internal keyring which requires a
-  // chain identifier to resolve the correct entry.  dapp-kit-core calls
-  // getAccountFeature({ account, chain }) which passes `chain` through to the
-  // wallet feature — the missing chain is what causes "UserKeyring not found".
-  if (/backpack/i.test(wallet.name)) {
-    const uiWallet = dappKit.stores.$wallets.get().find((w) => w.name === wallet.name);
-    if (uiWallet) {
-      // silent:true re-acknowledges the already-connected wallet without any UI prompt
-      await dappKit.connectWallet({ wallet: uiWallet, silent: true } as Parameters<typeof dappKit.connectWallet>[0]);
-      try {
-        return await dappKit.signPersonalMessage({ message });
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : '';
-        if (errMsg.includes('UserKeyring not found')) {
-          // Backpack's keyring is locked. A non-silent Wallet Standard connect
-          // targets the Sui context directly and should surface the Backpack
-          // popup (unlock screen if locked, account picker otherwise).
-          try {
-            await dappKit.connectWallet({ wallet: uiWallet } as Parameters<typeof dappKit.connectWallet>[0]);
-          } catch { /* user cancelled — sign retry will surface the error */ }
-          return dappKit.signPersonalMessage({ message });
-        }
-        throw e;
-      }
+  return withBackpackRetry(() => {
+    if (/backpack/i.test(wallet.name)) return dappKit.signPersonalMessage({ message });
+    if (!('sui:signPersonalMessage' in wallet.features)) {
+      throw new Error(`${wallet.name} does not support personal message signing`);
     }
-  }
-
-  // All other wallets: direct Wallet Standard feature call
-  if (!('sui:signPersonalMessage' in wallet.features)) {
-    throw new Error(`${wallet.name} does not support personal message signing`);
-  }
-
-  const signFeature = wallet.features['sui:signPersonalMessage'] as {
-    signPersonalMessage: (input: {
-      message: Uint8Array;
-      account: WalletAccount;
-    }) => Promise<{ bytes: string; signature: string }>;
-  };
-
-  return signFeature.signPersonalMessage({ message, account });
-}
-
-// ─── Sign Transaction (without executing) ────────────────────────────
-
-/**
- * Sign a transaction with the connected wallet but do NOT execute it.
- * Returns the base64 BCS bytes and the serialized signature.
- * Used by the sponsored-transaction flow where both wallets sign
- * the same bytes and the caller submits with both signatures.
- */
-export async function signTransactionOnly(transaction: unknown): Promise<{
-  bytes: string;
-  signature: string;
-}> {
-  const { wallet, account } = currentState;
-  if (!wallet || !account) throw new Error('No wallet connected');
-
-  if (!('sui:signTransaction' in wallet.features)) {
-    throw new Error(`${wallet.name} does not support sui:signTransaction`);
-  }
-
-  const signFeat = wallet.features['sui:signTransaction'] as {
-    signTransaction: (input: {
-      transaction: unknown;
-      account: WalletAccount;
-      chain: string;
-    }) => Promise<{ bytes: string; signature: string }>;
-  };
-
-  const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
-  return signFeat.signTransaction({ transaction, account, chain });
+    const feat = wallet.features['sui:signPersonalMessage'] as {
+      signPersonalMessage: (input: { message: Uint8Array; account: WalletAccount }) => Promise<{ bytes: string; signature: string }>;
+    };
+    return feat.signPersonalMessage({ message, account });
+  });
 }
 
 // ─── Sign & Execute Transaction ──────────────────────────────────────
@@ -338,63 +317,39 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
   const { wallet, account } = currentState;
   if (!wallet || !account) throw new Error('No wallet connected');
 
-  // Backpack routes through its internal keyring — same workaround as signPersonalMessage
-  if (/backpack/i.test(wallet.name)) {
-    const uiWallet = dappKit.stores.$wallets.get().find((w) => w.name === wallet.name);
-    if (uiWallet) {
-      await dappKit.connectWallet({ wallet: uiWallet, silent: true } as Parameters<typeof dappKit.connectWallet>[0]);
-      try {
-        const r = await dappKit.signAndExecuteTransaction({ transaction } as Parameters<typeof dappKit.signAndExecuteTransaction>[0]);
-        return normalizeTxResult(r);
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : '';
-        if (errMsg.includes('UserKeyring not found')) {
-          try {
-            await dappKit.connectWallet({ wallet: uiWallet } as Parameters<typeof dappKit.connectWallet>[0]);
-          } catch { /* user cancelled */ }
-          const r = await dappKit.signAndExecuteTransaction({ transaction } as Parameters<typeof dappKit.signAndExecuteTransaction>[0]);
-          return normalizeTxResult(r);
-        }
-        throw e;
-      }
+  return withBackpackRetry(async () => {
+    if (/backpack/i.test(wallet.name)) {
+      const r = await dappKit.signAndExecuteTransaction({ transaction } as Parameters<typeof dappKit.signAndExecuteTransaction>[0]);
+      return normalizeTxResult(r);
     }
-  }
 
-  if (!('sui:signAndExecuteTransaction' in wallet.features)) {
-    throw new Error(`${wallet.name} does not support signAndExecuteTransaction`);
-  }
+    // WaaP: sign-only + own gRPC execution fallback.
+    // WaaP's signAndExecuteTransaction produces "Invalid user signature" for some txs
+    // (shared-object-by-value, e.g. shade::cancel). Sign-only works — we execute ourselves.
+    if (/waap/i.test(wallet.name) && 'sui:signTransaction' in wallet.features) {
+      const signFeat = wallet.features['sui:signTransaction'] as {
+        signTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string }) => Promise<{ bytes: string; signature: string }>;
+      };
+      const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
+      const { bytes, signature } = await signFeat.signTransaction({
+        transaction: augmentBytes(transaction), account, chain,
+      });
+      // Execute via our own gRPC using WaaP's returned bytes + signature
+      const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://fullnode.mainnet.sui.io:443' });
+      const txBytes = Uint8Array.from(atob(bytes), c => c.charCodeAt(0));
+      const result = await grpc.executeTransaction({ transaction: txBytes, signatures: [signature] });
+      const digest = (result as { digest?: string }).digest ?? '';
+      return { digest, effects: (result as { effects?: unknown }).effects };
+    }
 
-  const feature = wallet.features['sui:signAndExecuteTransaction'] as {
-    signAndExecuteTransaction: (input: {
-      transaction: unknown;
-      account: WalletAccount;
-      chain: string;
-      options?: { showEffects?: boolean };
-    }) => Promise<{ digest: string; effects?: unknown }>;
-  };
-
-  const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
-
-  // Wallets like Phantom check for serialize()/toJSON() on the transaction and
-  // throw if not found. If we have pre-built bytes (Uint8Array), augment the
-  // instance with those methods. The object remains instanceof Uint8Array so
-  // WaaP's internal short-circuit (which checks instanceof first) still fires.
-  let txArg: unknown = transaction;
-  if (transaction instanceof Uint8Array) {
-    let b64 = '';
-    for (let i = 0; i < transaction.length; i++) b64 += String.fromCharCode(transaction[i]);
-    b64 = btoa(b64);
-    const aug = transaction as Uint8Array & { serialize?: () => string; toJSON?: () => string };
-    aug.serialize = () => b64;
-    aug.toJSON = () => b64;
-    txArg = aug;
-  }
-
-  return feature.signAndExecuteTransaction({
-    transaction: txArg,
-    account,
-    chain,
-    options: { showEffects: true },
+    if (!('sui:signAndExecuteTransaction' in wallet.features)) {
+      throw new Error(`${wallet.name} does not support signAndExecuteTransaction`);
+    }
+    const feat = wallet.features['sui:signAndExecuteTransaction'] as {
+      signAndExecuteTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string; options?: { showEffects?: boolean } }) => Promise<{ digest: string; effects?: unknown }>;
+    };
+    const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
+    return feat.signAndExecuteTransaction({ transaction: augmentBytes(transaction), account, chain, options: { showEffects: true } });
   });
 }
 
@@ -406,52 +361,19 @@ export async function signTransaction(transaction: unknown): Promise<{ bytes: st
   const { wallet, account } = currentState;
   if (!wallet || !account) throw new Error('No wallet connected');
 
-  // Backpack routes through its internal keyring — same workaround as signAndExecuteTransaction
-  if (/backpack/i.test(wallet.name)) {
-    const uiWallet = dappKit.stores.$wallets.get().find((w) => w.name === wallet.name);
-    if (uiWallet) {
-      await dappKit.connectWallet({ wallet: uiWallet, silent: true } as Parameters<typeof dappKit.connectWallet>[0]);
-      try {
-        return await dappKit.signTransaction({ transaction } as Parameters<typeof dappKit.signTransaction>[0]);
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : '';
-        if (errMsg.includes('UserKeyring not found')) {
-          try {
-            await dappKit.connectWallet({ wallet: uiWallet } as Parameters<typeof dappKit.connectWallet>[0]);
-          } catch { /* user cancelled */ }
-          return dappKit.signTransaction({ transaction } as Parameters<typeof dappKit.signTransaction>[0]);
-        }
-        throw e;
-      }
+  return withBackpackRetry(async () => {
+    if (/backpack/i.test(wallet.name)) {
+      return dappKit.signTransaction({ transaction } as Parameters<typeof dappKit.signTransaction>[0]);
     }
-  }
-
-  if (!('sui:signTransaction' in wallet.features)) {
-    throw new Error(`${wallet.name} does not support signTransaction`);
-  }
-
-  const feature = wallet.features['sui:signTransaction'] as {
-    signTransaction: (input: {
-      transaction: unknown;
-      account: WalletAccount;
-      chain: string;
-    }) => Promise<{ bytes: string; signature: string }>;
-  };
-
-  const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
-
-  let txArg: unknown = transaction;
-  if (transaction instanceof Uint8Array) {
-    let b64 = '';
-    for (let i = 0; i < transaction.length; i++) b64 += String.fromCharCode(transaction[i]);
-    b64 = btoa(b64);
-    const aug = transaction as Uint8Array & { serialize?: () => string; toJSON?: () => string };
-    aug.serialize = () => b64;
-    aug.toJSON = () => b64;
-    txArg = aug;
-  }
-
-  return feature.signTransaction({ transaction: txArg, account, chain });
+    if (!('sui:signTransaction' in wallet.features)) {
+      throw new Error(`${wallet.name} does not support signTransaction`);
+    }
+    const feat = wallet.features['sui:signTransaction'] as {
+      signTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string }) => Promise<{ bytes: string; signature: string }>;
+    };
+    const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
+    return feat.signTransaction({ transaction: augmentBytes(transaction), account, chain });
+  });
 }
 
 // ─── Deactivate (soft — keeps wallet OAuth session alive) ────────────
