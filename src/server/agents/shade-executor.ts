@@ -135,6 +135,20 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
         });
       }
     }
+    if ((url.pathname.endsWith('/cancel') || url.searchParams.has('cancel')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as { objectId: string };
+        const result = await this.cancel(params);
+        return new Response(JSON.stringify(result), {
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    }
     return super.onRequest(request);
   }
 
@@ -188,6 +202,11 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
   @callable()
   async cancel(params: { objectId: string }): Promise<{ success: boolean }> {
+    // Special: "all" purges every order
+    if (params.objectId === 'all') {
+      this.setState({ orders: [] });
+      return { success: true };
+    }
     this.setState({
       orders: this.state.orders.filter(o => o.objectId !== params.objectId),
     });
@@ -265,6 +284,27 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
         error: 'No keeper private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)',
       });
       return;
+    }
+
+    // Resolve placeholder object ID by querying on-chain ShadeOrders for this owner
+    if (order.objectId.startsWith('pending:')) {
+      const realId = await this.resolveShadeOrderId(order);
+      if (realId) {
+        const oldId = order.objectId;
+        order = { ...order, objectId: realId };
+        // Update stored order with real ID
+        this.setState({
+          orders: this.state.orders.map(o =>
+            o.objectId === oldId ? { ...o, objectId: realId } : o,
+          ),
+        });
+      } else {
+        this.updateOrder(order.objectId, {
+          status: 'failed',
+          error: 'Could not resolve on-chain ShadeOrder object ID',
+        });
+        return;
+      }
     }
 
     this.updateOrder(order.objectId, { status: 'executing' });
@@ -568,6 +608,37 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     }
 
     return json.result?.digest ?? '';
+  }
+
+  // ─── Resolve placeholder object ID ──────────────────────────────────
+
+  private async resolveShadeOrderId(order: ShadeExecutorOrder): Promise<string | null> {
+    try {
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const result = await transport.query({
+        query: `{
+          objects(filter: { type: "${SHADE_PACKAGE}::shade::ShadeOrder" }) {
+            nodes {
+              address
+              asMoveObject { contents { json } }
+            }
+          }
+        }`,
+      });
+      const nodes = (result.data as Record<string, unknown> & { objects?: { nodes?: Array<{ address: string; asMoveObject?: { contents?: { json?: { owner?: string; deposit?: string } } } }> } })?.objects?.nodes;
+      if (!nodes) return null;
+      // Match by owner + deposit amount
+      for (const node of nodes) {
+        const json = node.asMoveObject?.contents?.json;
+        if (json?.owner === order.ownerAddress && String(json?.deposit) === String(order.depositMist)) {
+          return node.address;
+        }
+      }
+      return null;
+    } catch (err) {
+      console.error('[ShadeExecutor] resolveShadeOrderId error:', err);
+      return null;
+    }
   }
 
   // ─── Internal helpers ───────────────────────────────────────────────

@@ -38,7 +38,7 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, sealDecryptShadeOrder, resolveSuiNSName, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo } from './suins.js';
 import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
@@ -631,13 +631,14 @@ function fmtTimeLeft(expiresAt: string): string {
 }
 
 /** Generate (or return cached) QR SVG for a URL. Stored in localStorage. */
-async function getQrSvg(url: string): Promise<string> {
-  const key = `ski:qr:${url}`;
+async function getQrSvg(url: string, color?: string): Promise<string> {
+  const dark = color ?? '#60a5fa';
+  const key = `ski:qr:${dark}:${url}`;
   try { const cached = localStorage.getItem(key); if (cached) return cached; } catch {}
   const mod = await import('qrcode');
   const QRCode = (mod as unknown as { default: typeof mod }).default ?? mod;
   const svg = await (QRCode as { toString: (url: string, opts: object) => Promise<string> })
-    .toString(url, { type: 'svg', margin: 1, color: { dark: '#60a5fa', light: '#0d1117' }, errorCorrectionLevel: 'M' });
+    .toString(url, { type: 'svg', margin: 1, color: { dark, light: '#0d1117' }, errorCorrectionLevel: 'M' });
   try { localStorage.setItem(key, svg); } catch {}
   return svg;
 }
@@ -2493,10 +2494,14 @@ const _shadeCancelledIds = new Set<string>((() => { // cancelled order IDs — p
 function _persistShadeCancelled() {
   try { localStorage.setItem('ski:shade-cancelled', JSON.stringify([..._shadeCancelledIds])); } catch {}
 }
-let nsRosterOpen = false; // SKI roster collapsed by default
+let nsRosterOpen = (() => { try { return sessionStorage.getItem('ski:roster-open') === '1'; } catch { return false; } })();
+function _persistRosterOpen() { try { sessionStorage.setItem('ski:roster-open', nsRosterOpen ? '1' : '0'); } catch {} }
+function _saveRosterScroll() { try { const g = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null; if (g) sessionStorage.setItem('ski:roster-scroll', String(g.scrollLeft)); } catch {} }
+function _restoreRosterScroll() { try { const g = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null; const v = sessionStorage.getItem('ski:roster-scroll'); if (g && v) g.scrollLeft = Number(v); } catch {} }
 let _shadeCountdownTimer: ReturnType<typeof setInterval> | null = null; // live ticking countdown
+let _shadeChipTimer: ReturnType<typeof setInterval> | null = null; // roster chip countdown
 let _shadeDoState: ShadeExecutorState | null = null; // live DO state from WebSocket
-let nsShadeOrders: Array<ShadeOrderInfo & { orphaned?: boolean }> = []; // merged localStorage + on-chain shade orders for roster
+let nsShadeOrders: Array<ShadeOrderInfo & { orphaned?: boolean; sealedPayload?: string; commitment?: string }> = []; // merged localStorage + on-chain shade orders for roster
 
 // ─── Wishlist (black-diamond names the user is watching) ─────────────
 let nsWishlist: string[] = (() => {
@@ -2714,7 +2719,7 @@ function _nsRouteHtml(): string {
     return `<div class="wk-ns-target-row wk-ns-target-row--loading"><span class="wk-ns-target-icon">\u25ce</span><span class="wk-ns-target-addr">resolving\u2026</span></div>`;
   }
 
-  const shortAddr = `${displayAddr.slice(0, 7)}\u2026${displayAddr.slice(-5)}`;
+  const shortAddr = `${displayAddr.slice(0, 6)}\u2026${displayAddr.slice(-6)}`;
 
   // Check if current name is listed in a kiosk (Tradeport)
   const isKioskName = nsOwnedDomains.some(d => d.inKiosk && d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);
@@ -2794,20 +2799,22 @@ function _nsOwnedListHtml(): string {
   });
 
   // Shade order chips (red-hexagon) — sorted by executeAfterMs ascending
+  // Always shown first and never dimmed by filter
+  const shadeChips: string[] = [];
   const sortedShades = [...nsShadeOrders].sort((a, b) => (a.executeAfterMs || Infinity) - (b.executeAfterMs || Infinity));
   for (const shade of sortedShades) {
     const bare = shade.domain || '???';
-    const matches = !hasFilter || bare.toLowerCase().includes(filterQ);
     const shadeSvg = _shapeOnlySvg('red-hexagon', 12);
-    const dimCls = hasFilter && !matches ? ' wk-ns-owned-chip--dim' : '';
-    // Countdown to executeAfterMs
+    // Countdown to executeAfterMs — live HH:MM:SS
     let countdownHtml = '';
     if (shade.executeAfterMs > 0) {
       const msLeft = shade.executeAfterMs - now;
       if (msLeft > 0) {
-        const dLeft = Math.floor(msLeft / 86_400_000);
-        const hLeft = Math.floor((msLeft % 86_400_000) / 3_600_000);
-        countdownHtml = `<span class="wk-ns-owned-expiry wk-ns-owned-expiry--urgent">${dLeft}d ${hLeft}h</span>`;
+        const h = Math.floor(msLeft / 3_600_000);
+        const m = Math.floor((msLeft % 3_600_000) / 60_000);
+        const s = Math.floor((msLeft % 60_000) / 1000);
+        const txt = `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        countdownHtml = `<span class="wk-ns-owned-expiry wk-ns-owned-expiry--urgent wk-shade-chip-cd" data-shade-cd="${shade.executeAfterMs}">${txt}</span>`;
       } else {
         countdownHtml = `<span class="wk-ns-owned-expiry wk-ns-owned-expiry--urgent">ready</span>`;
       }
@@ -2815,10 +2822,7 @@ function _nsOwnedListHtml(): string {
     const depositSui = Number(shade.depositMist) / 1e9;
     const title = bare === '???' ? `Orphaned shade order — ${depositSui.toFixed(2)} SUI escrowed` : `${bare}.sui shade — ${depositSui.toFixed(2)} SUI escrowed`;
     const dataAttrs = `data-domain="${esc(bare === '???' ? '' : bare)}" data-shade-id="${esc(shade.objectId)}" data-shade="1"`;
-    chipEntries.push({
-      html: `<button class="wk-ns-owned-chip wk-ns-owned-chip--shade${dimCls}" ${dataAttrs} type="button" title="${esc(title)}">${shadeSvg}${esc(bare)}<span class="wk-ns-owned-shade">shade</span>${countdownHtml}</button>`,
-      matches,
-    });
+    shadeChips.push(`<button class="wk-ns-owned-chip wk-ns-owned-chip--shade" ${dataAttrs} type="button" title="${esc(title)}">${shadeSvg}${esc(bare)}${countdownHtml}</button>`);
   }
 
   // Wishlist chips (black-diamond)
@@ -2835,15 +2839,16 @@ function _nsOwnedListHtml(): string {
   // Stable sort: matches first, then non-matches (preserves order within each group)
   if (hasFilter) chipEntries.sort((a, b) => (a.matches === b.matches ? 0 : a.matches ? -1 : 1));
 
-  const chips = chipEntries.map(e => e.html);
+  // Shade chips always appear first, never filtered
+  const chips = [...shadeChips, ...chipEntries.map(e => e.html)];
 
-  // Estimate yearly renewal cost (SuiNS base pricing: 3ch=$500, 4ch=$100, 5+ch=$20)
+  // Estimate yearly renewal cost (SuiNS base pricing: 3ch=$500, 4ch=$100, 5+ch=$10)
   let yearlyUsd = 0;
   for (const d of sorted) {
     if (d.kind === 'cap') continue; // subname caps have no renewal
     const bare = d.name.replace(/\.sui$/, '');
     const len = bare.length;
-    yearlyUsd += len === 3 ? 500 : len === 4 ? 100 : 20;
+    yearlyUsd += len === 3 ? 500 : len === 4 ? 100 : 10;
   }
   const savingsUsd = Math.round(yearlyUsd * 0.25);
 
@@ -2856,7 +2861,26 @@ function _nsOwnedListHtml(): string {
   }
   const header = `<div class="wk-ns-owned-header"><span class="wk-ns-owned-title">SKI Roster<span class="wk-ns-owned-tally">${totalOwned}</span></span>${statsHtml}</div>`;
 
-  return `<div class="wk-ns-owned-inner">${header}<div class="wk-ns-owned-grid">${chips.join('')}</div></div>`;
+  // QR code — render inline from cache when possible, async-load on miss
+  // Shade-aware: red QR when shade order exists or domain is in grace with no shade
+  const qrAddr = nsTargetAddress ?? nsNftOwner ?? getState().address ?? '';
+  const isShaded = !!nsShadeOrder;
+  const isGraceNoShade = nsAvail === 'grace' && !nsShadeOrder;
+  const qrColor = (isShaded || isGraceNoShade) ? '#ef4444' : undefined;
+  const isAvailableWithLabel = nsAvail === 'available' && !!nsLabel.trim();
+  const qrAction = isShaded ? 'cancel' : isGraceNoShade ? 'shade' : isAvailableWithLabel ? 'shade-test' : '';
+  let qrDiv = '';
+  if (qrAddr) {
+    const cacheKey = `${qrColor ?? 'blue'}:${qrAddr}`;
+    const cached = _rosterQrCache.get(cacheKey);
+    const actionAttr = qrAction ? ` data-qr-action="${qrAction}"` : '';
+    const colorAttr = qrColor ? ` data-qr-color="${esc(qrColor)}"` : '';
+    qrDiv = cached
+      ? `<div id="wk-roster-qr"${actionAttr}${colorAttr}>${cached}</div>`
+      : `<div id="wk-roster-qr" data-qr-addr="${esc(qrAddr)}"${actionAttr}${colorAttr}></div>`;
+  }
+
+  return `<div class="wk-ns-owned-inner">${header}<div class="wk-ns-owned-grid">${qrDiv}${chips.join('')}</div></div>`;
 }
 
 /** Clear the NS input and reset price/status when opening the roster. */
@@ -2880,12 +2904,55 @@ function _clearNsInput() {
   _patchNsOwnedList();
 }
 
+const _rosterQrCache = new Map<string, string>();
+
+/** Populate #wk-roster-qr if it has a data-qr-addr (cache miss). Caches SVG in memory for sync inline on next render. */
+function _loadRosterQr() {
+  const qrSlot = document.getElementById('wk-roster-qr');
+  if (!qrSlot) return;
+  const addr = qrSlot.dataset.qrAddr; // only set on cache-miss divs
+  if (!addr) return; // already rendered inline from cache
+  const color = qrSlot.dataset.qrColor;
+  const cacheKey = `${color ?? 'blue'}:${addr}`;
+  getQrSvg(addr, color).then(svg => {
+    _rosterQrCache.set(cacheKey, svg);
+    if (document.getElementById('wk-roster-qr')) qrSlot.innerHTML = svg;
+  }).catch(() => {});
+}
+
 function _patchNsOwnedList() {
   const el = document.getElementById('wk-ns-owned-list');
   if (!el) return;
+  _saveRosterScroll();
   el.innerHTML = _nsOwnedListHtml();
   _attachOwnedGridWheel();
   _attachNftPopoverListeners();
+  _restoreRosterScroll();
+  _syncShadeChipTimer();
+  _loadRosterQr();
+}
+
+/** Start/stop the 1s roster shade chip countdown timer based on whether chips exist. */
+function _syncShadeChipTimer() {
+  const hasChips = document.querySelector('.wk-shade-chip-cd') !== null;
+  if (hasChips && !_shadeChipTimer) {
+    _shadeChipTimer = setInterval(() => {
+      const now = Date.now();
+      const els = document.querySelectorAll<HTMLElement>('.wk-shade-chip-cd');
+      if (els.length === 0) { clearInterval(_shadeChipTimer!); _shadeChipTimer = null; return; }
+      els.forEach(el => {
+        const target = Number(el.dataset.shadeCd);
+        const ms = target - now;
+        if (ms <= 0) { el.textContent = 'ready'; el.classList.remove('wk-shade-chip-cd'); return; }
+        const h = Math.floor(ms / 3_600_000);
+        const m = Math.floor((ms % 3_600_000) / 60_000);
+        const s = Math.floor((ms % 60_000) / 1000);
+        el.textContent = `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      });
+    }, 1000);
+  } else if (!hasChips && _shadeChipTimer) {
+    clearInterval(_shadeChipTimer); _shadeChipTimer = null;
+  }
 }
 
 /** Attach horizontal wheel-scroll to the owned names grid. */
@@ -2898,6 +2965,7 @@ function _attachOwnedGridWheel() {
       grid.scrollLeft += e.deltaY || e.deltaX;
     }
   }, { passive: false });
+  grid.addEventListener('scroll', _saveRosterScroll, { passive: true });
 }
 
 // ─── NFT Card Popover (hover on roster chips) ────────────────────────
@@ -3032,22 +3100,37 @@ async function _fetchShadeOrdersForRoster(address: string) {
     const localIds = new Set(local.map(o => o.objectId));
 
     // Merge: keep all localStorage orders, add orphaned on-chain orders not in localStorage
-    const merged: Array<ShadeOrderInfo & { orphaned?: boolean }> = local
+    // Also reconcile placeholder IDs with real on-chain IDs
+    const merged: Array<ShadeOrderInfo & { orphaned?: boolean; sealedPayload?: string; commitment?: string }> = local
       .filter(o => !_shadeCancelledIds.has(o.objectId))
       .map(o => ({ ...o }));
+    // Reconcile: if a localStorage order has a pending: placeholder ID but a matching
+    // on-chain order exists, update the ID to the real one
     for (const oc of onChain) {
-      if (!localIds.has(oc.objectId) && !_shadeCancelledIds.has(oc.objectId)) {
-        merged.push({
-          objectId: oc.objectId,
-          domain: '',
-          owner: address,
-          depositMist: BigInt(oc.depositMist),
-          executeAfterMs: 0,
-          targetAddress: '',
-          salt: '',
-          orphaned: true,
-        });
+      if (_shadeCancelledIds.has(oc.objectId)) continue;
+      if (localIds.has(oc.objectId)) continue;
+      // Check if any local order has a placeholder ID for the same domain
+      const placeholderIdx = merged.findIndex(m => m.objectId.startsWith('pending:') && m.domain && oc.sealedPayload);
+      if (placeholderIdx >= 0) {
+        // Replace placeholder with real on-chain ID, keep the decrypted domain info
+        const old = merged[placeholderIdx];
+        removeShadeOrder(address, old.objectId);
+        old.objectId = oc.objectId;
+        addShadeOrder(address, old);
+        continue;
       }
+      merged.push({
+        objectId: oc.objectId,
+        domain: '',
+        owner: address,
+        depositMist: BigInt(oc.depositMist),
+        executeAfterMs: 0,
+        targetAddress: '',
+        salt: '',
+        orphaned: true,
+        sealedPayload: oc.sealedPayload,
+        commitment: oc.commitment,
+      });
     }
     // Prune cancelled IDs that no longer exist on-chain (order was actually deleted)
     const onChainIds = new Set(onChain.map(o => o.objectId));
@@ -3257,14 +3340,18 @@ function _graceCountdown(): string {
   return hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
 }
 
-/** Format grace end in EST, e.g. "Mar 15, 3:42 PM EST". */
+/** Format grace end in EST compactly, e.g. "Mar5 3:42p". */
 function _graceEndDate(): string {
   if (!nsGraceEndMs) return '';
   const tz = 'America/New_York';
   const d = new Date(nsGraceEndMs);
-  const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: tz });
-  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: tz });
-  return `${date} ${time} EST`;
+  const mo = d.toLocaleDateString('en-US', { month: 'short', timeZone: tz });
+  const day = d.toLocaleDateString('en-US', { day: 'numeric', timeZone: tz });
+  const h = +d.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: tz });
+  const m = d.toLocaleString('en-US', { minute: '2-digit', timeZone: tz });
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  const ap = h < 12 ? 'a' : 'p';
+  return `${mo} ${day} ${h12}:${m}${ap}`;
 }
 
 /** Format precise countdown: "2d 14h 32m 07s" ticking every second. */
@@ -3302,12 +3389,26 @@ function _startShadeCountdown() {
             nsAvail = 'owned';
             _patchNsStatus();
             _patchNsPrice();
+            _patchNsRoute();
+            _patchNsOwnedList();
             showToast(`${nsLabel.trim()}.sui auto-registered \u2713 ${doOrder.digest ? doOrder.digest.slice(0, 8) + '\u2026' : ''}`);
             return;
           }
           if (doOrder?.status === 'failed') {
             _patchNsStatus();
             return;
+          }
+          // If DO doesn't know about this order yet, schedule it
+          if (!doOrder && nsShadeOrder && nsShadeOrder.salt) {
+            scheduleShadeExecution({
+              objectId: nsShadeOrder.objectId,
+              domain: nsShadeOrder.domain,
+              executeAfterMs: nsShadeOrder.executeAfterMs,
+              targetAddress: nsShadeOrder.targetAddress,
+              salt: nsShadeOrder.salt,
+              ownerAddress: addr,
+              depositMist: String(nsShadeOrder.depositMist),
+            }).catch(() => {});
           }
         }
       });
@@ -3341,6 +3442,7 @@ function _startShadeCountdown() {
 
 function _stopShadeCountdown() {
   if (_shadeCountdownTimer) { clearInterval(_shadeCountdownTimer); _shadeCountdownTimer = null; }
+  if (_shadeChipTimer) { clearInterval(_shadeChipTimer); _shadeChipTimer = null; }
   _shadeDoState = null;
 }
 
@@ -3718,6 +3820,9 @@ function renderSkiMenu() {
   document.getElementById('wk-bal-toggle')?.addEventListener('change', menuToggleBalance);
 
   // ─── NS domain row bindings ─────────────────────────────────────────
+  _loadRosterQr(); // populate QR from initial _nsOwnedListHtml render
+  _attachOwnedGridWheel();
+  _attachNftPopoverListeners();
   const nsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
   nsInput?.addEventListener('click', (e) => e.stopPropagation());
   nsInput?.addEventListener('focus', (e) => {
@@ -3784,7 +3889,8 @@ function renderSkiMenu() {
     // Don't toggle if the user clicked the input, register button, pin button, or price chip
     if (t.closest('#wk-ns-label-input') || t.closest('#wk-dd-ns-register') || t.closest('#wk-ns-pin-btn') || t.closest('#wk-ns-price-chip')) return;
     nsRosterOpen = !nsRosterOpen;
-    if (nsRosterOpen) _clearNsInput();
+    _persistRosterOpen();
+    if (!nsRosterOpen) _clearNsInput();
     const list = document.getElementById('wk-ns-owned-list');
     if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
   });
@@ -3803,11 +3909,21 @@ function renderSkiMenu() {
       setTimeout(() => document.getElementById('wk-ns-target-input')?.focus(), 30);
       return;
     }
+    // Grace date span — click to toggle roster
+    if (target.closest('.wk-ns-target-grace')) {
+      nsRosterOpen = !nsRosterOpen;
+      _persistRosterOpen();
+      if (!nsRosterOpen) _clearNsInput();
+      const list = document.getElementById('wk-ns-owned-list');
+      if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
+      return;
+    }
     // Dim target row — click to toggle roster (names list) instead of copy
     const dimRow = target.closest<HTMLElement>('.wk-ns-target-row--dim');
     if (dimRow) {
       nsRosterOpen = !nsRosterOpen;
-      if (nsRosterOpen) _clearNsInput();
+      _persistRosterOpen();
+      if (!nsRosterOpen) _clearNsInput();
       const list = document.getElementById('wk-ns-owned-list');
       if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
       return;
@@ -4101,6 +4217,150 @@ function renderSkiMenu() {
     return { display: raw, full: raw };
   }
 
+  /** Create a shade order. Optional executeAfterMs overrides nsGraceEndMs (for testing with available domains). */
+  async function _shadeCreate(address: string, label: string, btn?: HTMLButtonElement | null, executeAfterMs?: number) {
+    const price = suiPriceCache?.price;
+    if (!price || price <= 0) { showToast('SUI price unavailable \u2014 try again'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+    const effectiveMs = executeAfterMs ?? nsGraceEndMs;
+    try {
+      const { txBytes, orderInfo } = await buildCreateShadeOrderTx(address, label, effectiveMs, price);
+      if (btn) btn.textContent = '\u270f';
+      const { digest, effects } = await signAndExecuteTransaction(txBytes);
+      let orderId = extractShadeOrderIdFromEffects(effects);
+      const placeholderId = orderId ?? `pending:${digest || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
+      const fullOrder: ShadeOrderInfo = { ...orderInfo, objectId: placeholderId };
+      addShadeOrder(address, fullOrder);
+      nsShadeOrder = fullOrder;
+      nsShadeOrders.push({ ...fullOrder });
+      _patchNsStatus();
+      _patchNsPrice();
+      _patchNsRoute();
+      _patchNsOwnedList();
+      showToast(`${label}.sui shaded \u2713`);
+      setTimeout(() => refreshPortfolio(true), 1200);
+      const resolveAndSchedule = async () => {
+        if (!orderId && digest) {
+          orderId = await findCreatedShadeOrderId(digest);
+          if (orderId && orderId !== placeholderId) {
+            removeShadeOrder(address, placeholderId);
+            fullOrder.objectId = orderId;
+            addShadeOrder(address, fullOrder);
+            if (nsShadeOrder?.objectId === placeholderId) nsShadeOrder = fullOrder;
+            const idx = nsShadeOrders.findIndex(o => o.objectId === placeholderId);
+            if (idx >= 0) nsShadeOrders[idx] = { ...fullOrder };
+            else nsShadeOrders.push({ ...fullOrder });
+            _patchNsOwnedList();
+            try { cancelShadeExecution(placeholderId); } catch {}
+          }
+        }
+        const resolvedId = orderId ?? placeholderId;
+        // Connect WS for state updates (best-effort — don't block scheduling)
+        try {
+          connectShadeExecutor(address, (state: ShadeExecutorState) => {
+            _shadeDoState = state;
+            const doOrder = state.orders.find(o => o.objectId === resolvedId);
+            if (doOrder?.status === 'completed') {
+              nsShadeOrder = null;
+              _stopShadeCountdown();
+              removeShadeOrder(address, resolvedId);
+              nsShadeOrders = nsShadeOrders.filter(o => o.objectId !== resolvedId);
+              nsAvail = 'owned';
+              _patchNsStatus();
+              _patchNsPrice();
+              _patchNsRoute();
+              _patchNsOwnedList();
+              showToast(`${fullOrder.domain}.sui auto-registered \u2713 ${doOrder.digest ? doOrder.digest.slice(0, 8) + '\u2026' : ''}`);
+            }
+          });
+        } catch { /* WS optional — scheduling uses HTTP fallback */ }
+        // Schedule with DO (tries WS RPC, falls back to HTTP POST)
+        try {
+          const schedResult = await scheduleShadeExecution({
+            objectId: resolvedId,
+            domain: fullOrder.domain,
+            executeAfterMs: fullOrder.executeAfterMs,
+            targetAddress: fullOrder.targetAddress,
+            salt: fullOrder.salt,
+            ownerAddress: address,
+            depositMist: String(fullOrder.depositMist),
+          });
+          if (!schedResult.success) {
+            console.warn('[Shade] DO scheduling failed:', schedResult.error);
+          }
+        } catch (schedErr) {
+          console.warn('[Shade] DO scheduling error:', schedErr);
+        }
+      };
+      resolveAndSchedule();
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      if (!raw.toLowerCase().includes('reject')) showToast(raw);
+    } finally {
+      if (btn) { btn.disabled = false; _patchNsStatus(); }
+    }
+  }
+
+  /** Cancel all shade orders for the current address. Extracted so QR click can reuse. */
+  async function _shadeCancel(address: string, label: string, btn?: HTMLButtonElement | null) {
+    let existingOrder = nsShadeOrder ?? findShadeOrder(address, label);
+    if (!existingOrder) {
+      const onChain = await fetchOnChainShadeOrders(address);
+      if (onChain.length > 0) {
+        existingOrder = {
+          objectId: onChain[0].objectId,
+          domain: label,
+          executeAfterMs: nsGraceEndMs,
+          targetAddress: address,
+          salt: '',
+          depositMist: onChain[0].depositMist,
+        };
+      }
+    }
+    if (!existingOrder) { showToast('No shade order found'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+    try {
+      const allOnChain = await fetchOnChainShadeOrders(address);
+      const ordersToCxl = allOnChain.length > 0 ? allOnChain : [{ objectId: existingOrder.objectId, depositMist: existingOrder.depositMist }];
+      let totalRefund = 0;
+      let cancelled = 0;
+      let lastDigest = '';
+      for (const o of ordersToCxl) {
+        try {
+          const tx = await buildCancelShadeOrderTx(address, o.objectId);
+          if (btn) btn.textContent = `\u270f ${ordersToCxl.indexOf(o) + 1}/${ordersToCxl.length}`;
+          const result = await signAndExecuteTransaction(tx);
+          _shadeCancelledIds.add(o.objectId); _persistShadeCancelled();
+          removeShadeOrder(address, o.objectId);
+          try { cancelShadeExecution(o.objectId); } catch { /* best-effort */ }
+          totalRefund += Number(o.depositMist) / 1e9;
+          cancelled++;
+          if (result.digest) lastDigest = result.digest;
+        } catch (err) {
+          const raw = err instanceof Error ? err.message : String(err);
+          if (raw.toLowerCase().includes('reject')) break;
+        }
+      }
+      if (cancelled > 0) {
+        nsShadeOrder = null;
+        _stopShadeCountdown();
+        removeShadeOrderByDomain(address, label);
+        nsShadeOrders = nsShadeOrders.filter(o => !_shadeCancelledIds.has(o.objectId) && o.domain !== label);
+        _patchNsOwnedList();
+        _patchNsStatus();
+        _patchNsPrice();
+        _patchNsRoute();
+        showToast(`${cancelled} shade order${cancelled > 1 ? 's' : ''} cancelled \u2014 ${totalRefund.toFixed(2)} SUI refunded ${lastDigest ? lastDigest.slice(0, 8) + '\u2026' : ''}`);
+        setTimeout(() => refreshPortfolio(true), 1200);
+      }
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      if (!raw.toLowerCase().includes('reject')) showToast(raw);
+    } finally {
+      if (btn) { btn.disabled = false; _patchNsStatus(); }
+    }
+  }
+
   document.getElementById('wk-dd-ns-register')?.addEventListener('click', async (e) => {
     e.stopPropagation();
     const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
@@ -4185,77 +4445,7 @@ function renderSkiMenu() {
       }
 
       if (!existingOrder) {
-        // No shade order → create one (lock funds for grace expiry)
-        const price = suiPriceCache?.price;
-        if (!price || price <= 0) { showToast('SUI price unavailable — try again'); return; }
-        if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
-        try {
-          const { txBytes, orderInfo } = await buildCreateShadeOrderTx(ws2.address, label, nsGraceEndMs, price);
-          if (btn) btn.textContent = '\u270f';
-          const { digest, effects } = await signAndExecuteTransaction(txBytes);
-          // Try to extract ShadeOrder ID from effects (instant)
-          let orderId = extractShadeOrderIdFromEffects(effects);
-          // Optimistically update UI immediately — use placeholder ID if needed
-          const placeholderId = orderId ?? `pending:${digest ?? Date.now()}`;
-          const fullOrder: ShadeOrderInfo = { ...orderInfo, objectId: placeholderId };
-          addShadeOrder(ws2.address, fullOrder);
-          nsShadeOrder = fullOrder;
-          _patchNsStatus();
-          _patchNsPrice();
-          showToast(`${label}.sui shaded \u2713`);
-          // Refresh balance — SUI was escrowed
-          setTimeout(() => refreshPortfolio(true), 1200);
-          // Resolve real object ID in background (for DO scheduling)
-          const resolveAndSchedule = async () => {
-            if (!orderId && digest) {
-              orderId = await findCreatedShadeOrderId(digest);
-              if (orderId && orderId !== placeholderId) {
-                // Update stored order with real ID
-                removeShadeOrder(ws2.address, placeholderId);
-                fullOrder.objectId = orderId;
-                addShadeOrder(ws2.address, fullOrder);
-                if (nsShadeOrder?.objectId === placeholderId) nsShadeOrder = fullOrder;
-              }
-            }
-            const resolvedId = orderId ?? placeholderId;
-            try {
-              connectShadeExecutor(ws2.address, (state: ShadeExecutorState) => {
-                _shadeDoState = state;
-                const doOrder = state.orders.find(o => o.objectId === resolvedId);
-                if (doOrder?.status === 'completed') {
-                  nsShadeOrder = null;
-                  _stopShadeCountdown();
-                  nsAvail = 'owned';
-                  _patchNsStatus();
-                  _patchNsPrice();
-                  showToast(`${fullOrder.domain}.sui auto-registered \u2713 ${doOrder.digest ? doOrder.digest.slice(0, 8) + '\u2026' : ''}`);
-                }
-              });
-              if (orderId) {
-                const schedResult = await scheduleShadeExecution({
-                  objectId: orderId,
-                  domain: fullOrder.domain,
-                  executeAfterMs: fullOrder.executeAfterMs,
-                  targetAddress: fullOrder.targetAddress,
-                  salt: fullOrder.salt,
-                  ownerAddress: ws2.address,
-                  depositMist: String(fullOrder.depositMist),
-                });
-                if (!schedResult.success) {
-                  console.warn('[Shade] DO scheduling failed:', schedResult.error);
-                }
-              }
-            } catch (schedErr) {
-              console.warn('[Shade] DO scheduling error:', schedErr);
-            }
-          };
-          resolveAndSchedule();
-        } catch (err) {
-          const raw = err instanceof Error ? err.message : String(err);
-          if (!raw.toLowerCase().includes('reject')) showToast(raw);
-        } finally {
-          if (btn) { btn.disabled = false; _patchNsStatus(); }
-        }
+        await _shadeCreate(ws2.address, label, btn);
         return;
       }
 
@@ -4296,49 +4486,8 @@ function renderSkiMenu() {
         return;
       }
 
-      // Shade order + grace still active → cancel ALL shade orders (refund deposits)
-      if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
-      try {
-        // Fetch all on-chain orders to cancel them all in sequence
-        const allOnChain = await fetchOnChainShadeOrders(ws2.address);
-        const ordersToCxl = allOnChain.length > 0 ? allOnChain : [{ objectId: existingOrder.objectId, depositMist: existingOrder.depositMist }];
-        let totalRefund = 0;
-        let cancelled = 0;
-        let lastDigest = '';
-        for (const o of ordersToCxl) {
-          try {
-            const tx = await buildCancelShadeOrderTx(ws2.address, o.objectId);
-            if (btn) btn.textContent = `\u270f ${ordersToCxl.indexOf(o) + 1}/${ordersToCxl.length}`;
-            const result = await signAndExecuteTransaction(tx);
-            _shadeCancelledIds.add(o.objectId); _persistShadeCancelled();
-            removeShadeOrder(ws2.address, o.objectId);
-            try { cancelShadeExecution(o.objectId); } catch { /* best-effort */ }
-            totalRefund += Number(o.depositMist) / 1e9;
-            cancelled++;
-            if (result.digest) lastDigest = result.digest;
-          } catch (err) {
-            const raw = err instanceof Error ? err.message : String(err);
-            if (raw.toLowerCase().includes('reject')) break; // user rejected — stop
-          }
-        }
-        // Only clear shade state if at least one cancel succeeded
-        if (cancelled > 0) {
-          nsShadeOrder = null;
-          _stopShadeCountdown();
-          removeShadeOrderByDomain(ws2.address, label);
-          nsShadeOrders = nsShadeOrders.filter(o => !_shadeCancelledIds.has(o.objectId) && o.domain !== label);
-          _patchNsOwnedList();
-          _patchNsStatus();
-          _patchNsPrice();
-          showToast(`${cancelled} shade order${cancelled > 1 ? 's' : ''} cancelled \u2014 ${totalRefund.toFixed(2)} SUI refunded ${lastDigest ? lastDigest.slice(0, 8) + '\u2026' : ''}`);
-          setTimeout(() => refreshPortfolio(true), 1200);
-        }
-      } catch (err) {
-        const raw = err instanceof Error ? err.message : String(err);
-        if (!raw.toLowerCase().includes('reject')) showToast(raw);
-      } finally {
-        if (btn) { btn.disabled = false; _patchNsStatus(); }
-      }
+      // Shade order + grace still active → cancel
+      await _shadeCancel(ws2.address, label, btn);
       return;
     }
 
@@ -4412,20 +4561,20 @@ function renderSkiMenu() {
               }
             }
           });
-          for (const o of allOrders) {
-            try {
-              await scheduleShadeExecution({
-                objectId: o.objectId,
-                domain: o.domain,
-                executeAfterMs: o.executeAfterMs,
-                targetAddress: o.targetAddress,
-                salt: o.salt,
-                ownerAddress: ws.address,
-                depositMist: String(o.depositMist),
-              });
-            } catch { /* idempotent — DO skips if already tracked */ }
-          }
-        } catch { /* connection failed — will retry next menu open */ }
+        } catch { /* WS optional */ }
+        for (const o of allOrders) {
+          try {
+            await scheduleShadeExecution({
+              objectId: o.objectId,
+              domain: o.domain,
+              executeAfterMs: o.executeAfterMs,
+              targetAddress: o.targetAddress,
+              salt: o.salt,
+              ownerAddress: ws.address,
+              depositMist: String(o.depositMist),
+            });
+          } catch { /* idempotent — DO skips if already tracked */ }
+        }
       })();
     }
   }
@@ -4434,6 +4583,19 @@ function renderSkiMenu() {
   document.getElementById('wk-ns-owned-list')?.addEventListener('click', async (e) => {
     e.stopPropagation();
     const t = e.target as HTMLElement;
+
+    // QR code shade action (red QR click)
+    const qrEl = t.closest('#wk-roster-qr[data-qr-action]') as HTMLElement | null;
+    if (qrEl) {
+      const action = qrEl.dataset.qrAction;
+      const ws2 = getState();
+      const label = nsLabel.trim();
+      if (!ws2.address || !label) return;
+      if (action === 'cancel') { await _shadeCancel(ws2.address, label); return; }
+      if (action === 'shade') { await _shadeCreate(ws2.address, label); return; }
+      if (action === 'shade-test') { await _shadeCreate(ws2.address, label, null, Date.now() + 30_000); return; }
+    }
+
     // Wishlist remove button
     const rmBtn = t.closest('.wk-ns-wish-rm') as HTMLElement | null;
     if (rmBtn) {
@@ -4445,15 +4607,87 @@ function renderSkiMenu() {
     const btn = t.closest('.wk-ns-owned-chip') as HTMLElement | null;
     if (!btn) return;
 
-    // Shade chip clicked — populate the NS input with the domain name
+    // Shade chip clicked
     if (btn.dataset.shade === '1') {
       const domain = btn.dataset.domain;
-      if (!domain) return;
-      const nsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
-      if (nsInput) {
-        nsInput.value = domain;
-        nsInput.dispatchEvent(new Event('input', { bubbles: true }));
-        nsInput.focus();
+      const shadeId = btn.dataset.shadeId;
+      // Orphaned shade order (no domain) — attempt Seal recovery
+      if (!domain && shadeId) {
+        const ws2 = getState();
+        if (!ws2.address) return;
+        const order = nsShadeOrders.find(o => o.objectId === shadeId);
+        if (!order) return;
+        const ext = order as typeof order & { sealedPayload?: string; commitment?: string };
+
+        if (ext.sealedPayload && ext.commitment) {
+          btn.style.opacity = '0.4';
+          btn.style.pointerEvents = 'none';
+          try {
+            const payload = await sealDecryptShadeOrder(
+              ws2.address, shadeId, ext.sealedPayload, ext.commitment,
+              async (msg: Uint8Array) => signPersonalMessage(msg),
+            );
+            const fullOrder: ShadeOrderInfo = {
+              objectId: shadeId,
+              domain: payload.domain,
+              owner: ws2.address,
+              depositMist: BigInt(order.depositMist),
+              executeAfterMs: payload.executeAfterMs,
+              targetAddress: payload.targetAddress,
+              salt: payload.salt,
+            };
+            addShadeOrder(ws2.address, fullOrder);
+            const idx = nsShadeOrders.findIndex(o => o.objectId === shadeId);
+            if (idx >= 0) nsShadeOrders[idx] = { ...fullOrder };
+            // Update NS state so legend + route reflect the recovered shade order
+            nsLabel = payload.domain;
+            nsShadeOrder = fullOrder;
+            nsAvail = 'grace';
+            nsGraceEndMs = payload.executeAfterMs || 0;
+            nsTargetAddress = payload.targetAddress || ws2.address;
+            _patchNsOwnedList();
+            _patchNsStatus();
+            _patchNsPrice();
+            _patchNsRoute();
+            showToast(`Recovered shade order: ${payload.domain}.sui`);
+            // Populate input with recovered domain
+            skipNextFocusClear = true;
+            const nsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+            if (nsInput) {
+              nsInput.value = payload.domain;
+              nsInput.focus();
+            }
+          } catch (err) {
+            btn.style.opacity = '';
+            btn.style.pointerEvents = '';
+            const raw = err instanceof Error ? err.message : String(err);
+            if (!raw.toLowerCase().includes('reject')) showToast(`Recovery failed: ${raw.slice(0, 60)}`);
+          }
+        }
+        return;
+      }
+      // Named shade order — populate input + pre-set shade state
+      if (domain) {
+        const ws2 = getState();
+        const shadeInfo = nsShadeOrders.find(o => o.objectId === shadeId && o.domain === domain);
+        if (shadeInfo) {
+          nsLabel = domain;
+          nsShadeOrder = shadeInfo;
+          nsAvail = 'grace';
+          nsGraceEndMs = shadeInfo.executeAfterMs || 0;
+          nsTargetAddress = shadeInfo.targetAddress || ws2.address || null;
+          _patchNsPrice();
+          _patchNsStatus();
+          _patchNsRoute();
+        }
+        skipNextFocusClear = true;
+        const nsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+        if (nsInput) {
+          nsInput.value = domain;
+          nsInput.focus();
+        }
+        // Still fetch fresh status in background
+        fetchAndShowNsPrice(domain);
       }
       return;
     }
@@ -4497,7 +4731,8 @@ async function handleDisconnect(reopenModal = false) {
   nsRealOwnerAddr = '';
   nsSubnameParent = null;
   nsShowTargetInput = false;
-  nsRosterOpen = false;
+  nsRosterOpen = false; _persistRosterOpen();
+  try { sessionStorage.removeItem('ski:roster-scroll'); } catch {}
   closeModal();
   render();
   try { await disconnect(); } catch { /* already gone */ }

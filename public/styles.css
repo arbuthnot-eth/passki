@@ -1324,6 +1324,9 @@ body {
 /* ─── Dim target row toggle cursor ─────────────────────────────────── */
 .wk-ns-target-row--toggle { cursor: pointer; }
 .wk-ns-target-row--toggle:hover { filter: brightness(1.3); }
+/* Grace date — clickable to toggle roster */
+.wk-ns-target-grace { cursor: pointer; font-size: 0.72rem; color: rgba(255,255,255,0.75); margin-left: auto; white-space: nowrap; }
+.wk-ns-target-grace:hover { color: rgba(255,255,255,1); }
 
 /* ─── Owned SuiNS domains list — Kumo-style collapsible ────────────── */
 .wk-ns-owned-list {
@@ -1406,6 +1409,21 @@ body {
 }
 .wk-ns-owned-grid::-webkit-scrollbar-thumb:hover {
   background: #ffffff;
+}
+#wk-roster-qr {
+  height: 104px;
+  width: 104px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0d1117;
+}
+#wk-roster-qr[data-qr-action] { cursor: pointer; }
+#wk-roster-qr[data-qr-action]:hover { opacity: 0.85; }
+#wk-roster-qr svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 .wk-ns-owned-chip svg { flex-shrink: 0; }
 .wk-ns-owned-chip {

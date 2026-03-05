@@ -10,6 +10,9 @@ import type { ShadeExecutorState, ShadeExecutorOrder } from '../server/agents/sh
 
 let client: AgentClient<ShadeExecutorState> | null = null;
 let stateCallback: ((state: ShadeExecutorState) => void) | null = null;
+let _lastOwnerAddress = '';
+
+const _host = () => window.location.hostname === 'localhost' ? window.location.host : 'sui.ski';
 
 /**
  * Connect to the ShadeExecutorAgent Durable Object via WebSocket.
@@ -23,10 +26,11 @@ export function connectShadeExecutor(
     try { client.close(); } catch { /* ignore */ }
   }
 
+  _lastOwnerAddress = ownerAddress;
   stateCallback = onStateUpdate ?? null;
 
   client = new AgentClient<ShadeExecutorState>({
-    host: window.location.hostname === 'localhost' ? window.location.host : 'sui.ski',
+    host: _host(),
     agent: 'shade-executor-agent',
     name: ownerAddress,
     onStateUpdate: (state: ShadeExecutorState) => {
@@ -38,8 +42,31 @@ export function connectShadeExecutor(
 }
 
 /**
+ * Schedule via HTTP POST — reliable fallback that doesn't depend on WebSocket.
+ */
+async function _scheduleViaHttp(params: {
+  objectId: string;
+  domain: string;
+  executeAfterMs: number;
+  targetAddress: string;
+  salt: string;
+  ownerAddress: string;
+  depositMist: string;
+}): Promise<{ success: boolean; error?: string }> {
+  const host = _host();
+  const proto = host.startsWith('localhost') ? 'http' : 'https';
+  const url = `${proto}://${host}/agents/shade-executor-agent/${params.ownerAddress}?schedule`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  return res.json() as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
  * Schedule a Shade order for auto-execution at grace expiry.
- * The DO sets an alarm and automatically submits the execute+register PTB.
+ * Tries WebSocket RPC first, falls back to HTTP POST if WS is unavailable.
  */
 export async function scheduleShadeExecution(params: {
   objectId: string;
@@ -50,8 +77,14 @@ export async function scheduleShadeExecution(params: {
   ownerAddress: string;
   depositMist: string;
 }): Promise<{ success: boolean; error?: string }> {
-  if (!client) throw new Error('ShadeExecutor not connected');
-  return client.call<{ success: boolean; error?: string }>('schedule', [params]);
+  // Try WebSocket RPC first
+  if (client) {
+    try {
+      return await client.call<{ success: boolean; error?: string }>('schedule', [params]);
+    } catch { /* WS failed — fall through to HTTP */ }
+  }
+  // HTTP fallback — always works
+  return _scheduleViaHttp(params);
 }
 
 /**
