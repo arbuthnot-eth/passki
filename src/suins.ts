@@ -862,20 +862,6 @@ export async function buildKioskPurchaseTx(
 /** Shade package on mainnet (published by plankton.sui). */
 const SHADE_PACKAGE = '0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff';
 
-/**
- * Seal key servers — free/open mainnet servers (no API key required).
- *   Overclock open:    https://seal-mainnet-open.overclock.run
- *   NodeInfra open:    https://open-seal-mainnet.nodeinfra.com (3 req/s limit)
- *   Studio Mirai open: https://open.key-server.mainnet.seal.mirai.cloud
- */
-const SEAL_KEY_SERVERS = [
-  { objectId: '0x145540d931f182fef76467dd8074c9839aea126852d90d18e1556fcbbd1208b6', weight: 1 }, // Overclock
-  { objectId: '0x1afb3a57211ceff8f6781757821847e3ddae73f64e78ec8cd9349914ad985475', weight: 1 }, // NodeInfra
-  { objectId: '0x837c18dc88b73552c182ccd6e27336de062297c264d405da625c1c9f5a598a35', weight: 1 }, // Studio Mirai
-];
-
-/** Seal encryption threshold (2-of-3 key servers must agree). */
-const SEAL_THRESHOLD = 2;
 
 export interface ShadeOrderInfo {
   objectId: string;
@@ -905,10 +891,6 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
-/** Uint8Array → hex string. */
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-}
 
 /** BCS-encode a u64 as 8 little-endian bytes (matches Move's bcs::to_bytes). */
 function bcsU64(value: number | bigint): Uint8Array {
@@ -953,33 +935,10 @@ async function buildCommitment(
   return keccak_256(preimage);
 }
 
-// ─── Seal encrypt/decrypt ────────────────────────────────────────────
-
-/**
- * Encrypt the shade order payload using Seal so only the owner can recover it.
- * Returns the encrypted blob to store on-chain in ShadeOrder.sealed_payload.
- */
-async function sealEncrypt(
-  orderIdBytes: Uint8Array,
-  payload: { domain: string; executeAfterMs: number; targetAddress: string; salt: string },
-): Promise<Uint8Array> {
-  const { SealClient } = await import('@mysten/seal');
-  const transport = new SuiGrpcClient({ network: 'mainnet', baseUrl: GRPC_URL });
-  const sealClient = new SealClient({
-    suiClient: transport as never,
-    serverConfigs: SEAL_KEY_SERVERS,
-    verifyKeyServers: false, // testnet servers may not be fully verified
-  });
-
-  const data = new TextEncoder().encode(JSON.stringify(payload));
-  const { encryptedObject } = await sealClient.encrypt({
-    threshold: SEAL_THRESHOLD,
-    packageId: SHADE_PACKAGE,
-    id: orderIdBytes,
-    data,
-  });
-  return encryptedObject;
-}
+// ─── Seal encrypt/decrypt — REMOVED ──────────────────────────────────
+// Seal encryption was dropped: on-chain seal_approve uses uid_to_bytes(order.id)
+// as namespace but encryption used the commitment hash → mismatch → decrypt
+// always fails. Domain info lives in localStorage only.
 
 // ─── PTB builders ────────────────────────────────────────────────────
 
@@ -1019,19 +978,10 @@ export async function buildCreateShadeOrderTx(
   const salt = generateSalt();
   const commitment = await buildCommitment(domain, graceEndMs, walletAddress, salt);
 
-  // Build the Seal-encrypted payload
-  // We use a placeholder order ID for encryption identity — the actual order ID
-  // is created on-chain. We'll use the commitment as a deterministic identity
-  // since it's unique per order.
-  const sealPayload = { domain, executeAfterMs: graceEndMs, targetAddress: walletAddress, salt };
-  let sealedPayload: Uint8Array;
-  try {
-    sealedPayload = await sealEncrypt(commitment, sealPayload);
-  } catch {
-    // If Seal encryption fails (e.g. key servers unreachable), store empty —
-    // the user must keep their localStorage intact for recovery.
-    sealedPayload = new Uint8Array(0);
-  }
+  // Seal encryption removed — domain info lives in localStorage only.
+  // On-chain sealed_payload is empty (Seal's seal_approve namespace mismatch
+  // made decrypt impossible anyway).
+  const sealedPayload = new Uint8Array(0);
 
   // Build PTB
   const tx = new Transaction();
@@ -1268,7 +1218,7 @@ export function findShadeOrder(address: string, domain: string): ShadeOrderInfo 
  * Returns minimal info (objectId + depositMist) for orders not tracked in localStorage.
  * This is the fallback when findCreatedShadeOrderId failed to extract the ID after creation.
  */
-export async function fetchOnChainShadeOrders(rawAddress: string): Promise<Array<{ objectId: string; depositMist: string }>> {
+export async function fetchOnChainShadeOrders(rawAddress: string): Promise<Array<{ objectId: string; depositMist: string; sealedPayload?: string; commitment?: string }>> {
   const address = normalizeSuiAddress(rawAddress);
   try {
     // ShadeOrders are shared objects — query by type, filter by owner field in contents
@@ -1289,7 +1239,7 @@ export async function fetchOnChainShadeOrders(rawAddress: string): Promise<Array
     const json = await res.json() as {
       data?: { objects?: { nodes?: Array<{
         address: string;
-        asMoveObject?: { contents?: { json?: { owner?: string; deposit?: string } } };
+        asMoveObject?: { contents?: { json?: { owner?: string; deposit?: string; sealed_payload?: string; commitment?: string } } };
       }> } };
     };
     // Filter to only orders owned by this address
@@ -1298,6 +1248,8 @@ export async function fetchOnChainShadeOrders(rawAddress: string): Promise<Array
       .map(n => ({
         objectId: n.address,
         depositMist: n.asMoveObject?.contents?.json?.deposit ?? '0',
+        sealedPayload: n.asMoveObject?.contents?.json?.sealed_payload,
+        commitment: n.asMoveObject?.contents?.json?.commitment,
       }));
   } catch { return []; }
 }

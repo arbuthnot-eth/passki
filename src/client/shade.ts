@@ -52,6 +52,7 @@ async function _scheduleViaHttp(params: {
   salt: string;
   ownerAddress: string;
   depositMist: string;
+  preferredRoute?: 'sui-ns' | 'sui-usdc-ns';
 }): Promise<{ success: boolean; error?: string }> {
   const host = _host();
   const proto = host.startsWith('localhost') ? 'http' : 'https';
@@ -76,6 +77,7 @@ export async function scheduleShadeExecution(params: {
   salt: string;
   ownerAddress: string;
   depositMist: string;
+  preferredRoute?: 'sui-ns' | 'sui-usdc-ns';
 }): Promise<{ success: boolean; error?: string }> {
   // Try WebSocket RPC first
   if (client) {
@@ -115,6 +117,25 @@ export async function getShadeOrderStatus(
 ): Promise<ShadeExecutorOrder | null> {
   if (!client) throw new Error('ShadeExecutor not connected');
   return client.call<ShadeExecutorOrder | null>('getStatus', [{ objectId }]);
+}
+
+/**
+ * Reset failed orders so they can retry execution.
+ * Optionally pass an objectId to reset a single order; omit to reset all.
+ */
+export async function resetFailedShadeOrders(
+  ownerAddress: string,
+  objectId?: string,
+): Promise<{ reset: number }> {
+  const host = _host();
+  const proto = host.startsWith('localhost') ? 'http' : 'https';
+  const url = `${proto}://${host}/agents/shade-executor-agent/${ownerAddress}?reset-failed`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(objectId ? { objectId } : {}),
+  });
+  return res.json() as Promise<{ reset: number }>;
 }
 
 /**

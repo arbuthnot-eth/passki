@@ -49,6 +49,8 @@ const RETRY_DELAYS_MS = [5_000, 15_000, 60_000]; // aggressive first retry, then
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
+export type ShadeRoute = 'sui-ns' | 'sui-usdc-ns';
+
 export interface ShadeExecutorOrder {
   objectId: string;
   domain: string;
@@ -57,6 +59,7 @@ export interface ShadeExecutorOrder {
   salt: string; // hex-encoded
   ownerAddress: string;
   depositMist: string; // serialized bigint
+  preferredRoute?: ShadeRoute; // decided at creation time based on user balance
   status: 'pending' | 'executing' | 'completed' | 'failed';
   retries: number;
   createdAt: number;
@@ -139,6 +142,20 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
         });
       }
     }
+    if (url.pathname.endsWith('/reset-failed') || url.searchParams.has('reset-failed')) {
+      try {
+        const params = request.method === 'POST' ? await request.json() as { objectId?: string } : undefined;
+        const result = await this.resetFailed(params);
+        return new Response(JSON.stringify(result), {
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    }
     if ((url.pathname.endsWith('/cancel') || url.searchParams.has('cancel')) && request.method === 'POST') {
       try {
         const params = await request.json() as { objectId: string };
@@ -167,6 +184,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     salt: string;
     ownerAddress: string;
     depositMist: string;
+    preferredRoute?: ShadeRoute;
   }): Promise<{ success: boolean; error?: string }> {
     // Idempotent — skip if this exact objectId is already tracked
     if (this.state.orders.some(o => o.objectId === params.objectId)) {
@@ -230,6 +248,25 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     return this.state.orders.find(o => o.objectId === params.objectId) ?? null;
   }
 
+  // ─── Reset failed orders so they can retry ────────────────────────
+
+  @callable()
+  async resetFailed(params?: { objectId?: string; force?: boolean }): Promise<{ reset: number }> {
+    let count = 0;
+    this.setState({
+      orders: this.state.orders.map(o => {
+        // Reset failed orders, or force-reset executing/stuck orders
+        if (o.status !== 'failed' && !(params?.force && o.status === 'executing')) return o;
+        if (params?.objectId && o.objectId !== params.objectId) return o;
+        count++;
+        return { ...o, status: 'pending' as const, retries: 0, error: undefined };
+      }),
+    });
+    if (count > 0) this.scheduleNextAlarm();
+    console.log(`[ShadeExecutor] resetFailed: reset ${count} order(s) (force=${!!params?.force})`);
+    return { reset: count };
+  }
+
   // ─── Poke — external trigger to re-check and re-schedule ──────────
 
   @callable()
@@ -290,6 +327,32 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       return;
     }
 
+    // Pre-flight: verify keeper has gas before building routes
+    try {
+      const gqlCheck = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const keypairCheck = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keeperAddr = keypairCheck.toSuiAddress();
+      const balResult = await gqlCheck.query({
+        query: `{ address(address: "${keeperAddr}") { balance(coinType: "0x2::sui::SUI") { totalBalance } } }`,
+      });
+      const keeperBalance = BigInt((balResult.data as any)?.address?.balance?.totalBalance ?? '0');
+      if (keeperBalance < 50_000_000n) { // need at least 0.05 SUI for gas
+        const retries = (order.retries ?? 0) + 1;
+        const msg = `Keeper has insufficient gas: ${keeperBalance} MIST (need ≥50M). Fund ${keeperAddr}`;
+        console.warn(`[ShadeExecutor] ${msg}`);
+        if (retries >= MAX_RETRIES) {
+          this.updateOrder(order.objectId, { status: 'failed', error: msg, retries });
+        } else {
+          this.updateOrder(order.objectId, { status: 'pending', retries, error: `Retry ${retries}/${MAX_RETRIES}: ${msg}` });
+          this.ctx.storage.setAlarm(Date.now() + RETRY_DELAYS_MS[retries - 1]);
+        }
+        return;
+      }
+      console.log(`[ShadeExecutor] Keeper gas OK: ${keeperBalance} MIST`);
+    } catch (err) {
+      console.warn('[ShadeExecutor] Gas check failed (proceeding anyway):', err);
+    }
+
     // Resolve placeholder object ID by querying on-chain ShadeOrders for this owner
     if (order.objectId.startsWith('pending:')) {
       const realId = await this.resolveShadeOrderId(order);
@@ -312,6 +375,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     }
 
     this.updateOrder(order.objectId, { status: 'executing' });
+    console.log(`[ShadeExecutor] Executing order ${order.objectId} for ${order.domain}.sui (deposit=${order.depositMist}, route=${order.preferredRoute ?? 'auto'})`);
 
     try {
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
@@ -324,41 +388,73 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       const targetAddr = normalizeSuiAddress(order.targetAddress);
       const fullDomain = `${order.domain}.sui`;
 
-      // Build all routes in parallel — submit the fastest, skip dry-runs for speed.
-      // Every millisecond matters: a competing bot could register first.
-      const buildArgs = [transport, suinsClient, keeperAddress, order, domainBytes, saltBytes, targetAddr, fullDomain] as const;
+      // Fetch NS-discounted price once — shared by all routes
+      const [rawPrice, discountMap] = await Promise.all([
+        suinsClient.calculatePrice({ name: fullDomain, years: 1 }),
+        suinsClient.getCoinTypeDiscount(),
+      ]);
+      const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
+      const discountPct = discountMap.get(nsKey) ?? 0;
+      const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
+      // 1.5% buffer + round up to nearest cent (covers DeepBook slippage)
+      const usdcNeeded = BigInt(Math.ceil(discountedUsd * 1.015 * 100) * 10000);
 
+      const buildArgs = [transport, suinsClient, keeperAddress, order, domainBytes, saltBytes, targetAddr, fullDomain, usdcNeeded] as const;
+
+      // Build both routes in parallel — submit fastest, skip dry-runs for speed.
+      // Route order decided at creation time based on user's balance:
+      //   'sui-ns':      prefer SUI → NS (single-hop), then SUI → USDC → NS
+      //   'sui-usdc-ns': prefer SUI → USDC → NS (two-hop), then SUI → NS
+      console.log(`[ShadeExecutor] Building routes A+B (usdcNeeded=${usdcNeeded}, deposit=${order.depositMist})...`);
       const [routeA, routeB] = await Promise.allSettled([
         this.buildRouteA(...buildArgs),
         this.buildRouteB(...buildArgs),
       ]);
 
-      // Try routes in priority order: A (direct SUI→NS) → B (SUI→USDC→NS) → fallback (SUI, no discount)
-      // No dry-run — submit directly, fall back on actual tx failure.
-      const routes: Array<{ name: string; bytes: Uint8Array | null }> = [
-        { name: 'A (SUI→NS)', bytes: routeA.status === 'fulfilled' ? routeA.value : null },
-        { name: 'B (SUI→USDC→NS)', bytes: routeB.status === 'fulfilled' ? routeB.value : null },
-      ];
+      const aErr = routeA.status === 'rejected' ? String(routeA.reason) : null;
+      const bErr = routeB.status === 'rejected' ? String(routeB.reason) : null;
+      if (aErr) console.warn('[ShadeExecutor] Route A build FAILED:', aErr);
+      else console.log(`[ShadeExecutor] Route A build OK (${routeA.value.length} bytes)`);
+      if (bErr) console.warn('[ShadeExecutor] Route B build FAILED:', bErr);
+      else console.log(`[ShadeExecutor] Route B build OK (${routeB.value.length} bytes)`);
+      const aResult = { name: `A (SUI→NS)`, bytes: routeA.status === 'fulfilled' ? routeA.value : null, err: aErr };
+      const bResult = { name: `B (SUI→USDC→NS)`, bytes: routeB.status === 'fulfilled' ? routeB.value : null, err: bErr };
+
+      const routes: Array<{ name: string; bytes: Uint8Array | null }> =
+        order.preferredRoute === 'sui-usdc-ns'
+          ? [bResult, aResult]
+          : [aResult, bResult];
 
       let digest: string | null = null;
+      const routeErrors: string[] = [];
       for (const route of routes) {
-        if (!route.bytes) continue;
+        if (!route.bytes) { routeErrors.push(`${route.name}: ${(route as any).err ?? 'build failed'}`); continue; }
         try {
           const { signature } = await keypair.signTransaction(route.bytes);
           digest = await this.submitTransaction(route.bytes, signature);
-          console.log(`[ShadeExecutor] Route ${route.name} submitted: ${digest}`);
+          console.log(`[ShadeExecutor] Route ${route.name} submitted OK: ${digest}`);
           break;
         } catch (err) {
-          console.warn(`[ShadeExecutor] Route ${route.name} submit failed:`, err);
+          const msg = err instanceof Error ? err.message : String(err);
+          routeErrors.push(`${route.name}: ${msg}`);
+          console.warn(`[ShadeExecutor] Route ${route.name} submit FAILED:`, msg);
         }
       }
 
-      // Last resort — direct SUI payment (no discount)
+      // Last resort — direct SUI payment (no NS discount)
       if (!digest) {
-        const fallbackBytes = await this.buildRouteFallback(...buildArgs);
-        const { signature } = await keypair.signTransaction(fallbackBytes);
-        digest = await this.submitTransaction(fallbackBytes, signature);
-        console.log(`[ShadeExecutor] Fallback (SUI direct) submitted: ${digest}`);
+        console.log(`[ShadeExecutor] All swap routes failed [${routeErrors.join(' | ')}], trying SUI direct fallback`);
+        try {
+          const fallbackBytes = await this.buildRouteFallback(transport, suinsClient, keeperAddress, order, domainBytes, saltBytes, targetAddr, fullDomain);
+          console.log(`[ShadeExecutor] Fallback build OK (${fallbackBytes.length} bytes)`);
+          const { signature } = await keypair.signTransaction(fallbackBytes);
+          digest = await this.submitTransaction(fallbackBytes, signature);
+          console.log(`[ShadeExecutor] Fallback (SUI direct) submitted OK: ${digest}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[ShadeExecutor] Fallback FAILED: ${msg}`);
+          throw new Error(`All routes failed — A+B: [${routeErrors.join(' | ')}] — Fallback: ${msg}`);
+        }
       }
 
       this.updateOrder(order.objectId, {
@@ -439,12 +535,15 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       priceInfoObjectId,
     });
     suinsTx.setTargetAddress({ nft, address: targetAddr });
-    suinsTx.setDefault(fullDomain);
+    // setDefault skipped — keeper can't set reverse lookup for the target user
     tx.transferObjects([nft], tx.pure.address(targetAddr));
     return nsCoin; // still alive — has remainder after register splits what it needs
   }
 
-  // ─── Route A: SUI → NS (direct DeepBook) → register with 25% discount
+  // ─── Route A: SUI → NS (direct DeepBook single-hop) → register with 25% discount
+  //
+  // Preferred route — single swap, least slippage. Swaps only what's needed,
+  // returns excess SUI to user.
 
   private async buildRouteA(
     transport: SuiGraphQLClient,
@@ -455,6 +554,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     saltBytes: number[],
     targetAddr: string,
     fullDomain: string,
+    _usdcNeeded: bigint, // unused — Route A swaps SUI directly
   ): Promise<Uint8Array> {
     const tx = new Transaction();
     tx.setSender(keeperAddress);
@@ -462,31 +562,47 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     // 1. shade::execute → Coin<SUI>
     const [releasedCoin] = this.shadeExecute(tx, order, domainBytes, saltBytes, targetAddr);
 
-    // 2. Swap SUI → NS via DeepBook NS/SUI pool (NS=base, SUI=quote)
+    // 2. Split ~50% of deposit for swap — keep remainder as safety margin.
+    //    If the pool is thin, we only risk half. The rest goes back to user.
+    const swapAmount = BigInt(order.depositMist) / 2n;
+    const [swapCoin] = tx.splitCoins(releasedCoin, [tx.pure.u64(swapAmount)]);
+
+    // 3. Swap SUI → NS via DeepBook NS/SUI pool (NS=base, SUI=quote)
     const nsSuiPool = tx.sharedObjectRef({
       objectId: DB_NS_SUI_POOL,
       initialSharedVersion: DB_NS_SUI_POOL_ISV,
       mutable: true,
     });
     const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
-    const [nsCoin, suiChange, deepChange] = tx.moveCall({
+    const [nsCoin, suiSwapChange, deepChange] = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
       typeArguments: [mainPackage.mainnet.coins.NS.type, SUI_TYPE],
-      arguments: [nsSuiPool, releasedCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock()],
+      arguments: [nsSuiPool, swapCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock()],
     });
 
-    // 3. Register with NS at 25% discount
-    this.registerWithNs(tx, suinsClient, fullDomain, nsCoin, this.nsPriceInfoRef(tx), targetAddr);
+    // 4. Update NS Pyth price feed for register's calculatePrice
+    const [nsPriceInfoId] = await suinsClient.getPriceInfoObject(
+      tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
+    );
 
-    // 4. Return change — NS dust to 0x0, SUI change to user
+    // 5. Register with NS at 25% discount
+    this.registerWithNs(tx, suinsClient, fullDomain, nsCoin, nsPriceInfoId, targetAddr);
+
+    // 6. Return excess to user — NS dust to 0x0
     tx.transferObjects([nsCoin], tx.pure.address('0x0'));
-    tx.transferObjects([suiChange], tx.pure.address(targetAddr));
+    // Merge swap SUI change back into released coin, send all excess to user
+    tx.mergeCoins(releasedCoin, [suiSwapChange]);
+    tx.transferObjects([releasedCoin], tx.pure.address(targetAddr));
     tx.transferObjects([deepChange], tx.pure.address('0x0'));
 
     return tx.build({ client: transport as never });
   }
 
-  // ─── Route B: SUI → USDC → NS (two-hop DeepBook) → register with 25% discount
+  // ─── Route B: SUI → USDC → NS (DeepBook two-hop) → register with 25% discount
+  //
+  // Fallback when NS/SUI pool lacks liquidity. Mirrors the proven USDC→NS
+  // path from buildRegisterSplashNsTx — swaps SUI→USDC first, then splits
+  // exact usdcNeeded for the USDC→NS swap, returning all excess to user.
 
   private async buildRouteB(
     transport: SuiGraphQLClient,
@@ -497,6 +613,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     saltBytes: number[],
     targetAddr: string,
     fullDomain: string,
+    usdcNeeded: bigint,
   ): Promise<Uint8Array> {
     const tx = new Transaction();
     tx.setSender(keeperAddress);
@@ -504,38 +621,46 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     // 1. shade::execute → Coin<SUI>
     const [releasedCoin] = this.shadeExecute(tx, order, domainBytes, saltBytes, targetAddr);
 
-    // 2. Swap SUI → USDC via DeepBook (SUI=base, USDC=quote)
+    // 2. Swap all released SUI → USDC via DeepBook SUI/USDC pool
     const suiUsdcPool = tx.sharedObjectRef({
       objectId: DB_SUI_USDC_POOL,
       initialSharedVersion: DB_SUI_USDC_POOL_ISV,
       mutable: true,
     });
     const [zeroDEEP1] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
-    const [usdcOut, suiChange, deepChange1] = tx.moveCall({
+    const [suiChange, usdcOut, deepChange1] = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
       typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
       arguments: [suiUsdcPool, releasedCoin, zeroDEEP1, tx.pure.u64(0), tx.object.clock()],
     });
 
-    // 3. Swap USDC → NS via DeepBook (NS=base, USDC=quote)
+    // 3. Split exact USDC needed for NS swap — excess USDC goes to user
+    const [usdcForSwap] = tx.splitCoins(usdcOut, [tx.pure.u64(usdcNeeded)]);
+
+    // 4. Swap USDC → NS via DeepBook NS/USDC pool (identical to working registration)
     const nsUsdcPool = tx.sharedObjectRef({
       objectId: DB_NS_USDC_POOL,
       initialSharedVersion: DB_NS_USDC_POOL_ISV,
       mutable: true,
     });
     const [zeroDEEP2] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
-    const [nsCoin, usdcChange, deepChange2] = tx.moveCall({
+    const [nsCoin, usdcSwapChange, deepChange2] = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
       typeArguments: [mainPackage.mainnet.coins.NS.type, mainPackage.mainnet.coins.USDC.type],
-      arguments: [nsUsdcPool, usdcOut, zeroDEEP2, tx.pure.u64(0), tx.object.clock()],
+      arguments: [nsUsdcPool, usdcForSwap, zeroDEEP2, tx.pure.u64(0), tx.object.clock()],
     });
 
-    // 4. Register with NS at 25% discount
-    this.registerWithNs(tx, suinsClient, fullDomain, nsCoin, this.nsPriceInfoRef(tx), targetAddr);
+    // 5. Update NS Pyth price feed (ensures freshness for register's calculatePrice)
+    const [nsPriceInfoId] = await suinsClient.getPriceInfoObject(
+      tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
+    );
 
-    // 5. Return change — NS dust to 0x0, SUI+USDC change to user
+    // 6. Register with NS at 25% discount
+    this.registerWithNs(tx, suinsClient, fullDomain, nsCoin, nsPriceInfoId, targetAddr);
+
+    // 7. Return all excess to user — NS dust + DEEP to 0x0
     tx.transferObjects([nsCoin], tx.pure.address('0x0'));
-    tx.transferObjects([suiChange, usdcChange], tx.pure.address(targetAddr));
+    tx.transferObjects([suiChange, usdcOut, usdcSwapChange], tx.pure.address(targetAddr));
     tx.transferObjects([deepChange1, deepChange2], tx.pure.address('0x0'));
 
     return tx.build({ client: transport as never });
@@ -556,23 +681,40 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     const tx = new Transaction();
     tx.setSender(keeperAddress);
 
+    // 1. shade::execute → Coin<SUI> (full deposit)
     const [releasedCoin] = this.shadeExecute(tx, order, domainBytes, saltBytes, targetAddr);
 
+    // 2. Get Pyth SUI/USD price info — pay oracle fee from gas (matches working buildRegisterSplashNsTx)
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
       tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
     );
 
+    // 3. Pre-split the SUI payment from released coin with buffer (matches working pattern).
+    //    The deposit already has a 10% buffer baked in from creation. Use the full deposit
+    //    as the payment coin — the SuiNS contract takes only what it needs.
+    //    Key: split a known amount into a fresh coin so the SDK's tx.object() is clean.
+    const rawPrice = await suinsClient.calculatePrice({ name: fullDomain, years: 1 });
+    const basePriceUsd = rawPrice / 1e6;
+    // Estimate SUI price from deposit: deposit was calculated as (usd_price / sui_price * 1.10)
+    // We'll use the full deposit minus a tiny reserve as the payment coin.
+    const suiPaymentMist = BigInt(order.depositMist) - 1_000_000n; // keep 0.001 SUI margin
+    const [suiPayment] = tx.splitCoins(releasedCoin, [tx.pure.u64(suiPaymentMist)]);
+
+    // 4. Register with SUI payment (same pattern as working buildRegisterSplashNsTx)
     const suinsTx = new SuinsTransaction(suinsClient, tx);
     const nft = suinsTx.register({
       domain: fullDomain,
       years: 1,
       coinConfig: mainPackage.mainnet.coins.SUI,
-      coin: releasedCoin,
+      coin: suiPayment,
       priceInfoObjectId,
     });
     suinsTx.setTargetAddress({ nft, address: targetAddr });
-    suinsTx.setDefault(fullDomain);
+    // setDefault skipped — keeper can't set reverse lookup for the target user
     tx.transferObjects([nft], tx.pure.address(targetAddr));
+
+    // 5. Return all excess SUI to user (suiPayment remainder + releasedCoin remainder)
+    tx.mergeCoins(releasedCoin, [suiPayment]);
     tx.transferObjects([releasedCoin], tx.pure.address(targetAddr));
 
     return tx.build({ client: transport as never });

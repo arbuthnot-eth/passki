@@ -1,6 +1,7 @@
 [package]
 name = "shade"
 edition = "2024.beta"
+published-at = "0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff"
 
 [dependencies]
 

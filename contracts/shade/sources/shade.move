@@ -82,7 +82,7 @@ public struct ShadeOrder has key {
     /// SHA3-256(domain_bytes || execute_after_ms_bcs || target_address_bcs || salt)
     commitment: vector<u8>,
     /// Seal-encrypted payload containing (domain, execute_after_ms, target_address, salt).
-    /// Encrypted with identity = [shade_pkg]::[order_id], decryptable only by owner.
+    /// Encrypted with identity = [shade_pkg]::[commitment], decryptable only by owner.
     sealed_payload: vector<u8>,
 }
 
@@ -193,13 +193,15 @@ entry fun top_up(order: &mut ShadeOrder, coin: Coin<SUI>, ctx: &TxContext) {
 
 // ─── Seal access policy ──────────────────────────────────────────────
 //
-// Identity namespace: [shade_pkg]::[order.id][nonce]
+// Identity namespace: [shade_pkg]::[commitment]
 // Only the order owner may decrypt the sealed_payload.
 // Key servers call this function to verify decryption access.
 
-/// Returns the Seal namespace bytes for this order (= order object ID bytes).
+/// Returns the Seal namespace bytes for this order (= commitment hash).
+/// The commitment is used as the Seal encryption identity so that the owner
+/// can recover the sealed_payload even without knowing the order's UID.
 public fun namespace(order: &ShadeOrder): vector<u8> {
-    order.id.to_bytes()
+    order.commitment
 }
 
 /// Seal approval entry point. Key servers invoke this to check whether
