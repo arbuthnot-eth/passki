@@ -301,14 +301,7 @@ window.addEventListener('ski:request-disconnect', () => {
 });
 
 window.addEventListener('ski:request-signin', async () => {
-  const ok = await signIn();
-  if (ok) {
-    if (window.location.hostname === 'sui.ski') {
-      window.location.reload();
-    } else {
-      window.open('https://sui.ski', '_blank');
-    }
-  }
+  await signIn();
 });
 
 // ─── Sign & Execute Transaction ──────────────────────────────────────
