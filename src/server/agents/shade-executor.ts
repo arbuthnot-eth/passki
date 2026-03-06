@@ -29,7 +29,7 @@ const FULLNODE_URLS = [
   'https://sui-mainnet-endpoint.blockvision.org',
   'https://rpc.ankr.com/sui',
 ];
-const SHADE_PACKAGE = '0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff';
+const SHADE_PACKAGE = '0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203';
 
 // DeepBook v3 — swap pools for NS registration discount
 const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
@@ -170,6 +170,20 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
         });
       }
     }
+    if ((url.pathname.endsWith('/reap-cancelled') || url.searchParams.has('reap-cancelled')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as { objectId: string };
+        const result = await this.reapCancelled(params);
+        return new Response(JSON.stringify(result), {
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    }
     return super.onRequest(request);
   }
 
@@ -234,6 +248,42 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     });
     this.scheduleNextAlarm();
     return { success: true };
+  }
+
+  // ─── Cleanup cancelled on-chain orders (keeper-signed delete) ───────
+
+  @callable()
+  async reapCancelled(params: { objectId: string }): Promise<{ success: boolean; digest?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
+      return { success: false, error: 'No keeper private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)' };
+    }
+    try {
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keeperAddress = keypair.toSuiAddress();
+
+      const tx = new Transaction();
+      tx.setSender(keeperAddress);
+      tx.moveCall({
+        target: `${SHADE_PACKAGE}::shade::reap_cancelled`,
+        arguments: [tx.object(params.objectId)],
+      });
+
+      const txBytes = await tx.build({ client: transport as never });
+      const { signature } = await keypair.signTransaction(txBytes);
+      const digest = await this.submitTransaction(txBytes, signature);
+
+      // Keep DO state consistent if this order was tracked here.
+      this.setState({
+        orders: this.state.orders.filter(o => o.objectId !== params.objectId),
+      });
+      this.scheduleNextAlarm();
+
+      return { success: true, digest };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: false, error: msg };
+    }
   }
 
   // ─── Query orders ───────────────────────────────────────────────────

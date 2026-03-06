@@ -6,7 +6,7 @@ Security documentation for the Shade subsystem of .SKI.
 
 Shade is a privacy-preserving time-locked escrow for SuiNS grace-period domain sniping. It uses an on-chain commitment-reveal scheme so that the target domain, recipient address, and execution timestamp remain hidden until the moment of execution.
 
-Contract: `0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff` (Sui mainnet)
+Contract: `0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203` (Sui mainnet)
 
 ---
 
@@ -80,9 +80,15 @@ The commitment-reveal scheme alone provides the core privacy guarantee: on-chain
 
 ## Known issues
 
-### WaaP shared-object-by-value transactions
+### WaaP cancel compatibility
 
-WaaP wallet's `signAndExecuteTransaction` produces invalid signatures for transactions that consume shared objects by value (as `cancel()` does — it deletes the `ShadeOrder`). The attempted workaround (sign-only + JSON-RPC submission) still fails for some transaction types. This affects only the cancel flow; order creation and execution (via the keeper) are unaffected.
+WaaP has signature issues on shared-object-by-value calls (like legacy `cancel()`).
+The cancel flow now uses:
+
+1. `cancel_refund(&mut ShadeOrder)` user-signed call to return funds.
+2. Keeper-signed `reap_cancelled(ShadeOrder)` cleanup to delete the cancelled object.
+
+This preserves refund + object deletion while avoiding WaaP's by-value signing bug.
 
 ---
 

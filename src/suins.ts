@@ -860,7 +860,7 @@ export async function buildKioskPurchaseTx(
 // Hidden until execution: domain, execute_after_ms, target_address, salt
 
 /** Shade package on mainnet (published by plankton.sui). */
-const SHADE_PACKAGE = '0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff';
+const SHADE_PACKAGE = '0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203';
 
 
 export interface ShadeOrderInfo {
@@ -1085,6 +1085,44 @@ export async function buildCancelShadeOrderTx(
   tx.setSender(walletAddress);
   tx.moveCall({
     target: `${SHADE_PACKAGE}::shade::cancel`,
+    arguments: [tx.object(orderObjectId)],
+  });
+  return tx.build({ client: transport as never });
+}
+
+/**
+ * Build a PTB to refund a Shade order using &mut shared access (WaaP-safe path).
+ * Object deletion is handled separately by shade::reap_cancelled.
+ */
+export async function buildCancelRefundShadeOrderTx(
+  rawAddress: string,
+  orderObjectId: string,
+): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+  tx.moveCall({
+    target: `${SHADE_PACKAGE}::shade::cancel_refund`,
+    arguments: [tx.object(orderObjectId)],
+  });
+  return tx.build({ client: transport as never });
+}
+
+/**
+ * Build a PTB to delete a cancelled (already refunded) Shade order.
+ * Intended for keeper/server execution.
+ */
+export async function buildReapCancelledShadeOrderTx(
+  rawAddress: string,
+  orderObjectId: string,
+): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+  tx.moveCall({
+    target: `${SHADE_PACKAGE}::shade::reap_cancelled`,
     arguments: [tx.object(orderObjectId)],
   });
   return tx.build({ client: transport as never });

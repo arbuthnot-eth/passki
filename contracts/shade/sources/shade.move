@@ -35,6 +35,8 @@ const ENotOwner: u64 = 0;
 const ETooEarly: u64 = 1;
 const EInvalidCommitment: u64 = 2;
 const EZeroDeposit: u64 = 3;
+const EAlreadyRefunded: u64 = 4;
+const ENonZeroDeposit: u64 = 5;
 
 // ─── Events ─────────────────────────────────────────────────────────
 
@@ -174,6 +176,33 @@ entry fun cancel(order: ShadeOrder, ctx: &mut TxContext) {
     id.delete();
     let coin = coin::from_balance(deposit, ctx);
     transfer::public_transfer(coin, ctx.sender());
+}
+
+/// WaaP-safe two-step cancel:
+/// 1) Owner calls this entry to refund escrow using &mut shared object access.
+/// 2) Keeper calls reap_cancelled() to delete the now-empty cancelled object.
+entry fun cancel_refund(order: &mut ShadeOrder, ctx: &mut TxContext) {
+    assert!(ctx.sender() == order.owner, ENotOwner);
+    let refund = order.deposit.value();
+    assert!(refund > 0, EAlreadyRefunded);
+    if (refund > 0) {
+        let coin = coin::take(&mut order.deposit, refund, ctx);
+        transfer::public_transfer(coin, order.owner);
+    };
+    event::emit(OrderCancelled {
+        order_id: object::id(order),
+        owner: order.owner,
+        deposit: refund,
+    });
+}
+
+/// Deletes a cancelled order after refund. Anyone may call this cleanup.
+entry fun reap_cancelled(order: ShadeOrder, ctx: &mut TxContext) {
+    assert!(order.deposit.value() == 0, ENonZeroDeposit);
+    let ShadeOrder { id, owner: _, deposit, commitment: _, sealed_payload: _ } = order;
+    id.delete();
+    let zero = coin::from_balance(deposit, ctx);
+    coin::destroy_zero(zero);
 }
 
 // ─── Top-up ──────────────────────────────────────────────────────────

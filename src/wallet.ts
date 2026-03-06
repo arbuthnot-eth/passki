@@ -325,7 +325,7 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
 
     // WaaP: sign-only + own JSON-RPC execution fallback.
     // WaaP's signAndExecuteTransaction produces "Invalid user signature" for some txs
-    // (shared-object-by-value, e.g. shade::cancel). Sign-only works — we execute ourselves.
+    // (shared-object-by-value, set_reverse_lookup, etc.). Sign-only works — we execute ourselves.
     if (/waap/i.test(wallet.name) && 'sui:signTransaction' in wallet.features) {
       const signFeat = wallet.features['sui:signTransaction'] as {
         signTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string }) => Promise<{ bytes: string; signature: string }>;
@@ -334,7 +334,7 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
       const { bytes, signature } = await signFeat.signTransaction({
         transaction: augmentBytes(transaction), account, chain,
       });
-      // Execute via JSON-RPC (gRPC can have signature encoding issues)
+      // Execute via JSON-RPC (gRPC can have signature encoding issues in browser)
       const rpcUrls = [
         'https://sui-rpc.publicnode.com',
         'https://sui-mainnet-endpoint.blockvision.org',

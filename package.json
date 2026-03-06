@@ -51,7 +51,7 @@
   },
   "dependencies": {
     "@fingerprintjs/fingerprintjs": "^5.1.0",
-    "@human.tech/waap-sdk": "^1.2.1",
+    "@human.tech/waap-sdk": "^1.2.2",
     "@ika.xyz/sdk": "^0.2.7",
     "@mysten/dapp-kit-core": "^1.1.3",
     "@mysten/deepbook-v3": "^1.1.5",

@@ -139,6 +139,25 @@ export async function resetFailedShadeOrders(
 }
 
 /**
+ * Ask the shade executor keeper to delete a cancelled shade order object.
+ * This is used after WaaP-safe cancel_refund() drained funds.
+ */
+export async function reapCancelledShadeOrder(
+  ownerAddress: string,
+  objectId: string,
+): Promise<{ success: boolean; digest?: string; error?: string }> {
+  const host = _host();
+  const proto = host.startsWith('localhost') ? 'http' : 'https';
+  const url = `${proto}://${host}/agents/shade-executor-agent/${ownerAddress}?reap-cancelled`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ objectId }),
+  });
+  return res.json() as Promise<{ success: boolean; digest?: string; error?: string }>;
+}
+
+/**
  * Disconnect the WebSocket connection.
  */
 export function disconnectShadeExecutor(): void {
