@@ -778,6 +778,25 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   );
 }
 
+// ─── Tradeport marketplace API ───────────────────────────────────────
+
+export type TradeportListing = {
+  listingId: string;
+  priceMist: string;
+  seller: string;
+  nftTokenId: string;
+  marketName: string;
+};
+
+/** Query Tradeport for an active listing of a SuiNS domain via server proxy. Returns null if not listed. */
+export async function fetchTradeportListing(label: string): Promise<TradeportListing | null> {
+  try {
+    const res = await fetch(`/api/tradeport/listing/${encodeURIComponent(label)}`);
+    const json = await res.json() as { listing: TradeportListing | null };
+    return json.listing;
+  } catch { return null; }
+}
+
 // ─── Kiosk marketplace helpers ───────────────────────────────────────
 
 /** Fetch the listing price (in MIST) for an NFT inside a kiosk, or null if not listed. */

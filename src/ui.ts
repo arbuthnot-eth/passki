@@ -38,7 +38,7 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
 import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
@@ -2483,7 +2483,14 @@ let nsNewTargetAddr = ''; // value in the target-address input
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
 let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
 let nsRealOwnerAddr = ''; // discovered on-chain owner address (WaaP wallets differ from wallet address)
-let nsKioskListing: { kioskId: string; nftId: string; priceMist: string } | null = null; // marketplace listing for current label
+let nsKioskListing: { kioskId: string; nftId: string; priceMist: string } | null = null; // on-chain kiosk listing for current label
+let nsTradeportListing: TradeportListing | null = null; // Tradeport marketplace listing for current label
+/** Get the active marketplace listing — prefer on-chain kiosk, fall back to Tradeport. */
+function _nsListing(): { priceMist: string; seller?: string; source: 'kiosk' | 'tradeport' } | null {
+  if (nsKioskListing) return { priceMist: nsKioskListing.priceMist, source: 'kiosk' };
+  if (nsTradeportListing) return { priceMist: nsTradeportListing.priceMist, seller: nsTradeportListing.seller, source: 'tradeport' };
+  return null;
+}
 let nsShadeOrder: ShadeOrderInfo | null = null; // active shade order for current domain
 let nsShadeOrdersPruned = false; // true once we've validated orders against on-chain state
 const _shadeCancelledIds = new Set<string>((() => { // cancelled order IDs — persisted to suppress on-chain re-discovery
@@ -2591,34 +2598,47 @@ async function fetchAndShowNsPrice(label: string) {
   nsAvail = null;
   _patchNsStatus();
 
+  /** Apply status + Tradeport listing results to module state and re-render. */
+  const _applyStatusAndListing = (sr: DomainStatusResult | null, tp: TradeportListing | null) => {
+    nsAvail = sr?.avail ?? null;
+    nsGraceEndMs = sr?.graceEndMs ?? 0;
+    nsTargetAddress = sr?.targetAddress ?? null;
+    nsNftOwner = sr?.nftOwner ?? null;
+    nsKioskListing = sr?.kioskId
+      ? { kioskId: sr.kioskId, nftId: sr.kioskNftId!, priceMist: sr.kioskListingPriceMist! }
+      : null;
+    nsTradeportListing = tp;
+    if (sr) _maybeDiscoverRealOwner(sr);
+    _patchNsPrice();
+    _patchNsStatus();
+    _patchNsRoute();
+  };
+
   if (label.length >= 5) {
     if (ns5CharPriceUsd != null) {
-      // Already loaded — show instantly, only fetch availability
+      // Already loaded — show instantly, only fetch availability + Tradeport listing
       nsPriceUsd = ns5CharPriceUsd;
       _patchNsPrice();
       const ws = getState();
       const _extra = nsRealOwnerAddr ? [nsRealOwnerAddr] : undefined;
-      const result = await checkDomainStatus(label, ws.address || undefined, _extra);
+      const [statusResult, tpResult] = await Promise.allSettled([
+        checkDomainStatus(label, ws.address || undefined, _extra),
+        fetchTradeportListing(label),
+      ]);
       if (nsPriceFetchFor !== label) return;
-      nsAvail = result.avail;
-      nsGraceEndMs = result.graceEndMs ?? 0;
-      nsTargetAddress = result.targetAddress;
-      nsNftOwner = result.nftOwner ?? null;
-      nsKioskListing = result.kioskId
-        ? { kioskId: result.kioskId, nftId: result.kioskNftId!, priceMist: result.kioskListingPriceMist! }
-        : null;
-      _maybeDiscoverRealOwner(result);
-      _patchNsPrice();
-      _patchNsStatus();
-      _patchNsRoute();
+      _applyStatusAndListing(
+        statusResult.status === 'fulfilled' ? statusResult.value : null,
+        tpResult.status === 'fulfilled' ? tpResult.value : null,
+      );
       return;
     }
     // First 5+ char lookup — fetch price once, then cache it
     const ws = getState();
     const _extra = nsRealOwnerAddr ? [nsRealOwnerAddr] : undefined;
-    const [priceResult, statusResult] = await Promise.allSettled([
+    const [priceResult, statusResult, tpResult] = await Promise.allSettled([
       fetchDomainPriceUsd(label),
       checkDomainStatus(label, ws.address || undefined, _extra),
+      fetchTradeportListing(label),
     ]);
     if (nsPriceFetchFor !== label) return;
     if (priceResult.status === 'fulfilled') {
@@ -2626,42 +2646,27 @@ async function fetchAndShowNsPrice(label: string) {
       try { localStorage.setItem('ski:ns5-price', String(ns5CharPriceUsd)); } catch {}
     }
     nsPriceUsd = priceResult.status === 'fulfilled' ? priceResult.value : null;
-    const sr5 = statusResult.status === 'fulfilled' ? statusResult.value : null;
-    nsAvail = sr5?.avail ?? null;
-    nsGraceEndMs = sr5?.graceEndMs ?? 0;
-    nsTargetAddress = sr5?.targetAddress ?? null;
-    nsNftOwner = sr5?.nftOwner ?? null;
-    nsKioskListing = sr5?.kioskId
-      ? { kioskId: sr5.kioskId, nftId: sr5.kioskNftId!, priceMist: sr5.kioskListingPriceMist! }
-      : null;
-    if (sr5) _maybeDiscoverRealOwner(sr5);
-    _patchNsPrice();
-    _patchNsStatus();
-    _patchNsRoute();
+    _applyStatusAndListing(
+      statusResult.status === 'fulfilled' ? statusResult.value : null,
+      tpResult.status === 'fulfilled' ? tpResult.value : null,
+    );
     return;
   }
 
-  // 3–4 char names have variable pricing — fetch both in parallel
+  // 3–4 char names have variable pricing — fetch all in parallel
   const ws = getState();
   const _extra = nsRealOwnerAddr ? [nsRealOwnerAddr] : undefined;
-  const [priceResult, statusResult] = await Promise.allSettled([
+  const [priceResult, statusResult, tpResult] = await Promise.allSettled([
     fetchDomainPriceUsd(label),
     checkDomainStatus(label, ws.address || undefined, _extra),
+    fetchTradeportListing(label),
   ]);
   if (nsPriceFetchFor !== label) return;
   nsPriceUsd = priceResult.status === 'fulfilled' ? priceResult.value : null;
-  const sr = statusResult.status === 'fulfilled' ? statusResult.value : null;
-  nsAvail = sr?.avail ?? null;
-  nsGraceEndMs = sr?.graceEndMs ?? 0;
-  nsTargetAddress = sr?.targetAddress ?? null;
-  nsNftOwner = sr?.nftOwner ?? null;
-  nsKioskListing = sr?.kioskId
-    ? { kioskId: sr.kioskId, nftId: sr.kioskNftId!, priceMist: sr.kioskListingPriceMist! }
-    : null;
-  if (sr) _maybeDiscoverRealOwner(sr);
-  _patchNsPrice();
-  _patchNsStatus();
-  _patchNsRoute();
+  _applyStatusAndListing(
+    statusResult.status === 'fulfilled' ? statusResult.value : null,
+    tpResult.status === 'fulfilled' ? tpResult.value : null,
+  );
 }
 
 function _patchNsPrice() {
@@ -2727,7 +2732,7 @@ function _nsRouteHtml(): string {
   // dim = no name typed yet (idle placeholder showing wallet address)
   let colorClass = 'wk-ns-target-row--blue'; // default: blue (taken by someone else)
   if (!nsLabel || nsLabel.length < 3 || nsAvail === null) colorClass = 'wk-ns-target-row--dim';
-  else if (nsKioskListing) colorClass = 'wk-ns-target-row--orange'; // marketplace listing (purchasable)
+  else if (_nsListing()) colorClass = 'wk-ns-target-row--orange'; // marketplace listing (purchasable)
   else if (isKioskName) colorClass = 'wk-ns-target-row--orange';
   else if (nsAvail === 'grace') colorClass = 'wk-ns-target-row--red';
   else if (isOwnerAddr || isOwnedName) colorClass = 'wk-ns-target-row--purple';
@@ -2897,7 +2902,7 @@ function _clearNsInput() {
   nsTargetAddress = null;
   nsNftOwner = null;
   nsLastDigest = '';
-  nsKioskListing = null;
+  nsKioskListing = null; nsTradeportListing = null;
   nsShadeOrder = null;
   nsPriceFetchFor = '';
   if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
@@ -3391,12 +3396,13 @@ function _patchNsStatus() {
         btn.classList.add('wk-shade-active');
         _startShadeCountdown();
       }
-    } else if (nsKioskListing) {
-      // Kiosk marketplace listing — enable buy button
+    } else if (_nsListing()) {
+      // Marketplace listing — enable buy button
+      const _listing = _nsListing()!;
       btn.classList.remove('wk-shade-ready', 'wk-shade-active', 'wk-shade-execute');
       btn.disabled = false;
       btn.textContent = '\u2192';
-      const sui = Number(BigInt(nsKioskListing.priceMist)) / 1e9;
+      const sui = Number(BigInt(_listing.priceMist)) / 1e9;
       btn.title = `Buy ${nsLabel.trim()}.sui for ${fmtSui(sui)} SUI`;
     } else {
       // Non-grace states — standard behavior
@@ -3563,14 +3569,20 @@ function _nsPriceHtml(): string {
   if (nsLabel.length < 3) return '';
   const variant = _nsVariant();
   if (variant === 'black-diamond') return ''; // invalid label — no spinner
+  // Marketplace listing — show listing price in SUI with USD approximation
+  const _activeListing = _nsListing();
+  if (_activeListing && (nsAvail === 'taken' || nsAvail === 'grace')) {
+    const sui = Number(BigInt(_activeListing.priceMist)) / 1e9;
+    const usdApprox = suiPriceCache ? ` \u2248 $${(sui * suiPriceCache.price).toFixed(2)}` : '';
+    return `<span class="wk-ns-price-val wk-ns-kiosk-pill">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI">${usdApprox}</span>`;
+  }
+  // Grace period (no marketplace listing) — shade countdown or registration cost
   if (nsAvail === 'grace') {
     if (nsShadeOrder) {
-      // Shade order exists — show "Shaded! Xd Xh Xm Xs" or "Shade — ready!" if grace expired
       const graceExpired = nsGraceEndMs > 0 && Date.now() >= nsGraceEndMs;
       if (graceExpired) return `<span class="wk-ns-price-val wk-shade-pill wk-shade-pill--ready">ready</span>`;
       return `<span class="wk-ns-price-val wk-shade-pill">${_graceCountdownPrecise()}</span>`;
     }
-    // No shade order — show estimated cost to shade (already NS-discounted from fetchDomainPriceUsd)
     if (nsPriceUsd != null) {
       if (balView === 'sui' && suiPriceCache) {
         const sui = nsPriceUsd / suiPriceCache.price * 1.05;
@@ -3579,11 +3591,6 @@ function _nsPriceHtml(): string {
       return `<span class="wk-ns-price-val wk-ns-grace-pill">$${nsPriceUsd.toFixed(2)}</span>`;
     }
     return `<span class="wk-ns-price-val wk-ns-grace-pill">${_graceCountdown()}</span>`;
-  }
-  // Kiosk marketplace listing — show listing price in SUI
-  if (nsAvail === 'taken' && nsKioskListing) {
-    const sui = Number(BigInt(nsKioskListing.priceMist)) / 1e9;
-    return `<span class="wk-ns-price-val wk-ns-kiosk-pill">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI"></span>`;
   }
   // Don't show price for owned or self-target names — they can't be re-registered
   if (nsAvail === 'owned') return '';
@@ -3876,13 +3883,13 @@ function renderSkiMenu() {
   const _nsInitGraceExpired = nsAvail === 'grace' && nsGraceEndMs > 0 && Date.now() >= nsGraceEndMs;
   const _registerTitle = _subnameMode
     ? (nsLabel ? `Create ${esc(nsLabel)}.${_parentBare}.sui` : 'Create subname')
-    : (nsKioskListing ? `Buy ${esc(nsLabel)}.sui for ${fmtSui(Number(BigInt(nsKioskListing.priceMist)) / 1e9)} SUI`
+    : (_nsListing() ? `Buy ${esc(nsLabel)}.sui for ${fmtSui(Number(BigInt(_nsListing()!.priceMist)) / 1e9)} SUI`
       : nsAvail === 'grace' && _nsInitShadeOrder && _nsInitGraceExpired ? `Execute Shade \u2014 register ${esc(nsLabel)}.sui now`
       : nsAvail === 'grace' && _nsInitShadeOrder ? `Shaded! Execute after ${_graceEndDate()}`
       : nsAvail === 'grace' ? `Shade ${esc(nsLabel)}.sui \u2014 lock funds for grace expiry`
       : _nsInitVariant === 'black-diamond' && nsLabel ? 'Invalid SuiNS name'
       : nsLabel ? `Mint ${esc(nsLabel)}.sui` : 'Mint .sui');
-  const _registerDisabled = _subnameMode ? false : nsKioskListing ? false : _nsInitVariant === 'black-diamond';
+  const _registerDisabled = _subnameMode ? false : _nsListing() ? false : _nsInitVariant === 'black-diamond';
   const _inputHtml = _subnameMode
     ? `<input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}">`
     : `<div class="wk-ns-input-wrap"><input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}"><button id="wk-ns-pin-btn" class="wk-ns-pin-btn" type="button" title="Create subname">\u25b8</button></div>`;
@@ -3951,7 +3958,7 @@ function renderSkiMenu() {
     nsTargetAddress = null;
     nsNftOwner = null;
     nsLastDigest = '';
-    nsKioskListing = null;
+    nsKioskListing = null; nsTradeportListing = null;
     nsShadeOrder = null;
     nsPriceFetchFor = '';
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
@@ -3985,7 +3992,7 @@ function renderSkiMenu() {
     nsTargetAddress = null;
     nsNftOwner = null;
     nsLastDigest = '';
-    nsKioskListing = null;
+    nsKioskListing = null; nsTradeportListing = null;
     _patchNsPrice();
     _patchNsStatus();
     _patchNsRoute();
@@ -4556,7 +4563,7 @@ function renderSkiMenu() {
         if (btn) btn.textContent = '\u270f';
         const { digest } = await signAndExecuteTransaction(tx);
         // Post-purchase: update to owned state
-        nsAvail = 'owned'; nsTargetAddress = ws2.address; nsLastDigest = digest ?? ''; nsKioskListing = null;
+        nsAvail = 'owned'; nsTargetAddress = ws2.address; nsLastDigest = digest ?? ''; nsKioskListing = null; nsTradeportListing = null;
         _patchNsStatus(); _patchNsRoute();
         const domain = `${label}.sui`;
         app.suinsName = app.suinsName || domain;
@@ -4860,7 +4867,7 @@ function renderSkiMenu() {
     nsTargetAddress = null;
     nsNftOwner = null;
     nsLastDigest = '';
-    nsKioskListing = null;
+    nsKioskListing = null; nsTradeportListing = null;
     nsSubnameParent = null;
     nsShowTargetInput = false;
     skipNextFocusClear = true;

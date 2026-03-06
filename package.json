@@ -38,7 +38,7 @@
     "build": "rm -rf public/dist && bun build src/ski.ts --outdir public/dist --target browser --minify --splitting --format esm --loader .svg:text",
     "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch --splitting --format esm --loader .svg:text",
     "dev:wrangler": "wrangler dev",
-    "deploy": "bun run build && npx wrangler deploy",
+    "deploy": "bun update && bun run build && npx wrangler deploy",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build"
   },
