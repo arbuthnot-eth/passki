@@ -296,6 +296,10 @@ window.addEventListener('ski:wallet-disconnected', () => {
   updateAppState({ splashSponsor: false });
 });
 
+window.addEventListener('ski:request-disconnect', () => {
+  disconnect().catch(() => {});
+});
+
 window.addEventListener('ski:request-signin', async () => {
   const ok = await signIn();
   if (ok) {
