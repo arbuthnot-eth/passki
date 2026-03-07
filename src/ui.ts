@@ -2995,10 +2995,12 @@ function _ensureNftPopover(): HTMLElement {
   return el;
 }
 
-function _hideNftPopover() {
+function _hideNftPopover(immediate = false) {
+  if (_nftPopoverHideTimer) { clearTimeout(_nftPopoverHideTimer); _nftPopoverHideTimer = null; }
+  if (immediate) { _nftPopover?.setAttribute('hidden', ''); return; }
   _nftPopoverHideTimer = setTimeout(() => {
     _nftPopover?.setAttribute('hidden', '');
-  }, 120);
+  }, 500);
 }
 
 function _showNftPopover(chip: HTMLElement, domainBare: string) {
@@ -3026,7 +3028,7 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
 
   popover.innerHTML = `
     <div class="ski-nft-card">
-      <div class="ski-nft-qr" id="ski-nft-qr-slot"></div>
+      <a class="ski-nft-qr" id="ski-nft-qr-slot" href="${esc(suiSkiUrl)}" target="_blank" rel="noopener" title="${esc(domainBare)}.sui.ski"></a>
       <div class="ski-nft-info">
         <span class="ski-nft-domain">${esc(domainBare)}<span class="ski-nft-tld">.sui</span></span>
         <a class="ski-nft-link" href="${esc(suiSkiUrl)}" target="_blank" rel="noopener">${esc(domainBare)}.sui.ski \u2197</a>
@@ -3035,15 +3037,24 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
       <div class="ski-nft-owner">${ownerBadge}</div>
     </div>`;
 
-  // Position above chip
+  // Position popover beside the chip: right for left-column chips, left for right-column chips
   const rect = chip.getBoundingClientRect();
   popover.removeAttribute('hidden');
+  popover.style.left = '0'; popover.style.top = '0';
   const pw = popover.offsetWidth;
   const ph = popover.offsetHeight;
-  let left = rect.left + rect.width / 2 - pw / 2;
+  let top = rect.top + rect.height / 2 - ph / 2;
+  top = Math.max(8, Math.min(top, window.innerHeight - ph - 8));
+  const grid = chip.closest('.wk-ns-owned-grid') as HTMLElement | null;
+  const gridMid = grid ? grid.getBoundingClientRect().left + grid.clientWidth / 2 : window.innerWidth / 2;
+  const inLeftCol = rect.left + rect.width / 2 < gridMid;
+  let left: number;
+  if (inLeftCol) {
+    left = rect.right + 8;
+  } else {
+    left = rect.left - pw - 8;
+  }
   left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
-  let top = rect.top - ph - 8;
-  if (top < 8) top = rect.bottom + 8; // flip below if no room above
   popover.style.left = `${left}px`;
   popover.style.top = `${top}px`;
 
@@ -3062,8 +3073,9 @@ function _attachNftPopoverListeners() {
   grid.addEventListener('mouseenter', (e) => {
     const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
     if (!chip?.dataset.domain) return;
-    // Don't show NFT popover for shade/wishlist chips
+    // Don't show NFT popover for shade/wishlist chips or dimmed (filtered-out) chips
     if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
+    if (chip.classList.contains('wk-ns-owned-chip--dim')) return;
     _showNftPopover(chip, chip.dataset.domain);
   }, true);
   grid.addEventListener('mouseleave', (e) => {
@@ -3071,6 +3083,20 @@ function _attachNftPopoverListeners() {
     if (!chip) return;
     _hideNftPopover();
   }, true);
+  // Dimmed chips: show popover on click instead of hover
+  grid.addEventListener('click', (e) => {
+    const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
+    if (!chip?.dataset.domain) return;
+    if (!chip.classList.contains('wk-ns-owned-chip--dim')) return;
+    if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
+    e.stopPropagation();
+    // Toggle: if popover is already showing for this chip, hide it
+    if (_nftPopover && !_nftPopover.hasAttribute('hidden')) {
+      _nftPopover.setAttribute('hidden', '');
+      return;
+    }
+    _showNftPopover(chip, chip.dataset.domain);
+  });
 }
 
 /** Fetch owned SuiNS domains for the connected wallet (cached per address). */
