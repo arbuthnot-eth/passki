@@ -55,6 +55,33 @@ body {
   align-items: flex-start;
   justify-content: flex-end;
   padding: 16px;
+  gap: 8px;
+}
+
+.ski-tools-toggle {
+  order: -1;
+  margin-right: auto;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  line-height: 1;
+}
+.ski-tools-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+.ski-tools-toggle--active {
+  color: var(--text);
+  border-color: rgba(163, 184, 211, 0.45);
+}
+
+#ski-sign.ski-sign--collapsed {
+  display: none !important;
 }
 @media (max-width: 600px) {
   body { padding: 10px; }
@@ -65,13 +92,20 @@ body {
   .ski-header { padding: 4px; }
 }
 
+/* ─── Sign Stage container ────────────────────────────────────────── */
+
+#ski-sign {
+  max-width: 320px;
+  margin: 0;
+}
+
 /* ─── Splash Card ─────────────────────────────────────────────────── */
 
 .splash-card {
   display: flex;
   flex-direction: column;
-  max-width: 680px;
-  margin: 40px auto 8px;
+  max-width: 320px;
+  margin: 40px 0 8px;
   padding: 10px 14px;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -328,8 +362,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 680px;
-  margin: 40px auto 0;
+  max-width: 320px;
+  margin: 40px 0 0;
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 12px;

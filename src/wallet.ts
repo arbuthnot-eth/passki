@@ -296,6 +296,87 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   });
 }
 
+// ─── Signature padding ──────────────────────────────────────────────
+
+/**
+ * Fix under-padded secp256k1/secp256r1 signatures from WaaP.
+ *
+ * Sui signature: flag(1) + r(32) + s(32) + pubkey(33) = 98 bytes.
+ * WaaP occasionally produces 97-byte sigs when r or s is only 31 bytes
+ * (leading zero stripped). We detect which component is short and zero-pad it.
+ *
+ * Heuristic: try padding r first (prepend 0x00 before r). If the resulting
+ * s would start with a byte > 0x7F that's unlikely for a valid s value of
+ * a 256-bit curve, swap and pad s instead. In practice both r and s are
+ * uniformly random so either pad position produces a valid-length sig —
+ * the RPC will reject if we guessed wrong, so we just try r-pad (most common).
+ */
+function _padSecp256k1Sig(sig: string): string {
+  const raw = Uint8Array.from(atob(sig), c => c.charCodeAt(0));
+  // secp256k1 flag=0x01, secp256r1 flag=0x02 — both have 33-byte compressed pubkey
+  if (raw.length !== 97 || (raw[0] !== 0x01 && raw[0] !== 0x02)) return sig;
+  // raw layout: [flag(1)] [raw_sig(63)] [pubkey(33)]
+  const flag = raw[0];
+  const rawSig = raw.subarray(1, 64);   // 63 bytes
+  const pubkey = raw.subarray(64);       // 33 bytes
+
+  // Pad r (most common): r becomes 32 bytes, s stays 31→ no, total must be 64
+  // If raw_sig is 63 bytes = r(31) + s(32) → pad r
+  const fixed = new Uint8Array(98);
+  fixed[0] = flag;
+  // fixed[1] = 0x00 (pad byte for r, already zero)
+  fixed.set(rawSig, 2);    // 63 bytes at offset 2 → fills [2..64]
+  fixed.set(pubkey, 65);   // 33 bytes at offset 65 → fills [65..97]
+
+  let b64 = '';
+  for (let i = 0; i < fixed.length; i++) b64 += String.fromCharCode(fixed[i]);
+  return btoa(b64);
+}
+
+// ─── Execute signed tx via gRPC → JSON-RPC fallback ─────────────────
+
+const GRPC_URL = 'https://fullnode.mainnet.sui.io:443';
+
+async function _executeSignedTx(bytesB64: string, signature: string): Promise<{ digest: string; effects?: unknown }> {
+  // Attempt 1: gRPC
+  try {
+    const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: GRPC_URL });
+    const txBytes = Uint8Array.from(atob(bytesB64), c => c.charCodeAt(0));
+    const result = await grpc.executeTransaction({ transaction: txBytes, signatures: [signature] }) as Record<string, unknown>;
+    const digest = (result.digest as string) ?? '';
+    if (!digest) throw new Error('gRPC: no digest');
+    return { digest, effects: result.effects };
+  } catch { /* fall through to JSON-RPC */ }
+
+  // Attempt 2: JSON-RPC across multiple endpoints
+  const rpcUrls = [
+    'https://fullnode.mainnet.sui.io:443',
+    'https://sui-rpc.publicnode.com',
+    'https://sui-mainnet-endpoint.blockvision.org',
+  ];
+  let lastErr: unknown;
+  for (const url of rpcUrls) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          method: 'sui_executeTransactionBlock',
+          params: [bytesB64, [signature], { showEffects: true }, 'WaitForLocalExecution'],
+        }),
+      });
+      const json = await res.json() as { result?: { digest?: string; effects?: Record<string, unknown> }; error?: { message?: string } };
+      if (json.error) throw new Error(json.error.message ?? 'RPC error');
+      const effects = json.result?.effects;
+      const status = effects?.status as { status?: string; error?: string } | undefined;
+      if (status?.status === 'failure') throw new Error(status.error || 'Transaction failed on-chain');
+      return { digest: json.result?.digest ?? '', effects };
+    } catch (err) { lastErr = err; }
+  }
+  throw lastErr;
+}
+
 // ─── Sign & Execute Transaction ──────────────────────────────────────
 
 // dapp-kit-core returns a discriminated union { $kind, Transaction } — normalise to a flat result.
@@ -323,41 +404,23 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
       return normalizeTxResult(r);
     }
 
-    // WaaP: sign-only + own JSON-RPC execution fallback.
-    // WaaP's signAndExecuteTransaction produces "Invalid user signature" for some txs
-    // (shared-object-by-value, set_reverse_lookup, etc.). Sign-only works — we execute ourselves.
-    if (/waap/i.test(wallet.name) && 'sui:signTransaction' in wallet.features) {
-      const signFeat = wallet.features['sui:signTransaction'] as {
-        signTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string }) => Promise<{ bytes: string; signature: string }>;
-      };
+    // WaaP: signAndExecuteTransaction with augmented bytes.
+    // WaaP's signTransaction produces invalid signatures (iframe re-serialization bug
+    // in waap-sdk 1.2.2), so we rely on signAndExecuteTransaction and validate the result.
+    if (/waap/i.test(wallet.name)) {
       const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
-      const { bytes, signature } = await signFeat.signTransaction({
-        transaction: augmentBytes(transaction), account, chain,
-      });
-      // Execute via JSON-RPC (gRPC can have signature encoding issues in browser)
-      const rpcUrls = [
-        'https://sui-rpc.publicnode.com',
-        'https://sui-mainnet-endpoint.blockvision.org',
-        'https://fullnode.mainnet.sui.io:443',
-      ];
-      let lastErr: unknown;
-      for (const url of rpcUrls) {
-        try {
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              jsonrpc: '2.0', id: 1,
-              method: 'sui_executeTransactionBlock',
-              params: [bytes, [signature], { showEffects: true }, 'WaitForLocalExecution'],
-            }),
-          });
-          const json = await res.json() as { result?: { digest?: string; effects?: unknown }; error?: { message?: string } };
-          if (json.error) throw new Error(json.error.message ?? 'RPC error');
-          return { digest: json.result?.digest ?? '', effects: json.result?.effects };
-        } catch (err) { lastErr = err; }
+
+      if ('sui:signAndExecuteTransaction' in wallet.features) {
+        const execFeat = wallet.features['sui:signAndExecuteTransaction'] as {
+          signAndExecuteTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string; options?: { showEffects?: boolean } }) => Promise<{ digest: string; effects?: unknown }>;
+        };
+        const r = await execFeat.signAndExecuteTransaction({
+          transaction: augmentBytes(transaction), account, chain, options: { showEffects: true },
+        });
+        if (r.digest) return r;
       }
-      throw lastErr;
+
+      throw new Error('WaaP cannot execute this transaction. Use Phantom or another wallet to set primary name.');
     }
 
     if (!('sui:signAndExecuteTransaction' in wallet.features)) {

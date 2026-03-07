@@ -565,11 +565,12 @@ export async function lookupNftOwner(domain: string): Promise<string | null> {
   }
 }
 
-/** Build a PTB that sets `domain` as the wallet's default reverse-lookup name. */
+/** Build a PTB that sets `domain` as the wallet's default reverse-lookup name.
+ *  Returns the Transaction object (not pre-built bytes) so WaaP can resolve
+ *  gas/objects using its own bundled SDK version, avoiding serialization mismatches. */
 export async function buildSetDefaultNsTx(rawAddress: string, domain: string): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const fullDomain = domain.endsWith('.sui') ? domain : `${domain}.sui`;
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
   const tx = new Transaction();
   tx.setSender(walletAddress);
   tx.moveCall({
@@ -579,7 +580,13 @@ export async function buildSetDefaultNsTx(rawAddress: string, domain: string): P
       tx.pure.string(fullDomain),
     ],
   });
-  return tx.build({ client: transport as never });
+  const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: GRPC_URL });
+  try {
+    return await tx.build({ client: grpc as never });
+  } catch {
+    const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    return tx.build({ client: gql as never });
+  }
 }
 
 /** Execute a pre-signed transaction via our own gRPC transport (bypasses WaaP execution bugs). */

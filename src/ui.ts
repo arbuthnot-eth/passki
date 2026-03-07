@@ -2595,8 +2595,7 @@ async function fetchAndShowNsPrice(label: string) {
   }
   if (label === nsPriceFetchFor && nsPriceUsd != null) return;
   nsPriceFetchFor = label;
-  nsAvail = null;
-  _patchNsStatus();
+  if (nsAvail !== 'owned') { nsAvail = null; _patchNsStatus(); }
 
   /** Apply status + Tradeport listing results to module state and re-render. */
   const _applyStatusAndListing = (sr: DomainStatusResult | null, tp: TradeportListing | null) => {
@@ -3627,15 +3626,23 @@ let lastSignResult: { signature: string; bytes: string } | null = null;
 function renderSignStage() {
   if (!els.signStage) return;
   const ws = getState();
+  const toggleBtn = document.getElementById('ski-tools-toggle');
 
   if (!ws.address) {
     els.signStage.style.display = 'none';
     els.signStage.innerHTML = '';
     lastSignResult = null;
+    if (toggleBtn) toggleBtn.style.display = 'none';
     return;
   }
 
-  els.signStage.style.display = '';
+  if (toggleBtn) toggleBtn.style.display = '';
+  // Respect collapsed state — still render content but keep hidden
+  if (els.signStage.classList.contains('ski-sign--collapsed')) {
+    // Content already rendered or will be on expand — skip display override
+  } else {
+    els.signStage.style.display = '';
+  }
 
   // ─── Splash card ─────────────────────────────────────────────────────
   const sponsorState = getSponsorState();
@@ -4273,16 +4280,22 @@ function renderSkiMenu() {
     try {
       if (icon) icon.style.opacity = '0.1';
       const txBytes = await buildSetDefaultNsTx(ws2.address, domain);
-      await signAndExecuteTransaction(txBytes);
+      const result = await signAndExecuteTransaction(txBytes);
+      // Verify the tx actually landed
+      if (!result.digest) throw new Error('Transaction returned no digest');
+      const eff = result.effects as Record<string, unknown> | undefined;
+      const st = eff?.status as { status?: string; error?: string } | undefined;
+      if (st?.status === 'failure') throw new Error(st.error || 'Transaction failed on-chain');
       app.suinsName = domain;
       suinsCache[ws2.address] = domain;
       try { localStorage.setItem(`ski:suins:${ws2.address}`, domain); } catch {}
       nsLastDigest = '';
       updateSkiDot('blue-square', domain);
+      renderWidget();
       renderSkiBtn();
       renderSkiMenu();
       updateFavicon('blue-square');
-      showToast(`${domain} set as primary \u2713`);
+      showToast(`${domain} set as primary \u2713 (${result.digest.slice(0, 8)})`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed';
       if (!msg.toLowerCase().includes('reject')) showToast(msg);
@@ -4860,11 +4873,11 @@ function renderSkiMenu() {
     const domain = btn.dataset.domain;
     if (!domain) return;
     nsLabel = domain;
-    nsAvail = null;
+    nsAvail = 'owned';
     nsPriceUsd = null;
     nsPriceFetchFor = '';
     nsGraceEndMs = 0;
-    nsTargetAddress = null;
+    nsTargetAddress = getState().address || null;
     nsNftOwner = null;
     nsLastDigest = '';
     nsKioskListing = null; nsTradeportListing = null;
@@ -5021,6 +5034,29 @@ function bindEvents() {
 
 export function initUI() {
   bindEvents();
+
+  // Tools panel toggle (Splash + Sign Message)
+  const _toolsToggle = document.getElementById('ski-tools-toggle');
+  if (_toolsToggle) {
+    // Restore collapsed state
+    const collapsed = (() => { try { return localStorage.getItem('ski:tools-collapsed') !== '0'; } catch { return true; } })();
+    if (collapsed && els.signStage) {
+      els.signStage.classList.add('ski-sign--collapsed');
+      els.signStage.style.display = 'none';
+    }
+    _toolsToggle.classList.toggle('ski-tools-toggle--active', !collapsed);
+    _toolsToggle.addEventListener('click', () => {
+      if (!els.signStage) return;
+      const isCollapsed = els.signStage.classList.toggle('ski-sign--collapsed');
+      _toolsToggle.classList.toggle('ski-tools-toggle--active', !isCollapsed);
+      if (isCollapsed) {
+        els.signStage.style.display = 'none';
+      } else {
+        els.signStage.style.display = '';
+      }
+      try { localStorage.setItem('ski:tools-collapsed', isCollapsed ? '1' : '0'); } catch {}
+    });
+  }
 
   // Subscribe to wallet state changes
   subscribe((ws: WalletState) => {
