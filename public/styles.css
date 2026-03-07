@@ -2634,10 +2634,10 @@ body {
 }
 .ski-legend-row:hover,
 .ski-legend-row.active {
-  background: rgba(59, 130, 246, 0.09);
+  background: rgba(255, 255, 255, 0.06);
 }
 .ski-legend-row:focus-visible {
-  box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.35);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.12);
 }
 .ski-legend-shape {
   display: flex;
@@ -2816,6 +2816,43 @@ body {
   background: rgba(34, 197, 94, 0.18);
   border-color: rgba(34, 197, 94, 0.4);
   color: #bbf7d0;
+}
+.ski-legend-addr--faux {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.25);
+  cursor: default;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.ski-create-waap-name-input {
+  background: rgba(34, 197, 94, 0.06);
+  border: 1px dashed rgba(34, 197, 94, 0.3);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: rgba(134, 239, 172, 0.5);
+  outline: none;
+  width: 80px;
+  line-height: 1.2;
+  box-sizing: border-box;
+  height: 20px;
+}
+.ski-create-waap-name-input::placeholder {
+  color: rgba(134, 239, 172, 0.35);
+}
+.ski-create-waap-tld {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: rgba(134, 239, 172, 0.5);
+  margin-left: 1px;
+}
+.ski-detail-addr-text--faux {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.2);
+  cursor: default;
 }
 
 /* Social provider X badge — 30×30 block used in pill, legend col-2, and list shapes */
@@ -3016,6 +3053,7 @@ body {
   justify-content: center;
   gap: 8px;
   width: 100%;
+  min-height: 38px;
 }
 .ski-detail-active-pfp {
   flex-shrink: 0;
@@ -3421,7 +3459,7 @@ body {
   padding-left: 1px;
   position: relative;
   top: 0;
-  font-size: 1.6rem;
+  font-size: 1.84rem;
 }
 /* Tagline: row 2, left-justified, anchored to bottom of brand area */
 .ski-modal-header-brand .ski-modal-tagline {
@@ -3433,6 +3471,7 @@ body {
   padding-bottom: 2px;
   position: relative;
   left: 2px;
+  top: 4px;
   font-size: 0.95rem;
   line-height: 1.2;
 }
@@ -3825,13 +3864,13 @@ body {
   fill: #22c55e;
 }
 
-/* Key PFP shapes — default: transparent fill, outline only */
+/* Key PFP shapes — default fills */
 .ski-key-pfp--diamond polygon {
-  fill: transparent;
+  fill: #000000;
   transition: fill 0.15s;
 }
 .ski-key-pfp--green-circle circle {
-  fill: transparent;
+  fill: #22c55e;
   transition: fill 0.15s;
 }
 

@@ -600,7 +600,7 @@ function updateSkiDot(variant: SkiDotVariant, suinsName?: string) {
   }
 
   const titleEl = document.querySelector('.ski-modal-title') as HTMLElement | null;
-  if (titleEl) titleEl.textContent = suinsName ? '.Sui Key-In' : 'SKI';
+  if (titleEl) titleEl.textContent = '.Sui Key-In';
 }
 
 // ─── Hydration guard (suppress disconnected flash on reload) ─────────
@@ -700,12 +700,21 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   })();
   let displayAddrs = storedAddrs.length ? storedAddrs : liveAddrs;
 
-  // Float the wallet's active account to the top (the key it would use if clicked).
-  // For the connected wallet liveAddrs[0] === connectedAddr; for others it's whatever
-  // the extension has selected right now.
-  const activeAddr = liveAddrs[0] ?? connectedAddr;
-  if (activeAddr && displayAddrs.includes(activeAddr)) {
-    displayAddrs = [activeAddr, ...displayAddrs.filter((a: string) => a !== activeAddr)];
+  // Prefer the explicitly selected legend-row address when it belongs to this wallet.
+  // Otherwise fall back to the wallet's current live account, then the connected addr.
+  const normalizedDisplayAddrs = new Set(displayAddrs.map((addr: string) => normalizeSuiAddress(addr)));
+  const selectedAddr = connectedAddr ? normalizeSuiAddress(connectedAddr) : '';
+  const liveAddr = liveAddrs[0] ? normalizeSuiAddress(liveAddrs[0]) : '';
+  const activeAddr = selectedAddr && normalizedDisplayAddrs.has(selectedAddr)
+    ? selectedAddr
+    : liveAddr && normalizedDisplayAddrs.has(liveAddr)
+      ? liveAddr
+      : '';
+  if (activeAddr) {
+    displayAddrs = [
+      activeAddr,
+      ...displayAddrs.filter((a: string) => normalizeSuiAddress(a) !== activeAddr),
+    ];
   }
 
   // Update active detail balance for the modal logo SVG
@@ -830,16 +839,25 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   const activePfpHtml = addr0
     ? keyPfpHtml(addr0, suinsName0)
     : '<div class="ski-key-pfp ski-key-pfp--green-circle"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div>';
+  const nameInputHtml = `<input class="ski-create-waap-name-input" type="text" value="name" tabindex="0" onclick="event.stopPropagation()" onfocus="if(this.value==='name')this.value=''" onblur="if(!this.value)this.value='name'"><span class="ski-create-waap-tld">.sui</span>`;
   const activeTextHtml = addr0 ? `<div class="ski-detail-active-text-row">
         <div class="ski-detail-active-pfp">${activePfpHtml}</div>
         <div class="ski-detail-key-text">
-          <span class="ski-detail-suins-slot"></span>
+          <span class="ski-detail-suins-slot">${suinsName0 ? '' : nameInputHtml}</span>
           <div class="ski-detail-addr-row">
             <a href="${esc(scanUrl0)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr0)}">${esc(truncAddr(addr0))}</a>
             <button class="ski-copy-btn" title="Copy address">\u2398</button>
           </div>
         </div>
-      </div>` : '';
+      </div>` : `<div class="ski-detail-active-text-row">
+        <div class="ski-detail-active-pfp">${activePfpHtml}</div>
+        <div class="ski-detail-key-text">
+          <span class="ski-detail-suins-slot">${nameInputHtml}</span>
+          <div class="ski-detail-addr-row">
+            <span class="ski-detail-addr-text ski-detail-addr-text--faux">0xHex\u2026Addr</span>
+          </div>
+        </div>
+      </div>`;
 
   const otherKeysHtml = displayAddrs.slice(1).map((addr: string, i: number) => keyCardHtml(addr, i + 1)).join('');
 
@@ -848,7 +866,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   const balanceCyclerHtml = '';
 
   detailEl.innerHTML = `
-    <div class="ski-detail-header${addr0 ? ' ski-detail-header--keyed' : ''}" data-detail-wallet="${esc(w.name)}">
+    <div class="ski-detail-header ski-detail-header--keyed" data-detail-wallet="${esc(w.name)}">
       <div class="ski-detail-icon-row"${addr0 ? ` data-addr-idx="0" data-full-addr="${esc(addr0)}"` : ''}>
         <div class="ski-detail-icons-top">
           ${w.icon ? (() => {
@@ -1277,7 +1295,7 @@ function buildSplashLegend(): string {
   const wrapScroll = (items: string) =>
     `<div class="ski-legend-scroll">${items}</div>`;
 
-  // Build the WaaP "create new" row — always appended at the bottom.
+  // Build the dedicated WaaP "create new" row for the green tier.
   // Clicking it opens WaaP's UI to create or switch accounts.
   const buildWaapCreateRow = () => {
     const waapWallet = allWallets.find(w => /waap/i.test(w.name));
@@ -1292,7 +1310,8 @@ function buildSplashLegend(): string {
 
   // Without Splash: one row per stored address (with SuiNS + hex), green circle for unused wallets.
   // Sorted: diamond (addr, no SuiNS) → blue square (addr + SuiNS) → green circle (never used).
-  // WaaP without address is omitted from regular entries; dedicated WaaP create row handles it.
+  // WaaP without address is omitted from regular entries; the dedicated
+  // WaaP row below keeps it pinned as the first green-tier action.
   if (!splashActive) {
     type Entry = { walletName: string; icon: string; address: string | null; suinsName: string | null; tier: 0 | 1 | 2 };
     const entries: Entry[] = [];
@@ -1301,6 +1320,7 @@ function buildSplashLegend(): string {
       const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
       const addrs = [...new Set([...liveAddrs, ...stored])];
       if (addrs.length === 0) {
+        if (/waap/i.test(w.name)) continue;
         entries.push({ walletName: w.name, icon: w.icon || '', address: null, suinsName: null, tier: 2 });
       } else {
         for (const addr of addrs) {
@@ -1309,8 +1329,15 @@ function buildSplashLegend(): string {
         }
       }
     }
+    const lastKeyinAddr = (() => { try { return localStorage.getItem('ski:last-keyin-addr'); } catch { return null; } })();
     entries.sort((a, b) => {
       if (a.tier !== b.tier) return a.tier - b.tier;
+      // Within the same tier, last-used address floats to top (becomes group head)
+      if (lastKeyinAddr) {
+        const aLast = a.address === lastKeyinAddr ? 0 : 1;
+        const bLast = b.address === lastKeyinAddr ? 0 : 1;
+        if (aLast !== bLast) return aLast - bLast;
+      }
       const aW = /waap/i.test(a.walletName) ? 0 : 1;
       const bW = /waap/i.test(b.walletName) ? 0 : 1;
       if (aW !== bW) return aW - bW;
@@ -1346,7 +1373,7 @@ function buildSplashLegend(): string {
     let allHtml = '';
     for (const tier of [0, 1, 2]) {
       const group = tierGroups.get(tier);
-      const extraBefore = '';
+      const extraBefore = tier === 2 ? buildWaapCreateRow() : '';
       if (!group || group.length === 0) {
         if (extraBefore) allHtml += extraBefore;
         continue;
@@ -1356,7 +1383,7 @@ function buildSplashLegend(): string {
       if (rowsHtml.length === 1) {
         allHtml += rowsHtml[0];
       } else {
-        const openClass = tier === 1 ? ' ski-legend-group--open' : '';
+        const openClass = tier === 2 ? ' ski-legend-group--open' : '';
         allHtml += `<div class="ski-legend-group${openClass}"><div class="ski-legend-group-head">${ARROW}${rowsHtml[0]}</div><div class="ski-legend-group-body"><div class="ski-legend-group-inner">${rowsHtml.slice(1).join('')}</div></div></div>`;
       }
     }
@@ -1366,7 +1393,15 @@ function buildSplashLegend(): string {
   }
 
   // Splash active — green-circle rows appended at bottom of legend (unconnected wallets only)
-  const greenWallets = allWallets.filter(w => isGreen(w)).sort((a, b) => a.name.localeCompare(b.name));
+  const greenWallets = allWallets.filter(w => isGreen(w)).sort((a, b) => {
+    const aW = /waap/i.test(a.name) ? 0 : 1;
+    const bW = /waap/i.test(b.name) ? 0 : 1;
+    if (aW !== bW) return aW - bW;
+    return a.name.localeCompare(b.name);
+  });
+  // Always include WaaP in green section even if it has stored keys
+  const waapW = allWallets.find(w => /waap/i.test(w.name));
+  if (waapW && !greenWallets.includes(waapW)) greenWallets.unshift(waapW);
   const walletRows = greenWallets.map((w) => {
     const social = socialIconSvg(w.name);
     const col2 = social
@@ -1447,7 +1482,7 @@ function buildSplashLegend(): string {
     if (rowsHtml.length === 1) {
       sponsoredHtml += rowsHtml[0];
     } else {
-      const openClass = tier === 1 ? ' ski-legend-group--open' : '';
+      const openClass = tier === 2 ? ' ski-legend-group--open' : '';
       sponsoredHtml += `<div class="ski-legend-group${openClass}"><div class="ski-legend-group-head">${ARROW_S}${rowsHtml[0]}</div><div class="ski-legend-group-body"><div class="ski-legend-group-inner">${rowsHtml.slice(1).join('')}</div></div></div>`;
     }
   }
@@ -1473,28 +1508,56 @@ let lockedWallet: Wallet | null = null;
 
 function activateLegendRow(idx: number, fromHover = false) {
   // Respect lock: on passive hover, highlight the row but leave right pane alone
+  const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
+  const row = rows.find(r => r.dataset.legendIdx === String(idx));
   if (fromHover && detailLocked) {
-    const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
     rows.forEach((r) => { r.classList.remove('active'); r.setAttribute('aria-selected', 'false'); });
-    rows[idx]?.classList.add('active');
-    rows[idx]?.setAttribute('aria-selected', 'true');
+    row?.classList.add('active');
+    row?.setAttribute('aria-selected', 'true');
     activeLegendIdx = idx;
     return;
   }
-  const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
   rows.forEach((r) => { r.classList.remove('active'); r.setAttribute('aria-selected', 'false'); });
-  const row = rows[idx];
   if (!row) return;
   row.classList.add('active');
   row.setAttribute('aria-selected', 'true');
   activeLegendIdx = idx;
   const walletName = row.dataset.legendWallet;
+  // Remember last key-in for next modal open
+  if (walletName) try { localStorage.setItem('ski:last-keyin', walletName); } catch {}
+  const legendAddr = row.dataset.legendAddr;
+  if (legendAddr) try { localStorage.setItem('ski:last-keyin-addr', legendAddr); } catch {}
   const detailEl = document.getElementById('ski-modal-detail');
 
   // The hovered legend address (if any) is passed as connectedAddr so it floats to top
   const hoverAddr = row.dataset.legendAddr || getState().address;
 
   if (detailEl) detailEl.classList.remove('ski-detail--key-hover');
+  // "+ new WaaP" row → show placeholder detail pane (input + faux address)
+  if (row.dataset.legendCreateWaap && detailEl) {
+    const wallet = walletName ? getSuiWallets().find((w) => w.name === walletName) : null;
+    const iconSrc = wallet?.icon || '';
+    detailEl.innerHTML = `
+      <div class="ski-detail-header ski-detail-header--keyed" data-detail-wallet="${esc(walletName || '')}">
+        <div class="ski-detail-icon-row">
+          <div class="ski-detail-icons-top">
+            ${iconSrc ? `<div class="ski-detail-icon-wrap"><img src="${esc(iconSrc)}" alt="" class="ski-detail-icon"></div>` : ''}
+          </div>
+          <div class="ski-detail-active-text-row">
+            <div class="ski-detail-active-pfp"><div class="ski-key-pfp ski-key-pfp--green-circle"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div></div>
+            <div class="ski-detail-key-text">
+              <span class="ski-detail-suins-slot"><input class="ski-create-waap-name-input" type="text" value="name" tabindex="0" onclick="event.stopPropagation()" onfocus="if(this.value==='name')this.value=''" onblur="if(!this.value)this.value='name'"><span class="ski-create-waap-tld">.sui</span></span>
+              <div class="ski-detail-addr-row">
+                <span class="ski-detail-addr-text ski-detail-addr-text--faux">0xHex\u2026Addr</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    updateSkiDot('green-circle');
+    renderModalLogo();
+    return;
+  }
   if (walletName) {
     const wallet = getSuiWallets().find((w) => w.name === walletName);
     if (wallet && detailEl) showKeyDetail(wallet, detailEl, hoverAddr);
@@ -1843,23 +1906,31 @@ function renderModal(): void {
   });
 
   if (layout === 'splash') {
-    // Activate the legend row for the connected wallet (or first row) and show detail immediately
+    // Activate the legend row for the last key-in, connected wallet, or first row
     requestAnimationFrame(() => {
       const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
       if (!rows.length) return;
-      let targetIdx = 0;
-      if (connectedName) {
-        const found = rows.findIndex((r) => r.dataset.legendWallet === connectedName);
-        if (found >= 0) targetIdx = found;
+      // Find the target row by last-keyin or connected wallet, then read its data-legend-idx
+      let targetRow = rows[0];
+      const lastKeyin = (() => { try { return localStorage.getItem('ski:last-keyin'); } catch { return null; } })();
+      const lastKeyinAddr = (() => { try { return localStorage.getItem('ski:last-keyin-addr'); } catch { return null; } })();
+      if (lastKeyin) {
+        // Prefer matching by address (more specific), fall back to wallet name
+        const byAddr = lastKeyinAddr ? rows.find(r => r.dataset.legendAddr === lastKeyinAddr) : null;
+        const byName = rows.find(r => r.dataset.legendWallet === lastKeyin);
+        targetRow = byAddr || byName || targetRow;
+      } else if (connectedName) {
+        const found = rows.find(r => r.dataset.legendWallet === connectedName);
+        if (found) targetRow = found;
       }
+      const targetIdx = parseInt(targetRow.dataset.legendIdx || '0', 10);
       activateLegendRow(targetIdx);
       // Populate right pane immediately — no "Hover a key" on open
       const detailEl = document.getElementById('ski-modal-detail');
       if (detailEl) {
-        const targetRow = rows[targetIdx];
-        const wName = targetRow?.dataset.legendWallet;
+        const wName = targetRow.dataset.legendWallet;
         const w = wName ? getSuiWallets().find((w) => w.name === wName) : null;
-        if (w && wName !== connectedName) showKeyDetail(w, detailEl, getState().address);
+        if (w && wName !== connectedName) showKeyDetail(w, detailEl, targetRow.dataset.legendAddr || getState().address);
         else if (connectedName) {
           const cw = getSuiWallets().find((w) => w.name === connectedName);
           if (cw) showKeyDetail(cw, detailEl, getState().address);
@@ -5305,18 +5376,11 @@ export function initUI() {
       return;
     }
 
-    // "Create WaaP" row click → full disconnect + fresh OAuth flow for new account
+    // "Create WaaP" row click → just activate it in the detail selector (don't open OAuth yet)
     const createWaapRow = (e.target as HTMLElement).closest<HTMLElement>('[data-legend-create-waap]');
-    if (createWaapRow?.dataset.legendWallet) {
-      const wallet = getSuiWallets().find((w) => w.name === createWaapRow.dataset.legendWallet);
-      if (wallet) {
-        closeModal();
-        deactivateCurrent();
-        // Skip silent connect so WaaP always shows its OAuth UI for new account
-        void connect(wallet, { skipSilent: true }).catch((err) => {
-          showToast('Failed to connect: ' + _errMsg(err));
-        });
-      }
+    if (createWaapRow) {
+      const idx = parseInt(createWaapRow.dataset.legendIdx || '-1', 10);
+      if (idx >= 0) activateLegendRow(idx);
       return;
     }
 
@@ -5325,16 +5389,6 @@ export function initUI() {
     if (legendRow) {
       const idx = parseInt(legendRow.dataset.legendIdx || '-1', 10);
       if (idx >= 0) activateLegendRow(idx);
-      // If the wallet has no stored keys (green circle / tier 2), trigger connect on click
-      const wName = legendRow.dataset.legendWallet;
-      const hasAddr = !!legendRow.dataset.legendAddr;
-      if (wName && !hasAddr && getState().status !== 'connected') {
-        const wallet = getSuiWallets().find((w) => w.name === wName);
-        if (wallet) {
-          if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
-          else void selectWallet(wallet);
-        }
-      }
       return;
     }
     // Wallet-list row click → show wallet in detail pane (active card)
@@ -5349,29 +5403,44 @@ export function initUI() {
   // Delegated: keyboard navigation on legend rows
   els.modal?.addEventListener('keydown', (e) => {
     if (!modalOpen) return;
-    const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
+    const allRows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
+    // Only include visible (uncollapsed) rows: exclude rows inside a collapsed group body
+    const rows = allRows.filter(r => {
+      const body = r.closest('.ski-legend-group-body');
+      if (!body) return true; // not inside a group body → always visible
+      return !!body.closest('.ski-legend-group--open');
+    });
     if (!rows.length) return;
     const ke = e as KeyboardEvent;
+    // Find current position in visible rows by data-legend-idx
+    const curVisIdx = rows.findIndex(r => parseInt(r.dataset.legendIdx || '-1', 10) === activeLegendIdx);
     if (ke.key === 'ArrowDown') {
       e.preventDefault();
-      const next = (activeLegendIdx + 1) % rows.length;
-      activateLegendRow(next);
-      rows[next]?.focus();
+      const nextVis = (curVisIdx + 1) % rows.length;
+      const nextIdx = parseInt(rows[nextVis]?.dataset.legendIdx || '-1', 10);
+      if (nextIdx >= 0) activateLegendRow(nextIdx);
+      rows[nextVis]?.focus();
     } else if (ke.key === 'ArrowUp') {
       e.preventDefault();
-      const prev = (activeLegendIdx - 1 + rows.length) % rows.length;
-      activateLegendRow(prev);
-      rows[prev]?.focus();
+      const prevVis = (curVisIdx - 1 + rows.length) % rows.length;
+      const prevIdx = parseInt(rows[prevVis]?.dataset.legendIdx || '-1', 10);
+      if (prevIdx >= 0) activateLegendRow(prevIdx);
+      rows[prevVis]?.focus();
     } else if (ke.key === 'Escape') {
       closeModal();
     } else if (ke.key === 'Enter') {
       const row = rows[activeLegendIdx];
-      if (row?.dataset.legendWallet) {
+      if (row?.dataset.legendWallet && row.dataset.legendAddr) {
+        // Keyed row (has address) — connect directly
         const wallet = getSuiWallets().find((w) => w.name === row.dataset.legendWallet);
         if (wallet) {
           if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
           else selectWallet(wallet);
         }
+      } else if (row?.dataset.legendWallet) {
+        // Green circle / no-address row — simulate detail header click to open wallet provider
+        const header = document.querySelector<HTMLElement>('.ski-detail-header--keyed');
+        header?.click();
       }
     }
   });
