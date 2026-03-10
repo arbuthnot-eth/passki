@@ -2411,13 +2411,15 @@ function skiHref(): string {
 
 // ─── Render: Widget Pill ─────────────────────────────────────────────
 
-function renderWidget() {
-  if (!els.profile) return;
+// Registry of externally mounted profile widgets (same pattern as externalCyclers)
+const externalProfiles = new Set<HTMLElement>();
+
+function _renderProfileEl(el: HTMLElement) {
   const ws = getState();
 
   // Disconnected: hide profile — SKI button handles connect
   if (!ws.address) {
-    els.profile.innerHTML = '';
+    el.innerHTML = '';
     return;
   }
 
@@ -2439,9 +2441,9 @@ function renderWidget() {
     ? '<span class="wk-widget-ika-badge" title="Ika dWallet active">ika</span>'
     : '';
 
-  els.profile.innerHTML = `
+  el.innerHTML = `
     <div class="wk-widget">
-      <button class="wk-widget-btn connected" id="wallet-pill-btn" type="button" title="Open profile">
+      <button class="wk-widget-btn connected" type="button" title="Open profile">
         ${iconHtml}
         <span class="wk-widget-label-wrap">
           <span class="${labelClass}">
@@ -2451,6 +2453,27 @@ function renderWidget() {
         ${ikaHtml}
       </button>
     </div>`;
+}
+
+function renderWidget() {
+  if (els.profile) _renderProfileEl(els.profile);
+  externalProfiles.forEach((el) => {
+    if (document.contains(el)) _renderProfileEl(el);
+    else externalProfiles.delete(el);
+  });
+}
+
+/**
+ * Mount a live profile widget onto any element.
+ * Shows the wallet icon, SuiNS name (or truncated address), and Ika badge.
+ * Empty when disconnected.
+ *
+ * @returns unmount function — call it to detach and clean up
+ */
+export function mountProfile(el: HTMLElement): () => void {
+  _renderProfileEl(el);
+  externalProfiles.add(el);
+  return () => { externalProfiles.delete(el); };
 }
 
 // ─── Render: Profile .SKI button ─────────────────────────────────────

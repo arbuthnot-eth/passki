@@ -267,7 +267,10 @@ export async function signIn(isReconnect = false): Promise<boolean> {
 // ─── Forget device ───────────────────────────────────────────────────
 
 export { forgetDevice, disconnectSession } from './client/session.js';
-export { setModalLayout, type ModalLayout, mountBalanceCycler, mountSkiButton, mountDotButton, openModal } from './ui.js';
+export { setModalLayout, type ModalLayout, mountBalanceCycler, mountSkiButton, mountDotButton, mountProfile, openModal } from './ui.js';
+
+// Register <ski-button>, <ski-dot>, <ski-balance> Custom Elements
+import './elements.js';
 
 // ─── Auto sign-in on wallet connect ──────────────────────────────────
 
