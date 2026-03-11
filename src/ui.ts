@@ -1057,10 +1057,10 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
 
       subnameBtn.disabled = true;
       try {
-        // Crown fee: resolve parent domain target, charge 1 SUI unless self-minting
+        // Crown fee: resolve parent domain target, always charge 1 SUI
         const parentName = parentDomain.name.endsWith('.sui') ? parentDomain.name : `${parentDomain.name}.sui`;
         const parentTarget = await resolveNameToAddress(parentName);
-        const feeRecipient = parentTarget && parentTarget !== ws.address ? parentTarget : undefined;
+        const feeRecipient = parentTarget ?? ws.address;
         const tx = buildSubnameTx(parentDomain, label, targetAddr, subnameType, undefined, feeRecipient);
         const txBytes = await tx.build({ client: grpcClient });
         const chain = ws.account.chains.find((c: string) => c.startsWith('sui:')) ?? 'sui:mainnet';
@@ -4759,10 +4759,9 @@ function renderSkiMenu() {
       const fullName = `${label}.${parentBare}.sui`;
       if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
       try {
-        // Resolve who the parent domain points to — crown fee goes to them
-        const parentTarget = await resolveNameToAddress(parentBare.includes('.') ? `${parentBare}.sui` : `${parentBare}.sui`);
-        // Charge 1 SUI crown fee unless minter IS the parent domain owner
-        const feeRecipient = parentTarget && parentTarget !== ws2.address ? parentTarget : undefined;
+        // Resolve who the parent domain points to — crown fee always goes to them
+        const parentTarget = await resolveNameToAddress(`${parentBare}.sui`);
+        const feeRecipient = parentTarget ?? ws2.address;
         const tx = await buildSubnameTxBytes(ws2.address, nsSubnameParent, label, ws2.address, 'leaf', feeRecipient);
         if (btn) btn.textContent = '\u270f';
         await signAndExecuteTransaction(tx);
