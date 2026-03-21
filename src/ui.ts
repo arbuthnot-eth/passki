@@ -85,6 +85,7 @@ const SKI_SVG_URI     = `data:image/svg+xml,${encodeURIComponent(SKI_SVG_TEXT)}`
 const SUI_SKI_QR_URI  = `data:image/svg+xml,${encodeURIComponent(SUI_SKI_QR_SVG_TEXT)}`;
 const NS_ICON_URI     = 'https://coin-images.coingecko.com/coins/images/40110/small/NS_coin.png';
 const WAL_ICON_URI    = 'https://coin-images.coingecko.com/coins/images/54914/small/Walrus_Token_Full_Color_200x200.png';
+const AU_ICON_URI     = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAABdFBMVEX//////5n//6r/zGb/zHf/3Xf/3Yj/7ojuzGbuu1Xu3Xf/7nfu7pnuu0TdqlXMqlW7mUSqiESqmUTdu2bu3Zn/7pm7iDN3VSJEMxEiIhEiIiIzMyJVVSKZiETdzHfu7rsRERERESJERCKZmVXu7oj//8zMmVVVMyIRIiIiIjMzMzNEMyKId0TuzHfuu2YiESJERDNVVTO7mWb/7qruzIhERERVVUR3ZkSZiFXdzGbdu1UzIiJmRDNmVTNVRDMzM0RVRES7iEQzIhFmVUT/3ZnMu4hEMzO7qlV3VTMiERGqiFXu3YiIZjPMqmZ3ZlVVRCJmRCLdu3e7mVWqmVXdzJm7qogzMxHMmUSZZjOqdzPuu4iIZkS7qneqiDOIZiLdqkRVMxEiEQDuu3eZd0SIdzOZdzPdu0RmRBHMqkTuzFVmVSLMu2Z3ZjPdzIjdu4h3ZiLdqneId1WqmWYREQDdzFURIhH/3WaIiES7qkR3d0Tu3WbMzIjjISF8AAAAAXRSTlMAQObYZgAAAo5JREFUOMt1k/tXEkEcxRdw37YDDoSzFM1SCbHsioYpQ1iN+SDEdYk084GmWBjZw6Kif75ZWBU9eX/Zc773M3f2nO8djhtWIOiJu0GhEd6TIPCi+B9bkmRZDoU8RFFUcfSaLfCSfEvWQDgyBqCiqqIYiA77Mc+/HR9HTHrizt0kA4L3hv2RkBZH2NB9pe4/CAQfXhDCiBSaSGNsZAb2o2zWzI0GA7GkD1i2PWFO6hnDJxiQn5p+LPLWwC/YNmC+7kVkfGDmyeycYhWJHwDjzC89Lc/rfYIBz2ae5+8WIfADXlBdzywUXi6WLn4im18ylwkIewEQrrBh5ZUlVFPGJZEtrWqARRSgBkw2ozVJ4lewPrm0Nq/r5sJaXncAYBEW1CKIAetuPSK8RgaebbwpVdbdxry+EQZgk0sS7S0D0BZcTb9z0wbedndKOA2ho6NdTQOcS7Q9Bjibzf2D+vtDhI+kWgnvE2KiSksjgIN9ALWOm/H9LVszcU4CJfxhAJA+0GyxBX08bluWLUs5fGTXEjhOYApXIgT2gTA1TgjZzeUOgfSJdmBt/CAOoYnpsg80TTxnaRRj3El+niqfuuGtCdcdxw4hMMJxhBx/odNft1EmYyztLH5LfD8tuHXXNc+OIIRe12Q5TClFbJmGgahu6PNlh6YcRAHsLwOyLu6dYWOg869ROWixAG8XnC3L5ISt2hjWZGUFwiL0C91u/yijn8MErnSKxaJ13ig+1FV+UXxpY5RLWpZQPC+lqPKq+ttB2Bdy6oqixKqXtQ4G1G63PdZJbVCacP4sK1Xmx66+SrXb6/WkYjJpKYKgVMXh84NreKUnKYIoilWlGotdf3qe2LXsYF9R7iZFo43G3yuTf1cDfbPrlphDAAAAAElFTkSuQmCC';
 
 // ─── Social provider icons (inline SVG, ships in the bundle) ─────────
 // Used in legend col-4 to replace wallet logos for social-login wallets.
@@ -2260,6 +2261,8 @@ function coinDecimals(coinType: string): number {
 /** Wallet coin balances for display */
 export interface WalletCoin { symbol: string; balance: number; coinType: string; isStable: boolean }
 let walletCoins: WalletCoin[] = [];
+type CoinChip = { icon: string; val: number; html: string; key: string; colorCls: string };
+const _coinChipsCache: CoinChip[] = [];
 let selectedCoinSymbol: string | null = (() => {
   try { return (localStorage.getItem('ski:bal-pref') as string) === 'sui' ? null : 'USD'; } catch { return 'USD'; }
 })();
@@ -2312,7 +2315,7 @@ function _fmtUsd(amt: number): string {
 const _SWAP_ICONS: Record<string, string> = {
   usd: '<svg viewBox="0 0 20 20" width="16" height="16"><circle cx="10" cy="10" r="9" fill="#22c55e" stroke="#fff" stroke-width="1.5"/><text x="10" y="10" text-anchor="middle" dominant-baseline="central" font-size="11" font-weight="700" fill="#fff">$</text></svg>',
   sui: `<img src="${SUI_DROP_URI}" width="16" height="16" style="vertical-align:middle" alt="SUI">`,
-  gold: '<svg viewBox="0 0 20 20" width="16" height="16"><circle cx="10" cy="10" r="9" fill="#d4a017" stroke="#fbbf24" stroke-width="1.5"/><text x="10" y="10" text-anchor="middle" dominant-baseline="central" font-size="8" font-weight="700" fill="#fff">Au</text></svg>',
+  gold: `<img src="${AU_ICON_URI}" width="16" height="16" style="vertical-align:middle;border-radius:50%" alt="Au">`,
 };
 
 function _quoteToUsd(key: string, returnAmount: string): string {
@@ -2343,12 +2346,14 @@ function _renderSwapSelect() {
     optionsHtml = '<div class="wk-swap-options">';
     for (const o of SWAP_OUT_OPTIONS) {
       const activeCls = o.key === swapOutputKey ? ' wk-swap-opt--active' : '';
-      optionsHtml += `<button class="wk-swap-opt${activeCls}" data-key="${esc(o.key)}" type="button" title="${esc(o.label)}">${_SWAP_ICONS[o.key] ?? ''}</button>`;
+      const goldCls = o.key === 'gold' ? ' wk-swap-opt--gold' : '';
+      optionsHtml += `<button class="wk-swap-opt${activeCls}${goldCls}" data-key="${esc(o.key)}" type="button" title="${esc(o.label)}">${_SWAP_ICONS[o.key] ?? ''}</button>`;
     }
     optionsHtml += '</div>';
   }
 
-  el.innerHTML = `<button class="wk-swap-trigger" type="button" id="wk-swap-trigger" title="${esc(selected.label)}">${_SWAP_ICONS[swapOutputKey] ?? ''}</button>${optionsHtml}`;
+  const triggerCls = swapOutputKey === 'gold' ? 'wk-swap-trigger wk-swap-trigger--gold' : 'wk-swap-trigger';
+  el.innerHTML = `<button class="${triggerCls}" type="button" id="wk-swap-trigger" title="${esc(selected.label)}">${_SWAP_ICONS[swapOutputKey] ?? ''}</button>${optionsHtml}`;
 }
 
 function _updateSwapEstimates() {
@@ -2628,42 +2633,9 @@ export async function refreshPortfolio(force = false) {
     let nextNsBalance = 0;
     let stableTotal = 0;
     const newCoins: WalletCoin[] = [];
-    // Verify non-SUI/non-stable balances via JSON-RPC — gRPC listBalances can return
-    // phantom aggregate balances for coins with 0 actual coin objects (indexer bug).
-    // Skip verification right after a mutation — JSON-RPC may also be stale for new coins.
-    const recentMutation = _lastMutationMs > 0 && Date.now() - _lastMutationMs < 15_000;
-    const suspectTypes: string[] = [];
-    if (!recentMutation) {
-      for (const b of balances) {
-        const raw = Number(b.balance ?? 0);
-        if (!Number.isFinite(raw) || raw <= 0) continue;
-        const ct = b.coinType;
-        const isSui = ct === '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
-        if (!isSui && !_isStableCoin(ct)) suspectTypes.push(ct);
-      }
-    }
-    const verifiedZero = new Set<string>();
-    if (suspectTypes.length > 0) {
-      try {
-        const checks = await Promise.all(suspectTypes.map(ct =>
-          fetch('https://fullnode.mainnet.sui.io:443', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getBalance', params: [fetchedFor, ct] }),
-          }).then(r => r.json()).then((d: { result?: { totalBalance?: string; coinObjectCount?: number } }) => {
-            const bal = Number(d.result?.totalBalance ?? 0);
-            const count = d.result?.coinObjectCount ?? -1;
-            return (bal <= 0 || count === 0) ? 0 : bal;
-          }).catch(() => -1)
-        ));
-        for (let i = 0; i < suspectTypes.length; i++) {
-          if (checks[i] === 0) verifiedZero.add(suspectTypes[i]);
-        }
-      } catch {}
-    }
     for (const b of balances) {
       const raw = Number(b.balance ?? 0);
       if (!Number.isFinite(raw) || raw <= 0) continue;
-      if (verifiedZero.has(b.coinType)) continue; // phantom balance — skip
       const dec = coinDecimals(b.coinType);
       const bal = raw / Math.pow(10, dec);
       const isStable = _isStableCoin(b.coinType);
@@ -4568,8 +4540,7 @@ function renderSkiMenu() {
     const s = usd < 100 ? '$' + usd.toFixed(2) : usd < 10_000 ? '$' + usd.toFixed(0) : '$' + (usd / 1_000).toFixed(1) + 'k';
     return `<span class="wk-coin-whole">${esc(s)}</span>`;
   };
-  type CoinChip = { icon: string; val: number; html: string; key: string; colorCls: string };
-  const coinChips: CoinChip[] = [];
+  _coinChipsCache.length = 0;
   const _fallbackSuiUsd = (() => {
     if (!_usdMode || _suiP > 0 || app.usd == null || app.sui <= 0) return null;
     let otherUsd = 0;
@@ -4592,19 +4563,18 @@ function renderSkiMenu() {
     if (!c.isStable && c.symbol !== 'SUI' && c.balance < 0.001 && usd < 0.10) continue;
     const isSui = c.symbol === 'SUI';
     if (isSui) hasSuiChip = true;
-    const goldIcon = `<svg class="wk-popout-coin-icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="#d4a017" stroke="#fbbf24" stroke-width="3"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="16" font-weight="700" fill="white">Au</text></svg>`;
     const icon = isSui ? suiDropIcon
       : c.symbol === 'NS' ? `<img src="${NS_ICON_URI}" class="wk-popout-coin-icon" alt="NS">`
       : c.symbol === 'WAL' ? `<img src="${WAL_ICON_URI}" class="wk-popout-coin-icon" alt="WAL">`
-      : c.symbol === 'XAUM' ? goldIcon
+      : c.symbol === 'XAUM' ? `<img src="${AU_ICON_URI}" class="wk-popout-coin-icon" alt="Au">`
       : c.isStable ? stableIcon
       : defaultIcon(c.symbol.charAt(0));
-    const colorCls = isSui ? 'wk-coin-item--sui' : c.isStable ? 'wk-coin-item--usd' : 'wk-coin-item--other';
+    const colorCls = isSui ? 'wk-coin-item--sui' : c.isStable ? 'wk-coin-item--usd' : c.symbol === 'XAUM' ? 'wk-coin-item--gold' : 'wk-coin-item--other';
     if (_usdMode) {
-      coinChips.push({ icon, val: usd, html: _fmtUsdChipHtml(usd), key: c.symbol.toLowerCase(), colorCls });
+      _coinChipsCache.push({ icon, val: usd, html: _fmtUsdChipHtml(usd), key: c.symbol.toLowerCase(), colorCls });
     } else {
       const fracCls = isSui ? 'wk-coin-frac--sui' : c.isStable ? 'wk-coin-frac--usd' : 'wk-coin-frac--other';
-      coinChips.push({ icon, val: c.balance, html: _fmtCoinHtml(c.balance, fracCls), key: c.symbol.toLowerCase(), colorCls });
+      _coinChipsCache.push({ icon, val: c.balance, html: _fmtCoinHtml(c.balance, fracCls), key: c.symbol.toLowerCase(), colorCls });
     }
   }
   // Preserve the SUI chip even if the live balance list or price fetch is temporarily incomplete.
@@ -4612,29 +4582,29 @@ function renderSkiMenu() {
     if (_usdMode) {
       const suiUsd = _suiP > 0 ? app.sui * _suiP : _fallbackSuiUsd;
       if (suiUsd != null && suiUsd >= 0.10) {
-        coinChips.push({ icon: suiDropIcon, val: suiUsd, html: _fmtUsdChipHtml(suiUsd), key: 'sui', colorCls: 'wk-coin-item--sui' });
+        _coinChipsCache.push({ icon: suiDropIcon, val: suiUsd, html: _fmtUsdChipHtml(suiUsd), key: 'sui', colorCls: 'wk-coin-item--sui' });
       }
     } else {
-      coinChips.push({ icon: suiDropIcon, val: app.sui, html: _fmtCoinHtml(app.sui, 'wk-coin-frac--sui'), key: 'sui', colorCls: 'wk-coin-item--sui' });
+      _coinChipsCache.push({ icon: suiDropIcon, val: app.sui, html: _fmtCoinHtml(app.sui, 'wk-coin-frac--sui'), key: 'sui', colorCls: 'wk-coin-item--sui' });
     }
   }
   // Always show stable chip if user has stablecoins and no stable chip was added from walletCoins
-  const hasStableChip = coinChips.some(c => c.colorCls === 'wk-coin-item--usd');
+  const hasStableChip = _coinChipsCache.some(c => c.colorCls === 'wk-coin-item--usd');
   if (!hasStableChip && app.stableUsd > 0) {
-    coinChips.push({ icon: stableIcon, val: app.stableUsd, html: _usdMode ? _fmtUsdChipHtml(app.stableUsd) : _fmtCoinHtml(app.stableUsd, 'wk-coin-frac--usd'), key: 'usd', colorCls: 'wk-coin-item--usd' });
+    _coinChipsCache.push({ icon: stableIcon, val: app.stableUsd, html: _usdMode ? _fmtUsdChipHtml(app.stableUsd) : _fmtCoinHtml(app.stableUsd, 'wk-coin-frac--usd'), key: 'usd', colorCls: 'wk-coin-item--usd' });
   }
-  coinChips.sort((a, b) => b.val - a.val);
+  _coinChipsCache.sort((a, b) => b.val - a.val);
   // Auto-select: if 'USD' (balView default), match the first stablecoin chip; otherwise highest value
-  if (selectedCoinSymbol === 'USD' && coinChips.length) {
-    const stableChip = coinChips.find(c => c.colorCls === 'wk-coin-item--usd');
+  if (selectedCoinSymbol === 'USD' && _coinChipsCache.length) {
+    const stableChip = _coinChipsCache.find(c => c.colorCls === 'wk-coin-item--usd');
     if (stableChip) selectedCoinSymbol = stableChip.key.toUpperCase();
   }
-  if (!selectedCoinSymbol && coinChips.length) {
-    selectedCoinSymbol = coinChips[0].key.toUpperCase();
+  if (!selectedCoinSymbol && _coinChipsCache.length) {
+    selectedCoinSymbol = _coinChipsCache[0].key.toUpperCase();
   }
   // Auto-populate 95% of highest-value token as default swap amount (in USD)
-  if (!pendingSendAmount && coinChips.length && _usdMode) {
-    const top = coinChips[0];
+  if (!pendingSendAmount && _coinChipsCache.length && _usdMode) {
+    const top = _coinChipsCache[0];
     if (top.val >= 1) {
       const amt95 = top.val * 0.95;
       pendingSendAmount = _fmtUsd(amt95);
@@ -4642,7 +4612,7 @@ function renderSkiMenu() {
     }
   }
   const _selKey = selectedCoinSymbol?.toLowerCase() ?? '';
-  const coinBreakdownHtml = coinChips.length ? `<div class="wk-coin-breakdown">${coinChips.map(c =>
+  const coinBreakdownHtml = _coinChipsCache.length ? `<div class="wk-coin-breakdown">${_coinChipsCache.map(c =>
     `<span class="wk-coin-item ${c.colorCls}${c.key === _selKey ? ' wk-coin-item--selected' : ''}" data-coin="${esc(c.key)}">${c.icon}<span class="wk-coin-val">${c.html}</span></span>`
   ).join('')}</div>` : '';
 
@@ -4764,9 +4734,19 @@ function renderSkiMenu() {
     } else {
       selectedCoinSymbol = null;
     }
-    // Update send row token label
-    const tokenLabel = document.querySelector('.wk-send-token');
-    if (tokenLabel) tokenLabel.textContent = selectedCoinSymbol === 'USD' ? 'USDC' : selectedCoinSymbol ?? 'SUI';
+    // Update amount to match selected chip — 100% for non-gas tokens, 95% for SUI
+    const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (amountInput && selectedCoinSymbol) {
+      const selChip = _coinChipsCache.find(c => c.key === selectedCoinSymbol!.toLowerCase());
+      if (selChip && selChip.val >= 0.10) {
+        const pct = selectedCoinSymbol === 'SUI' ? 0.95 : 1.0;
+        pendingSendAmount = _fmtUsd(selChip.val * pct);
+        amountInput.value = pendingSendAmount;
+        const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+        if (sendBtn) sendBtn.disabled = false;
+        _debounceSwapQuote();
+      }
+    }
   });
 
   // Consolidate alt tokens → USDC
@@ -4843,11 +4823,14 @@ function renderSkiMenu() {
 
     // Amount is in USD — determine input token and convert
     const symbol = selectedCoinSymbol ?? 'SUI';
+    const USDC_CT = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+    const SUI_CT = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
     const coin = symbol === 'USD' || symbol === 'USDC'
-      ? walletCoins.find(c => c.isStable && c.balance > 0)
+      ? (walletCoins.find(c => c.isStable && c.balance > 0) || (app.stableUsd > 0 ? { symbol: 'USDC', coinType: USDC_CT, balance: app.stableUsd, isStable: true } : null))
       : walletCoins.find(c => c.symbol === symbol)
-        || (symbol === 'SUI' ? { symbol: 'SUI', coinType: '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI', balance: app.sui, isStable: false } : null);
-    if (!coin) { showToast(`No ${symbol === 'USD' ? 'stablecoins' : symbol} in wallet`); return; }
+        || (symbol === 'SUI' ? { symbol: 'SUI', coinType: SUI_CT, balance: app.sui, isStable: false } : null)
+        || (symbol === 'XAUM' ? { symbol: 'XAUM', coinType: '0x9d297676e7a4b771ab023291377b2adfaa4938fb9080b8d12430e4b108b836a9::xaum::XAUM', balance: 0, isStable: false } : null);
+    if (!coin) { showToast(`No ${symbol} in wallet`); return; }
     const coinType = (coin as { coinType: string }).coinType;
     const outOpt = SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey)!;
     const isSwap = coinType !== outOpt.coinType;
@@ -4861,30 +4844,42 @@ function renderSkiMenu() {
     const usdAmount = Number(amountStr);
     const isStable = (coin as { isStable: boolean }).isStable;
     const decimals = coinType.includes('::usdc::') ? 6 : coinType.includes('::ns::') ? 6 : 9;
+    const coinBal = (coin as { balance: number }).balance;
 
-    let tokenAmount = _usdToTokenAmount(usdAmount);
-    if (!isStable && symbol === 'SUI' && (suiPriceCache?.price ?? 0) <= 0) { showToast('SUI price unavailable'); return; }
-    if (!isStable && symbol !== 'SUI' && !(getTokenPrice(symbol)! > 0)) { showToast(`${symbol} price unavailable`); return; }
-    if (tokenAmount <= 0) { showToast('Cannot convert amount'); return; }
+    // For non-SUI tokens: if the USD amount matches ~100% of the chip value, use the full balance
+    // This avoids rounding errors that cause "insufficient balance"
+    const chipVal = _coinChipsCache.find(c => c.key === symbol.toLowerCase())?.val ?? 0;
+    const isFullBalance = symbol !== 'SUI' && chipVal > 0 && usdAmount >= chipVal * 0.99;
 
-    // If swapping, use the cached quote ratio to adjust input so output ≥ target
-    if (isSwap && _swapQuotes[swapOutputKey]) {
-      const q = _swapQuotes[swapOutputKey];
-      const qOutUsdStr = _quoteToUsd(swapOutputKey, q.returnAmount).replace(/[^0-9.]/g, '');
-      const qOutUsd = Number(qOutUsdStr);
-      if (qOutUsd > 0) {
-        // Quote was: tokenAmount in → qOutUsd out. Scale so output = usdAmount.
-        tokenAmount = tokenAmount * (usdAmount / qOutUsd);
+    let amountMist: bigint;
+    if (isFullBalance && coinBal > 0) {
+      // Use the actual token balance — no USD conversion rounding
+      amountMist = BigInt(Math.floor(coinBal * Math.pow(10, decimals)));
+    } else {
+      let tokenAmount = _usdToTokenAmount(usdAmount);
+      if (!isStable && symbol === 'SUI' && (suiPriceCache?.price ?? 0) <= 0) { showToast('SUI price unavailable'); return; }
+      if (!isStable && symbol !== 'SUI' && !(getTokenPrice(symbol)! > 0)) { showToast(`${symbol} price unavailable`); return; }
+      if (tokenAmount <= 0) { showToast('Cannot convert amount'); return; }
+
+      // If swapping, use the cached quote ratio to adjust input so output ≥ target
+      if (isSwap && _swapQuotes[swapOutputKey]) {
+        const q = _swapQuotes[swapOutputKey];
+        const qOutUsdStr = _quoteToUsd(swapOutputKey, q.returnAmount).replace(/[^0-9.]/g, '');
+        const qOutUsd = Number(qOutUsdStr);
+        if (qOutUsd > 0) {
+          tokenAmount = tokenAmount * (usdAmount / qOutUsd);
+        }
       }
+      // Cap at actual balance to prevent insufficient balance errors
+      const maxMist = coinBal > 0 ? BigInt(Math.floor(coinBal * Math.pow(10, decimals))) : BigInt(0);
+      amountMist = BigInt(Math.ceil(tokenAmount * Math.pow(10, decimals)));
+      if (maxMist > 0n && amountMist > maxMist) amountMist = maxMist;
     }
-
-    const amountMist = BigInt(Math.ceil(tokenAmount * Math.pow(10, decimals)));
 
     sendBtn.disabled = true;
     sendBtn.textContent = '\u2026';
     try {
       if (isSwap) {
-        // Swap via buildSwapTx (DeepBook + Bluefin CLMM routing)
         const swap = await buildSwapTx(ws2.address, coinType, outOpt.coinType, amountMist);
         await signAndExecuteTransaction(swap.txBytes);
         showToast(`Swapped ${amountStr} ${swap.fromSymbol} \u2192 ${swap.toSymbol} \u2713`);

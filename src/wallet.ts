@@ -430,9 +430,9 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
       return normalizeTxResult(r);
     }
 
-    // WaaP: signAndExecuteTransaction with augmented bytes.
-    // WaaP's signTransaction produces invalid signatures (iframe re-serialization bug
-    // in waap-sdk 1.2.2), so we rely on signAndExecuteTransaction and validate the result.
+    // WaaP: use direct wallet features for signAndExecuteTransaction.
+    // WaaP's signTransaction produces invalid signatures (iframe re-serialization bug),
+    // so we must use signAndExecuteTransaction which executes server-side.
     if (/waap/i.test(wallet.name)) {
       const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
 
@@ -446,7 +446,7 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
         if (r.digest) return r;
       }
 
-      throw new Error('WaaP cannot execute this transaction. Use Phantom or another wallet to set primary name.');
+      throw new Error('WaaP cannot execute this transaction. Use Phantom or another wallet.');
     }
 
     if (!('sui:signAndExecuteTransaction' in wallet.features)) {
@@ -610,6 +610,34 @@ export async function autoReconnect(): Promise<boolean> {
   }
 
   if (!match) return false;
+
+  // If we got the WaaP placeholder (no standard:events), wait for real SDK to register
+  if (/waap/i.test(match.name) && !('standard:events' in match.features)) {
+    const real = await new Promise<Wallet | undefined>((resolve) => {
+      const unsub = walletsApi.on('register', () => {
+        const found = walletsApi.get().find(
+          (w) => /waap/i.test(w.name) && 'standard:events' in w.features,
+        );
+        if (found) { unsub(); clearTimeout(t); resolve(found); }
+      });
+      const t = setTimeout(() => { unsub(); resolve(undefined); }, 5000);
+    });
+    if (!real) return false;
+    match = real;
+  }
+
+  // For WaaP: restore OAuth snapshot so silent connect can find the session
+  if (/waap/i.test(match.name)) {
+    try {
+      const [{ getDeviceId }, { getWaapProof, restoreWaapOAuth }] = await Promise.all([
+        import('./fingerprint.js') as Promise<{ getDeviceId: () => Promise<{ visitorId: string }> }>,
+        import('./waap-proof.js') as Promise<{ getWaapProof: (id: string) => Promise<{ oauthSnapshot?: Record<string, string> } | null>; restoreWaapOAuth: (snap: Record<string, string>) => void }>,
+      ]);
+      const { visitorId } = await getDeviceId();
+      const proof = await getWaapProof(visitorId);
+      if (proof?.oauthSnapshot) restoreWaapOAuth(proof.oauthSnapshot);
+    } catch { /* non-fatal — proceed without snapshot */ }
+  }
 
   try {
     await connect(match);

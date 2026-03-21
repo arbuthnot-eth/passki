@@ -967,6 +967,14 @@ body {
   border-color: rgba(34, 197, 94, 0.5);
   background: rgba(34, 197, 94, 0.08);
 }
+.wk-swap-trigger--gold {
+  border-color: rgba(212, 160, 23, 0.4);
+}
+.wk-swap-trigger--gold:hover {
+  border-color: rgba(251, 191, 36, 0.7);
+  background: rgba(212, 160, 23, 0.15);
+  box-shadow: 0 0 8px rgba(212, 160, 23, 0.2);
+}
 .wk-swap-trigger svg, .wk-swap-trigger img { display: block; }
 .wk-swap-options {
   position: absolute;
@@ -1001,6 +1009,16 @@ body {
 }
 .wk-swap-opt--active:hover {
   background: rgba(34, 197, 94, 0.22);
+}
+.wk-swap-opt--gold:hover {
+  background: rgba(212, 160, 23, 0.15);
+}
+.wk-swap-opt--gold.wk-swap-opt--active {
+  background: rgba(212, 160, 23, 0.18);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.5);
+}
+.wk-swap-opt--gold.wk-swap-opt--active:hover {
+  background: rgba(212, 160, 23, 0.25);
 }
 .wk-swap-opt svg, .wk-swap-opt img { display: block; }
 
@@ -2292,6 +2310,13 @@ body {
   border-color: rgba(129, 140, 248, 0.5);
   background: rgba(99, 102, 241, 0.1);
   box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.15) inset;
+}
+
+.wk-coin-item--gold:hover,
+.wk-coin-item--gold.wk-coin-item--selected {
+  border-color: rgba(212, 160, 23, 0.6);
+  background: rgba(212, 160, 23, 0.12);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.2) inset, 0 0 8px rgba(212, 160, 23, 0.15);
 }
 
 .wk-bal-whole {
