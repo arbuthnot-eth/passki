@@ -844,8 +844,9 @@ body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
+  overflow: visible;
 }
 
 .wk-dd-name-col {
@@ -1191,6 +1192,7 @@ body {
 .wk-badge-collapse-inner {
   min-height: 0;
   overflow: hidden;
+  margin: -2px 0 6px;
 }
 
 .wk-badge-collapse--hidden {
@@ -2310,7 +2312,7 @@ body {
   border-radius: 8px;
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.3);
-  margin-bottom: 8px;
+  margin-bottom: 2px;
   cursor: pointer;
   user-select: none;
   transition: background 0.15s, border-color 0.15s;
@@ -2419,12 +2421,33 @@ body {
 .wk-coin-breakdown {
   display: flex;
   align-items: center;
-  gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.7) transparent;
-  overscroll-behavior-x: contain;
-  padding-bottom: 2px;
+  gap: 4px;
+  max-width: 100%;
+}
+.wk-coin-breakdown .wk-coin-item {
+  flex: 1;
+  min-width: 0;
+  justify-content: center;
+}
+.wk-coin-arrow {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 28px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 1rem;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+  line-height: 1;
+}
+.wk-coin-arrow:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .wk-coin-network {
@@ -2439,9 +2462,6 @@ body {
   opacity: 0.6;
 }
 
-.wk-coin-breakdown::-webkit-scrollbar { height: 4px; }
-.wk-coin-breakdown::-webkit-scrollbar-track { background: transparent; }
-.wk-coin-breakdown::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.8); border-radius: 2px; }
 
 .wk-coin-item {
   display: flex;

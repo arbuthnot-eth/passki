@@ -1974,6 +1974,80 @@ export async function buildSwapTx(
     return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'XAUM', toSymbol: 'SUI' };
   }
 
+  // Generic fallback: discover route via Bluefin aggregator, build PTB for single-hop swaps
+  const AGG_URL = 'https://aggregator.api.sui-prod.bluefin.io';
+  const AGG_SOURCES = 'deepbook_v3,bluefin,cetus,aftermath,flowx,flowx_v3,kriya,kriya_v3,turbos';
+
+  // DEX configs for building PTBs from aggregator routes
+  const DEX_CONFIGS: Record<string, { package: string; globalConfig: string; fn: string; coinArgs: 'coin' | 'balance' }> = {
+    cetus:   { package: '0xb2db7142fa83210a7d78d9c12ac49c043b3cbbd482224fea6e3da00aa5a5ae2d', globalConfig: '0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f', fn: 'router::swap', coinArgs: 'coin' },
+    bluefin: { package: BF_PACKAGE, globalConfig: BF_GLOBAL_CONFIG, fn: 'pool::swap', coinArgs: 'balance' },
+  };
+
+  try {
+    const params = new URLSearchParams({ amount: String(amount), from: inputCoinType, to: outputCoinType, sources: AGG_SOURCES });
+    const quoteRes = await fetch(`${AGG_URL}/v2/quote?${params}`);
+    if (!quoteRes.ok) throw new Error('No route found');
+    const quote = await quoteRes.json() as { routes?: Array<{ hops: Array<{ poolId: string; pool: { type: string; allTokens: Array<{ address: string }> }; tokenIn: string; tokenOut: string }> }> };
+
+    // Use the first single-hop route if available
+    const singleHop = quote.routes?.find(r => r.hops.length === 1);
+    if (singleHop) {
+      const hop = singleHop.hops[0];
+      const dexType = hop.pool.type;
+      const dex = DEX_CONFIGS[dexType];
+      const [coinX, coinY] = hop.pool.allTokens.map(t => t.address);
+      const swapXtoY = hop.tokenIn === coinX;
+
+      if (dex) {
+        const coins = await listCoinsOfType(transport, walletAddress, inputCoinType);
+        if (!coins.length) throw new Error(`No ${inputCoinType.split('::').pop()} found`);
+        const coinObj = tx.objectRef(coins[0]);
+        if (coins.length > 1) tx.mergeCoins(coinObj, coins.slice(1).map(c => tx.objectRef(c)));
+        const [coinForSwap] = tx.splitCoins(coinObj, [tx.pure.u64(amount)]);
+
+        if (dex.coinArgs === 'coin') {
+          // Cetus-style: takes Coin objects directly
+          const [zeroCoin] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [outputCoinType] });
+          const [coinValue] = tx.moveCall({ target: '0x2::coin::value', typeArguments: [inputCoinType], arguments: [coinForSwap] });
+          const [receiveA, receiveB] = tx.moveCall({
+            target: `${dex.package}::${dex.fn}`,
+            typeArguments: [coinX, coinY],
+            arguments: [
+              tx.object(dex.globalConfig), tx.object(hop.poolId),
+              swapXtoY ? coinForSwap : zeroCoin, swapXtoY ? zeroCoin : coinForSwap,
+              tx.pure.bool(swapXtoY), tx.pure.bool(true), coinValue,
+              tx.pure.u128(swapXtoY ? BF_MIN_SQRT_PRICE : BF_MAX_SQRT_PRICE),
+              tx.pure.bool(false), tx.object('0x6'),
+            ],
+          });
+          tx.transferObjects([receiveA, receiveB, coinObj], tx.pure.address(walletAddress));
+        } else {
+          // Bluefin-style: takes Balance objects
+          const [inBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [inputCoinType], arguments: [coinForSwap] });
+          const [zeroBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [outputCoinType] });
+          const [balOutX, balOutY] = tx.moveCall({
+            target: `${dex.package}::${dex.fn}`,
+            typeArguments: [coinX, coinY],
+            arguments: [
+              tx.object('0x6'), tx.object(dex.globalConfig), tx.object(hop.poolId),
+              swapXtoY ? inBal : zeroBal, swapXtoY ? zeroBal : inBal,
+              tx.pure.bool(swapXtoY), tx.pure.bool(true), tx.pure.u64(amount), tx.pure.u64(0),
+              tx.pure.u128(swapXtoY ? BF_MIN_SQRT_PRICE : BF_MAX_SQRT_PRICE),
+            ],
+          });
+          const [coinOutX] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [coinX], arguments: [balOutX] });
+          const [coinOutY] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [coinY], arguments: [balOutY] });
+          tx.transferObjects([coinOutX, coinOutY, coinObj], tx.pure.address(walletAddress));
+        }
+        return { txBytes: await tx.build({ client: transport as never }), fromSymbol: inputCoinType.split('::').pop()!, toSymbol: outputCoinType.split('::').pop()! };
+      }
+    }
+  } catch (e) {
+    // Route discovery failed — fall through to error
+    if (e instanceof Error && e.message !== 'No route found') throw e;
+  }
+
   throw new Error(`Swap from ${inputCoinType.split('::').pop()} to ${outputCoinType.split('::').pop()} is not supported`);
 }
 
