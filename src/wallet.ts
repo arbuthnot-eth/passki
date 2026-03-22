@@ -440,10 +440,18 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
         const execFeat = wallet.features['sui:signAndExecuteTransaction'] as {
           signAndExecuteTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string; options?: { showEffects?: boolean } }) => Promise<{ digest: string; effects?: unknown }>;
         };
-        const r = await execFeat.signAndExecuteTransaction({
-          transaction: augmentBytes(transaction), account, chain, options: { showEffects: true },
-        });
-        if (r.digest) return r;
+        try {
+          const r = await execFeat.signAndExecuteTransaction({
+            transaction: augmentBytes(transaction), account, chain, options: { showEffects: true },
+          });
+          if (r.digest) return r;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('signature') || msg.includes('abort') || msg.includes('1029')) {
+            throw new Error('This transaction requires Phantom wallet \u2014 WaaP cannot sign complex swaps');
+          }
+          throw err;
+        }
       }
 
       throw new Error('WaaP cannot execute this transaction. Use Phantom or another wallet.');

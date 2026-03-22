@@ -5,6 +5,7 @@ interface Env {
   ShadeExecutorAgent: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
+  SHADE_KEEPER_PRIVATE_KEY?: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -72,6 +73,81 @@ app.post('/api/shade/schedule/:address', async (c) => {
   }
 });
 
+// ── Gas sponsorship via Shade keeper ─────────────────────────────────
+
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+
+/**
+ * POST /api/sponsor-gas
+ * Body: { txBytes: string } (base64-encoded transaction bytes)
+ * Returns: { sponsorSig: string, sponsorAddress: string }
+ *
+ * Signs the transaction as gas sponsor using the Shade keeper keypair.
+ * The client must have built the tx with setGasOwner(sponsorAddress)
+ * and setGasPayment pointing to the keeper's SUI coins.
+ */
+app.post('/api/sponsor-gas', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Gas sponsorship not configured' }, 503);
+
+  try {
+    const { txBytes } = await c.req.json<{ txBytes: string }>();
+    if (!txBytes) return c.json({ error: 'Missing txBytes' }, 400);
+
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const bytes = Uint8Array.from(atob(txBytes), ch => ch.charCodeAt(0));
+    const { signature } = await keypair.signTransaction(bytes);
+
+    return c.json({ sponsorSig: signature, sponsorAddress: keypair.toSuiAddress() });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+/**
+ * GET /api/sponsor-info
+ * Returns the keeper's address and gas coins so clients can build sponsored txs.
+ */
+app.get('/api/sponsor-info', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Gas sponsorship not configured' }, 503);
+
+  try {
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const sponsorAddress = keypair.toSuiAddress();
+
+    // Fetch gas coins via GraphQL
+    const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!){
+          address(address:$a){
+            coins(type:"0x2::sui::SUI",first:5){
+              nodes{ address version digest contents { json } }
+            }
+          }
+        }`,
+        variables: { a: sponsorAddress },
+      }),
+    });
+    const json = await res.json() as {
+      data?: { address?: { coins?: { nodes?: Array<{ address: string; version: number; digest: string }> } } };
+    };
+    const nodes = json?.data?.address?.coins?.nodes ?? [];
+    const gasCoins = nodes.map((n) => ({
+      objectId: n.address,
+      version: String(n.version),
+      digest: n.digest,
+    }));
+
+    return c.json({ sponsorAddress, gasCoins });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Tradeport listing proxy ──────────────────────────────────────────
 
 const TRADEPORT_GQL = 'https://graphql.tradeport.gg';
@@ -109,6 +185,90 @@ app.get('/api/tradeport/listing/:label', async (c) => {
     });
   } catch {
     return c.json({ listing: null });
+  }
+});
+
+// ── SuiAMI identity proof verification ────────────────────────────
+app.post('/api/suiami/verify', async (c) => {
+  try {
+    const { token } = await c.req.json<{ token: string }>();
+    if (!token?.startsWith('suiami:')) return c.json({ valid: false, error: 'Invalid token format' }, 400);
+
+    const body = token.slice(7);
+    const dotIdx = body.lastIndexOf('.');
+    if (dotIdx < 0) return c.json({ valid: false, error: 'Malformed token' }, 400);
+
+    const msgB64 = body.slice(0, dotIdx);
+    const signature = body.slice(dotIdx + 1);
+    const message = JSON.parse(atob(msgB64));
+
+    if (!message.suiami || !message.address || !message.nftId) {
+      return c.json({ valid: false, error: 'Missing required fields' }, 400);
+    }
+
+    // Check timestamp freshness (within 5 minutes)
+    const age = Date.now() - (message.timestamp ?? 0);
+    if (age > 5 * 60 * 1000 || age < -30_000) {
+      return c.json({ valid: false, error: 'Token expired or future-dated' }, 400);
+    }
+
+    // On-chain verification: confirm the signer owns the NFT and it resolves to the claimed name
+    const RPC = 'https://fullnode.mainnet.sui.io:443';
+    let ownershipVerified = false;
+    let nameVerified = false;
+    let onChainError: string | undefined;
+
+    try {
+      // 1. Check NFT owner matches claimed address
+      const objRes = await fetch(RPC, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sui_getObject', params: [message.nftId, { showOwner: true, showContent: true, showType: true }] }),
+      });
+      const objData = await objRes.json() as {
+        result?: {
+          data?: {
+            owner?: { AddressOwner?: string; ObjectOwner?: string };
+            content?: { fields?: { name?: string } };
+            type?: string;
+          };
+        };
+      };
+      const owner = objData.result?.data?.owner;
+      const ownerAddr = owner?.AddressOwner ?? '';
+      // Normalize both addresses for comparison (strip 0x, lowercase, pad to 64)
+      const norm = (a: string) => a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+      ownershipVerified = norm(ownerAddr) === norm(message.address);
+
+      // 2. Check the NFT's domain_name field matches the claimed name
+      const fields = objData.result?.data?.content?.fields as Record<string, unknown> | undefined;
+      const nftName = ((fields?.domain_name ?? fields?.name ?? '') as string).replace(/\.sui$/, '');
+      const claimedName = (message.suiami as string).replace(/^I am /, '');
+      nameVerified = nftName === claimedName;
+
+      // Also verify it's actually a SuinsRegistration type
+      const objType = objData.result?.data?.type ?? (objData.result?.data?.content as Record<string, unknown>)?.type as string ?? '';
+      if (!objType.includes('suins_registration::SuinsRegistration') && !objType.includes('SubDomainRegistration')) {
+        onChainError = 'Object is not a SuiNS registration NFT';
+        ownershipVerified = false;
+      }
+    } catch {
+      onChainError = 'On-chain verification failed (RPC error)';
+    }
+
+    return c.json({
+      valid: ownershipVerified && nameVerified,
+      ownershipVerified,
+      nameVerified,
+      onChainError,
+      suiami: message.suiami,
+      ski: message.ski,
+      address: message.address,
+      nftId: message.nftId,
+      timestamp: message.timestamp,
+      signature,
+    });
+  } catch (err) {
+    return c.json({ valid: false, error: 'Parse error' }, 400);
   }
 });
 

@@ -41,6 +41,7 @@ import {
 } from './sponsor.js';
 import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
 import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
+import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
@@ -2346,14 +2347,12 @@ function _renderSwapSelect() {
     optionsHtml = '<div class="wk-swap-options">';
     for (const o of SWAP_OUT_OPTIONS) {
       const activeCls = o.key === swapOutputKey ? ' wk-swap-opt--active' : '';
-      const goldCls = o.key === 'gold' ? ' wk-swap-opt--gold' : '';
-      optionsHtml += `<button class="wk-swap-opt${activeCls}${goldCls}" data-key="${esc(o.key)}" type="button" title="${esc(o.label)}">${_SWAP_ICONS[o.key] ?? ''}</button>`;
+      optionsHtml += `<button class="wk-swap-opt wk-swap-opt--${o.key}${activeCls}" data-key="${esc(o.key)}" type="button" title="${esc(o.label)}">${_SWAP_ICONS[o.key] ?? ''}</button>`;
     }
     optionsHtml += '</div>';
   }
 
-  const triggerCls = swapOutputKey === 'gold' ? 'wk-swap-trigger wk-swap-trigger--gold' : 'wk-swap-trigger';
-  el.innerHTML = `<button class="${triggerCls}" type="button" id="wk-swap-trigger" title="${esc(selected.label)}">${_SWAP_ICONS[swapOutputKey] ?? ''}</button>${optionsHtml}`;
+  el.innerHTML = `<button class="wk-swap-trigger wk-swap-trigger--${swapOutputKey}" type="button" id="wk-swap-trigger" title="${esc(selected.label)}">${_SWAP_ICONS[swapOutputKey] ?? ''}</button>${optionsHtml}`;
 }
 
 function _updateSwapEstimates() {
@@ -2978,7 +2977,7 @@ export function mountDotButton(el: HTMLElement): () => void {
 
 let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
-let nsLabel = (() => { try { return localStorage.getItem('ski:ns-label') || ''; } catch { return ''; } })();
+let nsLabel = '';
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -3010,6 +3009,8 @@ function _persistShadeCancelled() {
   try { localStorage.setItem('ski:shade-cancelled', JSON.stringify([..._shadeCancelledIds])); } catch {}
 }
 let nsRosterOpen = (() => { try { return sessionStorage.getItem('ski:roster-open') === '1'; } catch { return false; } })();
+let nsRouteOpen = (() => { try { return sessionStorage.getItem('ski:route-open') !== '0'; } catch { return true; } })();
+let _suiamiVerifyHtml = ''; // persists SuiAMI result across re-renders
 function _persistRosterOpen() { try { sessionStorage.setItem('ski:roster-open', nsRosterOpen ? '1' : '0'); } catch {} }
 let nsSectionOpen = (() => { try { return sessionStorage.getItem('ski:ns-section-open') === '1'; } catch { return false; } })();
 function _persistNsSectionOpen() { try { sessionStorage.setItem('ski:ns-section-open', nsSectionOpen ? '1' : '0'); } catch {} }
@@ -3785,6 +3786,7 @@ async function _fetchShadeOrdersForRoster(address: string) {
 function _patchNsRoute() {
   const el = document.getElementById('wk-ns-route');
   if (!el) return;
+  if (_suiamiVerifyHtml) { el.innerHTML = _suiamiVerifyHtml; return; }
   el.innerHTML = _nsRouteHtml();
 }
 
@@ -3990,25 +3992,18 @@ function _patchNsStatus() {
     } else {
       // Non-grace states — standard behavior
       btn.classList.remove('wk-shade-ready', 'wk-shade-active', 'wk-shade-execute');
-      const isActionable = variant === 'green-circle' && !isPurple;
-      if (isActionable) {
-        // Available to register — show register button, hide send
-        btn.disabled = false;
-        btn.textContent = '\u2192';
-        btn.style.display = '';
-        if (sendBtnNs) sendBtnNs.style.display = 'none';
-      } else {
-        // Disabled/default — hide register button, show send
-        btn.disabled = true;
-        btn.textContent = '\u2192';
-        btn.style.display = 'none';
-        if (sendBtnNs) sendBtnNs.style.display = '';
-      }
+      // Always hide the old register button — MINT/SEND/SUIAMI buttons handle all actions
+      btn.disabled = true;
+      btn.textContent = '\u2192';
+      btn.style.display = 'none';
+      if (sendBtnNs) sendBtnNs.style.display = '';
       if (variant === 'black-diamond') btn.title = 'Invalid SuiNS name';
       else if (isPurple && !nsSubnameParent) btn.title = 'Already registered';
     }
   }
   _patchNsRoute();
+  // Notify send button mode may need updating
+  document.getElementById('wk-send-btn')?.dispatchEvent(new Event('ns-status-change'));
 }
 
 /** Format grace countdown: "12d" when ≥1 day, "5h 23m" when <1 day. */
@@ -4190,33 +4185,15 @@ function _nsPriceHtml(): string {
   if (nsAvail === 'owned') return '';
   const _walletAddr = getState().address?.toLowerCase() ?? '';
   if (nsTargetAddress && nsTargetAddress.toLowerCase() === _walletAddr) return '';
-  if (nsPriceUsd == null) {
-    // Instant pricing tier hint while async fetch runs
-    const len = nsLabel.replace(/\.sui$/, '').length;
-    const tier = len === 3 ? '~$500' : len === 4 ? '~$100' : '~$20';
-    return `<span class="wk-ns-price-val wk-ns-price-tier">${tier}<span class="wk-ns-price-yr">/yr</span></span>`;
+  // Show price — defaults are NS-discounted (25% off base) while async fetch runs
+  const len = nsLabel.replace(/\.sui$/, '').length;
+  const displayPrice = nsPriceUsd ?? (len === 3 ? 375 : len === 4 ? 75 : 7.50);
+  const priceStr = displayPrice < 10 ? `$${displayPrice.toFixed(2)}` : `$${displayPrice.toFixed(0)}`;
+  if (balView === 'sui' && suiPriceCache && suiPriceCache.price > 0) {
+    const sui = displayPrice / suiPriceCache.price;
+    return `<span class="wk-ns-price-val">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI" aria-hidden="true"></span>`;
   }
-  // Low balance warning — only for available (registerable) names
-  // Checks if any payment path (NS direct, USDC swap, or SUI direct) has sufficient balance
-  let lowBal = '';
-  if (nsAvail === 'available' && nsPriceUsd && appBalanceFetched) {
-    const suiUsdPrice = suiPriceCache?.price ?? 0;
-    const nsPrice = getTokenPrice('NS') ?? 0;
-    const nsUsdVal = app.nsBalance * nsPrice;
-    const suiUsdVal = suiUsdPrice > 0 ? app.sui * suiUsdPrice : 0;
-    // Any single payment route sufficient? NS (discounted ~25%), USDC (discounted), or SUI (full price)
-    const nsOk = nsUsdVal >= nsPriceUsd * 0.80;   // NS gets ~25% discount
-    const usdcOk = app.stableUsd >= nsPriceUsd * 0.80;
-    const suiOk = suiUsdVal >= nsPriceUsd * 1.10;
-    if (!nsOk && !usdcOk && !suiOk) {
-      lowBal = `<span class="wk-ns-low-bal">low balance</span>`;
-    }
-  }
-  if (balView === 'sui' && suiPriceCache) {
-    const sui = nsPriceUsd / suiPriceCache.price;
-    return `<span class="wk-ns-price-val">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI" aria-hidden="true"></span>${lowBal}`;
-  }
-  return `<span class="wk-ns-price-val">$${nsPriceUsd.toFixed(2)}</span>${lowBal}`;
+  return `<span class="wk-ns-price-val">${priceStr}</span>`;
 }
 
 // ─── Sign Message ───────────────────────────────────────────────────
@@ -4648,7 +4625,7 @@ function renderSkiMenu() {
   const _inputHtml = _subnameMode
     ? `<input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}">`
     : `<div class="wk-ns-input-wrap"><input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}"><button id="wk-ns-pin-btn" class="wk-ns-pin-btn" type="button" title="Create subname">\u25b8</button></div>`;
-  const _nsRouteInitHtml = _nsRouteHtml();
+  const _nsRouteInitHtml = _suiamiVerifyHtml || _nsRouteHtml();
   const nsRowHtml = `
       <div id="wk-dd-ns-section" class="wk-dd-ns-section${_nsInitSectionClass}${_subnameMode ? ' wk-dd-ns-section--subname' : ''}${nsSectionOpen ? '' : ' wk-dd-ns-section--collapsed'}">
         <div class="wk-dd-ns-domain-row">
@@ -4659,7 +4636,7 @@ function renderSkiMenu() {
           <button id="wk-send-btn" class="wk-send-btn" type="button" title="Send"${pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : ' disabled'}>\u2192</button>
           <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn${nsAvail === 'grace' && !_nsInitShadeOrder ? ' wk-shade-ready' : nsAvail === 'grace' && _nsInitShadeOrder && _nsInitGraceExpired ? ' wk-shade-execute' : nsAvail === 'grace' && _nsInitShadeOrder ? ' wk-shade-active' : ''}" type="button"${_registerDisabled ? ' disabled' : ''} title="${_registerTitle}" style="display:none">${nsAvail === 'grace' && !_nsInitShadeOrder ? '\u2299' : nsAvail === 'grace' && _nsInitShadeOrder && !_nsInitGraceExpired ? '\u2713' : '\u2192'}</button>
         </div>
-        <div id="wk-ns-route" class="wk-ns-route-wrap">${_nsRouteInitHtml}</div>
+        <div id="wk-ns-route" class="wk-ns-route-wrap${nsRouteOpen ? '' : ' wk-ns-route-wrap--hidden'}">${_nsRouteInitHtml}</div>
         <div id="wk-ns-owned-list" class="wk-ns-owned-list${nsRosterOpen ? '' : ' wk-ns-owned-list--hidden'}">${_nsOwnedListHtml()}</div>
       </div>`;
 
@@ -4747,6 +4724,7 @@ function renderSkiMenu() {
         _debounceSwapQuote();
       }
     }
+    _updateSendBtnMode();
   });
 
   // Consolidate alt tokens → USDC
@@ -4810,8 +4788,245 @@ function renderSkiMenu() {
     document.querySelector('.wk-dd-slider')?.classList.remove('wk-dd-slider--settings');
   });
 
-  // Send / Swap tokens
+  // Toggle send button between send/swap mode and SuiAMI mode
+  function _updateSendBtnMode() {
+    const btn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (!btn) return;
+    const sec = document.getElementById('wk-dd-ns-section');
+    const isSelfTarget = sec?.classList.contains('wk-dd-ns-section--self-target') ?? false;
+    const isOwned = sec?.classList.contains('wk-dd-ns-section--owned') ?? false;
+    const hasLabel = nsLabel.trim().length > 0;
+    const isAvailable = sec?.classList.contains('wk-dd-ns-section--available') ?? false;
+    const isTaken = sec?.classList.contains('wk-dd-ns-section--taken') ?? false;
+    const hasListing = !!(nsKioskListing || nsTradeportListing);
+
+    // Determine mode priority
+    const mintMode = isAvailable && hasLabel;
+    const suiamiGreen = !hasLabel && !!app.suinsName; // empty input = sign own identity
+    const suiamiPurple = (isSelfTarget || isOwned) && hasLabel; // owned name in input
+    const suiamiMode = suiamiGreen || suiamiPurple;
+    const marketMode = !suiamiMode && !mintMode && (isTaken || hasListing) && hasLabel;
+    const resolving = !suiamiMode && !mintMode && !marketMode && hasLabel && !nsAvail;
+    const inEqualsOut = _getSwapInCoinType() === (SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey)?.coinType ?? '');
+    const selfTarget = isSelfTarget || isOwned || (!hasLabel && !!app.suinsName);
+    const sendingToOther = hasLabel && !isSelfTarget && !isOwned && nsTargetAddress != null;
+    // SWAP: input ≠ output AND target is self (or empty)
+    const swapMode = coinChipsOpen && !mintMode && !marketMode && !resolving && !inEqualsOut && !sendingToOther;
+    // SUIAMI: input = output AND target is self
+    const suiamiSendMode = coinChipsOpen && !mintMode && !marketMode && !resolving && inEqualsOut && selfTarget && !sendingToOther;
+    // SEND: sending to someone else (any token combo), colored by output
+    const sendMode = coinChipsOpen && !mintMode && !marketMode && !resolving && !swapMode && !suiamiSendMode;
+
+    btn.classList.remove('wk-send-btn--suiami', 'wk-send-btn--suiami-green', 'wk-send-btn--send', 'wk-send-btn--market', 'wk-send-btn--resolving', 'wk-send-btn--mint', 'wk-send-btn--swap-usd', 'wk-send-btn--swap-sui', 'wk-send-btn--swap-gold');
+    if (mintMode) btn.classList.add('wk-send-btn--mint');
+    else if (swapMode) btn.classList.add(`wk-send-btn--swap-${swapOutputKey}`);
+    else if (suiamiSendMode) btn.classList.add(`wk-send-btn--swap-${swapOutputKey}`); // SUIAMI colored by output
+    else if (sendMode) btn.classList.add(`wk-send-btn--swap-${swapOutputKey}`); // SEND colored by output
+    else if (suiamiGreen) btn.classList.add('wk-send-btn--suiami-green');
+    else if (suiamiPurple) btn.classList.add('wk-send-btn--suiami');
+    else if (marketMode) btn.classList.add('wk-send-btn--market');
+    else if (resolving) btn.classList.add('wk-send-btn--resolving');
+    // Hide price chip when balance is expanded — except when name is available (show mint cost)
+    const priceChip = document.getElementById('wk-ns-price-chip');
+    if (priceChip) priceChip.style.display = (sendMode || swapMode) && !mintMode ? 'none' : '';
+
+    // Auto-configure swap for minting: set amount to mint price (with NS discount)
+    if (mintMode && coinChipsOpen) {
+      const len = nsLabel.replace(/\.sui$/, '').length;
+      const discountedPrice = nsPriceUsd ?? (len === 3 ? 375 : len === 4 ? 75 : 7.50);
+      // Check affordability
+      const totalUsd = app.usd ?? 0;
+      const canAfford = totalUsd >= discountedPrice * 0.80;
+      if (canAfford) {
+        const mintCost = _fmtUsd(discountedPrice);
+        const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+        if (amountInput && amountInput.value !== mintCost) {
+          pendingSendAmount = mintCost;
+          amountInput.value = mintCost;
+        }
+      }
+    }
+    // Check if MINT should be red (can't afford)
+    if (mintMode) {
+      const len = nsLabel.replace(/\.sui$/, '').length;
+      const discountedPrice = nsPriceUsd ?? (len === 3 ? 375 : len === 4 ? 75 : 7.50);
+      const totalUsd = app.usd ?? 0;
+      const canAfford = totalUsd >= discountedPrice * 0.80;
+      btn.classList.toggle('wk-send-btn--cant-afford', !canAfford);
+    } else {
+      btn.classList.remove('wk-send-btn--cant-afford');
+    }
+    const dotSui = document.querySelector('.wk-ns-dot-sui') as HTMLElement | null;
+    if (dotSui) {
+      dotSui.classList.toggle('wk-ns-dot-sui--send', sendMode || swapMode);
+      dotSui.classList.toggle('wk-ns-dot-sui--suiami', suiamiPurple);
+      dotSui.classList.toggle('wk-ns-dot-sui--mint', mintMode);
+    }
+    if (mintMode) {
+      btn.disabled = false;
+      btn.textContent = 'MINT';
+      btn.title = `Mint ${nsLabel.trim()}.sui`;
+    } else if (swapMode) {
+      btn.textContent = 'SWAP';
+      btn.title = 'Swap tokens';
+      const val = pendingSendAmount;
+      btn.disabled = !val || Number(val) <= 0;
+    } else if (suiamiSendMode) {
+      btn.disabled = false;
+      btn.textContent = 'SUIAMI';
+      btn.title = 'SuiAMI — SUI-Authenticated Message Identity';
+    } else if (sendMode) {
+      btn.textContent = 'SEND';
+      btn.title = 'Send tokens';
+      const val = pendingSendAmount;
+      btn.disabled = !val || Number(val) <= 0;
+    } else if (suiamiMode) {
+      btn.disabled = false;
+      btn.textContent = 'SUIAMI';
+      btn.title = 'SuiAMI — SUI-Authenticated Message Identity';
+    } else if (marketMode) {
+      btn.disabled = false;
+      btn.textContent = '\u2192';
+      btn.title = 'Buy on marketplace';
+    } else if (resolving) {
+      btn.disabled = true;
+      btn.textContent = '\u2026';
+      btn.title = 'Resolving\u2026';
+    } else {
+      // No specific mode — hide the button
+      btn.style.display = 'none';
+      return;
+    }
+    btn.style.display = '';
+  }
+  _updateSendBtnMode();
+  document.getElementById('wk-send-btn')?.addEventListener('ns-status-change', _updateSendBtnMode);
+
+  // Send / Swap / Mint / SuiAMI
   document.getElementById('wk-send-btn')?.addEventListener('click', async () => {
+    const sec = document.getElementById('wk-dd-ns-section');
+
+    // MINT mode: available name — delegate to the register button's handler
+    const isAvailable = sec?.classList.contains('wk-dd-ns-section--available') ?? false;
+    if (isAvailable && nsLabel.trim().length > 0) {
+      document.getElementById('wk-dd-ns-register')?.click();
+      return;
+    }
+
+    // SuiAMI mode: only when button is actually showing SUIAMI (not SWAP/SEND)
+    const isSelfTarget = sec?.classList.contains('wk-dd-ns-section--self-target') ?? false;
+    const isOwned = sec?.classList.contains('wk-dd-ns-section--owned') ?? false;
+    const suiamiName = nsLabel.trim().length > 0 ? nsLabel.trim() : (app.suinsName ?? '');
+    const inEqualsOut = _getSwapInCoinType() === (SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey)?.coinType ?? '');
+    const isSwapOrSend = coinChipsOpen && !inEqualsOut; // swap takes priority
+    const isSendMode = coinChipsOpen && inEqualsOut && nsLabel.trim().length > 0 && !isSelfTarget && !isOwned; // sending to other
+    const suiamiClick = !isSwapOrSend && !isSendMode && (((isSelfTarget || isOwned) && nsLabel.trim().length > 0) || (!nsLabel.trim() && !!app.suinsName));
+    if (suiamiClick) {
+      const ws2 = getState();
+      if (!ws2.address) return;
+      const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+      if (!sendBtn) return;
+      const bare = suiamiName.replace(/\.sui$/, '');
+
+      sendBtn.disabled = true;
+      sendBtn.textContent = '\u2026';
+      // Clear any previous verification result
+      _suiamiVerifyHtml = '';
+      const routeEl0 = document.getElementById('wk-ns-route');
+      if (routeEl0) { routeEl0.innerHTML = ''; delete routeEl0.dataset.suiami; }
+      try {
+        // Resolve NFT ID: paginate through SuinsRegistration objects, match by domain_name
+        let nftId = '';
+        try {
+          let cursor: string | null = null;
+          const target = `${bare}.sui`;
+          for (let page = 0; page < 10 && !nftId; page++) {
+            const objRes = await fetch('https://fullnode.mainnet.sui.io:443', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getOwnedObjects', params: [ws2.address, { filter: { StructType: '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::suins_registration::SuinsRegistration' }, options: { showContent: true } }, cursor, 50] }),
+            });
+            const objData = await objRes.json() as { result?: { data?: Array<{ data?: { objectId?: string; content?: { fields?: Record<string, unknown> } } }>; nextCursor?: string; hasNextPage?: boolean } };
+            const match = objData.result?.data?.find(o => {
+              const fields = o.data?.content?.fields ?? {};
+              return fields.domain_name === target || fields.name === target || fields.domain_name === bare || fields.name === bare;
+            });
+            if (match?.data?.objectId) { nftId = match.data.objectId; break; }
+            if (!objData.result?.hasNextPage) break;
+            cursor = objData.result?.nextCursor ?? null;
+          }
+        } catch {}
+        if (!nftId) { showToast(`No SuiNS NFT found for ${bare}.sui`); return; }
+
+        // Build and sign
+        const message = buildSuiamiMessage(bare, ws2.address, nftId);
+        const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));
+        const { bytes, signature } = await signPersonalMessage(msgBytes);
+        const proof = createSuiamiProof(message, bytes, signature);
+
+        // 1. Copy to clipboard (retry after focus returns from wallet popup)
+        const _copyProof = async () => {
+          try {
+            await navigator.clipboard.writeText(proof.token);
+            return true;
+          } catch {
+            // Fallback: textarea copy
+            try {
+              const ta = document.createElement('textarea');
+              ta.value = proof.token;
+              ta.style.cssText = 'position:fixed;left:-9999px';
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand('copy');
+              document.body.removeChild(ta);
+              return true;
+            } catch { return false; }
+          }
+        };
+        await _copyProof();
+
+        // 2. Emit custom event
+        window.dispatchEvent(new CustomEvent('suiami:signed', {
+          detail: { proof: proof.token, message: proof.message, signature: proof.signature, name: bare, address: ws2.address },
+        }));
+
+        // 3. POST to server and show verification result
+        // 3. POST to server and show verification result
+        const routeEl = document.getElementById('wk-ns-route');
+        try {
+          const verifyRes = await fetch('/api/suiami/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: proof.token }),
+          });
+          const v = await verifyRes.json() as { valid?: boolean; ownershipVerified?: boolean; nameVerified?: boolean; onChainError?: string };
+          // Show result in route area
+          if (v.valid) {
+            _suiamiVerifyHtml = `<span class="wk-ns-route wk-suiami-verified">\u2713 verified ${esc(bare)}.sui</span>`;
+          } else {
+            const reason = v.onChainError || (!v.ownershipVerified ? 'NFT not owned by signer' : !v.nameVerified ? 'Name mismatch' : 'Verification failed');
+            _suiamiVerifyHtml = `<span class="wk-ns-route wk-suiami-failed">\u2717 ${esc(reason)}</span>`;
+          }
+          if (routeEl) {
+            nsRouteOpen = true;
+            try { sessionStorage.setItem('ski:route-open', '1'); } catch {}
+            routeEl.classList.remove('wk-ns-route-wrap--hidden');
+            routeEl.innerHTML = _suiamiVerifyHtml;
+          }
+          showToast(v.valid
+            ? `\u2713 SuiAMI verified \u2014 ${bare}.sui (copied)`
+            : `SuiAMI signed \u2014 ${bare}.sui (copied)`);
+        } catch {
+          showToast(`SuiAMI signed \u2014 ${bare}.sui (copied)`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      } finally {
+        _updateSendBtnMode();
+      }
+      return;
+    }
+
     const ws2 = getState();
     if (!ws2.address) return;
     const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
@@ -4943,6 +5158,7 @@ function renderSkiMenu() {
       _swapSelectOpen = false;
       _renderSwapSelect();
       _debounceSwapQuote();
+      _updateSendBtnMode();
       return;
     }
     if (t.closest('#wk-swap-trigger') || t.closest('.wk-swap-trigger')) {
@@ -4962,6 +5178,7 @@ function renderSkiMenu() {
     coinChipsOpen = !coinChipsOpen;
     _persistCoinChipsOpen();
     document.getElementById('wk-coins-collapse')?.classList.toggle('wk-qr-collapse--hidden', !coinChipsOpen);
+    _updateSendBtnMode();
   });
 
   // Toggle address section when clicking QR code or name badge
@@ -4994,8 +5211,23 @@ function renderSkiMenu() {
   _attachNftPopoverListeners();
   const nsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
   nsInput?.addEventListener('click', (e) => e.stopPropagation());
+  function _togglePasteBtn() {}
   nsInput?.addEventListener('focus', (e) => {
     e.stopPropagation();
+    nsInput.value = '';
+    nsInput.placeholder = 'name';
+    nsLabel = '';
+    nsAvail = null;
+    nsTargetAddress = null;
+    nsNftOwner = null;
+    nsPriceUsd = null;
+    nsPriceFetchFor = '';
+    // Clear SuiAMI verification result
+    _suiamiVerifyHtml = '';
+    _patchNsStatus();
+    _patchNsPrice();
+    _patchNsRoute();
+    _togglePasteBtn();
   });
   nsInput?.addEventListener('paste', (e) => {
     const pasted = e.clipboardData?.getData('text')?.trim();
@@ -5072,6 +5304,7 @@ function renderSkiMenu() {
     }
   });
   nsInput?.addEventListener('input', (e) => {
+    _togglePasteBtn();
     const val = (e.target as HTMLInputElement).value.trim().toLowerCase();
 
     // Detect Sui hex address typed/pasted into the name input
@@ -5327,11 +5560,12 @@ function renderSkiMenu() {
     if (!ws2.address) return;
     const label = nsLabel.trim();
 
-    // Green circle (available) → add to wishlist
+    // Green circle (available) → toggle target address row
     if (nsAvail === 'available' && label) {
-      _addToWishlist(label);
-      _patchNsOwnedList();
-      showToast(`${label}.sui added to watchlist`);
+      nsRouteOpen = !nsRouteOpen;
+      try { sessionStorage.setItem('ski:route-open', nsRouteOpen ? '1' : '0'); } catch {}
+      const route = document.getElementById('wk-ns-route');
+      if (route) route.classList.toggle('wk-ns-route-wrap--hidden', !nsRouteOpen);
       return;
     }
 
@@ -5401,9 +5635,15 @@ function renderSkiMenu() {
       return;
     }
 
-    // Allow click when owned OR when target matches wallet (self-target)
+    // For non-owned, non-self-target names: toggle target address row
     const isSelfTarget = !!nsTargetAddress && nsTargetAddress.toLowerCase() === ws2.address.toLowerCase();
-    if (!isSelfTarget && nsAvail !== 'owned') return;
+    if (!isSelfTarget && nsAvail !== 'owned') {
+      nsRouteOpen = !nsRouteOpen;
+      try { sessionStorage.setItem('ski:route-open', nsRouteOpen ? '1' : '0'); } catch {}
+      const route = document.getElementById('wk-ns-route');
+      if (route) route.classList.toggle('wk-ns-route-wrap--hidden', !nsRouteOpen);
+      return;
+    }
     if (!label) return;
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     const icon = document.getElementById('wk-ns-status');

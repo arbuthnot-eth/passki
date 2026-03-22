@@ -1,4 +1,4 @@
-# SuiAMI — Sui Authenticated Message Identity
+# SuiAMI — SUI-Authenticated Message Identity
 
 ## Overview
 
