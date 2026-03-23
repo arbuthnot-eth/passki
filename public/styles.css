@@ -2421,7 +2421,7 @@ body {
 .wk-coin-breakdown {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 0;
   max-width: 100%;
 }
 .wk-coin-breakdown .wk-coin-item {
@@ -2435,19 +2435,23 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
+  width: 14px;
   height: 28px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.35);
-  font-size: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+  color: #dbe2f0;
+  font-size: 0.85rem;
+  font-weight: 700;
   flex-shrink: 0;
-  transition: background 0.12s, color 0.12s;
+  transition: border-color 0.15s, background 0.15s;
   line-height: 1;
+  padding: 0;
+  margin: 0 1px;
 }
 .wk-coin-arrow:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.7);
+  border-color: rgba(59, 130, 246, 0.86);
+  background: linear-gradient(135deg, rgba(13, 38, 94, 0.66), rgba(10, 24, 56, 0.75));
 }
 
 .wk-coin-network {
@@ -2698,15 +2702,11 @@ body {
 }
 
 .ski-btn-price-label {
-  font-size: 0.9rem;
+  font-size: 1.35rem;
   font-weight: 700;
   color: #e6ebf5;
   white-space: nowrap;
   padding: 0 3px;
-}
-
-.ski-btn-price-label--usd {
-  font-size: 1.35rem;
 }
 
 .ski-btn-inline-drop {

@@ -1826,6 +1826,46 @@ export async function buildSwapTx(
   const tx = new Transaction();
   tx.setSender(walletAddress);
 
+  // NS → USDC (DeepBook: NS is base, USDC is quote)
+  if (inputCoinType === mainPackage.mainnet.coins.NS.type && outputCoinType === USDC_TYPE) {
+    const nsCoins = await listCoinsOfType(transport, walletAddress, inputCoinType);
+    if (!nsCoins.length) throw new Error('No NS found');
+    const nsCoin = tx.objectRef(nsCoins[0]);
+    if (nsCoins.length > 1) tx.mergeCoins(nsCoin, nsCoins.slice(1).map(c => tx.objectRef(c)));
+    const [nsForSwap] = tx.splitCoins(nsCoin, [tx.pure.u64(amount)]);
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const dbResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [inputCoinType, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_NS_USDC_POOL, initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        nsForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], nsCoin], tx.pure.address(walletAddress));
+    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'NS', toSymbol: 'USDC' };
+  }
+
+  // WAL → USDC (DeepBook: WAL is base, USDC is quote)
+  if (inputCoinType === WAL_TYPE && outputCoinType === USDC_TYPE) {
+    const walCoins = await listCoinsOfType(transport, walletAddress, inputCoinType);
+    if (!walCoins.length) throw new Error('No WAL found');
+    const walCoin = tx.objectRef(walCoins[0]);
+    if (walCoins.length > 1) tx.mergeCoins(walCoin, walCoins.slice(1).map(c => tx.objectRef(c)));
+    const [walForSwap] = tx.splitCoins(walCoin, [tx.pure.u64(amount)]);
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const dbResult = tx.moveCall({
+      target: `${DB2_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [WAL_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_WAL_USDC_POOL, initialSharedVersion: DB_WAL_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        walForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], walCoin], tx.pure.address(walletAddress));
+    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'WAL', toSymbol: 'USDC' };
+  }
+
   // USDC → XAUM (single Bluefin hop)
   if (inputCoinType === USDC_TYPE && outputCoinType === XAUM_TYPE) {
     const usdcCoins = await listCoinsOfType(transport, walletAddress, USDC_TYPE);

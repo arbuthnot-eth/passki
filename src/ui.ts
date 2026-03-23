@@ -2657,23 +2657,6 @@ export async function refreshPortfolio(force = false) {
     const coinTypes = balances.map(b => b.coinType).filter(Boolean);
     await _fetchMissingDecimals(coinTypes);
 
-    // Verify NS balance specifically — gRPC listBalances has a known bug returning
-    // phantom NS aggregate balances with 0 actual coin objects
-    let nsVerifiedZero = false;
-    const nsEntry = balances.find(b => b.coinType === NS_TYPE && Number(b.balance ?? 0) > 0);
-    if (nsEntry) {
-      try {
-        const r = await fetch('https://fullnode.mainnet.sui.io:443', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getBalance', params: [fetchedFor, NS_TYPE] }),
-        });
-        const d = await r.json() as { result?: { totalBalance?: string; coinObjectCount?: number } };
-        if (Number(d.result?.totalBalance ?? 0) <= 0 || d.result?.coinObjectCount === 0) {
-          nsVerifiedZero = true;
-        }
-      } catch {}
-    }
-
     let nextSui = 0;
     let nextNsBalance = 0;
     let stableTotal = 0;
@@ -2681,7 +2664,6 @@ export async function refreshPortfolio(force = false) {
     for (const b of balances) {
       const raw = Number(b.balance ?? 0);
       if (!Number.isFinite(raw) || raw <= 0) continue;
-      if (nsVerifiedZero && b.coinType === NS_TYPE) continue; // phantom NS — skip
       const dec = coinDecimals(b.coinType);
       const bal = raw / Math.pow(10, dec);
       const isStable = _isStableCoin(b.coinType);
@@ -4561,7 +4543,7 @@ function renderSkiMenu() {
     return tp != null && tp > 0 ? bal * tp : 0;
   };
   const _fmtUsdChipHtml = (usd: number): string => {
-    const s = usd < 100 ? '$' + usd.toFixed(2) : usd < 10_000 ? '$' + usd.toFixed(0) : '$' + (usd / 1_000).toFixed(1) + 'k';
+    const s = usd < 100 ? usd.toFixed(2) : usd < 10_000 ? usd.toFixed(0) : (usd / 1_000).toFixed(1) + 'k';
     return `<span class="wk-coin-whole">${esc(s)}</span>`;
   };
   _coinChipsCache.length = 0;
@@ -5024,10 +5006,17 @@ function renderSkiMenu() {
   document.getElementById('wk-send-btn')?.addEventListener('click', async () => {
     const sec = document.getElementById('wk-dd-ns-section');
 
-    // MINT mode: available name — delegate to the register button's handler
+    // MINT mode: available name — show loading state and trigger registration
     const isAvailable = sec?.classList.contains('wk-dd-ns-section--available') ?? false;
     if (isAvailable && nsLabel.trim().length > 0) {
-      document.getElementById('wk-dd-ns-register')?.click();
+      const mintBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+      if (mintBtn) { mintBtn.disabled = true; mintBtn.textContent = '\u2026'; }
+      const regBtn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
+      if (regBtn) {
+        regBtn.disabled = false;
+        regBtn.click();
+        regBtn.disabled = true;
+      }
       return;
     }
 
