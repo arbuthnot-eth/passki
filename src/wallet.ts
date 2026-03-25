@@ -10,12 +10,13 @@ import { getWallets } from '@wallet-standard/app';
 import type { Wallet, WalletAccount } from '@wallet-standard/base';
 import { createDAppKit } from '@mysten/dapp-kit-core';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { grpcUrl, raceExecuteTransaction } from './rpc.js';
 
 // ─── DApp Kit (chain-aware signing for Backpack + hardware wallets) ───
 
 const dappKit = createDAppKit({
   networks: ['sui:mainnet' as const],
-  createClient: () => new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://fullnode.mainnet.sui.io:443' }),
+  createClient: () => new SuiGrpcClient({ network: 'mainnet', baseUrl: grpcUrl }),
   autoConnect: false,
   slushWalletConfig: null,
   enableBurnerWallet: false,
@@ -361,46 +362,9 @@ function _padSecp256k1Sig(sig: string): string {
 
 // ─── Execute signed tx via gRPC → JSON-RPC fallback ─────────────────
 
-const GRPC_URL = 'https://fullnode.mainnet.sui.io:443';
-
 async function _executeSignedTx(bytesB64: string, signature: string): Promise<{ digest: string; effects?: unknown }> {
-  // Attempt 1: gRPC
-  try {
-    const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: GRPC_URL });
-    const txBytes = Uint8Array.from(atob(bytesB64), c => c.charCodeAt(0));
-    const result = await grpc.executeTransaction({ transaction: txBytes, signatures: [signature] }) as Record<string, unknown>;
-    const digest = (result.digest as string) ?? '';
-    if (!digest) throw new Error('gRPC: no digest');
-    return { digest, effects: result.effects };
-  } catch { /* fall through to JSON-RPC */ }
-
-  // Attempt 2: JSON-RPC across multiple endpoints
-  const rpcUrls = [
-    'https://fullnode.mainnet.sui.io:443',
-    'https://sui-rpc.publicnode.com',
-    'https://sui-mainnet-endpoint.blockvision.org',
-  ];
-  let lastErr: unknown;
-  for (const url of rpcUrls) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 1,
-          method: 'sui_executeTransactionBlock',
-          params: [bytesB64, [signature], { showEffects: true }, 'WaitForLocalExecution'],
-        }),
-      });
-      const json = await res.json() as { result?: { digest?: string; effects?: Record<string, unknown> }; error?: { message?: string } };
-      if (json.error) throw new Error(json.error.message ?? 'RPC error');
-      const effects = json.result?.effects;
-      const status = effects?.status as { status?: string; error?: string } | undefined;
-      if (status?.status === 'failure') throw new Error(status.error || 'Transaction failed on-chain');
-      return { digest: json.result?.digest ?? '', effects };
-    } catch (err) { lastErr = err; }
-  }
-  throw lastErr;
+  const txBytes = Uint8Array.from(atob(bytesB64), c => c.charCodeAt(0));
+  return raceExecuteTransaction(txBytes, [signature]);
 }
 
 // ─── Sign & Execute Transaction ──────────────────────────────────────
