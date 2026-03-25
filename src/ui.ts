@@ -39,7 +39,7 @@ import {
   getActiveSponsoredList,
   resolveNameToAddress,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
 import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
@@ -1492,7 +1492,8 @@ function buildSplashLegend(): string {
       if (rowsHtml.length === 1) {
         allHtml += rowsHtml[0];
       } else {
-        const openClass = tier === 2 ? ' ski-legend-group--open' : '';
+        const hasBlueSquare = tierGroups.has(1) && (tierGroups.get(1)!.length > 0);
+        const openClass = tier === 2 && !hasBlueSquare ? ' ski-legend-group--open' : '';
         allHtml += `<div class="ski-legend-group${openClass}"><div class="ski-legend-group-head">${ARROW}${rowsHtml[0]}</div><div class="ski-legend-group-body"><div class="ski-legend-group-inner">${rowsHtml.slice(1).join('')}</div></div></div>`;
       }
     }
@@ -4035,16 +4036,11 @@ function _patchNsStatus() {
       btn.style.display = '';
       if (sendBtnNs) sendBtnNs.style.display = 'none';
     } else if (_nsListing()) {
-      // Marketplace listing — enable buy button
-      const _listing = _nsListing()!;
+      // Marketplace listing — let wk-send-btn handle BUY mode, hide register button
       btn.classList.remove('wk-shade-ready', 'wk-shade-active', 'wk-shade-execute');
-      btn.disabled = false;
-      btn.textContent = '\u2192';
-      const sui = Number(BigInt(_listing.priceMist)) / 1e9;
-      btn.title = `Buy ${nsLabel.trim()}.sui for ${fmtSui(sui)} SUI`;
-      // Listing: show register, hide send
-      btn.style.display = '';
-      if (sendBtnNs) sendBtnNs.style.display = 'none';
+      btn.disabled = true;
+      btn.style.display = 'none';
+      if (sendBtnNs) sendBtnNs.style.display = '';
     } else {
       // Non-grace states — standard behavior
       btn.classList.remove('wk-shade-ready', 'wk-shade-active', 'wk-shade-execute');
@@ -4214,12 +4210,15 @@ function _nsPriceHtml(): string {
   if (nsLabel.length < 3) return '';
   const variant = _nsVariant();
   if (variant === 'black-diamond') return ''; // invalid label — no spinner
-  // Marketplace listing — show listing price in SUI with USD approximation
+  // Marketplace listing — show price in USD
   const _activeListing = _nsListing();
   if (_activeListing && (nsAvail === 'taken' || nsAvail === 'grace')) {
     const sui = Number(BigInt(_activeListing.priceMist)) / 1e9;
-    const usdApprox = suiPriceCache ? ` \u2248 $${(sui * suiPriceCache.price).toFixed(2)}` : '';
-    return `<span class="wk-ns-price-val wk-ns-kiosk-pill">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI">${usdApprox}</span>`;
+    const fee = _activeListing.source === 'tradeport' ? sui * 0.03 : 0;
+    const totalSui = sui + fee;
+    const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
+    const priceText = usdVal != null ? `$${usdVal.toFixed(2)}` : `${fmtSui(totalSui)} SUI`;
+    return `<span class="wk-ns-price-val wk-ns-kiosk-pill">${priceText}</span>`;
   }
   // Grace period (no marketplace listing) — shade countdown or registration cost
   if (nsAvail === 'grace') {
@@ -4661,6 +4660,11 @@ function renderSkiMenu() {
     _selIdx = 0;
     selectedCoinSymbol = _coinChipsCache[0].key.toUpperCase();
     _selKey = _coinChipsCache[0].key;
+  } else if (_selIdx >= 0 && _coinChipsCache[_selIdx].val < 0.01 && _coinChipsCache.length) {
+    // Selected coin value dropped below $0.01 — switch to highest value
+    _selIdx = 0;
+    selectedCoinSymbol = _coinChipsCache[0].key.toUpperCase();
+    _selKey = _coinChipsCache[0].key;
   } else if (!_userManuallySelectedCoin && _coinChipsCache.length && _selIdx !== 0) {
     // User hasn't manually picked — keep selecting highest-value token as data loads
     _selIdx = 0;
@@ -4948,8 +4952,8 @@ function renderSkiMenu() {
     const inEqualsOut = _getSwapInCoinType() === (SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey)?.coinType ?? '');
     const selfTarget = isSelfTarget || isOwned || (!hasLabel && !!app.suinsName);
     const sendingToOther = hasLabel && !isSelfTarget && !isOwned && nsTargetAddress != null;
-    // SEND/SWAP take priority over market when balance section is open
-    const marketMode = !suiamiMode && !mintMode && (isTaken || hasListing) && hasLabel && !coinChipsOpen;
+    // Market mode: listed names always show BUY regardless of coin chips state
+    const marketMode = !suiamiMode && !mintMode && hasListing && hasLabel;
     const resolving = !suiamiMode && !mintMode && !marketMode && hasLabel && !nsAvail;
     // SWAP: input ≠ output AND target is self (or empty)
     const swapMode = coinChipsOpen && !mintMode && !marketMode && !resolving && !inEqualsOut && !sendingToOther;
@@ -5034,8 +5038,26 @@ function renderSkiMenu() {
       btn.title = 'SuiAMI — SUI-Authenticated Message Identity';
     } else if (marketMode) {
       btn.disabled = false;
-      btn.textContent = '\u2192';
-      btn.title = 'Buy on marketplace';
+      const listing = _nsListing();
+      if (listing) {
+        const suiAmt = Number(BigInt(listing.priceMist)) / 1e9;
+        const fee = listing.source === 'tradeport' ? suiAmt * 0.03 : 0;
+        const totalSui = suiAmt + fee;
+        const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
+        const priceStr = usdVal != null ? `$${usdVal.toFixed(2)}` : `${totalSui.toFixed(2)} SUI`;
+        btn.textContent = 'BUY';
+        btn.title = `Buy ${nsLabel.trim()}.sui for ${priceStr}`;
+        // Auto-fill amount with listing price
+        const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+        if (amountInput && usdVal != null) {
+          const listingAmt = Math.ceil(usdVal * 100) / 100;
+          pendingSendAmount = listingAmt.toFixed(2);
+          amountInput.value = pendingSendAmount;
+        }
+      } else {
+        btn.textContent = '\u2192';
+        btn.title = 'Buy on marketplace';
+      }
     } else if (resolving) {
       btn.disabled = true;
       btn.textContent = '\u2026';
@@ -5049,6 +5071,76 @@ function renderSkiMenu() {
   }
   _updateSendBtnMode();
   document.getElementById('wk-send-btn')?.addEventListener('ns-status-change', _updateSendBtnMode);
+
+  // Marketplace purchase handler (kiosk or Tradeport)
+  async function _handleMarketplacePurchase(ws2: { address: string }, btn: HTMLButtonElement | null, label: string) {
+    if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+    try {
+      const listing = _nsListing()!;
+      const priceMist = BigInt(listing.priceMist);
+      const feeMist = listing.source === 'tradeport' ? priceMist * 300n / 10000n : 0n;
+      const totalSuiMist = priceMist + feeMist;
+
+      // Check if we need to swap from selected balance to SUI first
+      const inCoinType = _getSwapInCoinType();
+      const SUI_COIN_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
+      if (inCoinType !== SUI_COIN_TYPE) {
+        const gasBuf = 50_000_000n;
+        const swapAmount = totalSuiMist + gasBuf;
+        const suiP = suiPriceCache?.price ?? 0;
+        if (suiP <= 0) throw new Error('SUI price unavailable \u2014 cannot estimate swap');
+        const suiNeeded = Number(swapAmount) / 1e9;
+        const inputDecimals = _getSwapInDecimals();
+        let inputAmount: bigint;
+        const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+        if (inCoinType === USDC_TYPE) {
+          inputAmount = BigInt(Math.ceil(suiNeeded * suiP * 1.02 * (10 ** inputDecimals)));
+        } else {
+          const sym = selectedCoinSymbol ?? '';
+          const tp = getTokenPrice(sym);
+          if (!tp || tp <= 0) throw new Error(`${sym} price unavailable \u2014 cannot estimate swap`);
+          const usdNeeded = suiNeeded * suiP;
+          inputAmount = BigInt(Math.ceil((usdNeeded / tp) * 1.02 * (10 ** inputDecimals)));
+        }
+        if (btn) btn.textContent = 'SWAP';
+        const swapResult = await buildSwapTx(ws2.address, inCoinType, SUI_COIN_TYPE, inputAmount);
+        await signAndExecuteTransaction(swapResult.txBytes);
+        showToast('Swapped to SUI \u2713');
+        await new Promise(r => setTimeout(r, 1500));
+      }
+
+      if (btn) btn.textContent = 'BUY';
+      let purchaseTx: Uint8Array;
+      if (nsKioskListing) {
+        purchaseTx = await buildKioskPurchaseTx(ws2.address, nsKioskListing.kioskId, nsKioskListing.nftId, nsKioskListing.priceMist);
+      } else {
+        purchaseTx = await buildTradeportPurchaseTx(ws2.address, nsTradeportListing!.nftTokenId, nsTradeportListing!.priceMist);
+      }
+      if (btn) btn.textContent = '\u270f';
+      const { digest } = await signAndExecuteTransaction(purchaseTx);
+
+      nsAvail = 'owned'; nsTargetAddress = ws2.address; nsLastDigest = digest ?? ''; nsKioskListing = null; nsTradeportListing = null;
+      _patchNsStatus(); _patchNsRoute();
+      const domain = `${label}.sui`;
+      app.suinsName = app.suinsName || domain;
+      suinsCache[ws2.address] = app.suinsName;
+      try { localStorage.setItem(`ski:suins:${ws2.address}`, app.suinsName); } catch {}
+      updateSkiDot('blue-square', app.suinsName);
+      nsOwnedFetchedFor = ''; _fetchOwnedDomains();
+      walletCoins = []; appBalanceFetched = false;
+      renderSkiMenu();
+      setTimeout(() => refreshPortfolio(true), 2000);
+      showToast(`${label}.sui purchased \u2713`);
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      if (!raw.toLowerCase().includes('reject')) {
+        const { display, full } = parseNsError(raw);
+        showCopyableToast(display, full);
+      }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'BUY'; }
+    }
+  }
 
   // Send / Swap / Mint / SuiAMI
   document.getElementById('wk-send-btn')?.addEventListener('click', async () => {
@@ -5065,6 +5157,21 @@ function renderSkiMenu() {
         regBtn.click();
         regBtn.disabled = true;
       }
+      return;
+    }
+
+    // BUY mode: marketplace listing — jump directly to purchase handler
+    if ((nsKioskListing || nsTradeportListing) && nsLabel.trim().length > 0) {
+      // Fall through to the marketplace purchase handler below the swap/send block
+      // by skipping suiami/swap/send checks
+      const ws2 = getState();
+      if (!ws2.address) return;
+      const btn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+      const label = nsLabel.trim();
+      const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+      // Jump to marketplace purchase handler (defined later in this function)
+      // We need to goto the handler — restructure: call it inline
+      await _handleMarketplacePurchase(ws2, btn, label);
       return;
     }
 
@@ -5267,7 +5374,6 @@ function renderSkiMenu() {
       _swapQuotes = {};
       _updateSwapEstimates();
       _setMutationMs();
-      _userManuallySelectedCoin = false;
       if (ws2.address) try { localStorage.removeItem(`ski:balances:${ws2.address}`); } catch {}
       walletCoins = [];
       appBalanceFetched = false;
@@ -6127,13 +6233,59 @@ function renderSkiMenu() {
       return;
     }
 
-    // ── Kiosk mode: marketplace purchase ──
-    if (nsKioskListing) {
+    // ── Marketplace purchase (kiosk or Tradeport) — handled by early return above ──
+    if (false) { // unreachable — kept for structure
       if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
       try {
-        const tx = await buildKioskPurchaseTx(ws2.address, nsKioskListing.kioskId, nsKioskListing.nftId, nsKioskListing.priceMist);
+        const listing = _nsListing()!;
+        const priceMist = BigInt(listing.priceMist);
+        const feeMist = listing.source === 'tradeport' ? priceMist * 300n / 10000n : 0n;
+        const totalSuiMist = priceMist + feeMist;
+
+        // Check if we need to swap from selected balance to SUI first
+        const inCoinType = _getSwapInCoinType();
+        const SUI_COIN_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
+        if (inCoinType !== SUI_COIN_TYPE) {
+          // Swap selected token → SUI (enough to cover purchase + gas buffer)
+          const gasBuf = 50_000_000n; // 0.05 SUI gas buffer
+          const swapAmount = totalSuiMist + gasBuf;
+          // Convert SUI amount needed to input token amount via price
+          const suiP = suiPriceCache?.price ?? 0;
+          if (suiP <= 0) throw new Error('SUI price unavailable — cannot estimate swap');
+          const suiNeeded = Number(swapAmount) / 1e9;
+          const inputDecimals = _getSwapInDecimals();
+          let inputAmount: bigint;
+          const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+          if (inCoinType === USDC_TYPE) {
+            // USDC → SUI: use SUI price directly
+            inputAmount = BigInt(Math.ceil(suiNeeded * suiP * 1.02 * (10 ** inputDecimals)));
+          } else {
+            // Other token → SUI: use token price
+            const sym = selectedCoinSymbol ?? '';
+            const tp = getTokenPrice(sym);
+            if (!tp || tp <= 0) throw new Error(`${sym} price unavailable — cannot estimate swap`);
+            const usdNeeded = suiNeeded * suiP;
+            inputAmount = BigInt(Math.ceil((usdNeeded / tp) * 1.02 * (10 ** inputDecimals)));
+          }
+          if (btn) btn.textContent = 'SWAP';
+          const swapResult = await buildSwapTx(ws2.address, inCoinType, SUI_COIN_TYPE, inputAmount);
+          await signAndExecuteTransaction(swapResult.txBytes);
+          showToast('Swapped to SUI \u2713');
+          // Brief pause for chain state to propagate
+          await new Promise(r => setTimeout(r, 1500));
+        }
+
+        // Build and execute purchase transaction
+        if (btn) btn.textContent = 'BUY';
+        let purchaseTx: Uint8Array;
+        if (nsKioskListing) {
+          purchaseTx = await buildKioskPurchaseTx(ws2.address, nsKioskListing.kioskId, nsKioskListing.nftId, nsKioskListing.priceMist);
+        } else {
+          purchaseTx = await buildTradeportPurchaseTx(ws2.address, nsTradeportListing!.nftTokenId, nsTradeportListing!.priceMist);
+        }
         if (btn) btn.textContent = '\u270f';
-        const { digest } = await signAndExecuteTransaction(tx);
+        const { digest } = await signAndExecuteTransaction(purchaseTx);
+
         // Post-purchase: update to owned state
         nsAvail = 'owned'; nsTargetAddress = ws2.address; nsLastDigest = digest ?? ''; nsKioskListing = null; nsTradeportListing = null;
         _patchNsStatus(); _patchNsRoute();
@@ -6142,7 +6294,11 @@ function renderSkiMenu() {
         suinsCache[ws2.address] = app.suinsName;
         try { localStorage.setItem(`ski:suins:${ws2.address}`, app.suinsName); } catch {}
         updateSkiDot('blue-square', app.suinsName);
+        _userManuallySelectedCoin = false;
         nsOwnedFetchedFor = ''; _fetchOwnedDomains();
+        walletCoins = []; appBalanceFetched = false;
+        renderSkiMenu();
+        setTimeout(() => refreshPortfolio(true), 2000);
         showToast(`${label}.sui purchased \u2713`);
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
@@ -6151,7 +6307,7 @@ function renderSkiMenu() {
           showCopyableToast(display, full);
         }
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '\u2192'; }
+        if (btn) { btn.disabled = false; btn.textContent = 'BUY'; }
       }
       return;
     }
@@ -6442,23 +6598,36 @@ function renderSkiMenu() {
 
     const domain = btn.dataset.domain;
     if (!domain) return;
+    // Set NS state directly
     nsLabel = domain;
     try { localStorage.setItem('ski:ns-label', domain); } catch {}
-    nsAvail = 'owned';
     nsPriceUsd = null;
     nsPriceFetchFor = '';
     nsGraceEndMs = 0;
-    nsTargetAddress = getState().address || null;
+    nsAvail = null;
+    nsTargetAddress = null;
     nsNftOwner = null;
     nsLastDigest = '';
     nsKioskListing = null; nsTradeportListing = null;
     nsSubnameParent = null;
-    nsShowTargetInput = false;
+    // Set input value and keep it set across re-renders
     skipNextFocusClear = true;
-    const input = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
-    if (input) { input.value = domain; input.focus(); }
+    const _setInput = () => {
+      const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+      if (inp && inp.value !== domain) inp.value = domain;
+    };
+    _setInput();
     _patchNsPrice();
     _patchNsStatus();
+    _patchNsRoute();
+    _patchNsOwnedList();
+    _updateSendBtnMode();
+    _setInput();
+    // Re-set after microtask and animation frame in case of async re-renders
+    Promise.resolve().then(_setInput);
+    requestAnimationFrame(_setInput);
+    setTimeout(_setInput, 50);
+    setTimeout(_setInput, 200);
     fetchAndShowNsPrice(domain);
   });
 

@@ -1011,6 +1011,11 @@ body {
   margin-left: auto;
 }
 .wk-send-btn--market {
+  width: auto;
+  padding: 0 8px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
   margin-left: auto;
   border-color: rgba(234, 138, 30, 0.5);
   background: linear-gradient(135deg, rgba(234, 138, 30, 0.3), rgba(245, 158, 50, 0.25));
@@ -1383,7 +1388,7 @@ body {
   letter-spacing: 0.02em;
 }
 .wk-ns-kiosk-pill {
-  color: rgba(255, 121, 75, 0.95) !important;
+  color: #ffffff !important;
 }
 .wk-ns-grace-date {
   color: rgba(239, 68, 68, 0.55);
