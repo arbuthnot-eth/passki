@@ -26,7 +26,8 @@ import {
   type WalletState,
 } from './wallet.js';
 import type { Wallet, WalletAccount } from '@wallet-standard/base';
-import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { grpcClient, GQL_URL } from './rpc.js';
+export { grpcClient };
 import {
   getSponsorState,
   isSponsorActive,
@@ -46,10 +47,6 @@ import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
 
-export const grpcClient = new SuiGrpcClient({
-  network: 'mainnet',
-  baseUrl: 'https://fullnode.mainnet.sui.io:443',
-});
 
 /** Sign a sponsored transaction: user signs, then fetch sponsor sig, submit both. */
 async function signAndExecuteSponsoredTx(txBytes: Uint8Array): Promise<{ digest: string }> {
@@ -2268,7 +2265,6 @@ async function selectWallet(wallet: Wallet) {
 
 // ─── Portfolio (gRPC balance fetch + GraphQL SuiNS) ──────────────────
 
-const GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 const USDC_TYPE   = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 const NS_TYPE     = '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS';
 const WAL_TYPE    = '0x356a26eb9e012a68958082340d4c4116e7f55615cf27affcff209cf0ae544f59::wal::WAL';
@@ -2478,7 +2474,7 @@ function normalizeSuiAddress(addr: string): string {
 async function lookupSuiNS(address: string): Promise<string | null> {
   try {
     const normalized = normalizeSuiAddress(address);
-    const res = await fetch(GRAPHQL_URL, {
+    const res = await fetch(GQL_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
