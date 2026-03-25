@@ -39,7 +39,7 @@ import {
   getActiveSponsoredList,
   resolveNameToAddress,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
 import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
@@ -4674,7 +4674,34 @@ function renderSkiMenu() {
   const _selChip = _selIdx >= 0 ? _coinChipsCache[_selIdx] : _coinChipsCache[0];
   const _canCycle = _coinChipsCache.length > 1;
   const _arrowDisabled = _canCycle ? '' : ' disabled';
-  const coinBreakdownHtml = _selChip ? `<div class="wk-coin-breakdown"><button class="wk-coin-arrow wk-coin-arrow--left" id="wk-coin-prev" type="button"${_arrowDisabled}>\u2039</button><span class="wk-coin-item ${_selChip.colorCls} wk-coin-item--selected" data-coin="${esc(_selChip.key)}" title="${esc(_selChip.tooltip ?? _selChip.key)}">${_selChip.icon}<span class="wk-coin-val">${_selChip.html}</span></span><button class="wk-coin-arrow wk-coin-arrow--right" id="wk-coin-next" type="button"${_arrowDisabled}>\u203A</button></div>` : '';
+  const _prevIdx = _canCycle ? ((_selIdx - 1 + _coinChipsCache.length) % _coinChipsCache.length) : _selIdx;
+  const _nextIdx = _canCycle ? ((_selIdx + 1) % _coinChipsCache.length) : _selIdx;
+  const _prevChip = _coinChipsCache[_prevIdx];
+  const _nextChip = _coinChipsCache[_nextIdx];
+  const _prevColor = _prevChip?.colorCls?.replace('wk-coin-item--', '') ?? '';
+  const _nextColor = _nextChip?.colorCls?.replace('wk-coin-item--', '') ?? '';
+  const _chipUsdTip = (c: typeof _prevChip) => {
+    if (!c) return '';
+    const sym = c.key.toUpperCase();
+    const usd = _usdMode ? c.val : (() => {
+      if (c.colorCls === 'wk-coin-item--usd') return c.val;
+      if (c.colorCls === 'wk-coin-item--sui') return _suiP > 0 ? c.val * _suiP : 0;
+      const tp = getTokenPrice(sym); return tp && tp > 0 ? c.val * tp : 0;
+    })();
+    return usd > 0 ? `$${usd < 100 ? usd.toFixed(2) : usd < 10_000 ? usd.toFixed(0) : (usd / 1_000).toFixed(1) + 'k'} ${sym}` : sym;
+  };
+  const _prevTip = _chipUsdTip(_prevChip);
+  const _nextTip = _chipUsdTip(_nextChip);
+  // Build coin picker grid (all coins except selected)
+  const _coinGridItems = _coinChipsCache.map((c, i) => {
+    if (i === _selIdx) return '';
+    const color = c.colorCls?.replace('wk-coin-item--', '') ?? '';
+    const usdTip = _chipUsdTip(c);
+    return `<button class="wk-coin-grid-item wk-coin-grid-item--${color}" data-coin-pick="${esc(c.key)}" type="button" title="${esc(usdTip)}">${c.icon}<span class="wk-coin-grid-val">${c.html}</span></button>`;
+  }).filter(Boolean).join('');
+  const _coinGridHtml = _coinGridItems ? `<div id="wk-coin-grid" class="wk-coin-grid wk-coin-grid--hidden">${_coinGridItems}</div>` : '';
+
+  const coinBreakdownHtml = _selChip ? `<div class="wk-coin-breakdown-wrap"><div class="wk-coin-breakdown"><button class="wk-coin-arrow wk-coin-arrow--left wk-coin-arrow--to-${_prevColor}" id="wk-coin-prev" type="button"${_arrowDisabled} title="${esc(_prevTip)}">\u2039</button><span class="wk-coin-item ${_selChip.colorCls} wk-coin-item--selected" data-coin="${esc(_selChip.key)}" id="wk-coin-selected" title="${esc(_selChip.tooltip ?? _selChip.key)}">${_selChip.icon}<span class="wk-coin-val">${_selChip.html}</span></span><button class="wk-coin-arrow wk-coin-arrow--right wk-coin-arrow--to-${_nextColor}" id="wk-coin-next" type="button"${_arrowDisabled} title="${esc(_nextTip)}">\u203A</button></div>${_coinGridHtml}</div>` : '';
 
   const _nsInitVariant = _nsVariant();
   const _nsInitLooksAvailable = nsAvail === 'available' || (nsAvail === null && _nsInitVariant === 'green-circle');
@@ -4698,7 +4725,7 @@ function renderSkiMenu() {
   const _nsInitGraceExpired = nsAvail === 'grace' && nsGraceEndMs > 0 && Date.now() >= nsGraceEndMs;
   const _registerTitle = _subnameMode
     ? (nsLabel ? `Create ${esc(nsLabel)}.${_parentBare}.sui` : 'Create subname')
-    : (_nsListing() ? `Buy ${esc(nsLabel)}.sui for ${fmtSui(Number(BigInt(_nsListing()!.priceMist)) / 1e9)} SUI`
+    : (_nsListing() ? (() => { const _l = _nsListing()!; const _s = Number(BigInt(_l.priceMist)) / 1e9; const _f = _l.source === 'tradeport' ? _s * 0.03 : 0; const _t = _s + _f; const _u = suiPriceCache ? (_t * suiPriceCache.price) : null; return `Trade ${_u != null ? `$${_u.toFixed(2)}` : `${_t.toFixed(2)} SUI`} for ${esc(nsLabel)}.sui`; })()
       : nsAvail === 'grace' && _nsInitShadeOrder && _nsInitGraceExpired ? `Execute Shade \u2014 register ${esc(nsLabel)}.sui now`
       : nsAvail === 'grace' && _nsInitShadeOrder ? `Shaded! Execute after ${_graceEndDate()}`
       : nsAvail === 'grace' ? `Shade ${esc(nsLabel)}.sui \u2014 lock funds for grace expiry`
@@ -4707,7 +4734,7 @@ function renderSkiMenu() {
   const _registerDisabled = _subnameMode ? false : _nsListing() ? false : _nsInitVariant === 'black-diamond';
   const _inputHtml = _subnameMode
     ? `<input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}">`
-    : `<div class="wk-ns-input-wrap"><input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}"><button id="wk-ns-pin-btn" class="wk-ns-pin-btn" type="button" title="Create subname">\u25b8</button></div>`;
+    : `<div class="wk-ns-input-wrap"><input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}"><button id="wk-ns-clear-btn" class="wk-ns-clear-btn" type="button" title="Clear" style="${nsLabel ? '' : 'display:none'}">\u2715</button><button id="wk-ns-pin-btn" class="wk-ns-pin-btn" type="button" title="Create subname">\u25b8</button></div>`;
   const _nsRouteInitHtml = _suiamiVerifyHtml || _nsRouteHtml();
   const nsRowHtml = `
       <div id="wk-dd-ns-section" class="wk-dd-ns-section${_nsInitSectionClass}${_subnameMode ? ' wk-dd-ns-section--subname' : ''}${nsSectionOpen ? '' : ' wk-dd-ns-section--collapsed'}">
@@ -4763,7 +4790,10 @@ function renderSkiMenu() {
                 ${coinBreakdownHtml}
                 <div class="wk-send-row">
                   <span class="wk-send-dollar">$</span>
-                  <input id="wk-send-amount" class="wk-send-amount" type="number" step="any" min="0" placeholder="0.00" spellcheck="false" autocomplete="off" value="${esc(pendingSendAmount)}">
+                  <div class="wk-send-amount-wrap">
+                    <input id="wk-send-amount" class="wk-send-amount" type="text" inputmode="decimal" placeholder="0.00" spellcheck="false" autocomplete="off" value="${esc(pendingSendAmount)}">
+                    <button id="wk-send-clear" class="wk-send-input-clear" type="button" title="Clear" style="${pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : 'display:none'}">\u2715</button>
+                  </div>
                 </div>
                 <div class="wk-send-row-below">
                   <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
@@ -4813,6 +4843,34 @@ function renderSkiMenu() {
     e.stopPropagation();
     const cur = _coinChipsCache.findIndex(c => c.key === (selectedCoinSymbol?.toLowerCase() ?? ''));
     _selectCoinByIndex(cur + 1);
+  });
+
+  // Toggle coin picker grid when clicking selected chip
+  document.getElementById('wk-coin-selected')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const grid = document.getElementById('wk-coin-grid');
+    if (grid) grid.classList.toggle('wk-coin-grid--hidden');
+  });
+
+  // Pick coin from grid
+  document.getElementById('wk-coin-grid')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-coin-pick]');
+    if (!btn) return;
+    const key = btn.dataset.coinPick;
+    if (!key) return;
+    const idx = _coinChipsCache.findIndex(c => c.key === key);
+    if (idx >= 0) _selectCoinByIndex(idx);
+    const grid = document.getElementById('wk-coin-grid');
+    if (grid) grid.classList.add('wk-coin-grid--hidden');
+  });
+
+  // Close coin grid when clicking elsewhere
+  document.addEventListener('click', () => {
+    const grid = document.getElementById('wk-coin-grid');
+    if (grid && !grid.classList.contains('wk-coin-grid--hidden')) {
+      grid.classList.add('wk-coin-grid--hidden');
+    }
   });
 
   // Consolidate alt tokens → USDC
@@ -5037,7 +5095,6 @@ function renderSkiMenu() {
       btn.textContent = 'SUIAMI';
       btn.title = 'SuiAMI — SUI-Authenticated Message Identity';
     } else if (marketMode) {
-      btn.disabled = false;
       const listing = _nsListing();
       if (listing) {
         const suiAmt = Number(BigInt(listing.priceMist)) / 1e9;
@@ -5045,18 +5102,33 @@ function renderSkiMenu() {
         const totalSui = suiAmt + fee;
         const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
         const priceStr = usdVal != null ? `$${usdVal.toFixed(2)}` : `${totalSui.toFixed(2)} SUI`;
-        btn.textContent = 'BUY';
-        btn.title = `Buy ${nsLabel.trim()}.sui for ${priceStr}`;
+        // Check if total portfolio covers the listing price (swap flow can use any balance)
+        const totalUsd = app.usd ?? 0;
+        const canAfford = usdVal != null ? totalUsd >= usdVal * 0.95 : true;
+        btn.disabled = !canAfford;
+        btn.classList.toggle('wk-send-btn--cant-afford', !canAfford);
+        document.querySelector('.wk-ns-dot-sui')?.classList.toggle('wk-ns-dot-sui--insufficient', !canAfford);
+        document.getElementById('wk-ns-price-chip')?.classList.toggle('wk-ns-price-chip--insufficient', !canAfford);
+        if (canAfford) {
+          btn.textContent = 'TRADE';
+          btn.title = `Trade ${priceStr} for ${nsLabel.trim()}.sui`;
+        } else {
+          btn.textContent = 'TRADE';
+          btn.title = `Insufficient balance \u2014 need ${priceStr} for ${nsLabel.trim()}.sui`;
+        }
         // Auto-fill amount with listing price
         const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
         if (amountInput && usdVal != null) {
           const listingAmt = Math.ceil(usdVal * 100) / 100;
           pendingSendAmount = listingAmt.toFixed(2);
           amountInput.value = pendingSendAmount;
+          amountInput.classList.toggle('wk-send-amount--over', !canAfford);
+          document.querySelector('.wk-send-dollar')?.classList.toggle('wk-send-dollar--over', !canAfford);
         }
       } else {
+        btn.disabled = false;
         btn.textContent = '\u2192';
-        btn.title = 'Buy on marketplace';
+        btn.title = 'Trade on marketplace';
       }
     } else if (resolving) {
       btn.disabled = true;
@@ -5069,55 +5141,67 @@ function renderSkiMenu() {
     }
     btn.style.display = '';
   }
+  function _checkAmountOverBalance() {
+    const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (!amountInput) return;
+    const val = Number(pendingSendAmount);
+    // In market/trade mode, use total portfolio (swap flow can use any balance)
+    const hasListing = !!(nsKioskListing || nsTradeportListing);
+    const maxVal = hasListing ? (app.usd ?? 0) : (() => {
+      const selKey = selectedCoinSymbol?.toLowerCase() ?? '';
+      const selChip = _coinChipsCache.find(c => c.key === selKey) ?? _coinChipsCache[0];
+      return selChip?.val ?? 0;
+    })();
+    const isOver = val > 0 && maxVal > 0 && val > maxVal * 1.01;
+    amountInput.classList.toggle('wk-send-amount--over', isOver);
+    document.querySelector('.wk-send-dollar')?.classList.toggle('wk-send-dollar--over', isOver);
+  }
+
   _updateSendBtnMode();
+  _checkAmountOverBalance();
   document.getElementById('wk-send-btn')?.addEventListener('ns-status-change', _updateSendBtnMode);
 
-  // Marketplace purchase handler (kiosk or Tradeport)
+  // Marketplace purchase handler (kiosk or Tradeport) — single PTB, one signature
   async function _handleMarketplacePurchase(ws2: { address: string }, btn: HTMLButtonElement | null, label: string) {
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
     try {
-      const listing = _nsListing()!;
-      const priceMist = BigInt(listing.priceMist);
-      const feeMist = listing.source === 'tradeport' ? priceMist * 300n / 10000n : 0n;
-      const totalSuiMist = priceMist + feeMist;
-
-      // Check if we need to swap from selected balance to SUI first
-      const inCoinType = _getSwapInCoinType();
+      // Determine selected coin info
       const SUI_COIN_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
-      if (inCoinType !== SUI_COIN_TYPE) {
-        const gasBuf = 50_000_000n;
-        const swapAmount = totalSuiMist + gasBuf;
-        const suiP = suiPriceCache?.price ?? 0;
-        if (suiP <= 0) throw new Error('SUI price unavailable \u2014 cannot estimate swap');
-        const suiNeeded = Number(swapAmount) / 1e9;
-        const inputDecimals = _getSwapInDecimals();
-        let inputAmount: bigint;
-        const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
-        if (inCoinType === USDC_TYPE) {
-          inputAmount = BigInt(Math.ceil(suiNeeded * suiP * 1.02 * (10 ** inputDecimals)));
-        } else {
-          const sym = selectedCoinSymbol ?? '';
-          const tp = getTokenPrice(sym);
-          if (!tp || tp <= 0) throw new Error(`${sym} price unavailable \u2014 cannot estimate swap`);
-          const usdNeeded = suiNeeded * suiP;
-          inputAmount = BigInt(Math.ceil((usdNeeded / tp) * 1.02 * (10 ** inputDecimals)));
+      const inCoinType = _getSwapInCoinType();
+      const outOpt = SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey);
+      const outCoinType = outOpt?.coinType ?? null;
+      const suiP = suiPriceCache?.price ?? 0;
+
+      // Get selected balance
+      const selKey = selectedCoinSymbol?.toLowerCase() ?? '';
+      const wc = walletCoins.find(c => c.symbol === (selectedCoinSymbol ?? '') || c.symbol.toLowerCase() === selKey);
+      let selBal = wc?.balance ?? 0;
+      if (selBal <= 0) {
+        const selChip = _coinChipsCache.find(c => c.key === selKey);
+        const selUsd = selChip?.val ?? 0;
+        if (selUsd > 0 && suiP > 0) {
+          if (selKey === 'usd' || selKey === 'usdc') selBal = selUsd;
+          else if (selKey === 'sui') selBal = selUsd / suiP;
+          else { const tp = getTokenPrice(selectedCoinSymbol ?? ''); selBal = tp && tp > 0 ? selUsd / tp : 0; }
         }
-        if (btn) btn.textContent = 'SWAP';
-        const swapResult = await buildSwapTx(ws2.address, inCoinType, SUI_COIN_TYPE, inputAmount);
-        await signAndExecuteTransaction(swapResult.txBytes);
-        showToast('Swapped to SUI \u2713');
-        await new Promise(r => setTimeout(r, 1500));
       }
 
-      if (btn) btn.textContent = 'BUY';
-      let purchaseTx: Uint8Array;
-      if (nsKioskListing) {
-        purchaseTx = await buildKioskPurchaseTx(ws2.address, nsKioskListing.kioskId, nsKioskListing.nftId, nsKioskListing.priceMist);
-      } else {
-        purchaseTx = await buildTradeportPurchaseTx(ws2.address, nsTradeportListing!.nftTokenId, nsTradeportListing!.priceMist);
-      }
+      // Build purchase descriptor
+      const purchase = nsKioskListing
+        ? { type: 'kiosk' as const, kioskId: nsKioskListing.kioskId, nftId: nsKioskListing.nftId, priceMist: nsKioskListing.priceMist }
+        : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: nsTradeportListing!.priceMist };
+
+      if (btn) btn.textContent = 'TRADE';
+      const txBytes = await buildSwapAndPurchaseTx(
+        ws2.address,
+        purchase,
+        inCoinType !== SUI_COIN_TYPE ? inCoinType : null,
+        selBal,
+        outCoinType !== SUI_COIN_TYPE ? outCoinType : null,
+        suiP,
+      );
       if (btn) btn.textContent = '\u270f';
-      const { digest } = await signAndExecuteTransaction(purchaseTx);
+      const { digest } = await signAndExecuteTransaction(txBytes);
 
       nsAvail = 'owned'; nsTargetAddress = ws2.address; nsLastDigest = digest ?? ''; nsKioskListing = null; nsTradeportListing = null;
       _patchNsStatus(); _patchNsRoute();
@@ -5138,13 +5222,28 @@ function renderSkiMenu() {
         showCopyableToast(display, full);
       }
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = 'BUY'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'TRADE'; }
     }
   }
 
   // Send / Swap / Mint / SuiAMI
   document.getElementById('wk-send-btn')?.addEventListener('click', async () => {
     const sec = document.getElementById('wk-dd-ns-section');
+
+    // BUY/TRADE mode: marketplace listing — takes priority over mint
+    if ((nsKioskListing || nsTradeportListing) && nsLabel.trim().length > 0) {
+      // Fall through to the marketplace purchase handler below the swap/send block
+      // by skipping suiami/swap/send checks
+      const ws2 = getState();
+      if (!ws2.address) return;
+      const btn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+      const label = nsLabel.trim();
+      const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+      // Jump to marketplace purchase handler (defined later in this function)
+      // We need to goto the handler — restructure: call it inline
+      await _handleMarketplacePurchase(ws2, btn, label);
+      return;
+    }
 
     // MINT mode: available name — show loading state and trigger registration
     const isAvailable = sec?.classList.contains('wk-dd-ns-section--available') ?? false;
@@ -5157,21 +5256,6 @@ function renderSkiMenu() {
         regBtn.click();
         regBtn.disabled = true;
       }
-      return;
-    }
-
-    // BUY mode: marketplace listing — jump directly to purchase handler
-    if ((nsKioskListing || nsTradeportListing) && nsLabel.trim().length > 0) {
-      // Fall through to the marketplace purchase handler below the swap/send block
-      // by skipping suiami/swap/send checks
-      const ws2 = getState();
-      if (!ws2.address) return;
-      const btn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-      const label = nsLabel.trim();
-      const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-      // Jump to marketplace purchase handler (defined later in this function)
-      // We need to goto the handler — restructure: call it inline
-      await _handleMarketplacePurchase(ws2, btn, label);
       return;
     }
 
@@ -5398,7 +5482,10 @@ function renderSkiMenu() {
     const val = amountInput.value.trim();
     pendingSendAmount = val;
     sendBtn.disabled = !val || Number(val) <= 0;
+    const clearBtn = document.getElementById('wk-send-clear');
+    if (clearBtn) clearBtn.style.display = val && Number(val) > 0 ? '' : 'none';
     _updateSendBtnMode();
+    _checkAmountOverBalance();
     _debounceSwapQuote();
   });
 
@@ -5428,6 +5515,32 @@ function renderSkiMenu() {
     if (sendBtn) sendBtn.disabled = false;
     _updateSendBtnMode();
     _debounceSwapQuote();
+  });
+
+  // Clear button — zero out amount
+  document.getElementById('wk-send-clear')?.addEventListener('click', () => {
+    const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (!amountInput) return;
+    pendingSendAmount = '';
+    amountInput.value = '';
+    amountInput.classList.remove('wk-send-amount--over');
+    const clearBtn = document.getElementById('wk-send-clear');
+    if (clearBtn) clearBtn.style.display = 'none';
+    const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (sendBtn) sendBtn.disabled = true;
+    _updateSendBtnMode();
+    _checkAmountOverBalance();
+    _debounceSwapQuote();
+    amountInput.focus();
+  });
+
+  // NS clear button — clear name input
+  document.getElementById('wk-ns-clear-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _clearNsInput();
+    const nsClearBtn = document.getElementById('wk-ns-clear-btn');
+    if (nsClearBtn) nsClearBtn.style.display = 'none';
+    _updateSendBtnMode();
   });
 
   // Custom swap output select
@@ -5599,6 +5712,8 @@ function renderSkiMenu() {
     }
 
     nsLabel = val;
+    const nsClearBtn = document.getElementById('wk-ns-clear-btn');
+    if (nsClearBtn) nsClearBtn.style.display = val ? '' : 'none';
     if (nsSubnameParent) {
       // Subname mode — no price fetch, just update register button title
       const parentBare = nsSubnameParent.name.replace(/\.sui$/, '');
@@ -6276,7 +6391,7 @@ function renderSkiMenu() {
         }
 
         // Build and execute purchase transaction
-        if (btn) btn.textContent = 'BUY';
+        if (btn) btn.textContent = 'TRADE';
         let purchaseTx: Uint8Array;
         if (nsKioskListing) {
           purchaseTx = await buildKioskPurchaseTx(ws2.address, nsKioskListing.kioskId, nsKioskListing.nftId, nsKioskListing.priceMist);
@@ -6307,7 +6422,7 @@ function renderSkiMenu() {
           showCopyableToast(display, full);
         }
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = 'BUY'; }
+        if (btn) { btn.disabled = false; btn.textContent = 'TRADE'; }
       }
       return;
     }

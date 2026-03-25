@@ -1084,6 +1084,154 @@ export async function buildTradeportPurchaseTx(
   return tx.build({ client: transport as never });
 }
 
+/**
+ * Build a single-PTB transaction that swaps tokens → SUI and purchases a kiosk/Tradeport listing.
+ * Composes: (optional) swap selected token → SUI + (optional) swap output token → SUI + purchase.
+ * All in one atomic transaction — one signature.
+ */
+export async function buildSwapAndPurchaseTx(
+  rawAddress: string,
+  purchase: { type: 'kiosk'; kioskId: string; nftId: string; priceMist: string }
+    | { type: 'tradeport'; nftTokenId: string; priceMist: string },
+  selectedCoinType: string | null,  // coin type of selected balance (null = SUI)
+  selectedBalance: number,          // token balance of selected coin
+  outputCoinType: string | null,    // coin type of output selector (null = SUI)
+  suiPrice: number,                 // current SUI price in USD
+): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  const priceMist = BigInt(purchase.priceMist);
+  const feeMist = purchase.type === 'tradeport' ? priceMist * 300n / 10000n : 0n;
+  const totalSuiNeeded = priceMist + feeMist;
+
+  // Check how much SUI we already have (from gas coins)
+  const suiCoins = await listCoinsOfType(transport, walletAddress, SUI_TYPE);
+  const suiBal = suiCoins.reduce((sum, c) => sum + c.balance, 0n);
+  const gasBuf = 100_000_000n; // 0.1 SUI gas buffer
+  let suiAccumulated = suiBal > gasBuf ? suiBal - gasBuf : 0n;
+
+  // Step 1: Swap ALL of selected token → SUI (if selected ≠ SUI and has value)
+  if (selectedCoinType && selectedCoinType !== SUI_TYPE && selectedBalance > 0) {
+    const selCoins = await listCoinsOfType(transport, walletAddress, selectedCoinType);
+    if (selCoins.length > 0) {
+      const isUsdc = selectedCoinType.includes('::usdc::');
+      const isXaum = selectedCoinType === XAUM_TYPE;
+      const selDecimals = isUsdc ? 6 : 9;
+      const selMist = BigInt(Math.floor(selectedBalance * (10 ** selDecimals)));
+
+      if (isUsdc) {
+        // USDC → SUI via DeepBook (swap_exact_quote_for_base)
+        const usdcCoin = tx.objectRef(selCoins[0]);
+        if (selCoins.length > 1) tx.mergeCoins(usdcCoin, selCoins.slice(1).map(c => tx.objectRef(c)));
+        const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(selMist)]);
+        const [zeroDEEP1] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+        const dbResult1 = tx.moveCall({
+          target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+          typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
+          arguments: [
+            tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+            usdcForSwap, zeroDEEP1, tx.pure.u64(0), tx.object.clock(),
+          ],
+        });
+        // SUI from swap goes back to wallet (will be available for purchase via gas)
+        tx.transferObjects([dbResult1[0], dbResult1[1], dbResult1[2], usdcCoin], tx.pure.address(walletAddress));
+        suiAccumulated += BigInt(Math.floor(selectedBalance * suiPrice * 0.97 * 1e9)); // estimate
+      } else if (isXaum) {
+        // XAUM → SUI via Bluefin (XAUM→USDC) then DeepBook (USDC→SUI)
+        const xaumCoin = tx.objectRef(selCoins[0]);
+        if (selCoins.length > 1) tx.mergeCoins(xaumCoin, selCoins.slice(1).map(c => tx.objectRef(c)));
+        // Bluefin: XAUM → USDC
+        const [xaumBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [XAUM_TYPE], arguments: [xaumCoin] });
+        const [xaumBalVal] = tx.moveCall({ target: '0x2::balance::value', typeArguments: [XAUM_TYPE], arguments: [xaumBal] });
+        const [zeroUsdcBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [mainPackage.mainnet.coins.USDC.type] });
+        const [xaumDust, usdcBalOut] = tx.moveCall({
+          target: `${BF_PACKAGE}::pool::swap`,
+          typeArguments: [XAUM_TYPE, mainPackage.mainnet.coins.USDC.type],
+          arguments: [
+            tx.object('0x6'), tx.object(BF_GLOBAL_CONFIG), tx.object(BF_XAUM_USDC_POOL),
+            xaumBal, zeroUsdcBal,
+            tx.pure.bool(true), tx.pure.bool(true), xaumBalVal, tx.pure.u64(0),
+            tx.pure.u128(BF_MIN_SQRT_PRICE),
+          ],
+        });
+        const [xaumDustCoin] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [xaumDust] });
+        const [usdcFromXaum] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [mainPackage.mainnet.coins.USDC.type], arguments: [usdcBalOut] });
+        // DeepBook: USDC → SUI
+        const [zeroDEEP2] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+        const dbResult2 = tx.moveCall({
+          target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+          typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
+          arguments: [
+            tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+            usdcFromXaum, zeroDEEP2, tx.pure.u64(0), tx.object.clock(),
+          ],
+        });
+        tx.transferObjects([dbResult2[0], dbResult2[1], dbResult2[2], xaumDustCoin], tx.pure.address(walletAddress));
+        suiAccumulated += BigInt(Math.floor(selectedBalance * suiPrice * 0.95 * 1e9)); // rough estimate
+      }
+      // Other tokens: skip for now (would need aggregator routing)
+    }
+  }
+
+  // Step 2: If still short, swap from output token → SUI
+  if (suiAccumulated < totalSuiNeeded && outputCoinType && outputCoinType !== SUI_TYPE) {
+    const shortfall = totalSuiNeeded - suiAccumulated;
+    const shortfallUsd = (Number(shortfall) / 1e9) * suiPrice;
+    const isOutUsdc = outputCoinType.includes('::usdc::');
+
+    if (isOutUsdc) {
+      const usdcCoins = await listCoinsOfType(transport, walletAddress, outputCoinType);
+      if (usdcCoins.length > 0) {
+        const usdcCoin = tx.objectRef(usdcCoins[0]);
+        if (usdcCoins.length > 1) tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c => tx.objectRef(c)));
+        const usdcAmount = BigInt(Math.ceil(shortfallUsd * 1.03 * 1e6));
+        const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(usdcAmount)]);
+        const [zeroDEEP3] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+        const dbResult3 = tx.moveCall({
+          target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+          typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
+          arguments: [
+            tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+            usdcForSwap, zeroDEEP3, tx.pure.u64(0), tx.object.clock(),
+          ],
+        });
+        tx.transferObjects([dbResult3[0], dbResult3[1], dbResult3[2], usdcCoin], tx.pure.address(walletAddress));
+      }
+    }
+  }
+
+  // Step 3: Purchase — split exact price from gas (which now includes swap proceeds)
+  if (purchase.type === 'kiosk') {
+    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(priceMist.toString())]);
+    const [nft, transferRequest] = tx.moveCall({
+      target: '0x2::kiosk::purchase',
+      typeArguments: [SUINS_REG_TYPE],
+      arguments: [tx.object(purchase.kioskId), tx.pure.id(purchase.nftId), payment],
+    });
+    tx.moveCall({
+      target: '0x2::transfer_policy::confirm_request',
+      typeArguments: [SUINS_REG_TYPE],
+      arguments: [tx.object(SUINS_TRANSFER_POLICY), transferRequest],
+    });
+    tx.transferObjects([nft], tx.pure.address(walletAddress));
+  } else {
+    const price = BigInt(purchase.priceMist);
+    const fee = price * 300n / 10000n;
+    const payment = tx.splitCoins(tx.gas, [tx.pure.u64((price + fee).toString())]);
+    tx.moveCall({
+      target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+      typeArguments: [SUINS_REG_TYPE],
+      arguments: [tx.object(TRADEPORT_STORE), tx.pure.id(purchase.nftTokenId), payment],
+    });
+    tx.transferObjects([payment], tx.pure.address(walletAddress));
+  }
+
+  return tx.build({ client: transport as never });
+}
+
 // ─── Shade — privacy-preserving grace-period escrow ──────────────────
 //
 // Uses a commitment-reveal pattern + Seal encryption so that on-chain
