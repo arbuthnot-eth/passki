@@ -1094,18 +1094,24 @@ export async function buildSwapAndPurchaseTx(
   purchase: { type: 'kiosk'; kioskId: string; nftId: string; priceMist: string }
     | { type: 'tradeport'; nftTokenId: string; priceMist: string },
   selectedCoinType: string | null,  // coin type of selected balance (null = SUI)
-  selectedBalance: number,          // token balance of selected coin
+  selectedBalance: number,          // USD value of selected coin (hint for estimates)
   outputCoinType: string | null,    // coin type of output selector (null = SUI)
   suiPrice: number,                 // current SUI price in USD
+  selectedTokenPrice?: number,      // price per token of selected coin (e.g. XAUM price)
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
   const tx = new Transaction();
   tx.setSender(walletAddress);
 
+  const SLIPPAGE_BPS = 200n; // 2% slippage tolerance
   const priceMist = BigInt(purchase.priceMist);
   const feeMist = purchase.type === 'tradeport' ? priceMist * 300n / 10000n : 0n;
   const totalSuiNeeded = priceMist + feeMist;
+
+  // Helper: calculate min output with slippage protection
+  // expectedOut in MIST, returns min acceptable output (98% of expected)
+  const withSlippage = (expected: bigint) => expected * (10000n - SLIPPAGE_BPS) / 10000n;
 
   // Check how much SUI we already have (from gas coins)
   const suiCoins = await listCoinsOfType(transport, walletAddress, SUI_TYPE);
@@ -1113,37 +1119,51 @@ export async function buildSwapAndPurchaseTx(
   const gasBuf = 100_000_000n; // 0.1 SUI gas buffer
   let suiAccumulated = suiBal > gasBuf ? suiBal - gasBuf : 0n;
 
-  // Step 1: Swap ALL of selected token → SUI (if selected ≠ SUI and has value)
-  if (selectedCoinType && selectedCoinType !== SUI_TYPE && selectedBalance > 0) {
+  // Step 1: Swap ALL of selected token → SUI (if selected ≠ SUI)
+  // Always check on-chain balance — don't trust UI cache
+  if (selectedCoinType && selectedCoinType !== SUI_TYPE) {
     const selCoins = await listCoinsOfType(transport, walletAddress, selectedCoinType);
-    if (selCoins.length > 0) {
+    const onChainBal = selCoins.reduce((sum, c) => sum + c.balance, 0n);
+    if (selCoins.length > 0 && onChainBal > 0n) {
       const isUsdc = selectedCoinType.includes('::usdc::');
       const isXaum = selectedCoinType === XAUM_TYPE;
+      // Use on-chain balance for USD estimate
       const selDecimals = isUsdc ? 6 : 9;
-      const selMist = BigInt(Math.floor(selectedBalance * (10 ** selDecimals)));
+      const actualBalance = Number(onChainBal) / (10 ** selDecimals);
 
       if (isUsdc) {
-        // USDC → SUI via DeepBook (swap_exact_quote_for_base)
+        // USDC → SUI via DeepBook
+        const expectedSui = BigInt(Math.floor(actualBalance / suiPrice * 1e9));
+        const minSuiOut = withSlippage(expectedSui);
         const usdcCoin = tx.objectRef(selCoins[0]);
         if (selCoins.length > 1) tx.mergeCoins(usdcCoin, selCoins.slice(1).map(c => tx.objectRef(c)));
-        const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(selMist)]);
+        const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(onChainBal)]);
         const [zeroDEEP1] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
         const dbResult1 = tx.moveCall({
           target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
           typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
           arguments: [
             tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
-            usdcForSwap, zeroDEEP1, tx.pure.u64(0), tx.object.clock(),
+            usdcForSwap, zeroDEEP1, tx.pure.u64(minSuiOut), tx.object.clock(),
           ],
         });
-        // SUI from swap goes back to wallet (will be available for purchase via gas)
-        tx.transferObjects([dbResult1[0], dbResult1[1], dbResult1[2], usdcCoin], tx.pure.address(walletAddress));
-        suiAccumulated += BigInt(Math.floor(selectedBalance * suiPrice * 0.97 * 1e9)); // estimate
+        tx.mergeCoins(tx.gas, [dbResult1[0]]);
+        tx.transferObjects([dbResult1[1], dbResult1[2], usdcCoin], tx.pure.address(walletAddress));
+        suiAccumulated += withSlippage(expectedSui);
       } else if (isXaum) {
-        // XAUM → SUI via Bluefin (XAUM→USDC) then DeepBook (USDC→SUI)
+        // XAUM → USDC (Bluefin) → SUI (DeepBook) — two-hop in same PTB
+        // Get XAUM price for slippage calc
         const xaumCoin = tx.objectRef(selCoins[0]);
         if (selCoins.length > 1) tx.mergeCoins(xaumCoin, selCoins.slice(1).map(c => tx.objectRef(c)));
-        // Bluefin: XAUM → USDC
+
+        // Bluefin XAUM→USDC: min_out from token price with 2% slippage
+        const xaumUsdValue = selectedTokenPrice && selectedTokenPrice > 0
+          ? actualBalance * selectedTokenPrice
+          : selectedBalance; // fallback to UI's USD hint
+        const expectedUsdc = BigInt(Math.floor(Math.max(xaumUsdValue, 0) * 1e6));
+        const minUsdcOut = withSlippage(expectedUsdc);
+
+        // Bluefin: XAUM → USDC (balance-based)
         const [xaumBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [XAUM_TYPE], arguments: [xaumCoin] });
         const [xaumBalVal] = tx.moveCall({ target: '0x2::balance::value', typeArguments: [XAUM_TYPE], arguments: [xaumBal] });
         const [zeroUsdcBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [mainPackage.mainnet.coins.USDC.type] });
@@ -1153,33 +1173,42 @@ export async function buildSwapAndPurchaseTx(
           arguments: [
             tx.object('0x6'), tx.object(BF_GLOBAL_CONFIG), tx.object(BF_XAUM_USDC_POOL),
             xaumBal, zeroUsdcBal,
-            tx.pure.bool(true), tx.pure.bool(true), xaumBalVal, tx.pure.u64(0),
+            tx.pure.bool(true), tx.pure.bool(true), xaumBalVal, tx.pure.u64(minUsdcOut),
             tx.pure.u128(BF_MIN_SQRT_PRICE),
           ],
         });
         const [xaumDustCoin] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [xaumDust] });
         const [usdcFromXaum] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [mainPackage.mainnet.coins.USDC.type], arguments: [usdcBalOut] });
-        // DeepBook: USDC → SUI
+
+        // DeepBook: USDC → SUI — use expected USDC value to set min SUI out
+        const expectedSuiFromXaum = suiPrice > 0
+          ? BigInt(Math.floor(Number(withSlippage(expectedUsdc)) / 1e6 / suiPrice * 1e9))
+          : 0n;
+        const minSuiFromXaum = withSlippage(expectedSuiFromXaum);
         const [zeroDEEP2] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
         const dbResult2 = tx.moveCall({
           target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
           typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
           arguments: [
             tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
-            usdcFromXaum, zeroDEEP2, tx.pure.u64(0), tx.object.clock(),
+            usdcFromXaum, zeroDEEP2, tx.pure.u64(minSuiFromXaum), tx.object.clock(),
           ],
         });
-        tx.transferObjects([dbResult2[0], dbResult2[1], dbResult2[2], xaumDustCoin], tx.pure.address(walletAddress));
-        suiAccumulated += BigInt(Math.floor(selectedBalance * suiPrice * 0.95 * 1e9)); // rough estimate
+        tx.mergeCoins(tx.gas, [dbResult2[0]]);
+        tx.transferObjects([dbResult2[1], dbResult2[2], xaumDustCoin], tx.pure.address(walletAddress));
+        suiAccumulated += minSuiFromXaum;
       }
-      // Other tokens: skip for now (would need aggregator routing)
     }
   }
 
-  // Step 2: If still short, swap from output token → SUI
+  // Step 2: If still short, swap from output token (USDC) → SUI
+  // Over-estimate input by slippage% to ensure enough SUI output
   if (suiAccumulated < totalSuiNeeded && outputCoinType && outputCoinType !== SUI_TYPE) {
     const shortfall = totalSuiNeeded - suiAccumulated;
-    const shortfallUsd = (Number(shortfall) / 1e9) * suiPrice;
+    // Add slippage buffer to input amount (swap more USDC to guarantee enough SUI)
+    const shortfallWithBuffer = shortfall + (shortfall * SLIPPAGE_BPS / 10000n);
+    const shortfallUsd = (Number(shortfallWithBuffer) / 1e9) * suiPrice;
+    const minSuiFromBackup = withSlippage(shortfall);
     const isOutUsdc = outputCoinType.includes('::usdc::');
 
     if (isOutUsdc) {
@@ -1187,7 +1216,7 @@ export async function buildSwapAndPurchaseTx(
       if (usdcCoins.length > 0) {
         const usdcCoin = tx.objectRef(usdcCoins[0]);
         if (usdcCoins.length > 1) tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c => tx.objectRef(c)));
-        const usdcAmount = BigInt(Math.ceil(shortfallUsd * 1.03 * 1e6));
+        const usdcAmount = BigInt(Math.ceil(shortfallUsd * 1e6));
         const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(usdcAmount)]);
         const [zeroDEEP3] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
         const dbResult3 = tx.moveCall({
@@ -1195,15 +1224,16 @@ export async function buildSwapAndPurchaseTx(
           typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
           arguments: [
             tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
-            usdcForSwap, zeroDEEP3, tx.pure.u64(0), tx.object.clock(),
+            usdcForSwap, zeroDEEP3, tx.pure.u64(minSuiFromBackup), tx.object.clock(),
           ],
         });
-        tx.transferObjects([dbResult3[0], dbResult3[1], dbResult3[2], usdcCoin], tx.pure.address(walletAddress));
+        tx.mergeCoins(tx.gas, [dbResult3[0]]);
+        tx.transferObjects([dbResult3[1], dbResult3[2], usdcCoin], tx.pure.address(walletAddress));
       }
     }
   }
 
-  // Step 3: Purchase — split exact price from gas (which now includes swap proceeds)
+  // Step 3: Purchase — split exact price from gas (now includes merged swap SUI)
   if (purchase.type === 'kiosk') {
     const payment = tx.splitCoins(tx.gas, [tx.pure.u64(priceMist.toString())]);
     const [nft, transferRequest] = tx.moveCall({

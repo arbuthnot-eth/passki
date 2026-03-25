@@ -1132,14 +1132,14 @@ body {
   all: unset;
   cursor: pointer;
   position: absolute;
-  right: 16px;
+  right: 3px;
   top: 50%;
   transform: translateY(-50%);
   font-size: 0.65rem;
   color: rgba(255, 255, 255, 0.7);
   padding: 2px 4px;
   line-height: 1;
-  z-index: 2;
+  z-index: 3;
   transition: color 0.15s;
 }
 .wk-ns-clear-btn:hover {
@@ -3318,6 +3318,8 @@ body {
 
 /* Blue card only when wallet has at least one key */
 .ski-detail-header--keyed {
+  position: relative;
+  overflow: hidden;
   border: 1px solid rgba(59, 130, 246, 0.86);
   border-radius: 8px;
   background: linear-gradient(135deg, rgba(13, 38, 94, 0.66), rgba(10, 24, 56, 0.75));
@@ -3608,7 +3610,7 @@ body {
   display: flex;
   align-items: center;
   height: 36px;
-  padding: 0 4px 0 16px;
+  padding: 0 4px 0 8px;
   gap: 3px;
   cursor: pointer;
   outline: none;
@@ -3636,7 +3638,7 @@ body {
 }
 /* Push content between shape (left) and icon (right) */
 .ski-legend-row-mid {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -4042,6 +4044,24 @@ body {
   width: 100%;
   min-height: 38px;
 }
+.ski-detail-qr {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  aspect-ratio: 1;
+  width: auto;
+  max-height: calc(100% - 16px);
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  z-index: 2;
+}
+.ski-detail-qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
 .ski-detail-active-pfp {
   flex-shrink: 0;
   display: flex;
@@ -4388,6 +4408,7 @@ body {
   transition: opacity 0.12s ease;
   margin-right: -1px;
   margin-bottom: -6px;
+  margin-left: -10px;
 }
 
 .ski-modal-logo:hover {

@@ -519,12 +519,12 @@ function getInlineSkiSvg(): string {
     const rawBal = balView === 'usd'
       ? ((fmtUsd(_showUsd) || '').replace(/^\$/, '') || '--')
       : fmtSui(_showSui);
-    // Flexible: fill from dot-right-edge (x=365) to lift bottom-right (x=1180), ~815 units wide.
-    // Font scales so character height fills the lower SVG zone (y=460..840).
-    const fontSize = Math.max(200, Math.min(380, Math.floor(815 / (rawBal.length * 0.52))));
-    // Push center up for large fonts so text stays within the 847-tall viewBox
+    // Balance text: starts right after the dot shape, extends to right edge
+    const balX = 280; // tighter left start (closer to dot)
+    const balW = 1180 - balX; // available width
+    const fontSize = Math.max(200, Math.min(380, Math.floor(balW / (rawBal.length * 0.52))));
     const textY = Math.min(672, 840 - Math.round(fontSize / 2));
-    extraOverlay = `<defs><filter id="ski-bal-glow" x="-15%" y="-15%" width="130%" height="130%"><feGaussianBlur stdDeviation="10" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><text x="365" y="${textY}" textLength="815" lengthAdjust="spacingAndGlyphs" text-anchor="start" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${fontSize}" font-weight="800" fill="white" stroke="white" stroke-width="6" paint-order="stroke fill" filter="url(#ski-bal-glow)" pointer-events="none">${esc(rawBal)}</text>`;
+    extraOverlay = `<defs><filter id="ski-bal-glow" x="-15%" y="-15%" width="130%" height="130%"><feGaussianBlur stdDeviation="10" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><text x="${balX}" y="${textY}" textLength="${balW}" lengthAdjust="spacingAndGlyphs" text-anchor="start" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${fontSize}" font-weight="800" fill="white" stroke="white" stroke-width="6" paint-order="stroke fill" filter="url(#ski-bal-glow)" pointer-events="none">${esc(rawBal)}</text>`;
   }
 
   const overlays = dotOverlay + extraOverlay;
@@ -689,9 +689,9 @@ async function getQrSvg(url: string, color?: string): Promise<string> {
 }
 
 /** Generate a QR SVG for a Sui address with a center logo. Uses 'H' error correction to tolerate the overlay.
- *  mode='sui' → blue QR + Sui drop; mode='usd' → green QR + $ sign */
-async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' = 'sui'): Promise<string> {
-  const dark = mode === 'usd' ? '#4ade80' : '#60a5fa';
+ *  mode='sui' → blue QR + Sui drop; mode='usd' → green QR + $ sign; mode='bw' → white QR + diamond */
+async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' = 'sui'): Promise<string> {
+  const dark = mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : '#60a5fa';
   const key = `ski:qr:addr:${mode}:${addr}`;
   try { const cached = localStorage.getItem(key); if (cached) return cached; } catch {}
   const mod = await import('qrcode');
@@ -708,6 +708,9 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' = 'sui'): Promise
     if (mode === 'usd') {
       const fill = '#22c55e';
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${r * 1.3}" font-weight="700" fill="white">$</text>`;
+    } else if (mode === 'bw') {
+      const d = r * 0.85;
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#050505" stroke="white" stroke-width="${d * 0.25}"/>`;
     } else {
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="#4da2ff"/><g transform="translate(${cx - r * 0.72},${cy - r * 0.82}) scale(${(logoSize * 0.75) / 300})" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
     }
@@ -916,6 +919,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
     ? keyPfpHtml(addr0, suinsName0)
     : '<div class="ski-key-pfp ski-key-pfp--green-circle"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div>';
   const nameInputHtml = `<input class="ski-create-waap-name-input" type="text" value="name" tabindex="0" onclick="event.stopPropagation()" onfocus="if(this.value==='name')this.value=''" onblur="if(!this.value)this.value='name'"><span class="ski-create-waap-tld">.sui</span>`;
+  const activeQrHtml = addr0 ? `<div class="ski-detail-qr" id="ski-detail-qr" data-qr-addr="${esc(addr0)}" title="Receive on Sui: ${esc(addr0)}"></div>` : '';
   const activeTextHtml = addr0 ? `<div class="ski-detail-active-text-row">
         <div class="ski-detail-active-pfp">${activePfpHtml}</div>
         <div class="ski-detail-key-text">
@@ -963,6 +967,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
         </div>
         ${activeTextHtml}
       </div>
+      ${activeQrHtml}
     </div>
   `;
 
@@ -1177,6 +1182,18 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
       });
     });
   });
+
+  // Populate QR code for the active key's receive address
+  const qrEl = detailEl.querySelector('#ski-detail-qr') as HTMLElement | null;
+  if (qrEl) {
+    const qrAddr = qrEl.dataset.qrAddr;
+    if (qrAddr) {
+      const qrMode = suinsName0 ? 'sui' : 'bw';
+      _getAddrQrSvg(qrAddr, qrMode as 'sui' | 'usd').then(svg => {
+        qrEl.innerHTML = svg;
+      }).catch(() => {});
+    }
+  }
 
   // Wallet icon wrap: sponsor the extension using the keyed-in wallet (or revoke if active)
   const walletIconWrapEl = detailEl.querySelector<HTMLElement>('.ski-detail-icon-wrap');
@@ -1460,12 +1477,17 @@ function buildSplashLegend(): string {
           ? (isConn ? LEGEND_BLUE_DROP : LEGEND_BLUE)
           : (isConn ? LEGEND_GREEN_DROP : LEGEND_GREEN);
       const social = socialIconSvg(e.walletName);
-      const nameHtml = e.suinsName
-        ? (() => { const bare = e.suinsName.replace(/\.sui$/, ''); return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-legend-name">${esc(bare)}</a>`; })()
+      const hasSuins = !!e.suinsName;
+      const nameHtml = hasSuins
+        ? (() => { const bare = e.suinsName!.replace(/\.sui$/, ''); return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-legend-name">${esc(bare)}</a>`; })()
         : `<span class="ski-legend-name ski-legend-name--empty"></span>`;
-      const addrCell = e.address
-        ? `<span class="ski-legend-addr" data-copy-addr="${esc(e.address)}" data-scan-addr="${esc(e.address)}" title="${esc(e.address)}">${esc(truncAddr(e.address))}</span>`
-        : `<span class="ski-legend-name ski-legend-name--wallet">${esc(e.walletName)}</span>`;
+      // Blue square (has SuiNS): show only name, no hex address
+      // Black diamond (no SuiNS): show hex address
+      const addrCell = hasSuins
+        ? ''
+        : e.address
+          ? `<span class="ski-legend-addr" data-copy-addr="${esc(e.address)}" data-scan-addr="${esc(e.address)}" title="${esc(e.address)}">${esc(truncAddr(e.address))}</span>`
+          : `<span class="ski-legend-name ski-legend-name--wallet">${esc(e.walletName)}</span>`;
       const iconCell = /waap/i.test(e.walletName) && e.address
         ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${waapProviderIcon(e.address)}</span>`
         : social
@@ -1811,11 +1833,18 @@ function renderModal(): void {
   const modalTop = anchorRect
     ? Math.round(anchorRect.bottom + 8)
     : 61;
-  // Match modal min-width to the SKI menu bar width
+  // Match modal width to the SKI button bar width (left edge to right edge of bar)
   const barEl = els.widget || els.profile;
   const barWidth = barEl ? barEl.getBoundingClientRect().width : 0;
-  const minWidthStyle = barWidth > 0 ? `min-width:${Math.round(barWidth)}px;` : '';
-  const modalPos = `right:${modalRight}px;top:${modalTop}px;${minWidthStyle}`;
+  const skiBtn = els.skiBtn || els.skiDot;
+  const skiBtnRect = skiBtn?.getBoundingClientRect();
+  // Width = from left edge of profile/widget to right edge of SKI button
+  const totalBarWidth = (skiBtnRect && barEl)
+    ? Math.round(skiBtnRect.right - barEl.getBoundingClientRect().left)
+    : barWidth;
+  const modalWidth = Math.max(totalBarWidth, 300);
+  const widthStyle = modalWidth > 0 ? `width:${modalWidth}px;` : '';
+  const modalPos = `right:${modalRight}px;top:${modalTop}px;${widthStyle}`;
 
   const wallets = getSuiWallets().sort((a, b) => {
     const aW = /waap/i.test(a.name) ? 0 : 1;
@@ -3491,6 +3520,14 @@ function _clearNsInput() {
   nsShadeOrder = null;
   nsPriceFetchFor = '';
   if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
+  // Clear amount + red styling when listing was populating it
+  pendingSendAmount = '';
+  const amtInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+  if (amtInput) { amtInput.value = ''; amtInput.classList.remove('wk-send-amount--over'); }
+  document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+  document.querySelector('.wk-ns-dot-sui')?.classList.remove('wk-ns-dot-sui--insufficient');
+  const clearBtn = document.getElementById('wk-send-clear');
+  if (clearBtn) clearBtn.style.display = 'none';
   _patchNsPrice();
   _patchNsStatus();
   _patchNsRoute();
@@ -4822,16 +4859,20 @@ function renderSkiMenu() {
     const wrapped = ((idx % _coinChipsCache.length) + _coinChipsCache.length) % _coinChipsCache.length;
     const chip = _coinChipsCache[wrapped];
     selectedCoinSymbol = chip.key.toUpperCase();
-    // Zero out amount on coin change
-    const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-    if (amountInput) {
-      pendingSendAmount = '';
-      amountInput.value = '';
-      const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-      if (sendBtn) sendBtn.disabled = true;
+    // Zero out amount on coin change — but NOT when a listing is active (price is fixed)
+    const hasListing = !!(nsKioskListing || nsTradeportListing);
+    if (!hasListing) {
+      const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+      if (amountInput) {
+        pendingSendAmount = '';
+        amountInput.value = '';
+        const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+        if (sendBtn) sendBtn.disabled = true;
+      }
     }
     _debounceSwapQuote();
     _updateSendBtnMode();
+    _checkAmountOverBalance();
     renderSkiMenu();
   }
   document.getElementById('wk-coin-prev')?.addEventListener('click', (e) => {
@@ -5076,8 +5117,19 @@ function renderSkiMenu() {
       const outLabel = outOpt ? outOpt.label : swapOutputKey.toUpperCase();
       const val = pendingSendAmount;
       const amtStr = val && Number(val) > 0 ? `$${_fmtUsd(Number(val))} ` : '';
-      btn.title = `Swap ${inSym} to ${amtStr}${outLabel}`;
-      btn.disabled = !val || Number(val) <= 0;
+      const selKey = selectedCoinSymbol?.toLowerCase() ?? '';
+      const selChip = _coinChipsCache.find(c => c.key === selKey) ?? _coinChipsCache[0];
+      const selVal = selChip?.val ?? 0;
+      const swapOver = Number(val) > 0 && selVal > 0 && Number(val) > selVal * 1.01;
+      if (swapOver) {
+        btn.title = `Insufficient ${inSym} \u2014 need $${_fmtUsd(Number(val))}`;
+        btn.disabled = true;
+        btn.classList.add('wk-send-btn--cant-afford');
+      } else {
+        btn.title = `Swap ${inSym} to ${amtStr}${outLabel}`;
+        btn.disabled = !val || Number(val) <= 0;
+        btn.classList.remove('wk-send-btn--cant-afford');
+      }
     } else if (suiamiSendMode) {
       btn.disabled = false;
       btn.textContent = 'SUIAMI';
@@ -5088,8 +5140,19 @@ function renderSkiMenu() {
       const val = pendingSendAmount;
       const sendAmtStr = val && Number(val) > 0 ? `$${_fmtUsd(Number(val))} ` : '';
       const sendTarget = nsLabel.trim() ? `${nsLabel.trim()}.sui` : '';
-      btn.title = `Send ${sendAmtStr}${sendSym}${sendTarget ? ` to ${sendTarget}` : ''}`;
-      btn.disabled = !val || Number(val) <= 0;
+      const sendSelKey = selectedCoinSymbol?.toLowerCase() ?? '';
+      const sendSelChip = _coinChipsCache.find(c => c.key === sendSelKey) ?? _coinChipsCache[0];
+      const sendSelVal = sendSelChip?.val ?? 0;
+      const sendOver = Number(val) > 0 && sendSelVal > 0 && Number(val) > sendSelVal * 1.01;
+      if (sendOver) {
+        btn.title = `Insufficient ${sendSym} \u2014 need $${_fmtUsd(Number(val))}`;
+        btn.disabled = true;
+        btn.classList.add('wk-send-btn--cant-afford');
+      } else {
+        btn.title = `Send ${sendAmtStr}${sendSym}${sendTarget ? ` to ${sendTarget}` : ''}`;
+        btn.disabled = !val || Number(val) <= 0;
+        btn.classList.remove('wk-send-btn--cant-afford');
+      }
     } else if (suiamiMode) {
       btn.disabled = false;
       btn.textContent = 'SUIAMI';
@@ -5192,6 +5255,7 @@ function renderSkiMenu() {
         : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: nsTradeportListing!.priceMist };
 
       if (btn) btn.textContent = 'TRADE';
+      const selTokenPrice = getTokenPrice(selectedCoinSymbol ?? '') ?? undefined;
       const txBytes = await buildSwapAndPurchaseTx(
         ws2.address,
         purchase,
@@ -5199,6 +5263,7 @@ function renderSkiMenu() {
         selBal,
         outCoinType !== SUI_COIN_TYPE ? outCoinType : null,
         suiP,
+        selTokenPrice,
       );
       if (btn) btn.textContent = '\u270f';
       const { digest } = await signAndExecuteTransaction(txBytes);
