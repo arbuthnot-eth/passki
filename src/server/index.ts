@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
+import { raceJsonRpc } from './rpc.js';
 
 interface Env {
   ShadeExecutorAgent: DurableObjectNamespace;
@@ -213,40 +214,33 @@ app.post('/api/suiami/verify', async (c) => {
     }
 
     // On-chain verification: confirm the signer owns the NFT and it resolves to the claimed name
-    const RPC = 'https://fullnode.mainnet.sui.io:443';
     let ownershipVerified = false;
     let nameVerified = false;
     let onChainError: string | undefined;
 
     try {
       // 1. Check NFT owner matches claimed address
-      const objRes = await fetch(RPC, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sui_getObject', params: [message.nftId, { showOwner: true, showContent: true, showType: true }] }),
-      });
-      const objData = await objRes.json() as {
-        result?: {
-          data?: {
-            owner?: { AddressOwner?: string; ObjectOwner?: string };
-            content?: { fields?: { name?: string } };
-            type?: string;
-          };
+      const objData = await raceJsonRpc<{
+        data?: {
+          owner?: { AddressOwner?: string; ObjectOwner?: string };
+          content?: { fields?: { name?: string } };
+          type?: string;
         };
-      };
-      const owner = objData.result?.data?.owner;
+      }>('sui_getObject', [message.nftId, { showOwner: true, showContent: true, showType: true }]);
+      const owner = objData?.data?.owner;
       const ownerAddr = owner?.AddressOwner ?? '';
       // Normalize both addresses for comparison (strip 0x, lowercase, pad to 64)
       const norm = (a: string) => a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
       ownershipVerified = norm(ownerAddr) === norm(message.address);
 
       // 2. Check the NFT's domain_name field matches the claimed name
-      const fields = objData.result?.data?.content?.fields as Record<string, unknown> | undefined;
+      const fields = objData?.data?.content?.fields as Record<string, unknown> | undefined;
       const nftName = ((fields?.domain_name ?? fields?.name ?? '') as string).replace(/\.sui$/, '');
       const claimedName = (message.suiami as string).replace(/^I am /, '');
       nameVerified = nftName === claimedName;
 
       // Also verify it's actually a SuinsRegistration type
-      const objType = objData.result?.data?.type ?? (objData.result?.data?.content as Record<string, unknown>)?.type as string ?? '';
+      const objType = objData?.data?.type ?? (objData?.data?.content as Record<string, unknown>)?.type as string ?? '';
       if (!objType.includes('suins_registration::SuinsRegistration') && !objType.includes('SubDomainRegistration')) {
         onChainError = 'Object is not a SuiNS registration NFT';
         ownershipVerified = false;
