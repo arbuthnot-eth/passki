@@ -13,9 +13,7 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
-
-const GQL_URL    = 'https://graphql.mainnet.sui.io/graphql';
-const GRPC_URL   = 'https://fullnode.mainnet.sui.io:443';
+import { grpcClient, GQL_URL, gqlClient } from './rpc.js';
 
 // ─── Contract constants ────────────────────────────────────────────────
 
@@ -460,7 +458,7 @@ export async function checkDomainStatus(
   /** Extra addresses to treat as "owned" (e.g. discovered on-chain owner for WaaP wallets). */
   additionalOwnerAddresses?: string[],
 ): Promise<DomainStatusResult> {
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
   try {
     const record = await suinsClient.getNameRecord(`${label}.sui`);
@@ -558,7 +556,7 @@ export async function checkDomainStatus(
 /** Look up the on-chain owner address for a SuiNS domain's NFT. */
 export async function lookupNftOwner(domain: string): Promise<string | null> {
   try {
-    const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    const transport = gqlClient;
     const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
     const fullDomain = domain.endsWith('.sui') ? domain : `${domain}.sui`;
     const record = await suinsClient.getNameRecord(fullDomain);
@@ -597,26 +595,23 @@ export async function buildSetDefaultNsTx(rawAddress: string, domain: string): P
       tx.pure.string(fullDomain),
     ],
   });
-  const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: GRPC_URL });
   try {
-    return await tx.build({ client: grpc as never });
+    return await tx.build({ client: grpcClient as never });
   } catch {
-    const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-    return tx.build({ client: gql as never });
+    return tx.build({ client: gqlClient as never });
   }
 }
 
 /** Execute a pre-signed transaction via our own gRPC transport (bypasses WaaP execution bugs). */
 export async function executeSignedTx(bytesB64: string, signature: string): Promise<string> {
-  const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: GRPC_URL });
   const txBytes = Uint8Array.from(atob(bytesB64), c => c.charCodeAt(0));
-  const result = await grpc.executeTransaction({ transaction: txBytes, signatures: [signature] });
+  const result = await grpcClient.executeTransaction({ transaction: txBytes, signatures: [signature] });
   return (result as { digest?: string }).digest ?? '';
 }
 
 /** Resolve a SuiNS name to its target address. Returns null if not found or no target set. */
 export async function resolveSuiNSName(name: string): Promise<string | null> {
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
   const fullName = name.endsWith('.sui') ? name : `${name}.sui`;
   try {
@@ -637,7 +632,7 @@ export async function buildSetTargetAddressTx(
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const target = normalizeSuiAddress(newTargetAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
   const fetchAddr = ownerAddress ? normalizeSuiAddress(ownerAddress) : walletAddress;
   const owned = await fetchOwnedDomains(fetchAddr);
@@ -661,7 +656,7 @@ export async function buildSubnameTxBytes(
   feeRecipient?: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const tx = buildSubnameTx(parent, subLabel, normalizeSuiAddress(targetAddress), type, undefined, feeRecipient);
   tx.setSender(walletAddress);
   return tx.build({ client: transport as never });
@@ -669,7 +664,7 @@ export async function buildSubnameTxBytes(
 
 /** Returns the NS-discounted registration price in USD for a `.sui` label (1 year). */
 export async function fetchDomainPriceUsd(label: string): Promise<number> {
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
   const [rawPrice, discountMap] = await Promise.all([
     suinsClient.calculatePrice({ name: `${label}.sui`, years: 1 }),
@@ -726,7 +721,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   const walletAddress = normalizeSuiAddress(rawAddress);
 
   // Use GraphQL directly — skip gRPC trial which adds a full extra round-trip on failure.
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
 
   const [usdcCoins, nsCoins, rawPrice, discountMap, sponsorInfo] = await Promise.all([
@@ -961,7 +956,7 @@ export async function resolveKioskIdForNft(nftId: string): Promise<string | null
 async function _fetchKioskListingPrice(kioskId: string, nftId: string): Promise<string | null> {
   try {
     const { kiosk } = await import('@mysten/kiosk');
-    const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    const transport = gqlClient;
     const client = transport.$extend(kiosk());
     const data = await client.kiosk.getKiosk({ id: kioskId, options: { withListingPrices: true } });
     const item = data.items?.find(i => i.objectId === nftId && i.listing);
@@ -986,7 +981,7 @@ export async function buildKioskPurchaseTx(
   priceMist: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
 
   const tx = new Transaction();
   tx.setSender(walletAddress);
@@ -1057,7 +1052,7 @@ export async function buildTradeportPurchaseTx(
   priceMist: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
 
   const tx = new Transaction();
   tx.setSender(walletAddress);
@@ -1100,7 +1095,7 @@ export async function buildSwapAndPurchaseTx(
   selectedTokenPrice?: number,      // price per token of selected coin (e.g. XAUM price)
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const tx = new Transaction();
   tx.setSender(walletAddress);
 
@@ -1372,7 +1367,7 @@ export async function buildCreateShadeOrderTx(
   suiPrice: number,
 ): Promise<{ txBytes: Uint8Array; orderInfo: Omit<ShadeOrderInfo, 'objectId'> }> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
 
   // Calculate deposit: NS-discounted price / SUI price * 1.10 buffer
@@ -1437,7 +1432,7 @@ export async function buildExecuteShadeOrderTx(
   order: ShadeOrderInfo,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
 
   const tx = new Transaction();
@@ -1493,7 +1488,7 @@ export async function buildCancelShadeOrderTx(
   orderObjectId: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const tx = new Transaction();
   tx.setSender(walletAddress);
   tx.moveCall({
@@ -1512,7 +1507,7 @@ export async function buildCancelRefundShadeOrderTx(
   orderObjectId: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const tx = new Transaction();
   tx.setSender(walletAddress);
   tx.moveCall({
@@ -1531,7 +1526,7 @@ export async function buildReapCancelledShadeOrderTx(
   orderObjectId: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const tx = new Transaction();
   tx.setSender(walletAddress);
   tx.moveCall({
@@ -1764,7 +1759,7 @@ export async function buildConsolidateToUsdcTx(
   includeSui = false,
 ): Promise<ConsolidateResult> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
 
   // Fetch all swappable coins + sponsor info in parallel
@@ -1910,7 +1905,7 @@ export async function buildSelfSwapTx(
   amount: bigint,
 ): Promise<SelfSwapResult> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
   const tx = new Transaction();
   tx.setSender(walletAddress);
@@ -2000,7 +1995,7 @@ export async function buildSwapTx(
   }
 
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const tx = new Transaction();
   tx.setSender(walletAddress);
 
@@ -2280,7 +2275,7 @@ export async function buildSendTx(
   const sender = normalizeSuiAddress(senderAddress);
   const recipient = normalizeSuiAddress(recipientAddress);
   if (sender === recipient) throw new Error('Recipient matches sender');
-  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const transport = gqlClient;
   const tx = new Transaction();
   tx.setSender(sender);
 
