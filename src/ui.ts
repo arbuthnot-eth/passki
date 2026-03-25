@@ -26,7 +26,7 @@ import {
   type WalletState,
 } from './wallet.js';
 import type { Wallet, WalletAccount } from '@wallet-standard/base';
-import { grpcClient, GQL_URL } from './rpc.js';
+import { grpcClient, grpcUrl, GQL_URL } from './rpc.js';
 export { grpcClient };
 import {
   getSponsorState,
@@ -2297,7 +2297,7 @@ async function _fetchMissingDecimals(coinTypes: string[]) {
   if (!unknown.length) return;
   await Promise.all(unknown.map(async ct => {
     try {
-      const r = await fetch('https://fullnode.mainnet.sui.io:443', {
+      const r = await fetch(grpcUrl, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoinMetadata', params: [ct] }),
       });
@@ -5372,7 +5372,7 @@ function renderSkiMenu() {
           let cursor: string | null = null;
           const target = `${bare}.sui`;
           for (let page = 0; page < 10 && !nftId; page++) {
-            const objRes = await fetch('https://fullnode.mainnet.sui.io:443', {
+            const objRes = await fetch(grpcUrl, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getOwnedObjects', params: [ws2.address, { filter: { StructType: '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::suins_registration::SuinsRegistration' }, options: { showContent: true } }, cursor, 50] }),
             });
