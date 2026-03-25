@@ -22,8 +22,8 @@
  */
 
 import { Transaction } from '@mysten/sui/transactions';
-import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuinsClient } from '@mysten/suins';
+import { grpcClient, GQL_URL } from './rpc.js';
 import type { Wallet, WalletAccount } from '@wallet-standard/base';
 
 // ─── Types ────────────────────────────────────────────────────────────
@@ -387,10 +387,7 @@ export async function restoreSponsor(registeredWallets: Wallet[]): Promise<boole
 
 // ─── SuiNS resolution ─────────────────────────────────────────────────
 
-const GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
-
-const _suinsGrpcClient = new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://fullnode.mainnet.sui.io:443' });
-const _suinsClient = new SuinsClient({ client: _suinsGrpcClient as never, network: 'mainnet' });
+const _suinsClient = new SuinsClient({ client: grpcClient as never, network: 'mainnet' });
 
 /** Truncate a Sui address for display: 0x3ca0...5222b */
 function truncAddr(addr: string): string {
@@ -411,7 +408,7 @@ async function resolveAddressToName(address: string): Promise<string | null> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(GRAPHQL_URL, {
+    const res = await fetch(GQL_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -532,7 +529,7 @@ export function removeSponsoredEntry(address: string): void {
 type CoinRef = { objectId: string; version: string; digest: string };
 
 async function fetchSponsorCoins(address: string): Promise<CoinRef[]> {
-  const res = await fetch(GRAPHQL_URL, {
+  const res = await fetch(GQL_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
