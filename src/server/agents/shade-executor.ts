@@ -22,13 +22,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
-
-const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
-const FULLNODE_URLS = [
-  'https://sui-rpc.publicnode.com',
-  'https://sui-mainnet-endpoint.blockvision.org',
-  'https://rpc.ankr.com/sui',
-];
+import { raceExecuteTransaction, TxFailureError, GQL_URL } from '../rpc.js';
 const SHADE_PACKAGE = '0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203';
 
 // DeepBook v3 — swap pools for NS registration discount
@@ -773,50 +767,14 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   // ─── Submit transaction via fullnode JSON-RPC ───────────────────────
 
   private async submitTransaction(txBytes: Uint8Array, signature: string): Promise<string> {
-    const payload = JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'sui_executeTransactionBlock',
-      params: [
-        uint8ToBase64(txBytes),
-        [signature],
-        { showEffects: true },
-        'WaitForLocalExecution',
-      ],
-    });
-
-    let lastError: Error | null = null;
-    for (const url of FULLNODE_URLS) {
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: payload,
-        });
-
-        const json = await res.json() as {
-          result?: { digest?: string; effects?: { status?: { status?: string; error?: string } } };
-          error?: { message?: string };
-        };
-
-        if (json.error) {
-          throw new Error(`RPC error: ${json.error.message}`);
-        }
-
-        const status = json.result?.effects?.status;
-        if (status?.status !== 'success') {
-          throw new Error(`Tx failed: ${status?.error ?? JSON.stringify(status)}`);
-        }
-
-        return json.result?.digest ?? '';
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        // Tx-level failures (MoveAbort, insufficient balance) won't be fixed by another RPC
-        if (lastError.message.includes('Tx failed:')) throw lastError;
-        console.warn(`[ShadeExecutor] RPC ${url} failed:`, lastError.message);
-      }
+    try {
+      const b64 = uint8ToBase64(txBytes);
+      const { digest } = await raceExecuteTransaction(b64, [signature]);
+      return digest;
+    } catch (err) {
+      if (err instanceof TxFailureError) throw err;
+      throw err instanceof Error ? err : new Error(String(err));
     }
-    throw lastError ?? new Error('All RPC endpoints failed');
   }
 
   // ─── Resolve placeholder object ID ──────────────────────────────────
