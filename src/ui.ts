@@ -4622,7 +4622,18 @@ function renderSkiMenu() {
     return;
   }
 
-  // Auto-detect dWallet on menu render (non-blocking)
+  // Restore cached dWallet addresses instantly (no RPC wait)
+  if (!app.btcAddress && ws.address) {
+    try {
+      const cached = localStorage.getItem(`ski:ika:${ws.address}`);
+      if (cached) {
+        const c = JSON.parse(cached) as { btc: string; eth: string; id: string };
+        if (c.btc) { app.btcAddress = c.btc; app.ethAddress = c.eth; app.ikaWalletId = c.id; }
+      }
+    } catch {}
+  }
+
+  // Auto-detect dWallet on menu render (non-blocking, updates cache)
   if (!app.btcAddress && ws.address && !_dwalletCheckInFlight) {
     _dwalletCheckInFlight = true;
     import('./client/ika.js').then(({ getCrossChainStatus }) =>
@@ -4633,6 +4644,7 @@ function renderSkiMenu() {
         app.btcAddress = status.btcAddress;
         app.ethAddress = status.ethAddress;
         app.ikaWalletId = status.dwalletId;
+        try { localStorage.setItem(`ski:ika:${ws.address}`, JSON.stringify({ btc: status.btcAddress, eth: status.ethAddress, id: status.dwalletId })); } catch {}
         render();
       }
     }).catch(() => { _dwalletCheckInFlight = false; });
