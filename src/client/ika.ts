@@ -23,7 +23,8 @@ let jsonRpcClient: SuiJsonRpcClient | null = null;
 function getJsonRpc(): SuiJsonRpcClient {
   if (!jsonRpcClient) {
     // Point at our same-origin proxy — avoids CORS, routes to PublicNode/Mysten
-    jsonRpcClient = new SuiJsonRpcClient({ url: '/api/rpc' });
+    // network param is required for Move type resolution (MVR)
+    jsonRpcClient = new SuiJsonRpcClient({ url: '/api/rpc', network: 'mainnet' });
   }
   return jsonRpcClient;
 }
