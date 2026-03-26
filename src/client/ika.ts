@@ -218,49 +218,37 @@ export async function provisionDWallet(
   tx.setGasOwner(keeperAddress);
   tx.setGasPayment(suiCoins.slice(0, 3));
 
-  // IKA coin: use keeper's existing IKA, or swap SUI→IKA via Cetus in the same PTB
+  // Fund user with IKA from keeper (if user doesn't have any)
   const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
   const SUI_TYPE = '0x2::sui::SUI';
-  let ikaCoin;
-  if (ikaCoins.length > 0) {
-    ikaCoin = tx.object(ikaCoins[0].objectId);
-  } else {
-    // No IKA on keeper — swap SUI→IKA via Cetus CLMM in this PTB
-    log('Swapping SUI→IKA via Cetus...');
-    const CETUS_ROUTER = '0xb2db7142fa83210a7d78d9c12ac49c043b3cbbd482224fea6e3da00aa5a5ae2d';
-    const CETUS_GLOBAL_CONFIG = '0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f';
-    const CETUS_IKA_SUI_POOL = '0xc23e7e8a74f0b18af4dfb7c3280e2a56916ec4d41e14416f85184a8aab6b7789';
-    const SUI_CLOCK = '0x0000000000000000000000000000000000000000000000000000000000000006';
-    // Pool is Pool<IKA, SUI> — IKA=coinA, SUI=coinB
-    // We swap SUI(B)→IKA(A), so a_to_b=false, use MAX_SQRT_PRICE
-    const MAX_SQRT_PRICE = '79226673515401279992447579055';
 
-    const swapAmount = tx.splitCoins(tx.gas, [tx.pure.u64(50_000_000)]); // 0.05 SUI
-    const [zeroIka] = tx.moveCall({
-      target: '0x2::coin::zero',
-      typeArguments: [IKA_TYPE],
+  // Check if user already has IKA
+  const userIkaCheck = await rpc.getCoins({ owner: userAddress, coinType: IKA_TYPE });
+  let userIkaCoinId = (userIkaCheck as any)?.data?.[0]?.coinObjectId;
+
+  if (!userIkaCoinId) {
+    // Request IKA funding from keeper
+    log('Funding IKA tokens...');
+    const fundRes = await fetch('/api/ika/fund', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ address: userAddress }),
     });
-    const [receiveA, receiveB] = tx.moveCall({
-      target: `${CETUS_ROUTER}::router::swap`,
-      typeArguments: [IKA_TYPE, SUI_TYPE],  // Pool<IKA, SUI> ordering
-      arguments: [
-        tx.object(CETUS_GLOBAL_CONFIG),
-        tx.object(CETUS_IKA_SUI_POOL),
-        zeroIka,             // coinA in (IKA — zero, we're receiving IKA)
-        swapAmount,          // coinB in (SUI — what we're spending)
-        tx.pure.bool(false),          // a_to_b = false (B→A = SUI→IKA)
-        tx.pure.bool(true),           // by_amount_in
-        tx.pure.u64(50_000_000),      // amount (same as split)
-        tx.pure.u128(MAX_SQRT_PRICE), // sqrt price limit for B→A
-        tx.pure.bool(false),
-        tx.object(SUI_CLOCK),
-      ],
-    });
-    // receiveA = IKA output, receiveB = leftover SUI dust
-    // Merge SUI dust back into gas coin, destroy zero IKA remainder
-    tx.mergeCoins(tx.gas, [receiveB]);
-    ikaCoin = receiveA;
+    if (!fundRes.ok) {
+      const err = await fundRes.json().catch(() => ({ error: 'Fund failed' })) as { error?: string };
+      throw new Error(err.error ?? 'IKA funding failed');
+    }
+    // Wait a moment for the tx to be indexed
+    await new Promise(r => setTimeout(r, 2000));
+    // Re-fetch user's IKA coins
+    const recheck = await rpc.getCoins({ owner: userAddress, coinType: IKA_TYPE });
+    userIkaCoinId = (recheck as any)?.data?.[0]?.coinObjectId;
+    if (!userIkaCoinId) throw new Error('IKA funding succeeded but coin not found yet — try again');
   }
+
+  let ikaCoin = tx.object(userIkaCoinId);
+
+  const _ = SUI_TYPE; // keep import used
   // SUI for DKG gas reimbursement (from keeper's gas coins)
   const suiCoin = tx.splitCoins(tx.gas, [tx.pure.u64(100_000_000)]);
 

@@ -215,6 +215,87 @@ app.get('/api/sponsor-info', async (c) => {
   }
 });
 
+// ── IKA token funding (keeper → user) ────────────────────────────────
+
+import { Transaction } from '@mysten/sui/transactions';
+
+const IKA_COIN_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+const IKA_FUND_AMOUNT = 5_000_000_000n; // 5 IKA (9 decimals)
+
+/**
+ * POST /api/ika/fund
+ * Body: { address: string }
+ *
+ * Transfers a small amount of IKA from the keeper to the user.
+ * SuiNS-gated. Called before DKG so the user has IKA for the DKG fee.
+ * Keeper signs and submits directly (no user signature needed).
+ */
+app.post('/api/ika/fund', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Not configured' }, 503);
+
+  try {
+    const { address } = await c.req.json<{ address: string }>();
+    if (!address) return c.json({ error: 'Missing address' }, 400);
+
+    // SuiNS gate
+    const hasNft = await hasSuinsNft(address);
+    if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
+
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keeperAddress = keypair.toSuiAddress();
+
+    // Find keeper's IKA coin
+    const coinRes = await fetch(SUINS_GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!,$t:String!){
+          address(address:$a){
+            objects(filter:{type:$t},first:1){
+              nodes{ address version digest contents { json } }
+            }
+          }
+        }`,
+        variables: { a: keeperAddress, t: `0x2::coin::Coin<${IKA_COIN_TYPE}>` },
+      }),
+    });
+    const coinJson = await coinRes.json() as any;
+    const ikaCoinObj = coinJson?.data?.address?.objects?.nodes?.[0];
+    if (!ikaCoinObj) return c.json({ error: 'Keeper has no IKA' }, 503);
+
+    // Build tx: split IKA and transfer to user
+    const tx = new Transaction();
+    tx.setSender(keeperAddress);
+    const ikaSplit = tx.splitCoins(tx.object(ikaCoinObj.address), [tx.pure.u64(IKA_FUND_AMOUNT.toString())]);
+    tx.transferObjects([ikaSplit], tx.pure.address(address));
+
+    // Sign and submit via RPC
+    const txBytes = await tx.build({ client: { url: SUI_RPC_URLS[0] } as any });
+
+    // Use JSON-RPC for submission since we're server-side
+    const { signature } = await keypair.signTransaction(txBytes);
+    const b64 = btoa(String.fromCharCode(...txBytes));
+
+    const submitRes = await fetch(SUI_RPC_URLS[0], {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'sui_executeTransactionBlock',
+        params: [b64, [signature], { showEffects: true }, 'WaitForLocalExecution'],
+      }),
+    });
+    const submitJson = await submitRes.json() as any;
+    const digest = submitJson?.result?.digest;
+
+    if (!digest) return c.json({ error: 'Fund tx failed', detail: submitJson?.error }, 500);
+    return c.json({ success: true, digest });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── IKA dWallet provisioning ─────────────────────────────────────────
 
 /**
