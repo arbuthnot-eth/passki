@@ -259,7 +259,7 @@ export async function provisionDWallet(
   // TODO: check if already registered and only call when necessary
   // await ikaTx.registerEncryptionKey({ curve });
 
-  const [dWalletCap] = await ikaTx.requestDWalletDKG({
+  const dkgResult = await ikaTx.requestDWalletDKG({
     curve,
     dkgRequestInput: dkgInput,
     sessionIdentifier: ikaTx.registerSessionIdentifier(sessionIdentifier),
@@ -267,8 +267,11 @@ export async function provisionDWallet(
     suiCoin,
     dwalletNetworkEncryptionKeyId: encKey.id,
   });
-  // DWalletCap goes to the user (sender)
-  tx.transferObjects([dWalletCap], tx.pure.address(userAddress));
+  // DKG returns [DWalletCap, Option<ID>] — transfer cap to user, drop the option
+  tx.transferObjects([dkgResult[0]], tx.pure.address(userAddress));
+  // Transfer leftover coins back to keeper (DKG takes coins by value but may not fully consume)
+  tx.transferObjects([ikaCoin], tx.pure.address(keeperAddress));
+  tx.transferObjects([suiCoin], tx.pure.address(keeperAddress));
 
   // Step 5: Build bytes, get sponsor sig, user signs
   log('Signing transaction...');
