@@ -4997,6 +4997,7 @@ function renderSkiMenu() {
         showToast('dWallet active \u2014 BTC + ETH addresses ready');
       }
     } catch (err) {
+      console.error('[ika:dkg] FAILED:', err);
       const msg = err instanceof Error ? err.message : 'Failed';
       showToast(msg);
       btn.disabled = false;
