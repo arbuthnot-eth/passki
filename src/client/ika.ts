@@ -209,8 +209,8 @@ export async function provisionDWallet(
   if (!suiCoins.length) throw new Error('Keeper has no SUI for gas');
 
   // Step 2: Prepare DKG crypto (WASM — runs in browser)
-  log('Preparing...');
-  console.log('[ika:dkg] Starting prepareDKGAsync — this fetches 250+ objects and may take 2-5 minutes');
+  // This fetches 250+ encryption key objects — takes 1-3 minutes on first run
+  log('Preparing (1-3 min)...');
   const client = await getClient();
   const curve = Curve.SECP256K1;
   // Random seed per attempt — deterministic seeds cause session conflicts on retry
