@@ -24,78 +24,77 @@ function getClient(): IkaClient {
     // which may be re-exported or aliased in @mysten/sui v2
     const config = getNetworkConfig('mainnet');
 
-    // Lazy-init with a fetch-only client for read operations
+    // Generic JSON-RPC proxy client — handles any method the IKA SDK calls.
+    // Routes through /api/rpc (same-origin Worker proxy) to avoid CORS.
+    const rpc = async (method: string, params: unknown[]) => {
+      const res = await fetch('/api/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      const json = await res.json() as { result?: unknown; error?: unknown };
+      if (json.error) throw new Error(`RPC ${method}: ${JSON.stringify(json.error)}`);
+      return json.result;
+    };
+
+    // Proxy object: intercepts any method call and routes to JSON-RPC.
+    // Maps SuiClient method names to their JSON-RPC equivalents.
+    const methodMap: Record<string, string> = {
+      getObject: 'sui_getObject',
+      multiGetObjects: 'sui_multiGetObjects',
+      getOwnedObjects: 'suix_getOwnedObjects',
+      getDynamicFields: 'suix_getDynamicFields',
+      getNormalizedMoveFunction: 'sui_getNormalizedMoveFunction',
+      getMoveFunction: 'sui_getNormalizedMoveFunction',
+      getReferenceGasPrice: 'suix_getReferenceGasPrice',
+      getCoins: 'suix_getCoins',
+      dryRunTransactionBlock: 'sui_dryRunTransactionBlock',
+      devInspectTransactionBlock: 'sui_devInspectTransactionBlock',
+      executeTransactionBlock: 'sui_executeTransactionBlock',
+    };
+
+    const suiClientProxy = new Proxy({}, {
+      get(_target, prop: string) {
+        return async (...args: any[]) => {
+          const rpcMethod = methodMap[prop];
+          if (!rpcMethod) {
+            console.warn(`[ika] Unknown SuiClient method: ${prop}`, args);
+            throw new Error(`SuiClient.${prop} not mapped to JSON-RPC`);
+          }
+          // Flatten params based on method signature
+          const p = args[0] ?? {};
+          switch (prop) {
+            case 'getObject':
+              return rpc(rpcMethod, [p.id, p.options || { showContent: true, showBcs: true }]);
+            case 'multiGetObjects':
+              return rpc(rpcMethod, [p.ids, p.options || { showContent: true, showBcs: true }]);
+            case 'getOwnedObjects':
+              return rpc(rpcMethod, [p.owner, { filter: p.filter, options: p.options || { showContent: true, showBcs: true } }, p.cursor || null, p.limit || 50]);
+            case 'getDynamicFields':
+              return rpc(rpcMethod, [p.parentId, p.cursor || null, p.limit || 50]);
+            case 'getNormalizedMoveFunction':
+            case 'getMoveFunction':
+              return rpc(rpcMethod, [p.package || p.packageId, p.module || p.moduleName, p.function || p.name || p.functionName]);
+            case 'getReferenceGasPrice':
+              return rpc(rpcMethod, []);
+            case 'getCoins':
+              return rpc(rpcMethod, [p.owner, p.coinType, p.cursor || null, p.limit || 50]);
+            case 'dryRunTransactionBlock':
+              return rpc(rpcMethod, [p.transactionBlock]);
+            case 'devInspectTransactionBlock':
+              return rpc(rpcMethod, [p.sender, p.transactionBlock, p.gasPrice || null, p.epoch || null]);
+            case 'executeTransactionBlock':
+              return rpc(rpcMethod, [p.transactionBlock, p.signature, p.options || { showEffects: true }, p.requestType || 'WaitForLocalExecution']);
+            default:
+              return rpc(rpcMethod, Array.isArray(args[0]) ? args[0] : [args[0]]);
+          }
+        };
+      },
+    });
+
     ikaClient = new IkaClient({
       config,
-      suiClient: {
-        getObject: async (params: { id: string; options?: object }) => {
-          const res = await fetch('/api/rpc', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              id: 1,
-              method: 'sui_getObject',
-              params: [params.id, params.options || { showContent: true, showBcs: true }],
-            }),
-          });
-          const json = await res.json();
-          return json.result;
-        },
-        multiGetObjects: async (params: { ids: string[]; options?: object }) => {
-          const res = await fetch('/api/rpc', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              id: 1,
-              method: 'sui_multiGetObjects',
-              params: [params.ids, params.options || { showContent: true, showBcs: true }],
-            }),
-          });
-          const json = await res.json();
-          return json.result;
-        },
-        getOwnedObjects: async (params: {
-          owner: string;
-          filter?: object;
-          cursor?: string;
-          limit?: number;
-          options?: object;
-        }) => {
-          const res = await fetch('/api/rpc', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              id: 1,
-              method: 'suix_getOwnedObjects',
-              params: [
-                params.owner,
-                { filter: params.filter, options: params.options || { showContent: true, showBcs: true } },
-                params.cursor || null,
-                params.limit || 50,
-              ],
-            }),
-          });
-          const json = await res.json();
-          return json.result;
-        },
-        getDynamicFields: async (params: { parentId: string; cursor?: string; limit?: number }) => {
-          const res = await fetch('/api/rpc', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              id: 1,
-              method: 'suix_getDynamicFields',
-              params: [params.parentId, params.cursor || null, params.limit || 50],
-            }),
-          });
-          const json = await res.json();
-          return json.result;
-        },
-      } as any,
+      suiClient: suiClientProxy as any,
     });
   }
   return ikaClient;

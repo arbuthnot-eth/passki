@@ -23,7 +23,6 @@ app.get('/api/health', (c) => c.json({ status: 'ok', version: '2.0.0' }));
 // Forwards to multiple Sui fullnodes with fallback.
 const SUI_RPC_URLS = [
   'https://sui-rpc.publicnode.com',
-  'https://rpc.ankr.com/sui',
   'https://fullnode.mainnet.sui.io:443',
 ];
 app.post('/api/rpc', async (c) => {
