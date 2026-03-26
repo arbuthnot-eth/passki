@@ -297,6 +297,173 @@ app.post('/api/ika/fund', async (c) => {
   }
 });
 
+// ── IKA dWallet creation (keeper-submitted, for WaaP) ────────────────
+
+/**
+ * POST /api/ika/create
+ * Body: { address, authSignature, authBytes, dkgData }
+ *
+ * WaaP path: user can't sign transactions, so the keeper submits the DKG tx.
+ * The user proves intent via signPersonalMessage (authSignature).
+ * Browser runs WASM prepareDKGAsync and sends the results as dkgData.
+ * Keeper builds + signs + submits the tx, transfers DWalletCap to user.
+ *
+ * Uses requestDWalletDKGWithPublicUserShare (shared dWallet).
+ */
+app.post('/api/ika/create', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Not configured' }, 503);
+
+  try {
+    const { address, authSignature, dkgData } = await c.req.json<{
+      address: string;
+      authSignature: string;
+      dkgData: {
+        userDKGMessage: number[];
+        userSecretKeyShare: number[];
+        userPublicOutput: number[];
+        sessionIdentifier: number[];
+        encryptionKeyBytes: number[];
+        signingPublicKeyBytes: number[];
+        encryptionKeySignature: number[];
+        curve: number;
+      };
+    }>();
+    if (!address || !authSignature || !dkgData) return c.json({ error: 'Missing params' }, 400);
+
+    // SuiNS gate
+    const hasNft = await hasSuinsNft(address);
+    if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
+
+    // TODO: verify authSignature matches address (cryptographic proof of intent)
+
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keeperAddress = keypair.toSuiAddress();
+
+    // Fetch keeper's coins
+    const GQL = 'https://graphql.mainnet.sui.io/graphql';
+    const IKA_COIN_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+
+    const coinQuery = (coinType: string, limit: number) => fetch(GQL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!,$t:String!){ address(address:$a){ objects(filter:{type:$t},first:${limit}){ nodes{ address version digest } } } }`,
+        variables: { a: keeperAddress, t: `0x2::coin::Coin<${coinType}>` },
+      }),
+    }).then(r => r.json()) as Promise<any>;
+
+    const [suiRes, ikaRes] = await Promise.all([
+      coinQuery('0x2::sui::SUI', 5),
+      coinQuery(IKA_COIN_TYPE, 3),
+    ]);
+    const mapCoins = (res: any) => (res?.data?.address?.objects?.nodes ?? []).map((n: any) => ({
+      objectId: n.address, version: String(n.version), digest: n.digest,
+    }));
+    const suiCoins = mapCoins(suiRes);
+    const ikaCoins = mapCoins(ikaRes);
+
+    if (!suiCoins.length) return c.json({ error: 'Keeper has no SUI' }, 503);
+    if (!ikaCoins.length) return c.json({ error: 'Keeper has no IKA' }, 503);
+
+    // Build the DKG transaction — keeper is sender
+    const tx = new Transaction();
+    tx.setSender(keeperAddress);
+    tx.setGasPayment(suiCoins.slice(0, 3));
+
+    const ikaCoin = tx.object(ikaCoins[0].objectId);
+    const suiCoin = tx.splitCoins(tx.gas, [tx.pure.u64(100_000_000)]);
+
+    // IKA package constants
+    const IKA_CONFIG = {
+      packages: {
+        ikaDwallet2pcMpcPackage: '0x23b5bd96051923f800c3a2150aacdcdd8d39e1df2dce4dac69a00d2d8c7f7e77',
+      },
+    };
+    const COORDINATOR_ID = '0x5ea59bce034008a006425df777da925633ef384ce25761657ea89e2a08ec75f3';
+
+    // Register encryption key
+    tx.moveCall({
+      target: `${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator::register_encryption_key`,
+      arguments: [
+        tx.sharedObjectRef({ objectId: COORDINATOR_ID, initialSharedVersion: 595876492, mutable: true }),
+        tx.pure.u32(dkgData.curve),
+        tx.pure('vector<u8>', dkgData.encryptionKeyBytes),
+        tx.pure('vector<u8>', dkgData.encryptionKeySignature),
+        tx.pure('vector<u8>', dkgData.signingPublicKeyBytes),
+      ],
+    });
+
+    // Register session identifier
+    const sessionId = tx.moveCall({
+      target: `${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator::register_session_identifier`,
+      arguments: [
+        tx.sharedObjectRef({ objectId: COORDINATOR_ID, initialSharedVersion: 595876492, mutable: true }),
+        tx.pure('vector<u8>', dkgData.sessionIdentifier),
+      ],
+    });
+
+    // Fetch latest encryption key ID from coordinator
+    // For now use a known encryption key object — TODO: fetch dynamically
+    const encKeyRes = await fetch(SUI_RPC_URLS[0], {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'suix_getDynamicFields',
+        params: [COORDINATOR_ID, null, 1],
+      }),
+    });
+    const encKeyJson = await encKeyRes.json() as any;
+    const encKeyObjId = encKeyJson?.result?.data?.[0]?.objectId;
+
+    // Request shared dWallet DKG (public user secret key share)
+    const [dWalletCap] = tx.moveCall({
+      target: `${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator::request_dwallet_dkg_with_public_user_secret_key_share`,
+      arguments: [
+        tx.sharedObjectRef({ objectId: COORDINATOR_ID, initialSharedVersion: 595876492, mutable: true }),
+        tx.pure.id(encKeyObjId || '0x0'),
+        tx.pure.u32(dkgData.curve),
+        tx.pure('vector<u8>', dkgData.userDKGMessage),
+        tx.pure('vector<u8>', dkgData.userSecretKeyShare),
+        tx.pure('vector<u8>', dkgData.userPublicOutput),
+        tx.object(sessionId),
+        tx.moveCall({
+          target: '0x1::option::none',
+          typeArguments: [`${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator_inner::SignDuringDKGRequest`],
+        }),
+        ikaCoin,
+        suiCoin,
+      ],
+    });
+
+    // Transfer DWalletCap to the user
+    tx.transferObjects([dWalletCap], tx.pure.address(address));
+
+    // Build, sign with keeper, submit
+    const txBytes = await tx.build({ client: { url: SUI_RPC_URLS[0] } as any });
+    const { signature } = await keypair.signTransaction(txBytes);
+    const b64 = btoa(String.fromCharCode(...txBytes));
+
+    const submitRes = await fetch(SUI_RPC_URLS[0], {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'sui_executeTransactionBlock',
+        params: [b64, [signature], { showEffects: true }, 'WaitForLocalExecution'],
+      }),
+    });
+    const submitJson = await submitRes.json() as any;
+    const digest = submitJson?.result?.digest;
+
+    if (!digest) return c.json({ error: 'DKG tx failed', detail: submitJson?.error }, 500);
+    return c.json({ success: true, digest });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── IKA dWallet provisioning ─────────────────────────────────────────
 
 /**

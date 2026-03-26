@@ -161,8 +161,8 @@ export interface CrossChainStatus {
 export interface ProvisionCallbacks {
   /** Sign a transaction as the user (wallet popup). Returns base64 signature. */
   signTransaction: (txBytes: Uint8Array) => Promise<{ signature: string }>;
-  /** WaaP fallback: sign AND execute a Transaction object (no sponsorship). */
-  signAndExecuteTransaction?: (tx: any) => Promise<{ digest: string }>;
+  /** WaaP: sign a personal message (proof of intent for server-side DKG). */
+  signPersonalMessage?: (message: Uint8Array) => Promise<{ signature: string; bytes: string }>;
   /** Whether the wallet is WaaP (uses non-sponsored path). */
   isWaap?: boolean;
   /** Called with status updates during provisioning. */
@@ -345,33 +345,41 @@ export async function provisionDWallet(
   log('Signing...');
   let digest: string;
 
-  if (callbacks.isWaap && callbacks.signAndExecuteTransaction) {
-    // WaaP path: non-sponsored, user pays own gas via signAndExecuteTransaction
-    // Remove gas sponsor settings — user is both sender and gas payer
-    // Build a fresh non-sponsored tx
-    const waapTx = new Transaction();
-    waapTx.setSender(userAddress);
-
-    const waapIkaTx = new IkaTransaction({ ikaClient: client, transaction: waapTx, userShareEncryptionKeys });
-    await waapIkaTx.registerEncryptionKey({ curve });
-
-    const waapIka = waapTx.object(userIkaCoinId2 || userIkaCoinId);
-    const waapSui = waapTx.splitCoins(waapTx.gas, [waapTx.pure.u64(100_000_000)]);
-
-    const waapDkg = await waapIkaTx.requestDWalletDKG({
-      curve,
-      dkgRequestInput: dkgInput,
-      sessionIdentifier: waapIkaTx.registerSessionIdentifier(sessionIdentifier),
-      ikaCoin: waapIka,
-      suiCoin: waapSui,
-      dwalletNetworkEncryptionKeyId: encKey.id,
-    });
-    waapTx.transferObjects([waapDkg[0]], waapTx.pure.address(userAddress));
-    waapTx.transferObjects([waapSui], waapTx.pure.address(userAddress));
+  if (callbacks.isWaap) {
+    // WaaP path: user signs a personal message (proof of intent),
+    // server (keeper) builds + signs + submits the DKG tx.
+    // Uses shared dWallet (requestDWalletDKGWithPublicUserShare).
+    log('Authorizing...');
+    const authMessage = new TextEncoder().encode(
+      `Authorize IKA dWallet creation for ${userAddress} at ${Date.now()}`
+    );
+    const { signature: authSig } = await callbacks.signPersonalMessage!(authMessage);
 
     log('Submitting...');
-    const result = await callbacks.signAndExecuteTransaction(waapTx);
-    digest = result?.digest ?? '';
+    const createRes = await fetch('/api/ika/create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        address: userAddress,
+        authSignature: authSig,
+        dkgData: {
+          userDKGMessage: Array.from(dkgInput.userDKGMessage),
+          userSecretKeyShare: Array.from(dkgInput.userSecretKeyShare),
+          userPublicOutput: Array.from(dkgInput.userPublicOutput),
+          sessionIdentifier: Array.from(sessionIdentifier),
+          encryptionKeyBytes: Array.from(userShareEncryptionKeys.encryptionKey),
+          signingPublicKeyBytes: Array.from(userShareEncryptionKeys.getSigningPublicKeyBytes()),
+          encryptionKeySignature: Array.from(await userShareEncryptionKeys.getEncryptionKeySignature()),
+          curve: 0, // SECP256K1
+        },
+      }),
+    });
+    if (!createRes.ok) {
+      const err = await createRes.json().catch(() => ({ error: 'Create failed' })) as { error?: string };
+      throw new Error(err.error ?? 'DKG creation failed');
+    }
+    const createResult = await createRes.json() as { digest?: string };
+    digest = createResult.digest ?? '';
   } else {
     // Normal path: sponsored tx (Phantom/Backpack)
     const txBytes = await dkgTx.build({ client: grpcClient as any });

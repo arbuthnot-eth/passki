@@ -4979,9 +4979,8 @@ function renderSkiMenu() {
       const isWaap = /waap/i.test(getState().walletName);
       const status = await provisionDWallet(getState().address, {
         signTransaction: (txBytes: Uint8Array) => wallet.signTransaction(txBytes),
-        // WaaP can't do sponsored txs — use signAndExecuteTransaction instead
-        signAndExecuteTransaction: isWaap
-          ? (tx: any) => wallet.signAndExecuteTransaction(tx)
+        signPersonalMessage: isWaap
+          ? (msg: Uint8Array) => wallet.signPersonalMessage(msg)
           : undefined,
         isWaap,
         onStatus: (msg: string) => {
