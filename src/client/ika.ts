@@ -211,6 +211,7 @@ export async function provisionDWallet(
   // Step 2: Prepare DKG crypto (WASM — runs in browser)
   // This fetches 250+ encryption key objects — takes 1-3 minutes on first run
   log('Preparing (1-3 min)...');
+  console.log('[ika:dkg] Step 2: prepareDKGAsync starting...');
   const client = await getClient();
   const curve = Curve.SECP256K1;
   // Random seed per attempt — deterministic seeds cause session conflicts on retry
@@ -222,9 +223,11 @@ export async function provisionDWallet(
   const dkgInput = await prepareDKGAsync(
     client, curve, userShareEncryptionKeys, sessionIdentifier, userAddress,
   );
+  console.log('[ika:dkg] Step 2: prepareDKGAsync DONE');
 
   // Step 3: Get network encryption key
   log('Fetching keys...');
+  console.log('[ika:dkg] Step 3: getLatestNetworkEncryptionKey...');
   const encKey = await client.getLatestNetworkEncryptionKey();
 
   // Step 4: Build the PTB
