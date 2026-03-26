@@ -14,6 +14,8 @@
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { ripemd160 } from '@noble/hashes/legacy.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { bech32 } from '@scure/base';
 
 // ─── IKA Curve & Algorithm Enums ─────────────────────────────────────
@@ -81,14 +83,35 @@ function btcP2wpkhAddress(pubkey: Uint8Array): string {
 
 /**
  * EVM address — 0x prefixed, last 20 bytes of keccak256(uncompressed_pubkey[1:]).
- * Requires keccak256 — lazy-loaded to keep the base bundle small.
+ *
+ * Steps:
+ *   1. Decompress secp256k1 point (33 bytes → 65 bytes)
+ *   2. Strip the 0x04 prefix → 64 bytes (raw x||y coordinates)
+ *   3. keccak256 hash → 32 bytes
+ *   4. Take last 20 bytes → EIP-55 checksum encode
  */
-async function evmAddress(pubkey: Uint8Array): Promise<string> {
-  // secp256k1 compressed → uncompressed requires elliptic curve math.
-  // For now, this is a placeholder — EVM address derivation will be
-  // implemented when we add Ethereum dWallet support.
-  // The compressed pubkey alone is insufficient without decompression.
-  throw new Error('EVM address derivation not yet implemented — requires secp256k1 point decompression');
+function evmAddress(compressedPubkey: Uint8Array): string {
+  // Decompress: 33-byte compressed → 65-byte uncompressed (04 || x || y)
+  const hex = Array.from(compressedPubkey, (b) => b.toString(16).padStart(2, '0')).join('');
+  const point = secp256k1.Point.fromHex(hex);
+  const uncompressed = point.toBytes(false); // false = uncompressed (65 bytes)
+
+  // keccak256 of the 64-byte public key (skip the 0x04 prefix byte)
+  const hash = keccak_256(uncompressed.slice(1));
+
+  // Last 20 bytes = the raw address
+  const addrBytes = hash.slice(12);
+
+  // EIP-55 mixed-case checksum encoding
+  const addrHex = Array.from(addrBytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  const checksumHash = Array.from(keccak_256(new TextEncoder().encode(addrHex)), (b) => b.toString(16).padStart(2, '0')).join('');
+  let checksummed = '';
+  for (let i = 0; i < addrHex.length; i++) {
+    checksummed += parseInt(checksumHash[i], 16) >= 8
+      ? addrHex[i].toUpperCase()
+      : addrHex[i];
+  }
+  return '0x' + checksummed;
 }
 
 /**
@@ -123,7 +146,7 @@ export const CHAIN_REGISTRY: Record<string, ChainConfig> = {
     signatureAlgorithm: SignatureAlgorithm.ECDSASecp256k1,
     hashScheme: HashScheme.KECCAK256,
     coinType: 60,
-    deriveAddress: () => { throw new Error('EVM derivation not yet implemented'); },
+    deriveAddress: evmAddress,
   },
   'eip155:8453': {
     caipId: 'eip155:8453',
@@ -132,7 +155,34 @@ export const CHAIN_REGISTRY: Record<string, ChainConfig> = {
     signatureAlgorithm: SignatureAlgorithm.ECDSASecp256k1,
     hashScheme: HashScheme.KECCAK256,
     coinType: 60,
-    deriveAddress: () => { throw new Error('EVM derivation not yet implemented'); },
+    deriveAddress: evmAddress,
+  },
+  'eip155:137': {
+    caipId: 'eip155:137',
+    name: 'Polygon',
+    curve: IkaCurve.SECP256K1,
+    signatureAlgorithm: SignatureAlgorithm.ECDSASecp256k1,
+    hashScheme: HashScheme.KECCAK256,
+    coinType: 60,
+    deriveAddress: evmAddress,
+  },
+  'eip155:42161': {
+    caipId: 'eip155:42161',
+    name: 'Arbitrum',
+    curve: IkaCurve.SECP256K1,
+    signatureAlgorithm: SignatureAlgorithm.ECDSASecp256k1,
+    hashScheme: HashScheme.KECCAK256,
+    coinType: 60,
+    deriveAddress: evmAddress,
+  },
+  'eip155:10': {
+    caipId: 'eip155:10',
+    name: 'Optimism',
+    curve: IkaCurve.SECP256K1,
+    signatureAlgorithm: SignatureAlgorithm.ECDSASecp256k1,
+    hashScheme: HashScheme.KECCAK256,
+    coinType: 60,
+    deriveAddress: evmAddress,
   },
 
   // ── Sui ──────────────────────────────────────────────────────────
@@ -155,6 +205,9 @@ const CHAIN_ALIASES: Record<string, string> = {
   ethereum: 'eip155:1',
   eth: 'eip155:1',
   base: 'eip155:8453',
+  polygon: 'eip155:137',
+  arbitrum: 'eip155:42161',
+  optimism: 'eip155:10',
   sui: 'sui:mainnet',
 };
 
