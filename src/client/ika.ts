@@ -41,15 +41,15 @@ async function getClient(): Promise<IkaClient> {
       config,
       suiClient: grpcClient as any,
     });
-    // Pre-fetch coordinator objects, encryption keys, and protocol state.
-    // initialize() may partially fail on mainnet (SDK bug with table vector parsing)
-    // but the cached data it does fetch still speeds up subsequent calls.
+    // Fire-and-forget initialize() — don't block on it.
+    // It may fail (SDK bug with table vector parsing on mainnet) but
+    // any data it caches still helps. The DKG flow lazy-fetches what it needs.
     if (!initPromise) {
       initPromise = ikaClient.initialize().catch((err) => {
         console.warn('[ika] initialize() partial failure (non-fatal):', err?.message?.slice(0, 100));
       });
     }
-    await initPromise;
+    // Don't await — let it run in background
   }
   return ikaClient;
 }
