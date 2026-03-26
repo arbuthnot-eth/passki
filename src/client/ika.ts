@@ -227,7 +227,7 @@ export async function provisionDWallet(
 
   // Check if user already has IKA
   const userIkaCheck = await getJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
-  let userIkaCoinId = (userIkaCheck as any)?.data?.[0]?.coinObjectId;
+  let userIkaCoinId = (userIkaCheck as any)?.data?.find((c: any) => BigInt(c.balance || '0') > 0n)?.coinObjectId;
 
   if (!userIkaCoinId) {
     // Request IKA funding from keeper
@@ -245,7 +245,7 @@ export async function provisionDWallet(
     await new Promise(r => setTimeout(r, 2000));
     // Re-fetch user's IKA coins
     const recheck = await getJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
-    userIkaCoinId = (recheck as any)?.data?.[0]?.coinObjectId;
+    userIkaCoinId = (recheck as any)?.data?.find((c: any) => BigInt(c.balance || '0') > 0n)?.coinObjectId;
     if (!userIkaCoinId) throw new Error('IKA funding succeeded but coin not found yet — try again');
   }
 
@@ -310,7 +310,7 @@ export async function provisionDWallet(
   const userSuiCheck2 = await getJsonRpc().getCoins({ owner: userAddress, coinType: '0x2::sui::SUI' });
   const userSuiCoinId2 = (userSuiCheck2 as any)?.data?.[0]?.coinObjectId;
   const userIkaCheck2 = await getJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
-  const userIkaCoinId2 = (userIkaCheck2 as any)?.data?.[0]?.coinObjectId;
+  const userIkaCoinId2 = (userIkaCheck2 as any)?.data?.find((c: any) => BigInt(c.balance || '0') > 0n)?.coinObjectId;
 
   const ikaCoin2 = dkgTx.object(userIkaCoinId2 || userIkaCoinId);
   const suiCoin2 = dkgTx.splitCoins(dkgTx.object(userSuiCoinId2 || userSuiCoinId), [dkgTx.pure.u64(100_000_000)]);
