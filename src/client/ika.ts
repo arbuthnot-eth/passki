@@ -257,7 +257,8 @@ export async function provisionDWallet(
       ],
     });
     // receiveA = IKA output, receiveB = leftover SUI dust
-    tx.transferObjects([receiveB], tx.pure.address(keeperAddress));
+    // Merge SUI dust back into gas coin, destroy zero IKA remainder
+    tx.mergeCoins(tx.gas, [receiveB]);
     ikaCoin = receiveA;
   }
   // SUI for DKG gas reimbursement (from keeper's gas coins)
