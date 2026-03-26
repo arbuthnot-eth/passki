@@ -29,7 +29,7 @@ function getClient(): IkaClient {
       config,
       suiClient: {
         getObject: async (params: { id: string; options?: object }) => {
-          const res = await fetch('https://fullnode.mainnet.sui.io:443', {
+          const res = await fetch('/api/rpc', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
@@ -43,7 +43,7 @@ function getClient(): IkaClient {
           return json.result;
         },
         multiGetObjects: async (params: { ids: string[]; options?: object }) => {
-          const res = await fetch('https://fullnode.mainnet.sui.io:443', {
+          const res = await fetch('/api/rpc', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
@@ -63,7 +63,7 @@ function getClient(): IkaClient {
           limit?: number;
           options?: object;
         }) => {
-          const res = await fetch('https://fullnode.mainnet.sui.io:443', {
+          const res = await fetch('/api/rpc', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
@@ -82,7 +82,7 @@ function getClient(): IkaClient {
           return json.result;
         },
         getDynamicFields: async (params: { parentId: string; cursor?: string; limit?: number }) => {
-          const res = await fetch('https://fullnode.mainnet.sui.io:443', {
+          const res = await fetch('/api/rpc', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
@@ -347,7 +347,7 @@ export async function provisionDWallet(
 
   // Step 6: Submit with both signatures
   log('Submitting DKG transaction...');
-  const submitRes = await fetch('https://fullnode.mainnet.sui.io:443', {
+  const submitRes = await fetch('/api/rpc', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({

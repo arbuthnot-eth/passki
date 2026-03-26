@@ -19,6 +19,31 @@ app.use('/agents/*', agentsMiddleware());
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', version: '2.0.0' }));
 
+// ── JSON-RPC proxy (same-origin, avoids CORS for browser-side IKA SDK) ──
+// Forwards to multiple Sui fullnodes with fallback.
+const SUI_RPC_URLS = [
+  'https://sui-rpc.publicnode.com',
+  'https://rpc.ankr.com/sui',
+  'https://fullnode.mainnet.sui.io:443',
+];
+app.post('/api/rpc', async (c) => {
+  const body = await c.req.text();
+  for (const url of SUI_RPC_URLS) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      if (res.ok) {
+        const json = await res.text();
+        return c.text(json, 200, { 'content-type': 'application/json' });
+      }
+    } catch {}
+  }
+  return c.json({ error: 'All RPC endpoints failed' }, 502);
+});
+
 // ── Shade monitoring & manual poke ──────────────────────────────────
 
 app.get('/api/shade/poke/:address', async (c) => {
