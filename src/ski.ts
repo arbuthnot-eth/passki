@@ -150,65 +150,32 @@ async function establishSession(address: string, signature: string, bytes: strin
   }
 
   // Check for existing Ika dWallets — if none and user has SuiNS, auto-provision
-  loadIka().then(async ({ getCrossChainStatus }) => {
+  loadIka().then(async ({ getCrossChainStatus, provisionDWallet }) => {
     const status = await getCrossChainStatus(address);
     if (status.ika) {
       updateAppState({ ikaWalletId: status.dwalletId, btcAddress: status.btcAddress, ethAddress: status.ethAddress });
       return;
     }
 
-    // No dWallet — check if user has a SuiNS name (qualifies for sponsored DKG)
-    const suinsName = (() => { try { return localStorage.getItem(`ski:suins:${address}`); } catch { return null; } })();
-    if (!suinsName) return;
-
-    // Request sponsored DKG from server
+    // No dWallet — try auto-provision (server checks SuiNS gate)
     try {
-      const res = await fetch('/api/ika/provision', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ address }),
+      showToast('Creating dWallet...');
+      const result = await provisionDWallet(address, {
+        signTransaction: (txBytes: Uint8Array) => signTransaction(txBytes),
+        onStatus: (msg: string) => showToast(msg),
       });
-      if (!res.ok) return;
-      const result = await res.json() as {
-        success: boolean;
-        txBytes?: string;
-        sponsorSig?: string;
-        dwalletId?: string;
-      };
-      if (!result.success) return;
-
-      // Already provisioned (server found existing dWallet)
-      if (result.dwalletId) {
-        const refreshed = await getCrossChainStatus(address);
-        updateAppState({ ikaWalletId: refreshed.dwalletId, btcAddress: refreshed.btcAddress, ethAddress: refreshed.ethAddress });
-        return;
-      }
-
-      // Server returned sponsored tx bytes — user needs to co-sign and submit
-      if (result.txBytes && result.sponsorSig) {
-        const txBytes = Uint8Array.from(atob(result.txBytes), ch => ch.charCodeAt(0));
-        const { signature: userSig } = await signTransaction(txBytes);
-
-        // Submit with both signatures (user + sponsor)
-        const execResult = await (grpcClient as any).core.executeTransaction({
-          transaction: txBytes,
-          signatures: [userSig, result.sponsorSig],
+      if (result.ika) {
+        updateAppState({
+          ikaWalletId: result.dwalletId,
+          btcAddress: result.btcAddress,
+          ethAddress: result.ethAddress,
         });
-
-        const digest = execResult?.digest ?? execResult?.Transaction?.digest ?? '';
-        if (digest) {
-          // Poll for dWallet to become active (DKG is async)
-          const poll = setInterval(async () => {
-            const s = await getCrossChainStatus(address);
-            if (s.ika && s.btcAddress) {
-              clearInterval(poll);
-              updateAppState({ ikaWalletId: s.dwalletId, btcAddress: s.btcAddress, ethAddress: s.ethAddress });
-            }
-          }, 5000);
-          setTimeout(() => clearInterval(poll), 120_000);
-        }
+        showToast('dWallet active — BTC + ETH addresses ready');
       }
-    } catch {}
+    } catch (err) {
+      // SuiNS gate rejection or other failure — not critical, just log
+      console.warn('[ski:ika] DKG provision failed:', err instanceof Error ? err.message : err);
+    }
   }).catch(() => {});
 
   return true;

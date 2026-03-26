@@ -1,13 +1,19 @@
 /**
  * Client-side Ika dWallet integration.
  *
- * Checks for existing dWallet capabilities owned by the connected address
- * and reports cross-chain status. The actual DKG provisioning requires
- * IKA + SUI coins and runs through IkaTransaction on the server.
+ * Handles:
+ *   - Checking for existing dWallets
+ *   - Multi-chain address derivation (BTC, ETH, etc.)
+ *   - DKG provisioning (WASM runs in browser, gas sponsored by keeper)
  */
 
-import { IkaClient, getNetworkConfig, publicKeyFromDWalletOutput, Curve } from '@ika.xyz/sdk';
+import {
+  IkaClient, IkaTransaction, getNetworkConfig,
+  publicKeyFromDWalletOutput, Curve,
+  UserShareEncryptionKeys, createRandomSessionIdentifier, prepareDKGAsync,
+} from '@ika.xyz/sdk';
 import type { DWalletCap } from '@ika.xyz/sdk';
+import { Transaction } from '@mysten/sui/transactions';
 import { deriveAddress, chainsForCurve, IkaCurve, type ChainConfig } from './chains.js';
 
 let ikaClient: IkaClient | null = null;
@@ -187,6 +193,146 @@ export interface CrossChainStatus {
   ethAddress: string;
   /** All derivable addresses from this dWallet */
   addresses: Array<{ chain: string; name: string; address: string }>;
+}
+
+// ── DKG Provisioning (client-side) ──────────────────────────────────
+
+export interface ProvisionCallbacks {
+  /** Sign a transaction as the user (wallet popup). Returns base64 signature. */
+  signTransaction: (txBytes: Uint8Array) => Promise<{ signature: string }>;
+  /** Called with status updates during provisioning. */
+  onStatus?: (msg: string) => void;
+}
+
+/**
+ * Provision a new secp256k1 dWallet for the user.
+ *
+ * Flow:
+ *   1. Check /api/ika/provision for SuiNS gate + keeper info
+ *   2. Run DKG WASM in browser (prepareDKGAsync)
+ *   3. Build PTB: DKG request with keeper as gas sponsor
+ *   4. User signs as sender, keeper signs as gas owner via /api/sponsor-gas
+ *   5. Submit with both signatures
+ *   6. Poll for dWallet to reach Active state
+ *
+ * Returns the CrossChainStatus once the dWallet is active.
+ */
+export async function provisionDWallet(
+  userAddress: string,
+  callbacks: ProvisionCallbacks,
+): Promise<CrossChainStatus> {
+  const log = callbacks.onStatus ?? (() => {});
+
+  // Step 1: Check eligibility + get keeper info
+  log('Checking SuiNS eligibility...');
+  const provRes = await fetch('/api/ika/provision', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ address: userAddress }),
+  });
+  if (!provRes.ok) {
+    const err = await provRes.json().catch(() => ({ error: 'Provision check failed' })) as { error?: string };
+    throw new Error(err.error ?? 'Not eligible for sponsored DKG');
+  }
+  const { keeperAddress, suiCoins, ikaCoins } = await provRes.json() as {
+    keeperAddress: string;
+    suiCoins: Array<{ objectId: string; version: string; digest: string }>;
+    ikaCoins: Array<{ objectId: string; version: string; digest: string }>;
+  };
+
+  if (!suiCoins.length) throw new Error('Keeper has no SUI for gas');
+  if (!ikaCoins.length) throw new Error('Keeper has no IKA for DKG fee');
+
+  // Step 2: Prepare DKG crypto (WASM — runs in browser)
+  log('Preparing DKG cryptography...');
+  const client = getClient();
+  const curve = Curve.SECP256K1;
+  const seed = new TextEncoder().encode(`ski:dwallet:${userAddress}`);
+  const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seed, curve);
+  const sessionIdentifier = createRandomSessionIdentifier();
+  const dkgInput = await prepareDKGAsync(
+    client, curve, userShareEncryptionKeys, sessionIdentifier, userAddress,
+  );
+
+  // Step 3: Get network encryption key
+  log('Fetching network encryption key...');
+  const encKey = await client.getLatestNetworkEncryptionKey();
+
+  // Step 4: Build the PTB
+  log('Building DKG transaction...');
+  const tx = new Transaction();
+  tx.setSender(userAddress);
+  tx.setGasOwner(keeperAddress);
+  tx.setGasPayment(suiCoins.slice(0, 3));
+
+  // IKA coin from keeper's balance
+  const ikaCoin = tx.object(ikaCoins[0].objectId);
+  // SUI for DKG gas reimbursement (from keeper's gas coins)
+  const suiCoin = tx.splitCoins(tx.gas, [tx.pure.u64(100_000_000)]);
+
+  const ikaTx = new IkaTransaction({ ikaClient: client, transaction: tx, userShareEncryptionKeys });
+  await ikaTx.registerEncryptionKey({ curve });
+
+  const [dWalletCap] = await ikaTx.requestDWalletDKG({
+    curve,
+    dkgRequestInput: dkgInput,
+    sessionIdentifier: ikaTx.registerSessionIdentifier(sessionIdentifier),
+    ikaCoin,
+    suiCoin,
+    dwalletNetworkEncryptionKeyId: encKey.id,
+  });
+  // DWalletCap stays with sender (user)
+
+  // Step 5: Build bytes, get sponsor sig, user signs
+  log('Signing transaction...');
+  const txBytes = await tx.build({ client: client as any });
+
+  // Get keeper's gas sponsor signature
+  const b64Tx = btoa(String.fromCharCode(...txBytes));
+  const sponsorRes = await fetch('/api/sponsor-gas', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ txBytes: b64Tx, senderAddress: userAddress }),
+  });
+  if (!sponsorRes.ok) {
+    const err = await sponsorRes.json().catch(() => ({ error: 'Sponsor signing failed' })) as { error?: string };
+    throw new Error(err.error ?? 'Gas sponsorship failed');
+  }
+  const { sponsorSig } = await sponsorRes.json() as { sponsorSig: string };
+
+  // User signs
+  const { signature: userSig } = await callbacks.signTransaction(txBytes);
+
+  // Step 6: Submit with both signatures
+  log('Submitting DKG transaction...');
+  const submitRes = await fetch('https://fullnode.mainnet.sui.io:443', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1,
+      method: 'sui_executeTransactionBlock',
+      params: [b64Tx, [userSig, sponsorSig], { showEffects: true }, 'WaitForLocalExecution'],
+    }),
+  });
+  const submitJson = await submitRes.json() as any;
+  const digest = submitJson?.result?.digest;
+  if (!digest) throw new Error('DKG transaction failed: ' + JSON.stringify(submitJson?.error ?? submitJson));
+
+  log('DKG submitted! Waiting for dWallet activation...');
+
+  // Step 7: Poll for dWallet to become active
+  for (let i = 0; i < 24; i++) { // 2 minutes max
+    await new Promise(r => setTimeout(r, 5000));
+    const status = await getCrossChainStatus(userAddress);
+    if (status.ika && status.btcAddress) {
+      log('dWallet active!');
+      return status;
+    }
+    log(`Waiting for activation... (${i + 1}/24)`);
+  }
+
+  // Return whatever we have even if not fully active yet
+  return getCrossChainStatus(userAddress);
 }
 
 export async function getCrossChainStatus(address: string): Promise<CrossChainStatus> {
