@@ -148,6 +148,7 @@ export interface AppState {
   nsBalance: number;
   suinsName: string;
   ikaWalletId: string;
+  btcAddress: string;
   skiMenuOpen: boolean;
   copied: boolean;
   splashSponsor: boolean;
@@ -160,6 +161,7 @@ const app: AppState = {
   nsBalance: 0,
   suinsName: '',
   ikaWalletId: '',
+  btcAddress: '',
   skiMenuOpen: (() => { try { return localStorage.getItem('ski:lift') === '1'; } catch { return false; } })(),
   copied: false,
   splashSponsor: false,
@@ -2819,7 +2821,8 @@ function stopPolling() {
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 function copyAddress() {
-  const addr = getState().address;
+  const isBtcView = networkView === 'btc' && !!app.btcAddress;
+  const addr = isBtcView ? app.btcAddress : getState().address;
   if (!addr) return;
   navigator.clipboard?.writeText(addr).then(() => {
     if (copiedTimer) clearTimeout(copiedTimer);
@@ -4620,9 +4623,14 @@ function renderSkiMenu() {
     return;
   }
 
-  const scanUrl = `https://suiscan.xyz/mainnet/account/${ws.address}`;
+  const isBtcView = networkView === 'btc' && !!app.btcAddress;
+  const displayAddr = isBtcView ? app.btcAddress : ws.address;
+  const scanUrl = isBtcView
+    ? `https://mempool.space/address/${app.btcAddress}`
+    : `https://suiscan.xyz/mainnet/account/${ws.address}`;
+  const explorerTitle = isBtcView ? 'View on Mempool' : 'View on Suiscan';
 
-  const addrShort = truncAddr(ws.address);
+  const addrShort = truncAddr(displayAddr);
 
   const dotSvg = balView === 'usd'
     ? `<button type="button" class="wk-popout-bal-icon-btn" id="wk-consolidate-btn" title="Consolidate tokens to USDC"><svg class="wk-popout-bal-icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="#22c55e" stroke="white" stroke-width="3"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">$</text></svg></button>`
@@ -4870,17 +4878,17 @@ function renderSkiMenu() {
               <div class="wk-badge-collapse-inner">
                 <div class="wk-dd-address-row">
                   <div id="wk-network-select" class="wk-dd-network-select"></div>
-                  <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="${esc(ws.address)}">
+                  <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}${isBtcView ? ' wk-dd-address-banner--btc' : ''}" id="wk-dd-copy" type="button" title="${esc(displayAddr)}">
                     <span class="wk-dd-address-text">${esc(app.copied ? 'Copied! \u2713' : addrShort)}</span>
                   </button>
-                  <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
+                  <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="${esc(explorerTitle)}">\u2197</a>
                 </div>
               </div>
             </div>
             ${balToggleHtml}
             <div id="wk-coins-collapse" class="wk-qr-collapse-wrap${coinChipsOpen ? '' : ' wk-qr-collapse--hidden'}">
               <div class="wk-qr-content-left">
-                <div class="wk-qr-content-qr" id="wk-addr-qr" title="${esc(ws.address)}"></div>
+                <div class="wk-qr-content-qr" id="wk-addr-qr" title="${esc(displayAddr)}" data-qr-addr="${esc(displayAddr)}"></div>
               </div>
               <div class="wk-qr-content-main">
                 ${coinBreakdownHtml}
@@ -4921,6 +4929,7 @@ function renderSkiMenu() {
       try { localStorage.setItem('ski:network-pref', networkView); } catch {}
       _networkSelectOpen = false;
       _renderNetworkSelect();
+      render(); // re-render to update address row for network switch
       return;
     }
     if (t.closest('#wk-network-trigger') || t.closest('.wk-dd-network-trigger')) {
@@ -7144,6 +7153,7 @@ export function initUI() {
       app.nsBalance = 0;
       app.suinsName = '';
       app.ikaWalletId = '';
+      app.btcAddress = '';
       app.skiMenuOpen = false;
       try { localStorage.setItem('ski:lift', '0'); } catch {}
       app.copied = false;
