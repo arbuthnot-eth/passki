@@ -74,26 +74,66 @@ app.post('/api/shade/schedule/:address', async (c) => {
   }
 });
 
+// ── SuiNS ownership gate ────────────────────────────────────────────
+
+const SUINS_REGISTRATION_TYPE = '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::suins_registration::SuinsRegistration';
+const SUINS_GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+
+/** Check if an address owns at least one SuiNS registration NFT. */
+async function hasSuinsNft(address: string): Promise<boolean> {
+  try {
+    const res = await fetch(SUINS_GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($owner:SuiAddress!,$type:String!){
+          address(address:$owner){
+            objects(filter:{type:$type},first:1){
+              nodes{ address }
+            }
+          }
+        }`,
+        variables: { owner: address, type: SUINS_REGISTRATION_TYPE },
+      }),
+    });
+    const json = await res.json() as {
+      data?: { address?: { objects?: { nodes?: unknown[] } } };
+    };
+    return (json?.data?.address?.objects?.nodes?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
 // ── Gas sponsorship via Shade keeper ─────────────────────────────────
 
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 
 /**
  * POST /api/sponsor-gas
- * Body: { txBytes: string } (base64-encoded transaction bytes)
+ * Body: { txBytes: string, senderAddress?: string } (base64-encoded transaction bytes)
  * Returns: { sponsorSig: string, sponsorAddress: string }
  *
  * Signs the transaction as gas sponsor using the Shade keeper keypair.
  * The client must have built the tx with setGasOwner(sponsorAddress)
  * and setGasPayment pointing to the keeper's SUI coins.
+ *
+ * When senderAddress is provided, requires the sender to own a SuiNS
+ * registration NFT (403 if not).
  */
 app.post('/api/sponsor-gas', async (c) => {
   const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
   if (!key) return c.json({ error: 'Gas sponsorship not configured' }, 503);
 
   try {
-    const { txBytes } = await c.req.json<{ txBytes: string }>();
+    const { txBytes, senderAddress } = await c.req.json<{ txBytes: string; senderAddress?: string }>();
     if (!txBytes) return c.json({ error: 'Missing txBytes' }, 400);
+
+    // SuiNS gate: require sender to own a SuiNS registration NFT
+    if (senderAddress) {
+      const hasNft = await hasSuinsNft(senderAddress);
+      if (!hasNft) return c.json({ error: 'SuiNS name required for gas sponsorship' }, 403);
+    }
 
     const keypair = Ed25519Keypair.fromSecretKey(key);
     const bytes = Uint8Array.from(atob(txBytes), ch => ch.charCodeAt(0));

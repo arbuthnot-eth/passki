@@ -58,7 +58,7 @@ async function signAndExecuteSponsoredTx(txBytes: Uint8Array): Promise<{ digest:
   const res = await fetch('/api/sponsor-gas', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ txBytes: b64 }),
+    body: JSON.stringify({ txBytes: b64, senderAddress: getState().address }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Sponsor signing failed' })) as { error?: string };
