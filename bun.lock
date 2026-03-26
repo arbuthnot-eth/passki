@@ -8,8 +8,8 @@
         "@7kprotocol/sdk-ts": "^4.0.0",
         "@bluefin-exchange/bluefin7k-aggregator-sdk": "^5.5.1",
         "@fingerprintjs/fingerprintjs": "^5.1.0",
-        "@human.tech/waap-sdk": "^1.2.2",
-        "@ika.xyz/sdk": "^0.3.1",
+        "@human.tech/waap-sdk": "^1.2.4",
+        "@ika.xyz/sdk": "0.3.1",
         "@mysten/dapp-kit-core": "^1.2.0",
         "@mysten/deepbook-v3": "^1.2.1",
         "@mysten/kiosk": "^1.1.3",
@@ -193,7 +193,7 @@
 
     "@human.tech/waap-interface-core": ["@human.tech/waap-interface-core@0.2.1", "", { "dependencies": { "crypto-js": "^4.2.0" } }, "sha512-KzrmfoL8Uc2gLoRMrMsoGbYsXiJrHyM7Sshi6Gnukv+1H8tz9K0nQX2UDzNP5QUrEv+cPz0pKPYvPvLMSDzxTA=="],
 
-    "@human.tech/waap-sdk": ["@human.tech/waap-sdk@1.2.2", "", { "dependencies": { "@human.tech/waap-constants": "0.1.1", "@human.tech/waap-interface-core": "0.2.1", "@metamask/rpc-errors": "^5.1.1", "@mysten/sui": "^1.45.2", "@mysten/wallet-standard": "^0.13.0", "@reown/appkit": "^1.8.17", "@reown/appkit-adapter-ethers": "^1.8.17", "ethers": "^6.16.0", "events": "^3.3.0", "pino-pretty": "^10.2.0", "zod": "^3.21.4", "zod-validation-error": "^1.3.0" }, "peerDependencies": { "react": ">=16.8.0" }, "optionalPeers": ["react"] }, "sha512-PpQ82W/DLGAzNuWzUkcjPEMG1yEz9OB1H4KLGmMaI5nIh81YtWlTZitQqwps/p7QfxJcRxAxhJGXZKv4louKtg=="],
+    "@human.tech/waap-sdk": ["@human.tech/waap-sdk@1.2.4", "", { "dependencies": { "@human.tech/waap-constants": "^0.1.1", "@human.tech/waap-interface-core": "^0.2.1", "@metamask/rpc-errors": "^5.1.1", "@mysten/sui": "^1.45.2", "@mysten/wallet-standard": "^0.13.0", "@reown/appkit": "^1.8.17", "@reown/appkit-adapter-ethers": "^1.8.17", "ethers": "^6.16.0", "events": "^3.3.0", "pino-pretty": "^10.2.0", "zod": "^3.21.4", "zod-validation-error": "^1.3.0" }, "peerDependencies": { "react": ">=16.8.0" }, "optionalPeers": ["react"] }, "sha512-ExEBrejbckLyv6ZDu6xP5C8rCdIaf7xxdZh001iwngn0+v3oegxbu2EnAB1yWzEwMSWS2reFTyYYJY4UpuffHQ=="],
 
     "@ika.xyz/ika-wasm": ["@ika.xyz/ika-wasm@0.2.1", "", {}, "sha512-Zq528aTdAHA7mW4+vqUoc/fhornMo8EHcS8hKJx1ZBs9tAepWw07ZReMsZuCtQRmpi1vmYh2mIi2PhZRV0M4dA=="],
 
