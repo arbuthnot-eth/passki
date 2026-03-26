@@ -82,14 +82,22 @@ export async function checkExistingDWallets(address: string): Promise<{
 
 /**
  * Extract the raw compressed public key from a dWallet's public output.
- * The IKA WASM returns BCS-encoded bytes; we strip the length prefix.
+ * Tries IKA WASM first, falls back to manual BCS extraction.
  */
 async function extractPubkey(publicOutput: Uint8Array): Promise<Uint8Array> {
-  const bcsEncodedKey = await publicKeyFromDWalletOutput(Curve.SECP256K1, publicOutput);
-  // BCS encodes a vector<u8> with a ULEB128 length prefix. For 33 bytes, prefix is 0x21.
-  return bcsEncodedKey.length === 33
-    ? bcsEncodedKey
-    : bcsEncodedKey.slice(bcsEncodedKey.length - 33);
+  try {
+    const bcsEncodedKey = await publicKeyFromDWalletOutput(Curve.SECP256K1, publicOutput);
+    return bcsEncodedKey.length === 33
+      ? bcsEncodedKey
+      : bcsEncodedKey.slice(bcsEncodedKey.length - 33);
+  } catch {
+    // WASM may fail — extract manually from public_output
+    // Format: [version, 33, 02/03, ...32 bytes] — compressed secp256k1 pubkey
+    if (publicOutput.length >= 35 && (publicOutput[2] === 2 || publicOutput[2] === 3) && publicOutput[1] === 33) {
+      return publicOutput.slice(2, 35);
+    }
+    throw new Error('Could not extract public key from dWallet output');
+  }
 }
 
 /**
@@ -372,7 +380,7 @@ export async function provisionDWallet(
       log('Active!');
       return status;
     }
-    log(`Waiting for activation... (${i + 1}/24)`);
+    log(`Activating (${i + 1}/24)`);
   }
 
   // Return whatever we have even if not fully active yet
@@ -380,27 +388,47 @@ export async function provisionDWallet(
 }
 
 export async function getCrossChainStatus(address: string): Promise<CrossChainStatus> {
-  const { hasDWallet, caps, count } = await checkExistingDWallets(address);
   let btcAddress = '';
   let ethAddress = '';
   let addresses: Array<{ chain: string; name: string; address: string }> = [];
-  if (hasDWallet && caps[0]) {
-    try {
-      const client = await getClient();
-      const dWallet = await client.getDWallet(caps[0].dwallet_id);
-      const publicOutput = (dWallet as any)?.state?.Active?.public_output;
-      if (publicOutput) {
-        const output = new Uint8Array(publicOutput);
-        addresses = await deriveAllAddresses(output);
-        btcAddress = addresses.find(a => a.name === 'Bitcoin')?.address ?? '';
-        ethAddress = addresses.find(a => a.name === 'Ethereum')?.address ?? '';
+  let dwalletId = '';
+  let hasDWallet = false;
+
+  try {
+    const rpc = getJsonRpc();
+    // Direct RPC check — bypass broken IKA SDK initialize()
+    const DWALLET_CAP_TYPE = '0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317::coordinator_inner::DWalletCap';
+    const owned = await rpc.getOwnedObjects({
+      owner: address,
+      filter: { StructType: DWALLET_CAP_TYPE },
+      options: { showContent: true },
+      limit: 1,
+    });
+    const cap = (owned as any)?.data?.[0]?.data;
+    if (cap) {
+      hasDWallet = true;
+      dwalletId = cap.content?.fields?.dwallet_id ?? '';
+
+      // Fetch the dWallet object to get public_output
+      if (dwalletId) {
+        const dw = await rpc.getObject({ id: dwalletId, options: { showContent: true } });
+        const state = (dw as any)?.data?.content?.fields?.state?.fields;
+        // Check Active or AwaitingKeyHolderSignature (both have public_output)
+        const publicOutput = state?.public_output;
+        if (publicOutput && Array.isArray(publicOutput)) {
+          const output = new Uint8Array(publicOutput);
+          addresses = await deriveAllAddresses(output);
+          btcAddress = addresses.find(a => a.name === 'Bitcoin')?.address ?? '';
+          ethAddress = addresses.find(a => a.name === 'Ethereum')?.address ?? '';
+        }
       }
-    } catch {}
-  }
+    }
+  } catch {}
+
   return {
     ika: hasDWallet,
-    dwalletCount: count,
-    dwalletId: hasDWallet && caps[0] ? caps[0].dwallet_id : '',
+    dwalletCount: hasDWallet ? 1 : 0,
+    dwalletId,
     btcAddress,
     ethAddress,
     addresses,
