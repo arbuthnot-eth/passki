@@ -89,6 +89,15 @@ function getClient(): IkaClient {
         // 'core' property — the v2 @mysten/sui transaction resolver accesses client.core.getMoveFunction
         // Return self so client.core.getMoveFunction works the same as client.getMoveFunction
         if (prop === 'core') return suiClientProxy;
+        // resolveTransactionPlugin — Transaction.build() needs this to resolve Move calls.
+        // Returns a plugin function that provides gas price + object resolution.
+        if (prop === 'resolveTransactionPlugin') return () => ({
+          step: 'resolve',
+          async run({ transaction, next }: any) {
+            // Just pass through — the transaction should already have gas info set
+            await next();
+          },
+        });
         // Prevent Proxy from being treated as a Promise (breaks await detection)
         if (prop === 'then') return undefined;
         // Only intercept known RPC methods
