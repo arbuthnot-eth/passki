@@ -43,9 +43,12 @@ async function getClient(): Promise<IkaClient> {
       suiClient: rpc as any,
     });
     // Pre-fetch coordinator objects, encryption keys, and protocol state.
-    // Without this, the SDK lazily fetches 250+ objects individually (slow/timeout).
+    // initialize() may partially fail on mainnet (SDK bug with table vector parsing)
+    // but the cached data it does fetch still speeds up subsequent calls.
     if (!initPromise) {
-      initPromise = ikaClient.initialize();
+      initPromise = ikaClient.initialize().catch((err) => {
+        console.warn('[ika] initialize() partial failure (non-fatal):', err?.message?.slice(0, 100));
+      });
     }
     await initPromise;
   }
