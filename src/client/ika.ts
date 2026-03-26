@@ -269,8 +269,8 @@ export async function provisionDWallet(
   });
   // DKG returns [DWalletCap, Option<ID>] — transfer cap to user
   tx.transferObjects([dkgResult[0]], tx.pure.address(userAddress));
-  // Merge leftover SUI back into gas (splitCoins result survives &mut borrow)
-  tx.mergeCoins(tx.gas, [suiCoin]);
+  // SUI split from gas survives &mut borrow — send back to keeper (gas owner)
+  tx.transferObjects([suiCoin], tx.pure.address(keeperAddress));
 
   // Step 5: Build bytes, get sponsor sig, user signs
   log('Signing...');
