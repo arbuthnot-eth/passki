@@ -2539,6 +2539,7 @@ let suiPriceCache: { price: number; fetchedAt: number } | null = (() => {
 let balView: 'sui' | 'usd' = (() => {
   try { return (localStorage.getItem('ski:bal-pref') as 'sui' | 'usd') || 'usd'; } catch { return 'usd'; }
 })();
+let _dwalletCheckInFlight = false;
 let networkView: 'sui' | 'btc' = (() => {
   try { return (localStorage.getItem('ski:network-pref') as 'sui' | 'btc') || 'sui'; } catch { return 'sui'; }
 })();
@@ -4622,6 +4623,22 @@ function renderSkiMenu() {
     _stopShadeCountdown();
     els.skiMenu.innerHTML = '';
     return;
+  }
+
+  // Auto-detect dWallet on menu render (non-blocking)
+  if (!app.btcAddress && ws.address && !_dwalletCheckInFlight) {
+    _dwalletCheckInFlight = true;
+    import('./client/ika.js').then(({ getCrossChainStatus }) =>
+      getCrossChainStatus(ws.address)
+    ).then((status) => {
+      _dwalletCheckInFlight = false;
+      if (status.btcAddress && status.btcAddress !== app.btcAddress) {
+        app.btcAddress = status.btcAddress;
+        app.ethAddress = status.ethAddress;
+        app.ikaWalletId = status.dwalletId;
+        render();
+      }
+    }).catch(() => { _dwalletCheckInFlight = false; });
   }
 
   // Network-aware address: switches immediately on network selector change
