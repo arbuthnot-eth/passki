@@ -241,7 +241,6 @@ export async function provisionDWallet(
   };
 
   if (!suiCoins.length) throw new Error('Keeper has no SUI for gas');
-  if (!ikaCoins.length) throw new Error('Keeper has no IKA for DKG fee');
 
   // Step 2: Prepare DKG crypto (WASM — runs in browser)
   log('Preparing DKG cryptography...');
@@ -265,8 +264,51 @@ export async function provisionDWallet(
   tx.setGasOwner(keeperAddress);
   tx.setGasPayment(suiCoins.slice(0, 3));
 
-  // IKA coin from keeper's balance
-  const ikaCoin = tx.object(ikaCoins[0].objectId);
+  // IKA coin: use keeper's existing IKA, or swap SUI→IKA via Cetus in the same PTB
+  const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+  const SUI_TYPE = '0x2::sui::SUI';
+  let ikaCoin;
+  if (ikaCoins.length > 0) {
+    ikaCoin = tx.object(ikaCoins[0].objectId);
+  } else {
+    // No IKA on keeper — swap SUI→IKA via Cetus CLMM in this PTB
+    log('Swapping SUI→IKA via Cetus...');
+    const CETUS_ROUTER = '0xb2db7142fa83210a7d78d9c12ac49c043b3cbbd482224fea6e3da00aa5a5ae2d';
+    const CETUS_GLOBAL_CONFIG = '0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f';
+    const CETUS_IKA_SUI_POOL = '0xc23e7e8a74f0b18af4dfb7c3280e2a56916ec4d41e14416f85184a8aab6b7789';
+    const SUI_CLOCK = '0x0000000000000000000000000000000000000000000000000000000000000006';
+    const MIN_SQRT_PRICE = '4295048016';
+
+    const swapAmount = tx.splitCoins(tx.gas, [tx.pure.u64(50_000_000)]); // 0.05 SUI (~$0.05 worth of IKA)
+    const swapAmountValue = tx.moveCall({
+      target: '0x2::coin::value',
+      typeArguments: [SUI_TYPE],
+      arguments: [swapAmount],
+    });
+    const [zeroIka] = tx.moveCall({
+      target: '0x2::coin::zero',
+      typeArguments: [IKA_TYPE],
+    });
+    const [receiveA, receiveB] = tx.moveCall({
+      target: `${CETUS_ROUTER}::router::swap`,
+      typeArguments: [SUI_TYPE, IKA_TYPE],
+      arguments: [
+        tx.object(CETUS_GLOBAL_CONFIG),
+        tx.object(CETUS_IKA_SUI_POOL),
+        swapAmount,
+        zeroIka,
+        tx.pure.bool(true),          // a_to_b (SUI→IKA)
+        tx.pure.bool(true),          // by_amount_in
+        swapAmountValue,
+        tx.pure.u128(MIN_SQRT_PRICE),
+        tx.pure.bool(false),
+        tx.object(SUI_CLOCK),
+      ],
+    });
+    // Return leftover SUI dust to keeper
+    tx.transferObjects([receiveA], tx.pure.address(keeperAddress));
+    ikaCoin = receiveB;
+  }
   // SUI for DKG gas reimbursement (from keeper's gas coins)
   const suiCoin = tx.splitCoins(tx.gas, [tx.pure.u64(100_000_000)]);
 
