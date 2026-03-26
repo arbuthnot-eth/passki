@@ -267,11 +267,9 @@ export async function provisionDWallet(
     suiCoin,
     dwalletNetworkEncryptionKeyId: encKey.id,
   });
-  // DKG returns [DWalletCap, Option<ID>] — transfer cap to user, drop the option
+  // DKG returns [DWalletCap, Option<ID>] — transfer cap to user
   tx.transferObjects([dkgResult[0]], tx.pure.address(userAddress));
-  // Transfer leftover coins back to keeper (DKG takes coins by value but may not fully consume)
-  tx.transferObjects([ikaCoin], tx.pure.address(keeperAddress));
-  tx.transferObjects([suiCoin], tx.pure.address(keeperAddress));
+  // IKA coin stays with user (they own it), SUI coin merges back to gas automatically
 
   // Step 5: Build bytes, get sponsor sig, user signs
   log('Signing transaction...');

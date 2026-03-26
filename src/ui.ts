@@ -4902,7 +4902,7 @@ function renderSkiMenu() {
                   <div id="wk-network-select" class="wk-dd-network-select"></div>
                   ${needsDWallet
                     ? `<button class="wk-dd-address-banner wk-dd-address-banner--btc wk-dd-dwallet-setup" id="wk-dd-dwallet-setup" type="button" title="Create a dWallet to get BTC + ETH addresses">
-                        <span class="wk-dd-address-text">Create dWallet \u2192</span>
+                        <span class="wk-dd-address-text">Create \u2192</span>
                       </button>`
                     : `<button class="wk-dd-address-banner${app.copied ? ' copied' : ''}${addrBannerCls ? ' ' + addrBannerCls : ''}" id="wk-dd-copy" type="button" title="${esc(displayAddr)}">
                         <span class="wk-dd-address-text">${esc(app.copied ? 'Copied! \u2713' : addrShort)}</span>
@@ -4970,7 +4970,7 @@ function renderSkiMenu() {
       showToast(msg);
       btn.disabled = false;
       const txt = btn.querySelector('.wk-dd-address-text');
-      if (txt) txt.textContent = 'Create dWallet \u2192';
+      if (txt) txt.textContent = 'Create \u2192';
     }
   });
   document.getElementById('wk-dd-switch')?.addEventListener('click', menuLockin);
