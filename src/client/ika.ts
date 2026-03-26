@@ -233,11 +233,6 @@ export async function provisionDWallet(
     const MAX_SQRT_PRICE = '79226673515401279992447579055';
 
     const swapAmount = tx.splitCoins(tx.gas, [tx.pure.u64(50_000_000)]); // 0.05 SUI
-    const swapAmountValue = tx.moveCall({
-      target: '0x2::coin::value',
-      typeArguments: [SUI_TYPE],
-      arguments: [swapAmount],
-    });
     const [zeroIka] = tx.moveCall({
       target: '0x2::coin::zero',
       typeArguments: [IKA_TYPE],
@@ -252,7 +247,7 @@ export async function provisionDWallet(
         swapAmount,          // coinB in (SUI — what we're spending)
         tx.pure.bool(false),          // a_to_b = false (B→A = SUI→IKA)
         tx.pure.bool(true),           // by_amount_in
-        swapAmountValue,
+        tx.pure.u64(50_000_000),      // amount (same as split)
         tx.pure.u128(MAX_SQRT_PRICE), // sqrt price limit for B→A
         tx.pure.bool(false),
         tx.object(SUI_CLOCK),
