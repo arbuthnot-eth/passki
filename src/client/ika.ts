@@ -27,13 +27,16 @@ function getClient(): IkaClient {
     // Generic JSON-RPC proxy client — handles any method the IKA SDK calls.
     // Routes through /api/rpc (same-origin Worker proxy) to avoid CORS.
     const rpc = async (method: string, params: unknown[]) => {
+      console.log(`[ika:rpc] ${method}`, params);
       const res = await fetch('/api/rpc', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
       });
+      if (!res.ok) throw new Error(`RPC ${method}: HTTP ${res.status}`);
       const json = await res.json() as { result?: unknown; error?: unknown };
       if (json.error) throw new Error(`RPC ${method}: ${JSON.stringify(json.error)}`);
+      console.log(`[ika:rpc] ${method} → ok`);
       return json.result;
     };
 
