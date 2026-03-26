@@ -34,8 +34,9 @@ app.post('/api/rpc', async (c) => {
         headers: { 'content-type': 'application/json' },
         body,
       });
-      if (res.ok) {
-        const json = await res.text();
+      // Accept any response that has JSON content (even non-200)
+      const json = await res.text();
+      if (json && json.startsWith('{')) {
         return c.text(json, 200, { 'content-type': 'application/json' });
       }
     } catch {}
