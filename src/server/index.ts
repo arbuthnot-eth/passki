@@ -223,31 +223,31 @@ app.post('/api/ika/provision', async (c) => {
     const GQL = 'https://graphql.mainnet.sui.io/graphql';
     const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
 
+    const coinQuery = (coinType: string, limit: number) => fetch(GQL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!,$t:String!){
+          address(address:$a){
+            objects(filter:{type:$t},first:${limit}){
+              nodes{ address version digest }
+            }
+          }
+        }`,
+        variables: { a: keeperAddress, t: `0x2::coin::Coin<${coinType}>` },
+      }),
+    }).then(r => r.json()) as Promise<any>;
+
     const [suiRes, ikaRes] = await Promise.all([
-      fetch(GQL, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          query: `query($a:SuiAddress!){ address(address:$a){ coins(type:"0x2::sui::SUI",first:5){ nodes{ address version digest } } } }`,
-          variables: { a: keeperAddress },
-        }),
-      }).then(r => r.json()) as Promise<any>,
-      fetch(GQL, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          query: `query($a:SuiAddress!,$t:String!){ address(address:$a){ coins(type:$t,first:3){ nodes{ address version digest contents { json } } } } }`,
-          variables: { a: keeperAddress, t: IKA_TYPE },
-        }),
-      }).then(r => r.json()) as Promise<any>,
+      coinQuery('0x2::sui::SUI', 5),
+      coinQuery(IKA_TYPE, 3),
     ]);
 
-    const suiCoins = (suiRes?.data?.address?.coins?.nodes ?? []).map((n: any) => ({
+    const mapCoins = (res: any) => (res?.data?.address?.objects?.nodes ?? []).map((n: any) => ({
       objectId: n.address, version: String(n.version), digest: n.digest,
     }));
-    const ikaCoins = (ikaRes?.data?.address?.coins?.nodes ?? []).map((n: any) => ({
-      objectId: n.address, version: String(n.version), digest: n.digest,
-    }));
+    const suiCoins = mapCoins(suiRes);
+    const ikaCoins = mapCoins(ikaRes);
 
     return c.json({
       success: true,
