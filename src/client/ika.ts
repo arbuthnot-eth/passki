@@ -6,8 +6,11 @@
  * IKA + SUI coins and runs through IkaTransaction on the server.
  */
 
-import { IkaClient, getNetworkConfig } from '@ika.xyz/sdk';
+import { IkaClient, getNetworkConfig, publicKeyFromDWalletOutput, Curve } from '@ika.xyz/sdk';
 import type { DWalletCap } from '@ika.xyz/sdk';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { ripemd160 } from '@noble/hashes/legacy.js';
+import { bech32 } from '@scure/base';
 
 let ikaClient: IkaClient | null = null;
 
@@ -117,6 +120,35 @@ export async function checkExistingDWallets(address: string): Promise<{
   }
 }
 
+// ── Bitcoin address derivation ───────────────────────────────────────
+
+/**
+ * Derive a native SegWit (bech32) Bitcoin address from a dWallet's public output.
+ *
+ * Flow:
+ *   1. Extract compressed secp256k1 pubkey from dWallet output (via IKA WASM)
+ *   2. SHA256 → RIPEMD160 = pubkey hash (Hash160)
+ *   3. Encode as bech32 witness v0 program → bc1q... address
+ */
+export async function deriveBtcAddress(publicOutput: Uint8Array): Promise<string> {
+  // 1. Get raw compressed public key (33 bytes) from dWallet output
+  const bcsEncodedKey = await publicKeyFromDWalletOutput(Curve.SECP256K1, publicOutput);
+  // BCS encodes a vector<u8> with a ULEB128 length prefix. For 33 bytes, prefix is 0x21.
+  const rawPubkey = bcsEncodedKey.length === 33
+    ? bcsEncodedKey
+    : bcsEncodedKey.slice(bcsEncodedKey.length - 33);
+
+  // 2. Hash160 = RIPEMD160(SHA256(pubkey))
+  const hash160 = ripemd160(sha256(rawPubkey));
+
+  // 3. Encode as bech32 witness v0 program (P2WPKH → bc1q...)
+  const words = bech32.toWords(hash160);
+  words.unshift(0); // witness version 0
+  return bech32.encode('bc', words);
+}
+
+// ── Cross-chain status ──────────────────────────────────────────────
+
 /**
  * Get cross-chain wallet info for display.
  */
@@ -124,13 +156,26 @@ export interface CrossChainStatus {
   ika: boolean;
   dwalletCount: number;
   dwalletId: string;
+  btcAddress: string;
 }
 
 export async function getCrossChainStatus(address: string): Promise<CrossChainStatus> {
   const { hasDWallet, caps, count } = await checkExistingDWallets(address);
+  let btcAddress = '';
+  if (hasDWallet && caps[0]) {
+    try {
+      const client = getClient();
+      const dWallet = await client.getDWallet(caps[0].dwallet_id);
+      const publicOutput = (dWallet as any)?.state?.Active?.public_output;
+      if (publicOutput) {
+        btcAddress = await deriveBtcAddress(new Uint8Array(publicOutput));
+      }
+    } catch {}
+  }
   return {
     ika: hasDWallet,
     dwalletCount: count,
     dwalletId: hasDWallet && caps[0] ? caps[0].dwallet_id : '',
+    btcAddress,
   };
 }
