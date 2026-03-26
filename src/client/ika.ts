@@ -8,9 +8,7 @@
 
 import { IkaClient, getNetworkConfig, publicKeyFromDWalletOutput, Curve } from '@ika.xyz/sdk';
 import type { DWalletCap } from '@ika.xyz/sdk';
-import { sha256 } from '@noble/hashes/sha2.js';
-import { ripemd160 } from '@noble/hashes/legacy.js';
-import { bech32 } from '@scure/base';
+import { deriveAddress, chainsForCurve, IkaCurve, type ChainConfig } from './chains.js';
 
 let ikaClient: IkaClient | null = null;
 
@@ -120,31 +118,60 @@ export async function checkExistingDWallets(address: string): Promise<{
   }
 }
 
-// ── Bitcoin address derivation ───────────────────────────────────────
+// ── Multi-chain address derivation ──────────────────────────────────
 
 /**
- * Derive a native SegWit (bech32) Bitcoin address from a dWallet's public output.
- *
- * Flow:
- *   1. Extract compressed secp256k1 pubkey from dWallet output (via IKA WASM)
- *   2. SHA256 → RIPEMD160 = pubkey hash (Hash160)
- *   3. Encode as bech32 witness v0 program → bc1q... address
+ * Extract the raw compressed public key from a dWallet's public output.
+ * The IKA WASM returns BCS-encoded bytes; we strip the length prefix.
  */
-export async function deriveBtcAddress(publicOutput: Uint8Array): Promise<string> {
-  // 1. Get raw compressed public key (33 bytes) from dWallet output
+async function extractPubkey(publicOutput: Uint8Array): Promise<Uint8Array> {
   const bcsEncodedKey = await publicKeyFromDWalletOutput(Curve.SECP256K1, publicOutput);
   // BCS encodes a vector<u8> with a ULEB128 length prefix. For 33 bytes, prefix is 0x21.
-  const rawPubkey = bcsEncodedKey.length === 33
+  return bcsEncodedKey.length === 33
     ? bcsEncodedKey
     : bcsEncodedKey.slice(bcsEncodedKey.length - 33);
+}
 
-  // 2. Hash160 = RIPEMD160(SHA256(pubkey))
-  const hash160 = ripemd160(sha256(rawPubkey));
+/**
+ * Derive a chain-native address from a dWallet's public output.
+ * Uses the chain registry to resolve curve params + derivation function.
+ *
+ * @example
+ *   deriveChainAddress('btc', publicOutput)  // → 'bc1q...'
+ *   deriveChainAddress('ethereum', pubOut)    // → '0x...' (when implemented)
+ */
+export async function deriveChainAddress(
+  chainIdOrAlias: string,
+  publicOutput: Uint8Array,
+): Promise<string> {
+  const rawPubkey = await extractPubkey(publicOutput);
+  return deriveAddress(chainIdOrAlias, rawPubkey);
+}
 
-  // 3. Encode as bech32 witness v0 program (P2WPKH → bc1q...)
-  const words = bech32.toWords(hash160);
-  words.unshift(0); // witness version 0
-  return bech32.encode('bc', words);
+/** Convenience alias — derive Bitcoin address from dWallet public output. */
+export async function deriveBtcAddress(publicOutput: Uint8Array): Promise<string> {
+  return deriveChainAddress('btc', publicOutput);
+}
+
+/**
+ * Get all chain addresses derivable from a single secp256k1 dWallet.
+ * Returns only chains whose derivation is implemented.
+ */
+export async function deriveAllAddresses(
+  publicOutput: Uint8Array,
+): Promise<Array<{ chain: string; name: string; address: string }>> {
+  const rawPubkey = await extractPubkey(publicOutput);
+  const chains = chainsForCurve(IkaCurve.SECP256K1);
+  const results: Array<{ chain: string; name: string; address: string }> = [];
+  for (const chain of chains) {
+    try {
+      const address = chain.deriveAddress(rawPubkey);
+      results.push({ chain: chain.caipId, name: chain.name, address });
+    } catch {
+      // Derivation not implemented for this chain — skip
+    }
+  }
+  return results;
 }
 
 // ── Cross-chain status ──────────────────────────────────────────────
