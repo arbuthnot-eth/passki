@@ -395,7 +395,8 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
   let hasDWallet = false;
 
   try {
-    const rpc = getJsonRpc();
+    // Use a fresh JSON-RPC client to avoid any cached/broken state
+    const rpc = new SuiJsonRpcClient({ url: '/api/rpc', network: 'mainnet' });
     // Direct RPC check — bypass broken IKA SDK initialize()
     const DWALLET_CAP_TYPE = '0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317::coordinator_inner::DWalletCap';
     const owned = await rpc.getOwnedObjects({
