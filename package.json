@@ -35,7 +35,7 @@
     "url": "https://github.com/arbuthnot-eth/.SKI"
   },
   "scripts": {
-    "build": "rm -rf public/dist && bun build src/ski.ts --outdir public/dist --target browser --minify --splitting --format esm --loader .svg:text",
+    "build": "rm -rf public/dist && bun build src/ski.ts --outdir public/dist --target browser --minify --splitting --format esm --loader .svg:text && cp node_modules/@ika.xyz/ika-wasm/dist/web/dwallet_mpc_wasm_bg.wasm public/dist/",
     "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch --splitting --format esm --loader .svg:text",
     "dev:wrangler": "wrangler dev",
     "deploy": "bun update && bun run build && npx wrangler deploy",
