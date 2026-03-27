@@ -5012,7 +5012,7 @@ function renderSkiMenu() {
                 <div class="wk-dd-address-row">
                   <div id="wk-network-select" class="wk-dd-network-select"></div>
                   ${needsDWallet
-                    ? `<button class="wk-dd-address-banner wk-dd-address-banner--btc wk-dd-dwallet-setup" id="wk-dd-dwallet-setup" type="button" title="Create a dWallet to get BTC + ETH addresses">
+                    ? `<button class="wk-dd-address-banner wk-dd-address-banner--${networkView === 'sol' ? 'sol' : 'btc'} wk-dd-dwallet-setup" id="wk-dd-dwallet-setup" type="button" title="${networkView === 'sol' ? 'Create a dWallet to get a Solana address' : 'Create a dWallet to get BTC + ETH addresses'}">
                         <span class="wk-dd-address-text">Create \u2192</span>
                       </button>`
                     : `<button class="wk-dd-address-banner${app.copied ? ' copied' : ''}${addrBannerCls ? ' ' + addrBannerCls : ''}" id="wk-dd-copy" type="button" title="${esc(displayAddr)}">
