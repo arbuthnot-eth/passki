@@ -340,7 +340,10 @@ window.addEventListener('ski:request-suiami', async (e) => {
     }
   }
 
-  const name = ws.suinsName?.replace(/\.sui$/, '') || 'nobody';
+  // Check app state for SuiNS name (reverse-resolved), fallback to wallet state, then localStorage
+  const appName = getAppState().suinsName;
+  const cachedName = (() => { try { return localStorage.getItem(`ski:suins:${ws.address}`); } catch { return null; } })();
+  const name = (appName || cachedName || ws.suinsName || '').replace(/\.sui$/, '') || 'nobody';
 
   try {
     const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
