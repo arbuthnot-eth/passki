@@ -5177,12 +5177,12 @@ body {
   position: relative;
 }
 .ski-demo--btc { background: linear-gradient(135deg, rgba(247,147,26,0.08), var(--panel) 60%); border-color: rgba(247,147,26,0.15); }
-.ski-demo--btc:hover { border-color: rgba(247,147,26,0.35); }
+.ski-demo--btc:hover { border-color: rgba(255,255,255,0.3); }
 .ski-demo--sol { background: linear-gradient(135deg, rgba(153,69,255,0.08), var(--panel) 60%); border-color: rgba(153,69,255,0.15); }
-.ski-demo--sol:hover { border-color: rgba(153,69,255,0.35); }
+.ski-demo--sol:hover { border-color: rgba(255,255,255,0.3); }
 .ski-demo--sui { background: linear-gradient(135deg, rgba(77,162,255,0.08), var(--panel) 60%); border-color: rgba(77,162,255,0.15); }
-.ski-demo--sui:hover { border-color: rgba(77,162,255,0.35); }
-.ski-demo:hover { border-color: rgba(247, 147, 26, 0.3); }
+.ski-demo--sui:hover { border-color: rgba(255,255,255,0.3); }
+.ski-demo:hover { border-color: rgba(255, 255, 255, 0.3); }
 .ski-demo-body {
   cursor: pointer;
   display: flex;
