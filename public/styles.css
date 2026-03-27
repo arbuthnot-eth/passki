@@ -5220,6 +5220,7 @@ body {
   display: none;
 }
 .ski-demo:not(.open) .ski-demo-addr { display: none; }
+.ski-demo:not(.open) .ski-chip--gear { display: none; }
 .ski-demo:not(.open) .ski-demo-label-row {
   display: flex;
   flex-wrap: wrap;
