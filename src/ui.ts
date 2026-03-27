@@ -675,6 +675,15 @@ function fmtTimeLeft(expiresAt: string): string {
   return hrs > 0 ? `${hrs}h` : '< 1h';
 }
 
+// One-time QR cache clear — old white-bg SVGs cached under ski:qr:*
+try {
+  if (!localStorage.getItem('ski:qr:v2')) {
+    const keys = Object.keys(localStorage).filter(k => k.startsWith('ski:qr:'));
+    keys.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem('ski:qr:v2', '1');
+  }
+} catch {}
+
 /** Generate (or return cached) QR SVG for a URL. Stored in localStorage. */
 async function getQrSvg(url: string, color?: string): Promise<string> {
   const dark = color ?? '#60a5fa';
