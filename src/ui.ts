@@ -683,7 +683,7 @@ async function getQrSvg(url: string, color?: string): Promise<string> {
   const mod = await import('qrcode');
   const QRCode = (mod as unknown as { default: typeof mod }).default ?? mod;
   const svg = await (QRCode as { toString: (url: string, opts: object) => Promise<string> })
-    .toString(url, { type: 'svg', margin: 1, color: { dark, light: '#0d1117' }, errorCorrectionLevel: 'M' });
+    .toString(url, { type: 'svg', margin: 1, color: { dark, light: '#ffffff' }, errorCorrectionLevel: 'M' });
   try { localStorage.setItem(key, svg); } catch {}
   return svg;
 }
@@ -697,7 +697,7 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' = 
   const mod = await import('qrcode');
   const QRCode = (mod as unknown as { default: typeof mod }).default ?? mod;
   let svg: string = await (QRCode as { toString: (url: string, opts: object) => Promise<string> })
-    .toString(addr, { type: 'svg', margin: 1, color: { dark, light: '#0d1117' }, errorCorrectionLevel: 'H' });
+    .toString(addr, { type: 'svg', margin: 1, color: { dark, light: '#ffffff' }, errorCorrectionLevel: 'H' });
   const vbMatch = svg.match(/viewBox="0 0 (\d+) (\d+)"/);
   if (vbMatch) {
     const vw = Number(vbMatch[1]), vh = Number(vbMatch[2]);
@@ -737,7 +737,7 @@ function keyPfpHtml(addr: string, suinsName: string | null): string {
     return `<button type="button" class="ski-key-pfp ski-key-pfp--blue${splashClass}" data-splash-addr="${escaped}" title="${splashTitle} for ${esc(bare)}.sui"><img src="${SUI_DROP_URI}" class="ski-key-pfp-drop" alt=""></button>`;
   }
   const dropOverlay = splashOn ? `<img src="${SUI_DROP_URI}" class="ski-key-pfp-splash-drop" alt="" aria-hidden="true">` : '';
-  return `<button type="button" class="ski-key-pfp ski-key-pfp--diamond${splashClass}" data-splash-addr="${escaped}" title="${splashTitle}"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#1a1a2e" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</button>`;
+  return `<button type="button" class="ski-key-pfp ski-key-pfp--diamond${splashClass}" data-splash-addr="${escaped}" title="${splashTitle}"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#3a3a5e" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</button>`;
 }
 
 /** Subname creator column rendered inside each secondary key card. */
@@ -1382,11 +1382,11 @@ function walletListShape(w: Wallet): string {
   if (hasSuins) {
     return `<span class="ski-list-shape ski-list-shape--blue${sponsorClass}${deviceClass}">${hoverDrop}${dropOverlay}</span>`;
   } else if (hasAddrs) {
-    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#1a1a2e" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
+    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#3a3a5e" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
   }
   // WaaP: always black diamond even before first connect
   if (/waap/i.test(w.name)) {
-    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#1a1a2e" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
+    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#3a3a5e" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
   }
   // Green circle — no known addresses. Google/Discord: wrap with social X badge.
   const greenSvg = `<svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>`;
@@ -3978,12 +3978,12 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
     }).join(' ');
     return `<svg ${base}><polygon points="${pts}" fill="#ef4444" stroke="white" stroke-width="${sw}"/></svg>`;
   }
-  // black-diamond: white outline with dark fill matching the input textbox
+  // black-diamond: white outline with lighter fill for visibility on dark backgrounds
   const outerPad = pad;
   const innerPad = pad + sw * 1.1;
   const outerPath = `M${half},${outerPad} L${s - outerPad},${half} L${half},${s - outerPad} L${outerPad},${half}Z`;
   const innerPath = `M${half},${innerPad} L${s - innerPad},${half} L${half},${s - innerPad} L${innerPad},${half}Z`;
-  return `<svg ${base}><path d="${outerPath}" fill="white"/><path d="${innerPath}" fill="#1a1a2e"/></svg>`;
+  return `<svg ${base}><path d="${outerPath}" fill="white"/><path d="${innerPath}" fill="#3a3a5e"/></svg>`;
 }
 
 function _nsStatusSvg(variant: SkiDotVariant): string {
@@ -4979,9 +4979,7 @@ function renderSkiMenu() {
       const isWaap = /waap/i.test(getState().walletName);
       const status = await provisionDWallet(getState().address, {
         signTransaction: (txBytes: Uint8Array) => wallet.signTransaction(txBytes),
-        signPersonalMessage: isWaap
-          ? (msg: Uint8Array) => wallet.signPersonalMessage(msg)
-          : undefined,
+        signAndExecuteTransaction: (txBytes: Uint8Array) => wallet.signAndExecuteTransaction(txBytes),
         isWaap,
         onStatus: (msg: string) => {
           const txt = btn.querySelector('.wk-dd-address-text');

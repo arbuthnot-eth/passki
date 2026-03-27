@@ -10,22 +10,23 @@
 import {
   IkaClient, IkaTransaction, getNetworkConfig,
   publicKeyFromDWalletOutput, Curve,
-  UserShareEncryptionKeys, createRandomSessionIdentifier, prepareDKGAsync,
+  UserShareEncryptionKeys, createRandomSessionIdentifier, prepareDKG, prepareDKGAsync,
 } from '@ika.xyz/sdk';
 import type { DWalletCap } from '@ika.xyz/sdk';
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { deriveAddress, chainsForCurve, IkaCurve, type ChainConfig } from './chains.js';
-import { grpcClient } from '../rpc.js';
+import { grpcClient, gqlClient, jsonRpcClient } from '../rpc.js';
 
 let ikaClient: IkaClient | null = null;
-let jsonRpcClient: SuiJsonRpcClient | null = null;
 
-function getJsonRpc(): SuiJsonRpcClient {
-  if (!jsonRpcClient) {
-    jsonRpcClient = new SuiJsonRpcClient({ url: '/api/rpc', network: 'mainnet' });
+/** JSON-RPC via same-origin proxy — used for getCoins, executeTransactionBlock */
+let localJsonRpc: SuiJsonRpcClient | null = null;
+function getLocalJsonRpc(): SuiJsonRpcClient {
+  if (!localJsonRpc) {
+    localJsonRpc = new SuiJsonRpcClient({ url: '/api/rpc', network: 'mainnet' });
   }
-  return jsonRpcClient;
+  return localJsonRpc;
 }
 
 let initPromise: Promise<void> | null = null;
@@ -33,25 +34,94 @@ let initPromise: Promise<void> | null = null;
 async function getClient(): Promise<IkaClient> {
   if (!ikaClient) {
     const config = getNetworkConfig('mainnet');
-    const rpc = getJsonRpc();
 
-    // IKA SDK 0.3.1 calls client.core.getObjects/listOwnedObjects/listDynamicFields
-    // These are v2 CoreClient methods — SuiGrpcClient implements them natively.
-    ikaClient = new IkaClient({
-      config,
-      suiClient: grpcClient as any,
-    });
-    // Fire-and-forget initialize() — don't block on it.
-    // It may fail (SDK bug with table vector parsing on mainnet) but
-    // any data it caches still helps. The DKG flow lazy-fetches what it needs.
+    // Race all three transports — first one to initialize() wins.
+    // gRPC has pagination bug, GraphQL hung before, JSON-RPC works but sunsets April 2026.
+    // Promise.any takes the first success; if all fail, we get AggregateError.
     if (!initPromise) {
-      initPromise = ikaClient.initialize().catch((err) => {
-        console.warn('[ika] initialize() partial failure (non-fatal):', err?.message?.slice(0, 100));
+      const transports = [
+        { name: 'GraphQL', client: gqlClient },
+        { name: 'gRPC', client: grpcClient },
+        { name: 'JSON-RPC', client: jsonRpcClient },
+      ];
+
+      initPromise = Promise.any(
+        transports.map(async ({ name, client: suiClient }) => {
+          const candidate = new IkaClient({ config, suiClient: suiClient as any });
+          await candidate.initialize();
+          console.log(`[ika] initialize() succeeded with ${name}`);
+          ikaClient = candidate;
+        }),
+      ).catch((aggErr) => {
+        // All three failed — use JSON-RPC anyway (known to partially work)
+        console.warn('[ika] All transports failed initialize():', aggErr.errors?.map((e: any) => e?.message?.slice(0, 80)));
+        ikaClient = new IkaClient({ config, suiClient: jsonRpcClient as any });
+        return ikaClient.initialize().catch((err) => {
+          console.warn('[ika] JSON-RPC fallback partial failure (non-fatal):', err?.message?.slice(0, 120));
+        });
       });
     }
-    // Don't await — let it run in background
   }
-  return ikaClient;
+  await initPromise;
+  return ikaClient!;
+}
+
+// ── IKA mainnet encryption key constants ────────────────────────────
+// The SDK's fetchEncryptionKeysFromNetwork crashes because it tries to read
+// ALL 242 reconfiguration outputs (some pruned). We bypass it by reading
+// the specific TableVec data we need directly.
+const IKA_ENC_KEY = {
+  id: '0x0a9c0b88a5c729378bce1a98a8c285f1dde26f89e53d07164dba8a059dc15587',
+  epoch: 1,
+  networkDKGOutputTableId: '0xaf474872701d540e9bd02bcac57e1708e8b735bbb8795905ac1a2a4f07e5bf1e',
+  // Latest valid reconfiguration output (key=242 from reconfiguration_public_outputs)
+  reconfigOutputTableId: '0x751cf7d555e3eac20d717422e75775b593a261e63f65687fb562a9387ae30ae8',
+};
+
+/**
+ * Bypass the SDK's broken getProtocolPublicParameters.
+ * Reads the two TableVec objects directly and calls WASM to convert.
+ */
+async function getProtocolPublicParametersDirect(
+  _client: IkaClient,
+  curve: typeof Curve.SECP256K1,
+): Promise<Uint8Array> {
+  console.log('[ika:dkg] Bypassing SDK — reading TableVec data directly...');
+
+  // Use gRPC for TableVec reads — fast binary protocol, no query size limit.
+  // readTableVecAsRawBytes uses hasNextPage (not the broken cursor===cursor pattern)
+  // so gRPC pagination works fine here. GraphQL hits 5KB query payload limit.
+  const config = getNetworkConfig('mainnet');
+  const readerClient = new IkaClient({ config, suiClient: grpcClient as any });
+  await readerClient.initialize().catch(() => {}); // non-fatal
+  const reader = readerClient as any;
+
+  console.log('[ika:dkg] Reading network DKG public output (JSON-RPC)...');
+  const networkDkgOutput = await reader.readTableVecAsRawBytes(IKA_ENC_KEY.networkDKGOutputTableId);
+  console.log('[ika:dkg] Network DKG output:', networkDkgOutput.length, 'bytes');
+
+  console.log('[ika:dkg] Reading reconfiguration public output (JSON-RPC)...');
+  const reconfigOutput = await reader.readTableVecAsRawBytes(IKA_ENC_KEY.reconfigOutputTableId);
+  console.log('[ika:dkg] Reconfig output:', reconfigOutput.length, 'bytes');
+
+  console.log('[ika:dkg] Converting to protocol public parameters (WASM)...');
+  const crypto = await import('../../node_modules/@ika.xyz/sdk/dist/esm/client/cryptography.js');
+  const params = await crypto.reconfigurationPublicOutputToProtocolPublicParameters(
+    curve, reconfigOutput, networkDkgOutput,
+  );
+  console.log('[ika:dkg] Protocol public parameters:', params.length, 'bytes');
+  return params;
+}
+
+/** Race a promise against a timeout. Rejects with a clear message on expiry. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer!));
 }
 
 /**
@@ -161,9 +231,9 @@ export interface CrossChainStatus {
 export interface ProvisionCallbacks {
   /** Sign a transaction as the user (wallet popup). Returns base64 signature. */
   signTransaction: (txBytes: Uint8Array) => Promise<{ signature: string }>;
-  /** WaaP: sign a personal message (proof of intent for server-side DKG). */
-  signPersonalMessage?: (message: Uint8Array) => Promise<{ signature: string; bytes: string }>;
-  /** Whether the wallet is WaaP (uses non-sponsored path). */
+  /** Sign AND execute a transaction (WaaP needs this — server-side execution). */
+  signAndExecuteTransaction: (txBytes: Uint8Array) => Promise<{ digest: string; effects?: unknown }>;
+  /** Whether the wallet is WaaP (uses signAndExecuteTransaction, non-sponsored). */
   isWaap?: boolean;
   /** Called with status updates during provisioning. */
   onStatus?: (msg: string) => void;
@@ -191,6 +261,7 @@ export async function provisionDWallet(
 
   // Step 1: Check eligibility + get keeper info
   log('Checking...');
+  console.log('[ika:dkg] Step 1: /api/ika/provision...');
   const provRes = await fetch('/api/ika/provision', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -200,54 +271,65 @@ export async function provisionDWallet(
     const err = await provRes.json().catch(() => ({ error: 'Provision check failed' })) as { error?: string };
     throw new Error(err.error ?? 'Not eligible for sponsored DKG');
   }
-  const { keeperAddress, suiCoins, ikaCoins } = await provRes.json() as {
+  const { keeperAddress, suiCoins } = await provRes.json() as {
     keeperAddress: string;
     suiCoins: Array<{ objectId: string; version: string; digest: string }>;
     ikaCoins: Array<{ objectId: string; version: string; digest: string }>;
   };
+  console.log('[ika:dkg] Step 1: OK — keeper:', keeperAddress, 'suiCoins:', suiCoins.length);
 
   if (!suiCoins.length) throw new Error('Keeper has no SUI for gas');
 
-  // Step 2: Prepare DKG crypto (WASM — runs in browser)
-  // This fetches 250+ encryption key objects — takes 1-3 minutes on first run
-  log('Preparing (1-3 min)...');
-  console.log('[ika:dkg] Step 2: prepareDKGAsync starting...');
-  const client = await getClient();
+  // Step 2: Prepare DKG crypto
+  // Split into sub-steps so we can see exactly where it hangs:
+  //   2a. IKA client init
+  //   2b. getProtocolPublicParameters (network — fetches 250+ objects)
+  //   2c. prepareDKG (WASM — pure crypto, no network)
+  log('Preparing...');
+  console.log('[ika:dkg] Step 2a: getClient + initialize...');
+  const client = await withTimeout(getClient(), 60_000, 'IKA client init');
+  console.log('[ika:dkg] Step 2a: client ready');
+
   const curve = Curve.SECP256K1;
-  // Random seed per attempt — deterministic seeds cause session conflicts on retry
   const seedBytes = new Uint8Array(32);
   crypto.getRandomValues(seedBytes);
-  const seed = seedBytes;
-  const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seed, curve);
+  const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seedBytes, curve);
   const sessionIdentifier = createRandomSessionIdentifier();
-  const dkgInput = await prepareDKGAsync(
-    client, curve, userShareEncryptionKeys, sessionIdentifier, userAddress,
+
+  // Skip SDK's getProtocolPublicParameters — it hangs with GraphQL/gRPC (pagination bug)
+  // and fails with JSON-RPC (pruned reconfiguration objects). Read TableVec data directly.
+  console.log('[ika:dkg] Step 2b: getProtocolPublicParameters (direct bypass)...');
+  log('Fetching params...');
+  const protocolPublicParameters = await getProtocolPublicParametersDirect(client, curve);
+  console.log('[ika:dkg] Step 2b: got protocolPublicParameters, length:', protocolPublicParameters.length);
+
+  console.log('[ika:dkg] Step 2c: prepareDKG (WASM crypto)...');
+  log('Computing DKG...');
+  const dkgInput = await prepareDKG(
+    protocolPublicParameters, curve, userShareEncryptionKeys.encryptionKey,
+    sessionIdentifier, userAddress,
   );
-  console.log('[ika:dkg] Step 2: prepareDKGAsync DONE');
+  console.log('[ika:dkg] Step 2c: prepareDKG DONE');
 
-  // Step 3: Get network encryption key
-  log('Fetching keys...');
-  console.log('[ika:dkg] Step 3: getLatestNetworkEncryptionKey...');
-  const encKey = await client.getLatestNetworkEncryptionKey();
+  // Step 3: Network encryption key — use known ID (SDK's getLatestNetworkEncryptionKey
+  // calls fetchEncryptionKeysFromNetwork which hangs with GraphQL/gRPC)
+  console.log('[ika:dkg] Step 3: using known encryption key ID');
+  const encKey = { id: IKA_ENC_KEY.id };
+  console.log('[ika:dkg] Step 3: encKey id:', encKey.id);
 
-  // Step 4: Build the PTB
+  // Step 4: Build the PTB — unified path for ALL wallets (WaaP + Phantom + Backpack)
   log('Building...');
-  const tx = new Transaction();
-  tx.setSender(userAddress);
-  tx.setGasOwner(keeperAddress);
-  tx.setGasPayment(suiCoins.slice(0, 3));
-
-  // Fund user with IKA from keeper (if user doesn't have any)
+  console.log('[ika:dkg] Step 4: building transactions...');
   const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
-  const SUI_TYPE = '0x2::sui::SUI';
 
   // Check if user already has IKA
-  const userIkaCheck = await getJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
+  const userIkaCheck = await getLocalJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
   let userIkaCoinId = (userIkaCheck as any)?.data?.find((c: any) => BigInt(c.balance || '0') > 0n)?.coinObjectId;
+  console.log('[ika:dkg] Step 4: user IKA coin:', userIkaCoinId ?? 'none');
 
   if (!userIkaCoinId) {
-    // Request IKA funding from keeper
     log('Funding...');
+    console.log('[ika:dkg] Step 4: requesting IKA funding...');
     const fundRes = await fetch('/api/ika/fund', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -257,76 +339,134 @@ export async function provisionDWallet(
       const err = await fundRes.json().catch(() => ({ error: 'Fund failed' })) as { error?: string };
       throw new Error(err.error ?? 'IKA funding failed');
     }
-    // Wait a moment for the tx to be indexed
     await new Promise(r => setTimeout(r, 2000));
-    // Re-fetch user's IKA coins
-    const recheck = await getJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
+    const recheck = await getLocalJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
     userIkaCoinId = (recheck as any)?.data?.find((c: any) => BigInt(c.balance || '0') > 0n)?.coinObjectId;
     if (!userIkaCoinId) throw new Error('IKA funding succeeded but coin not found yet — try again');
+    console.log('[ika:dkg] Step 4: funded, IKA coin:', userIkaCoinId);
   }
 
-  let ikaCoin = tx.object(userIkaCoinId);
-
-  const _ = SUI_TYPE; // keep import used
-  // SUI for DKG gas reimbursement — use user's own SUI (not gas, which is keeper-owned)
-  const userSuiCheck = await getJsonRpc().getCoins({ owner: userAddress, coinType: '0x2::sui::SUI' });
+  // SUI for DKG gas reimbursement — use user's own SUI
+  const userSuiCheck = await getLocalJsonRpc().getCoins({ owner: userAddress, coinType: '0x2::sui::SUI' });
   const userSuiCoinId = (userSuiCheck as any)?.data?.[0]?.coinObjectId;
   if (!userSuiCoinId) throw new Error('No SUI coins found');
-  const suiCoin = tx.splitCoins(tx.object(userSuiCoinId), [tx.pure.u64(100_000_000)]);
+  console.log('[ika:dkg] Step 4: user SUI coin:', userSuiCoinId);
 
-  const ikaTx = new IkaTransaction({ ikaClient: client, transaction: tx, userShareEncryptionKeys });
-  // Register encryption key in a SEPARATE transaction first
-  // (must be finalized on-chain before DKG can reference it)
-  log('Registering key...');
-  const regTx = new Transaction();
-  regTx.setSender(userAddress);
-  regTx.setGasOwner(keeperAddress);
-  regTx.setGasPayment(suiCoins.slice(0, 1));
-  const regIkaTx = new IkaTransaction({ ikaClient: client, transaction: regTx, userShareEncryptionKeys });
-  await regIkaTx.registerEncryptionKey({ curve });
+  if (callbacks.isWaap) {
+    // ── WaaP: combine reg + DKG into single tx (one signAndExecuteTransaction call) ──
+    // WaaP's signAndExecuteTransaction is intermittently broken (re-serialization bug).
+    // Combining into one tx avoids: separate reg tx failing + indexer timing + coin staleness.
+    log('Building tx...');
+    console.log('[ika:dkg] Step 4: WaaP — building combined reg+DKG transaction...');
 
-  const regBytes = await regTx.build({ client: grpcClient as any });
-  const regB64 = btoa(String.fromCharCode(...regBytes));
-  const regSponsorRes = await fetch('/api/sponsor-gas', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ txBytes: regB64, senderAddress: userAddress }),
-  });
-  if (regSponsorRes.ok) {
-    const { sponsorSig: regSponsorSig } = await regSponsorRes.json() as { sponsorSig: string };
-    const { signature: regUserSig } = await callbacks.signTransaction(regBytes);
+    const dkgTx = new Transaction();
+    dkgTx.setSender(userAddress);
+
+    const ikaCoin2 = dkgTx.object(userIkaCoinId);
+    // Split from gas coin — don't reference the SUI coin explicitly or builder
+    // can't also use it for gas (only 1 SUI coin, causes "insufficient balance")
+    const suiCoin2 = dkgTx.splitCoins(dkgTx.gas, [dkgTx.pure.u64(100_000_000)]);
+
+    const ikaTx2 = new IkaTransaction({ ikaClient: client, transaction: dkgTx, userShareEncryptionKeys });
+
+    // Register encryption key + DKG in same PTB — sequential execution within tx
+    await ikaTx2.registerEncryptionKey({ curve });
+
+    const dkgResult = await ikaTx2.requestDWalletDKG({
+      curve,
+      dkgRequestInput: dkgInput,
+      sessionIdentifier: ikaTx2.registerSessionIdentifier(sessionIdentifier),
+      ikaCoin: ikaCoin2,
+      suiCoin: suiCoin2,
+      dwalletNetworkEncryptionKeyId: encKey.id,
+    });
+    dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(userAddress));
+    dkgTx.transferObjects([suiCoin2], dkgTx.pure.address(userAddress));
+
+    log('Signing...');
+    console.log('[ika:dkg] Step 5: WaaP — building + signAndExecuteTransaction...');
+    // Match working WaaP tx pattern: gRPC first, GraphQL fallback
+    let txBytes: Uint8Array;
     try {
-      await getJsonRpc().executeTransactionBlock({
-        transactionBlock: regB64,
-        signature: [regUserSig, regSponsorSig],
-        options: { showEffects: true },
-        requestType: 'WaitForLocalExecution',
-      });
+      txBytes = await dkgTx.build({ client: grpcClient as never });
     } catch {
-      // May already be registered — continue
+      txBytes = await dkgTx.build({ client: gqlClient as never });
     }
-    // Wait for registration to finalize
-    await new Promise(r => setTimeout(r, 2000));
+    const execResult = await callbacks.signAndExecuteTransaction(txBytes);
+    const digest = execResult.digest ?? '';
+    console.log('[ika:dkg] Step 5: WaaP exec result digest:', digest);
+
+    if (!digest) {
+      console.error('[ika:dkg] DKG tx failed — no digest');
+      throw new Error('DKG transaction failed — no digest returned');
+    }
+
+    log('Activating...');
+    for (let i = 0; i < 24; i++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const status = await getCrossChainStatus(userAddress);
+      if (status.ika && status.btcAddress) {
+        log('Active!');
+        return status;
+      }
+      log(`Activating (${i + 1}/24)`);
+    }
+    return getCrossChainStatus(userAddress);
   }
 
-  // Now build the DKG transaction (encryption key is on-chain)
-  log('Building...');
+  // ── Phantom/Backpack: separate reg tx (sponsored) then DKG tx ──
+  log('Registering key...');
+  console.log('[ika:dkg] Step 4a: register encryption key tx...');
+  {
+    const regTx = new Transaction();
+    regTx.setSender(userAddress);
+    regTx.setGasOwner(keeperAddress);
+    regTx.setGasPayment(suiCoins.slice(0, 1));
+    const regIkaTx = new IkaTransaction({ ikaClient: client, transaction: regTx, userShareEncryptionKeys });
+    await regIkaTx.registerEncryptionKey({ curve });
+    const regBytes = await regTx.build({ client: grpcClient as any });
+    const regB64 = btoa(String.fromCharCode(...regBytes));
+    const regSponsorRes = await fetch('/api/sponsor-gas', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ txBytes: regB64, senderAddress: userAddress }),
+    });
+    if (regSponsorRes.ok) {
+      const { sponsorSig: regSponsorSig } = await regSponsorRes.json() as { sponsorSig: string };
+      const { signature: regUserSig } = await callbacks.signTransaction(regBytes);
+      try {
+        await getLocalJsonRpc().executeTransactionBlock({
+          transactionBlock: regB64,
+          signature: [regUserSig, regSponsorSig],
+          options: { showEffects: true },
+          requestType: 'WaitForLocalExecution',
+        });
+      } catch (regErr) {
+        console.warn('[ika:dkg] Step 4a: registration tx failed (may already exist):', regErr);
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+
+  // ── Build the DKG transaction (Phantom/Backpack) ──
+  log('Building DKG tx...');
+  console.log('[ika:dkg] Step 4b: building DKG transaction...');
+
+  const userSuiCheck2 = await getLocalJsonRpc().getCoins({ owner: userAddress, coinType: '0x2::sui::SUI' });
+  const userSuiCoinId2 = (userSuiCheck2 as any)?.data?.[0]?.coinObjectId;
+  const userIkaCheck2 = await getLocalJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
+  const userIkaCoinId2 = (userIkaCheck2 as any)?.data?.find((c: any) => BigInt(c.balance || '0') > 0n)?.coinObjectId;
+
   const dkgTx = new Transaction();
   dkgTx.setSender(userAddress);
-  dkgTx.setGasOwner(keeperAddress);
-  // Re-fetch keeper coins (may have changed after reg tx)
   const refreshProv = await fetch('/api/ika/provision', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ address: userAddress }),
   });
   const refreshData = await refreshProv.json() as any;
+  dkgTx.setGasOwner(keeperAddress);
   dkgTx.setGasPayment((refreshData.suiCoins ?? suiCoins).slice(0, 3));
-
-  const userSuiCheck2 = await getJsonRpc().getCoins({ owner: userAddress, coinType: '0x2::sui::SUI' });
-  const userSuiCoinId2 = (userSuiCheck2 as any)?.data?.[0]?.coinObjectId;
-  const userIkaCheck2 = await getJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
-  const userIkaCoinId2 = (userIkaCheck2 as any)?.data?.find((c: any) => BigInt(c.balance || '0') > 0n)?.coinObjectId;
 
   const ikaCoin2 = dkgTx.object(userIkaCoinId2 || userIkaCoinId);
   const suiCoin2 = dkgTx.splitCoins(dkgTx.object(userSuiCoinId2 || userSuiCoinId), [dkgTx.pure.u64(100_000_000)]);
@@ -341,54 +481,19 @@ export async function provisionDWallet(
     suiCoin: suiCoin2,
     dwalletNetworkEncryptionKeyId: encKey.id,
   });
-  // DKG returns [DWalletCap, Option<ID>] — transfer cap to user
   dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(userAddress));
-  // SUI split survives &mut borrow — send back to user
   dkgTx.transferObjects([suiCoin2], dkgTx.pure.address(userAddress));
 
-  // Step 5: Sign and submit
+  // Step 5: Sign and submit (Phantom/Backpack — sponsored)
   log('Signing...');
   let digest: string;
-
-  if (callbacks.isWaap) {
-    // WaaP path: user signs a personal message (proof of intent),
-    // server (keeper) builds + signs + submits the DKG tx.
-    // Uses shared dWallet (requestDWalletDKGWithPublicUserShare).
-    log('Authorizing...');
-    const authMessage = new TextEncoder().encode(
-      `Authorize IKA dWallet creation for ${userAddress} at ${Date.now()}`
-    );
-    const { signature: authSig } = await callbacks.signPersonalMessage!(authMessage);
-
-    log('Submitting...');
-    const createRes = await fetch('/api/ika/create', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        address: userAddress,
-        authSignature: authSig,
-        dkgData: {
-          userDKGMessage: Array.from(dkgInput.userDKGMessage),
-          userSecretKeyShare: Array.from(dkgInput.userSecretKeyShare),
-          userPublicOutput: Array.from(dkgInput.userPublicOutput),
-          sessionIdentifier: Array.from(sessionIdentifier),
-          encryptionKeyBytes: Array.from(userShareEncryptionKeys.encryptionKey),
-          signingPublicKeyBytes: Array.from(userShareEncryptionKeys.getSigningPublicKeyBytes()),
-          encryptionKeySignature: Array.from(await userShareEncryptionKeys.getEncryptionKeySignature()),
-          curve: 0, // SECP256K1
-        },
-      }),
-    });
-    if (!createRes.ok) {
-      const err = await createRes.json().catch(() => ({ error: 'Create failed' })) as { error?: string };
-      throw new Error(err.error ?? 'DKG creation failed');
-    }
-    const createResult = await createRes.json() as { digest?: string };
-    digest = createResult.digest ?? '';
-  } else {
-    // Normal path: sponsored tx (Phantom/Backpack)
+  {
+    // Phantom/Backpack: sponsored tx (two signatures)
+    console.log('[ika:dkg] Step 5: building sponsored tx bytes...');
     const txBytes = await dkgTx.build({ client: grpcClient as any });
     const b64Tx = btoa(String.fromCharCode(...txBytes));
+
+    console.log('[ika:dkg] Step 5: requesting sponsor sig...');
     const sponsorRes = await fetch('/api/sponsor-gas', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -399,10 +504,14 @@ export async function provisionDWallet(
       throw new Error(err.error ?? 'Gas sponsorship failed');
     }
     const { sponsorSig } = await sponsorRes.json() as { sponsorSig: string };
+
+    console.log('[ika:dkg] Step 5: requesting user sig...');
     const { signature: userSig } = await callbacks.signTransaction(txBytes);
+    console.log('[ika:dkg] Step 5: user signed, sig length:', userSig.length);
 
     log('Submitting...');
-    const rpcSubmit = getJsonRpc();
+    console.log('[ika:dkg] Step 5: submitting with both sigs...');
+    const rpcSubmit = getLocalJsonRpc();
     const execResult = await rpcSubmit.executeTransactionBlock({
       transactionBlock: b64Tx,
       signature: [userSig, sponsorSig],
@@ -410,13 +519,17 @@ export async function provisionDWallet(
       requestType: 'WaitForLocalExecution',
     }) as any;
     digest = execResult?.digest ?? '';
+    console.log('[ika:dkg] Step 5: exec result digest:', digest, 'status:', execResult?.effects?.status?.status);
   }
 
-  if (!digest) throw new Error('DKG transaction failed');
+  if (!digest) {
+    console.error('[ika:dkg] DKG tx failed — no digest');
+    throw new Error('DKG transaction failed — no digest returned');
+  }
 
   log('Activating...');
 
-  // Step 7: Poll for dWallet to become active
+  // Step 6: Poll for dWallet to become active
   for (let i = 0; i < 24; i++) { // 2 minutes max
     await new Promise(r => setTimeout(r, 5000));
     const status = await getCrossChainStatus(userAddress);
@@ -439,8 +552,7 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
   let hasDWallet = false;
 
   try {
-    // Use a fresh JSON-RPC client to avoid any cached/broken state
-    const rpc = new SuiJsonRpcClient({ url: '/api/rpc', network: 'mainnet' });
+    const rpc = getLocalJsonRpc();
     // Direct RPC check — bypass broken IKA SDK initialize()
     const DWALLET_CAP_TYPE = '0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317::coordinator_inner::DWalletCap';
     const owned = await rpc.getOwnedObjects({

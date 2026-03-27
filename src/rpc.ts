@@ -7,6 +7,7 @@
 
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
+import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 
 // ─── Backend URLs ─────────────────────────────────────────────────────
 
@@ -23,16 +24,26 @@ export const grpcUrl = GRPC_BACKENDS[0];
 export const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 
 // ─── Singleton clients ────────────────────────────────────────────────
+// Three clients, each for its strengths:
+//   gRPC   → tx building, general Sui ops (fast binary protocol)
+//   GraphQL → read queries, IKA SDK (future-proof, no sunset)
+//   JSON-RPC → IKA SDK fallback (only client it works with today, sunsets April 2026)
 
-/** Racing gRPC client — points at the primary backend. Used throughout browser code. */
+/** gRPC client — tx building, balance checks, general ops */
 export const grpcClient = new SuiGrpcClient({
   network: 'mainnet',
   baseUrl: grpcUrl,
 });
 
-/** GraphQL client for read-only queries */
+/** GraphQL client — read queries, future IKA SDK target */
 export const gqlClient = new SuiGraphQLClient({
   url: GQL_URL,
+  network: 'mainnet',
+});
+
+/** JSON-RPC client — IKA SDK (only working transport for IKA pagination) */
+export const jsonRpcClient = new SuiJsonRpcClient({
+  url: 'https://sui-rpc.publicnode.com',
   network: 'mainnet',
 });
 
