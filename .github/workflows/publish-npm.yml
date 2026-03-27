@@ -50,8 +50,23 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
+      - name: Publish to GitHub Packages
+        run: |
+          node -e "const p=require('./package.json'); p.name='@arbuthnot-eth/ski'; require('fs').writeFileSync('package.json', JSON.stringify(p, null, 2)+'\n')"
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc
+          npm publish --access public --registry https://npm.pkg.github.com
+          git checkout -- package.json
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        run: gh release create "v${{ steps.version.outputs.value }}" --title "v${{ steps.version.outputs.value }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Commit version bump and tag
         run: |
+          git checkout -- .npmrc 2>/dev/null || true
           git add package.json bun.lock
           git commit -m "chore(release): v${{ steps.version.outputs.value }} [skip ci]"
           git tag "v${{ steps.version.outputs.value }}"

@@ -1,7 +1,7 @@
 {
   "name": "sui.ski",
-  "version": "1.0.13",
-  "description": ".SKI — One-button Sui wallet sign-in. Connect once, authenticate everywhere.",
+  "version": "1.0.12",
+  "description": ".Sui Key-In — .SKI once, everywhere.",
   "type": "module",
   "main": "public/dist/ski.js",
   "module": "public/dist/ski.js",

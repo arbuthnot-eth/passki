@@ -1,6 +1,6 @@
 # .SKI — .Sui Key-In
 
-Your Sui wallet, everywhere. Connect once, authenticate everywhere.
+.SKI once, everywhere.
 
 [![npm](https://img.shields.io/npm/v/sui.ski)](https://www.npmjs.com/package/sui.ski)
 [![Live](https://img.shields.io/badge/live-sui.ski-blue)](https://sui.ski)
