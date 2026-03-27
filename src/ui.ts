@@ -5328,7 +5328,8 @@ function renderSkiMenu() {
       // Always auto-fill amount with mint price (even if can't afford — user sees the cost)
       const mintCost = _fmtUsd(discountedPrice);
       const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-      if (amountInput && amountInput.value !== mintCost) {
+      // Only auto-fill if amount is empty (don't overwrite user edits or re-fill after clear)
+      if (amountInput && !amountInput.value && !pendingSendAmount) {
         pendingSendAmount = mintCost;
         amountInput.value = mintCost;
         amountInput.classList.toggle('wk-send-amount--over', !canAfford);
