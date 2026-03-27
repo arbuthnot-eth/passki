@@ -677,10 +677,10 @@ function fmtTimeLeft(expiresAt: string): string {
 
 // One-time QR cache clear — old white-bg SVGs cached under ski:qr:*
 try {
-  if (!localStorage.getItem('ski:qr:v5')) {
+  if (!localStorage.getItem('ski:qr:v6')) {
     const keys = Object.keys(localStorage).filter(k => k.startsWith('ski:qr:'));
     keys.forEach(k => localStorage.removeItem(k));
-    localStorage.setItem('ski:qr:v5', '1');
+    localStorage.setItem('ski:qr:v6', '1');
   }
 } catch {}
 
@@ -719,7 +719,8 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' = 
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${r * 1.3}" font-weight="700" fill="white">$</text>`;
     } else if (mode === 'btc') {
       const fill = '#f7931a';
-      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${r * 1.4}" font-weight="700" fill="white">\u20BF</text>`;
+      const br = r * 1.15;
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${br * 1.3}" font-weight="700" fill="white">\u20BF</text>`;
     } else if (mode === 'bw') {
       const d = r * 0.85;
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#050505" stroke="white" stroke-width="${d * 0.25}"/>`;
