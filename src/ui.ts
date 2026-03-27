@@ -5099,13 +5099,23 @@ function renderSkiMenu() {
   }
   document.getElementById('wk-coin-prev')?.addEventListener('click', (e) => {
     e.stopPropagation();
+    const gridWasOpen = !document.getElementById('wk-coin-grid')?.classList.contains('wk-coin-grid--hidden');
     const cur = _coinChipsCache.findIndex(c => c.key === (selectedCoinSymbol?.toLowerCase() ?? ''));
     _selectCoinByIndex(cur - 1);
+    if (gridWasOpen) {
+      const grid = document.getElementById('wk-coin-grid');
+      if (grid) grid.classList.remove('wk-coin-grid--hidden');
+    }
   });
   document.getElementById('wk-coin-next')?.addEventListener('click', (e) => {
     e.stopPropagation();
+    const gridWasOpen = !document.getElementById('wk-coin-grid')?.classList.contains('wk-coin-grid--hidden');
     const cur = _coinChipsCache.findIndex(c => c.key === (selectedCoinSymbol?.toLowerCase() ?? ''));
     _selectCoinByIndex(cur + 1);
+    if (gridWasOpen) {
+      const grid = document.getElementById('wk-coin-grid');
+      if (grid) grid.classList.remove('wk-coin-grid--hidden');
+    }
   });
 
   // Toggle coin picker grid when clicking selected chip
