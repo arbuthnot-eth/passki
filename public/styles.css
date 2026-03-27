@@ -5189,7 +5189,7 @@ body {
   align-items: stretch;
 }
 .ski-demo-sidebar {
-  padding: 10px 16px;
+  padding: 6px 10px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -5213,8 +5213,8 @@ body {
   order: -1;
 }
 .ski-demo:not(.open) .ski-demo-qr {
-  width: 96px;
-  height: 96px;
+  width: 110px;
+  height: 110px;
   border-radius: 8px;
   cursor: pointer;
 }
@@ -5230,7 +5230,7 @@ body {
   gap: 0;
 }
 .ski-demo:not(.open) .ski-demo-card-label {
-  font-size: 22px;
+  font-size: 28px;
 }
 
 /* Open: QR + nets row, label below */
@@ -5248,7 +5248,7 @@ body {
   gap: 6px;
 }
 .ski-demo-card-label {
-  font-size: 22px;
+  font-size: 28px;
   font-weight: 700;
   color: var(--text);
   letter-spacing: -0.02em;
@@ -5304,12 +5304,12 @@ body {
 .ski-demo-badge { display: none; }
 .ski-demo-suiami { opacity: 1; }
 .ski-demo-play-hint {
-  font-size: 12px;
+  font-size: 10px;
   color: var(--muted);
   transition: color 0.15s;
   position: absolute;
-  bottom: 8px;
-  right: 12px;
+  bottom: 4px;
+  right: 8px;
 }
 .ski-demo-body:hover .ski-demo-play-hint { color: var(--text); }
 .ski-demo.open .ski-demo-play-hint { display: none; }
