@@ -5254,15 +5254,7 @@ body {
   align-items: center;
   gap: 8px;
 }
-.ski-demo-badge {
-  font-size: 10px;
-  padding: 3px 8px;
-  border-radius: 5px;
-  background: rgba(77, 162, 255, 0.12);
-  color: #4da2ff;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-}
+.ski-demo-badge { display: none; }
 .ski-demo-play-hint {
   font-size: 12px;
   color: var(--muted);
@@ -5284,12 +5276,15 @@ body {
   visibility: visible;
   flex: 1;
 }
-/* Chips row */
+/* Chips — only visible when playing */
 .ski-demo-chips {
-  display: flex;
+  display: none;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 6px 16px 10px;
+  gap: 4px;
+  max-width: 140px;
+}
+.ski-demo.open .ski-demo-chips {
+  display: flex;
 }
 .ski-chip {
   all: unset;
@@ -5315,10 +5310,6 @@ body {
 .ski-chip--cetus { background: rgba(0,210,190,0.12); color: #00d2be; }
 .ski-chip--superteam { background: rgba(255,100,50,0.12); color: #ff6432; }
 .ski-chip--suiami { background: rgba(34,197,94,0.12); color: #22c55e; }
-.ski-demo-badge {
-  text-decoration: none;
-}
-
 .ski-demo-player video {
   width: 100%;
   height: 100%;
