@@ -5168,6 +5168,7 @@ function renderSkiMenu() {
   // Consolidate alt tokens → USDC
   document.getElementById('wk-consolidate-btn')?.addEventListener('click', async (e) => {
     e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
     const ws2 = getState();
     if (!ws2.address) return;
     // Switch output selector to USDC and update all UI before the wallet popup
@@ -5183,7 +5184,6 @@ function renderSkiMenu() {
     const eligible = walletCoins.filter(c => !c.isStable && c.symbol !== 'SUI' && c.balance > 0);
     if (!eligible.length) { showToast('No tokens to consolidate'); return; }
 
-    const btn = e.currentTarget as HTMLButtonElement;
     btn.disabled = true;
     try {
       const USDC_CT = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
