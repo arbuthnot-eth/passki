@@ -677,10 +677,10 @@ function fmtTimeLeft(expiresAt: string): string {
 
 // One-time QR cache clear — old white-bg SVGs cached under ski:qr:*
 try {
-  if (!localStorage.getItem('ski:qr:v6')) {
+  if (!localStorage.getItem('ski:qr:v7')) {
     const keys = Object.keys(localStorage).filter(k => k.startsWith('ski:qr:'));
     keys.forEach(k => localStorage.removeItem(k));
-    localStorage.setItem('ski:qr:v6', '1');
+    localStorage.setItem('ski:qr:v7', '1');
   }
 } catch {}
 
@@ -714,18 +714,19 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' = 
     const cx = vw / 2, cy = vh / 2;
     const r = logoSize / 2;
     let logoSvg: string;
+    const br = r * 1.15; // slightly bigger logo for presence
     if (mode === 'usd') {
-      const fill = '#22c55e';
-      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${r * 1.3}" font-weight="700" fill="white">$</text>`;
+      // Sui drop inside green circle — it's stablecoins on a Sui address
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="#4da2ff"/><g transform="translate(${cx - br * 0.62},${cy - br * 0.72}) scale(${(br * 2 * 0.65) / 300})" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
     } else if (mode === 'btc') {
       const fill = '#f7931a';
-      const br = r * 1.15;
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${br * 1.3}" font-weight="700" fill="white">\u20BF</text>`;
     } else if (mode === 'bw') {
-      const d = r * 0.85;
-      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#050505" stroke="white" stroke-width="${d * 0.25}"/>`;
+      const d = br * 0.75;
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#1a1a2e" stroke="white" stroke-width="${d * 0.2}"/>`;
     } else {
-      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="#4da2ff"/><g transform="translate(${cx - r * 0.72},${cy - r * 0.82}) scale(${(logoSize * 0.75) / 300})" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
+      // SUI mode — Sui drop
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="#4da2ff"/><g transform="translate(${cx - br * 0.62},${cy - br * 0.72}) scale(${(br * 2 * 0.65) / 300})" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
     }
     svg = svg.replace('</svg>', `${logoSvg}</svg>`);
   }
