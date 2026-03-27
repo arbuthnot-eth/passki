@@ -2297,8 +2297,19 @@ function coinShortName(coinType: string): string {
   return parts.length >= 3 ? parts[parts.length - 1] : coinType.slice(0, 8);
 }
 // Decimals per coinType — fetched on-chain and cached
-// One-time purge of stale decimals cache (NS was incorrectly cached as 9)
-try { if (!localStorage.getItem('ski:dec:v2')) { localStorage.removeItem('ski:decimals'); localStorage.setItem('ski:dec:v2', '1'); } } catch {}
+// One-time purge of stale coin caches (NS decimals/balance were incorrectly cached)
+try {
+  if (!localStorage.getItem('ski:dec:v3')) {
+    localStorage.removeItem('ski:decimals');
+    localStorage.removeItem('ski:coin-meta');
+    localStorage.removeItem('ski:token-prices');
+    // Also purge any per-address balance caches
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('ski:balances:')) localStorage.removeItem(k);
+    }
+    localStorage.setItem('ski:dec:v3', '1');
+  }
+} catch {}
 const _decimalsCache: Record<string, number> = {
   ...(() => { try { const c = JSON.parse(localStorage.getItem('ski:decimals') ?? '{}'); return typeof c === 'object' ? c : {}; } catch { return {}; } })(),
   // Hardcoded values always win
