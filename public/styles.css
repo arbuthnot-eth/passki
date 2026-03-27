@@ -5195,12 +5195,25 @@ body {
   gap: 6px;
   flex-shrink: 0;
 }
-/* Collapsed: inline row, hide QR + addr */
+/* Collapsed: inline row, show QR small, hide addr */
 .ski-demo:not(.open) .ski-demo-sidebar {
   flex-direction: row;
   align-items: center;
 }
-.ski-demo:not(.open) .ski-demo-top-row { display: none; }
+.ski-demo:not(.open) .ski-demo-top-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ski-demo:not(.open) .ski-demo-qr {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ski-demo:not(.open) .ski-demo-nets--stacked {
+  display: none;
+}
 .ski-demo:not(.open) .ski-demo-addr { display: none; }
 .ski-demo:not(.open) .ski-demo-label-row {
   display: flex;

@@ -236,6 +236,17 @@
         updateAddr(next);
       });
 
+      // QR click cycles network
+      var netOrder = ['btc', 'sol', 'sui'];
+      qrCanvas.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var idx = (netOrder.indexOf(currentNet) + 1) % netOrder.length;
+        var next = netOrder[idx];
+        document.querySelectorAll('.ski-demo-net').forEach(function(b) { b.classList.remove('active'); });
+        document.querySelector('.ski-demo-net--' + next).classList.add('active');
+        updateAddr(next);
+      });
+
       // Lock portrait orientation in fullscreen
       var video = document.querySelector('.ski-demo-player video');
       video.addEventListener('fullscreenchange', function() {
