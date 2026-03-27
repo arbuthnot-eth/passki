@@ -5168,12 +5168,13 @@ body {
 .ski-demo {
   max-width: 90vw;
   width: fit-content;
-  margin: -16px auto 0;
+  margin: 0 auto;
   border-radius: 14px;
   border: 1px solid var(--border);
   background: var(--panel);
   overflow: hidden;
   transition: border-color 0.2s;
+  position: relative;
 }
 .ski-demo--btc { background: linear-gradient(135deg, rgba(247,147,26,0.08), var(--panel) 60%); border-color: rgba(247,147,26,0.15); }
 .ski-demo--btc:hover { border-color: rgba(247,147,26,0.35); }
@@ -5226,7 +5227,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
+  gap: 0;
 }
 .ski-demo:not(.open) .ski-demo-card-label {
   font-size: 22px;
@@ -5306,6 +5307,9 @@ body {
   font-size: 12px;
   color: var(--muted);
   transition: color 0.15s;
+  position: absolute;
+  bottom: 8px;
+  right: 12px;
 }
 .ski-demo-body:hover .ski-demo-play-hint { color: var(--text); }
 .ski-demo.open .ski-demo-play-hint { display: none; }
