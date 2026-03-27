@@ -5168,7 +5168,7 @@ body {
 .ski-demo {
   max-width: 90vw;
   width: fit-content;
-  margin: -26px auto 0;
+  margin: -16px auto 0;
   border-radius: 14px;
   border: 1px solid var(--border);
   background: var(--panel);
@@ -5224,16 +5224,12 @@ body {
 .ski-demo:not(.open) .ski-chip--gear { display: none; }
 .ski-demo:not(.open) .ski-demo-label-row {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 .ski-demo:not(.open) .ski-demo-card-label {
   font-size: 16px;
-}
-.ski-demo:not(.open) .ski-demo-suiami {
-  position: relative;
-  top: -2px;
 }
 
 /* Open: QR + nets row, label below */
