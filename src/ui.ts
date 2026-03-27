@@ -4787,10 +4787,10 @@ function renderSkiMenu() {
     if (_usdMode && c.symbol === 'SUI' && usd <= 0 && _fallbackSuiUsd != null) {
       usd = _fallbackSuiUsd;
     }
-    // In USD mode, filter out coins worth less than $0.10 (except SUI — always show gas token)
-    if (_usdMode && usd < 0.01 && c.symbol !== 'SUI') continue;
-    // Filter dust amounts regardless of mode
-    if (!c.isStable && c.symbol !== 'SUI' && c.balance < 0.001 && usd < 0.01) continue;
+    // Filter dust: skip non-SUI tokens worth less than $0.10 in USD mode
+    if (_usdMode && usd < 0.10 && c.symbol !== 'SUI') continue;
+    // Filter dust regardless of mode: skip negligible balances (< $0.10 or < 0.01 tokens)
+    if (!c.isStable && c.symbol !== 'SUI' && c.balance < 0.01 && usd < 0.10) continue;
     const isSui = c.symbol === 'SUI';
     if (isSui) hasSuiChip = true;
     // Use on-chain icon if available, else known icons, else default letter
