@@ -5979,6 +5979,7 @@ function renderSkiMenu() {
   function _togglePasteBtn() {}
   nsInput?.addEventListener('focus', (e) => {
     e.stopPropagation();
+    if (skipNextFocusClear) { skipNextFocusClear = false; return; }
     nsInput.value = '';
     nsInput.placeholder = 'name';
     nsLabel = '';
@@ -5987,8 +5988,16 @@ function renderSkiMenu() {
     nsNftOwner = null;
     nsPriceUsd = null;
     nsPriceFetchFor = '';
-    // Clear SuiAMI verification result
     _suiamiVerifyHtml = '';
+    // Clear amount
+    pendingSendAmount = '';
+    const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+    document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+    const _ac = document.getElementById('wk-send-clear');
+    if (_ac) _ac.style.display = 'none';
+    const _sb = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (_sb) _sb.disabled = true;
     _patchNsStatus();
     _patchNsPrice();
     _patchNsRoute();
