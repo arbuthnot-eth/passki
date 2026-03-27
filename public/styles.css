@@ -863,7 +863,7 @@ body {
   width: 100%;
   border-radius: 8px;
   overflow: hidden;
-  background: #ffffff;
+  background: #0d1117;
   cursor: pointer;
   transition: opacity 0.15s;
 }
@@ -2119,7 +2119,7 @@ body {
   flex-shrink: 0;
   border-radius: 8px;
   overflow: hidden;
-  background: #ffffff;
+  background: #0d1117;
 }
 #wk-roster-qr[data-qr-action] { cursor: pointer; }
 #wk-roster-qr[data-qr-action]:hover { opacity: 0.85; }
@@ -2268,7 +2268,7 @@ body {
   height: 148px;
   border-radius: 8px;
   overflow: hidden;
-  background: #ffffff;
+  background: #0d1117;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4027,7 +4027,7 @@ body {
   position: absolute;
   inset: 0;
   border-radius: 8px;
-  background: #ffffff;
+  background: #0d1117;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4161,7 +4161,7 @@ body {
   max-height: calc(100% - 16px);
   border-radius: 6px;
   overflow: hidden;
-  background: #ffffff;
+  background: #0d1117;
   cursor: pointer;
   z-index: 2;
 }
@@ -5061,7 +5061,7 @@ body {
   left: 50%;
   transform: translateX(-50%);
   z-index: 200;
-  background: #ffffff;
+  background: #0d1117;
   border: 1px solid rgba(96, 165, 250, 0.3);
   border-radius: 10px;
   padding: 8px;

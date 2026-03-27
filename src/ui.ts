@@ -683,7 +683,7 @@ async function getQrSvg(url: string, color?: string): Promise<string> {
   const mod = await import('qrcode');
   const QRCode = (mod as unknown as { default: typeof mod }).default ?? mod;
   const svg = await (QRCode as { toString: (url: string, opts: object) => Promise<string> })
-    .toString(url, { type: 'svg', margin: 1, color: { dark, light: '#ffffff' }, errorCorrectionLevel: 'M' });
+    .toString(url, { type: 'svg', margin: 1, color: { dark, light: '#0d1117' }, errorCorrectionLevel: 'M' });
   try { localStorage.setItem(key, svg); } catch {}
   return svg;
 }
@@ -697,7 +697,7 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' = 
   const mod = await import('qrcode');
   const QRCode = (mod as unknown as { default: typeof mod }).default ?? mod;
   let svg: string = await (QRCode as { toString: (url: string, opts: object) => Promise<string> })
-    .toString(addr, { type: 'svg', margin: 1, color: { dark, light: '#ffffff' }, errorCorrectionLevel: 'H' });
+    .toString(addr, { type: 'svg', margin: 1, color: { dark, light: '#0d1117' }, errorCorrectionLevel: 'H' });
   const vbMatch = svg.match(/viewBox="0 0 (\d+) (\d+)"/);
   if (vbMatch) {
     const vw = Number(vbMatch[1]), vh = Number(vbMatch[2]);
