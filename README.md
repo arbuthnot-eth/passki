@@ -9,6 +9,33 @@ Your Sui wallet, everywhere. Connect once, authenticate everywhere.
 
 ---
 
+## Native Cross-Chain Wallets via IKA dWallets
+
+Real Bitcoin, Ethereum, and Solana addresses controlled by your Sui account — no bridges, no wrapping, no custodians. Powered by [IKA](https://docs.ika.xyz)'s 2PC-MPC threshold signatures.
+
+<video src="https://aggregator.walrus-testnet.walrus.space/v1/blobs/w-YsMSmoAgV-RQt_SinhQuEoM107nqC52WPUEi11ofI" width="100%" controls muted>
+  <a href="https://aggregator.walrus-testnet.walrus.space/v1/blobs/w-YsMSmoAgV-RQt_SinhQuEoM107nqC52WPUEi11ofI">Watch the Superteam demo</a>
+</video>
+
+> *Video hosted on [Walrus](https://walrus.xyz) — Sui's decentralized storage protocol.*
+
+### What One Sui Account Controls
+
+| Curve | Chains | Address Format |
+|-------|--------|----------------|
+| **secp256k1** (1 DKG) | Bitcoin, Ethereum, Base, Polygon, Arbitrum, Optimism | `bc1q...`, `0x...` |
+| **ed25519** (1 DKG) | Solana | base58 |
+
+Two DKG ceremonies. Two dWallets. Seven chains. One Sui account.
+
+### Why This Matters
+
+- **No bridges** — BTC stays on Bitcoin, SOL stays on Solana. IKA generates real native addresses whose signing is governed by Sui smart contracts.
+- **Non-collusive security** — 2PC-MPC means neither the user nor the network can sign alone. 100+ mainnet operators with Byzantine threshold.
+- **Quantum-ready architecture** — Sui's flag-byte signature scheme (`flag || sig || pk`) lets the network add post-quantum primitives via a new flag byte — no hard fork, no address migration. IKA's per-curve DKG is inherently modular, so post-quantum dWallets slot in alongside existing ones. See [Mysten Labs' research on post-quantum readiness in EdDSA chains](https://eprint.iacr.org/2025/1368) and our full analysis in [`docs/ika-quantum-resistance.md`](docs/ika-quantum-resistance.md).
+
+---
+
 ## Domain structure
 
 | Domain | Purpose |
@@ -246,9 +273,9 @@ API routes served by the worker:
 | `/api/shade/*` | Shade order management (poke, status, schedule) |
 | `/api/tradeport/listing/:label` | TradePort listing proxy |
 
-## IKA dWallet Integration (feat/ika-btc)
+## IKA dWallet Integration
 
-Native Bitcoin addresses via IKA's 2PC-MPC threshold signatures. A single secp256k1 dWallet controls a real Bitcoin address — no bridges, no wrapping, no custodians.
+Native cross-chain addresses via IKA's 2PC-MPC threshold signatures. Two dWallets (secp256k1 + ed25519) control real Bitcoin, Ethereum, and Solana addresses — no bridges, no wrapping, no custodians.
 
 ### Architecture
 
@@ -256,37 +283,35 @@ Native Bitcoin addresses via IKA's 2PC-MPC threshold signatures. A single secp25
 |-------|------|---------|
 | Chain registry | `src/client/chains.ts` | CAIP-2 chain → IKA curve/algo/derivation mapping |
 | Address derivation | `src/client/ika.ts` | Extract pubkey from dWallet → derive chain addresses |
+| Multi-curve DKG | `src/client/ika.ts` | `Curve.SECP256K1` (BTC/EVM) + `Curve.ED25519` (Solana) |
 | Signing ceremony | `src/client/ika-signing.ts` | 5-phase 2PC-MPC signing with browser presign pool |
 | gRPC adapter | `src/server/grpc-7k-adapter.ts` | Wraps SuiGrpcClient for 7K SDK compatibility |
 | DKG provisioning | `src/server/ika-provision.ts` | Server-side sponsored dWallet creation |
 | SuiNS gate | `src/server/index.ts` | Gas sponsorship gated by SuiNS NFT ownership |
+| Quantum analysis | `docs/ika-quantum-resistance.md` | Signature schemes, Shor's algorithm impact, migration paths |
 
 ### How it works
 
-1. **Sign in** → check for existing dWallet via `getCrossChainStatus()`
-2. **No dWallet + has SuiNS** → server builds sponsored DKG tx (SUI→IKA swap via Cetus CLMM in same PTB), user co-signs, submits
-3. **dWallet active** → derive `bc1q...` address from secp256k1 public output
-4. **BTC network view** → orange address row, mempool.space explorer, BTC QR code
+1. **Sign in** → check for existing dWallets via `getCrossChainStatus()` (scans all caps, detects curve)
+2. **No dWallet + has SuiNS** → sponsored DKG tx (SUI→IKA swap via Cetus CLMM in same PTB), user co-signs
+3. **Network selector** → choose Sui, Bitcoin, or Solana view
+4. **Create** → runs DKG for the correct curve (secp256k1 for BTC, ed25519 for Solana), skips if already exists
+5. **dWallet active** → derive native address from public output (P2WPKH, EVM keccak, or base58)
+
+### Post-Quantum Readiness
+
+Both secp256k1 and ed25519 are vulnerable to Shor's algorithm. The architecture is designed for the transition:
+
+- **Sui's flag-byte scheme** — adding post-quantum signatures = new flag byte + verifier, no hard fork
+- **IKA's per-curve DKG** — post-quantum dWallets coexist with existing ones, users migrate at their own pace
+- **Defense in depth** — even before target chains go post-quantum, Sui's authorization layer can adopt quantum-safe auth independently
+- **Mysten Labs research** — [ePrint 2025/1368](https://eprint.iacr.org/2025/1368) describes backward-compatible quantum-safe migration for EdDSA chains (Sui, Solana, Near, Stellar, Cosmos)
+
+Full analysis: [`docs/ika-quantum-resistance.md`](docs/ika-quantum-resistance.md)
 
 ### Credits
 
 Chain registry and signing ceremony adapted from [inkwell-finance/ows-ika](https://github.com/inkwell-finance/ows-ika) (MIT) — Inkwell Finance's OpenWallet Standard adapter for IKA dWallets.
-
-### Development log
-
-| Date | Change | Commit |
-|------|--------|--------|
-| 2026-03-26 | gRPC adapter for Bluefin 7K aggregator SDK (4-method shim, no JSON-RPC) | `0f3818a` |
-| 2026-03-26 | SuiNS NFT ownership gate on `/api/sponsor-gas` | `5a8b8fe` |
-| 2026-03-26 | Bitcoin bech32 address derivation from dWallet pubkey | `65982ea` |
-| 2026-03-26 | Orange BTC address display, mempool.space link, network-aware copy/QR | `674d8ab` |
-| 2026-03-26 | Server-side sponsored DKG provisioning endpoint | `14c17ab` |
-| 2026-03-26 | Auto-provision dWallet at sign-in for SuiNS holders | `d361082` |
-| 2026-03-26 | Direct Cetus SUI→IKA swap in DKG PTB, IKA buffer fallback | `37d8345` |
-| 2026-03-26 | CAIP-2 chain registry for multi-chain address derivation | `3871a7f` |
-| 2026-03-26 | 2PC-MPC signing ceremony adapter with browser presign pool | `ce66411` |
-| 2026-03-26 | EVM address derivation — secp256k1 decompression + keccak256 + EIP-55 checksum | `d18cf69` |
-| 2026-03-26 | CrossChainStatus returns ETH address + full multi-chain address array | `9465bd0` |
 
 ---
 
