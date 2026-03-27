@@ -246,17 +246,9 @@
 
       // SUIAMI button — sign proof if connected, else open GitHub
       document.getElementById('ski-demo-suiami').addEventListener('click', function() {
-        // Check if wallet is connected by looking for the ski-btn visibility
-        var connected = document.querySelector('#ski-btn[style*="display"]') ||
-                        document.querySelector('.ski-widget-label-wrap');
-        if (connected) {
-          // Dispatch event that the SKI JS listens for — include current network
-          window.dispatchEvent(new CustomEvent('ski:request-suiami', {
-            detail: { network: currentNet }
-          }));
-        } else {
-          window.open('https://github.com/arbuthnot-eth/SUIAMI', '_blank');
-        }
+        window.dispatchEvent(new CustomEvent('ski:request-suiami', {
+          detail: { network: currentNet }
+        }));
       });
 
       // Initial state
