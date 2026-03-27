@@ -1763,11 +1763,13 @@ export async function buildConsolidateToUsdcTx(
   const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
 
   // Fetch all swappable coins + sponsor info in parallel
-  const [nsCoins, walCoins, suiCoins, xaumCoins, sponsorInfo] = await Promise.all([
+  const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+  const [nsCoins, walCoins, suiCoins, xaumCoins, ikaCoins, sponsorInfo] = await Promise.all([
     listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.NS.type),
     listCoinsOfType(transport, walletAddress, WAL_TYPE),
     includeSui ? listCoinsOfType(transport, walletAddress, SUI_TYPE) : Promise.resolve([]),
     listCoinsOfType(transport, walletAddress, XAUM_TYPE),
+    listCoinsOfType(transport, walletAddress, IKA_TYPE),
     fetchSponsorInfo(),
   ]);
 
@@ -1775,14 +1777,16 @@ export async function buildConsolidateToUsdcTx(
   const totalWal = walCoins.reduce((sum, c) => sum + c.balance, 0n);
   const totalSui = suiCoins.reduce((sum, c) => sum + c.balance, 0n);
   const totalXaum = xaumCoins.reduce((sum, c) => sum + c.balance, 0n);
+  const totalIka = ikaCoins.reduce((sum, c) => sum + c.balance, 0n);
   const want = (s: string) => !tokens?.length || tokens.includes(s);
   // Minimum swap thresholds — skip dust amounts that would fail or cost more in fees than value
   const shouldSwapNs = totalNs > 1_000_000n && want('NS');     // > 1 NS (~$0.02)
   const shouldSwapWal = totalWal > 100_000_000n && want('WAL'); // > 0.1 WAL
   const shouldSwapSui = includeSui && totalSui > 500_000_000n && want('SUI');
   const shouldSwapXaum = totalXaum > 0n && want('XAUM');
+  const shouldSwapIka = totalIka > 100_000_000n && want('IKA'); // > 0.1 IKA
 
-  if (!shouldSwapNs && !shouldSwapWal && !shouldSwapSui && !shouldSwapXaum) {
+  if (!shouldSwapNs && !shouldSwapWal && !shouldSwapSui && !shouldSwapXaum && !shouldSwapIka) {
     throw new Error('No eligible tokens to consolidate into USDC.');
   }
 
@@ -1889,6 +1893,44 @@ export async function buildConsolidateToUsdcTx(
     const [usdcOut] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
     tx.transferObjects([usdcOut, xaumDust], tx.pure.address(walletAddress));
     swaps.push({ symbol: 'XAUM', amount: Number(totalXaum) / 1e9 });
+  }
+
+  // ── IKA → USDC (two-hop: Cetus IKA→SUI, then DeepBook SUI→USDC) ──
+  if (shouldSwapIka) {
+    const CETUS_ROUTER = '0xb2db7142fa83210a7d78d9c12ac49c043b3cbbd482224fea6e3da00aa5a5ae2d';
+    const CETUS_GLOBAL_CONFIG = '0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f';
+    const CETUS_IKA_SUI_POOL = '0xc23e7e8a74f0b18af4dfb7c3280e2a56916ec4d41e14416f85184a8aab6b7789';
+    const CETUS_MIN_SQRT = '4295048016';
+
+    const ikaCoin = tx.objectRef(ikaCoins[0]);
+    if (ikaCoins.length > 1) {
+      tx.mergeCoins(ikaCoin, ikaCoins.slice(1).map(c => tx.objectRef(c)));
+    }
+    // Step 1: IKA → SUI via Cetus (Pool<IKA, SUI>, a_to_b = true)
+    const [zeroSui] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [SUI_TYPE] });
+    const [ikaValue] = tx.moveCall({ target: '0x2::coin::value', typeArguments: [IKA_TYPE], arguments: [ikaCoin] });
+    const [ikaDust, suiFromCetus] = tx.moveCall({
+      target: `${CETUS_ROUTER}::router::swap`,
+      typeArguments: [IKA_TYPE, SUI_TYPE],
+      arguments: [
+        tx.object(CETUS_GLOBAL_CONFIG), tx.object(CETUS_IKA_SUI_POOL),
+        ikaCoin, zeroSui,
+        tx.pure.bool(true), tx.pure.bool(true), ikaValue,
+        tx.pure.u128(CETUS_MIN_SQRT), tx.pure.bool(false), tx.object('0x6'),
+      ],
+    });
+    // Step 2: SUI → USDC via DeepBook
+    const [zeroDEEP_ika] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const ikaDbResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [SUI_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        suiFromCetus, zeroDEEP_ika, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([ikaDbResult[0], ikaDbResult[1], ikaDbResult[2], ikaDust], tx.pure.address(walletAddress));
+    swaps.push({ symbol: 'IKA', amount: Number(totalIka) / 1e9 });
   }
 
   const txBytes = await tx.build({ client: transport as never });

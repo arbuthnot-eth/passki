@@ -5201,7 +5201,7 @@ function renderSkiMenu() {
       // 2. Swap remaining tokens individually via buildSwapTx
       const SUI_CT = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
       for (const c of eligible) {
-        if (['NS', 'WAL', 'XAUM'].includes(c.symbol)) continue; // already handled above
+        if (['NS', 'WAL', 'XAUM', 'IKA'].includes(c.symbol)) continue; // already handled above
         if (c.coinType === USDC_CT) continue;
         const decimals = coinDecimals(c.coinType);
         const amountMist = BigInt(Math.floor(c.balance * Math.pow(10, decimals)));
