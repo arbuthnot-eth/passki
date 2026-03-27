@@ -5223,6 +5223,7 @@ body {
   grid-row: 1;
   grid-column: 2;
   align-self: end;
+  font-size: 38px;
 }
 .ski-demo:not(.open) .ski-demo-addr-row {
   grid-row: 2;
@@ -5243,6 +5244,11 @@ body {
 }
 .ski-demo:not(.open) .ski-demo-addr-row .ski-demo-addr { display: none; }
 .ski-demo:not(.open) .ski-demo-addr-row .ski-demo-gear-abs { display: none; }
+.ski-demo:not(.open) .ski-demo-addr-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .ski-demo:not(.open) .ski-demo-addr { display: none; }
 .ski-demo:not(.open) .ski-chip--gear { display: none; }
 .ski-demo:not(.open) .ski-demo-nets--stacked { display: none; }
