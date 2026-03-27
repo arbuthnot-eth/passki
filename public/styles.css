@@ -3003,11 +3003,12 @@ body {
 }
 .ski-btn-bal-whole { color: #ffffff; }
 .ski-btn-bal-dec {
-  font-size: 0.78em;
+  font-size: 0.75em;
   font-weight: 500;
+  color: rgba(255, 255, 255, 0.5);
 }
-.ski-btn-price-label--usd .ski-btn-bal-whole { color: #86efac; }
-.ski-btn-price-label--usd .ski-btn-bal-dec { color: #4ade80; }
+.ski-btn-price-label--usd .ski-btn-bal-whole { color: #ffffff; }
+.ski-btn-price-label--usd .ski-btn-bal-dec { color: #2ee89a; }
 
 .ski-btn-inline-drop {
   width: 18px;
