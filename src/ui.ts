@@ -7095,7 +7095,7 @@ function render() {
     const sw = header.scrollWidth;
     const cw = header.clientWidth || window.innerWidth;
     if (sw > cw + 2) {
-      const scale = cw / sw;
+      const scale = (cw / sw) * 0.85;
       header.style.transform = `scale(${scale.toFixed(4)})`;
       header.style.transformOrigin = 'top left';
       header.style.marginBottom = `-${Math.round(header.offsetHeight * (1 - scale))}px`;
