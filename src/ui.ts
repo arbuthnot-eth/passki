@@ -4796,20 +4796,22 @@ function renderSkiMenu() {
     // Use on-chain icon if available, else known icons, else default letter
     const meta = _coinMetaCache[c.coinType];
     const metaIcon = meta?.iconUrl ? `<img src="${esc(meta.iconUrl)}" class="wk-popout-coin-icon" alt="${esc(c.symbol)}">` : null;
+    const ikaIcon = `<svg class="wk-popout-coin-icon" viewBox="0 0 40 40"><circle cx="20" cy="20" r="20" fill="#EE2B5B"/><g transform="translate(6,3) scale(0.29)" stroke="white" stroke-width="5.7" fill="none"><path d="M72.662 71.076V46.717C72.662 33.265 61.756 22.359 48.304 22.359C34.851 22.359 23.945 33.265 23.945 46.717V71.076"/><path d="M72.663 62.956V72.428C72.663 77.66 76.904 81.901 82.136 81.901C87.367 81.901 91.608 77.66 91.608 72.428V62.956"/><path d="M58.297 95.641V81.207C58.297 75.688 53.823 71.214 48.304 71.214C42.785 71.214 38.311 75.688 38.311 81.207V95.641"/><path d="M5 62.956V72.428C5 77.66 9.241 81.901 14.473 81.901C19.704 81.901 23.945 77.66 23.945 72.428V62.956"/><path d="M48.307 57.542C52.791 57.542 56.426 53.906 56.426 49.422C56.426 44.938 52.791 41.303 48.307 41.303C43.823 41.303 40.188 44.938 40.188 49.422C40.188 50.254 40.313 51.057 40.545 51.813C41.182 50.403 42.6 49.422 44.247 49.422C46.489 49.422 48.307 51.239 48.307 53.482C48.307 55.129 47.326 56.547 45.916 57.184C46.672 57.416 47.475 57.542 48.307 57.542Z" fill="white"/></g></svg>`;
     const icon = isSui ? suiDropIcon
       : c.symbol === 'NS' ? `<img src="${NS_ICON_URI}" class="wk-popout-coin-icon" alt="NS">`
       : c.symbol === 'WAL' ? `<img src="${WAL_ICON_URI}" class="wk-popout-coin-icon" alt="WAL">`
       : c.symbol === 'XAUM' ? `<img src="${AU_ICON_URI}" class="wk-popout-coin-icon" alt="Au">`
+      : c.symbol === 'IKA' ? ikaIcon
       : c.isStable ? stableIcon
       : metaIcon ?? defaultIcon(c.symbol.charAt(0));
-    const colorCls = isSui ? 'wk-coin-item--sui' : c.isStable ? 'wk-coin-item--usd' : c.symbol === 'XAUM' ? 'wk-coin-item--gold' : 'wk-coin-item--other';
+    const colorCls = isSui ? 'wk-coin-item--sui' : c.isStable ? 'wk-coin-item--usd' : c.symbol === 'XAUM' ? 'wk-coin-item--gold' : c.symbol === 'IKA' ? 'wk-coin-item--ika' : 'wk-coin-item--other';
     // Tooltip: amount, token name, (price per token)
     const tp = isSui ? _suiP : getTokenPrice(c.symbol);
     const tokenName = c.symbol;
     const balFmt = c.balance < 0.001 ? c.balance.toExponential(2) : c.balance < 1 ? c.balance.toFixed(6) : c.balance < 1000 ? c.balance.toFixed(4) : c.balance.toFixed(2);
     const priceFmt = !c.isStable && tp != null && tp > 0 ? ` ($${tp < 0.01 ? tp.toFixed(6) : tp < 1 ? tp.toFixed(4) : tp < 100 ? tp.toFixed(2) : _fmtUsd(tp)})` : '';
     const tooltip = `${balFmt} ${tokenName}${priceFmt}`;
-    const fracCls = isSui ? 'wk-coin-frac--sui' : c.isStable ? 'wk-coin-frac--usd' : c.symbol === 'XAUM' ? 'wk-coin-frac--gold' : 'wk-coin-frac--other';
+    const fracCls = isSui ? 'wk-coin-frac--sui' : c.isStable ? 'wk-coin-frac--usd' : c.symbol === 'XAUM' ? 'wk-coin-frac--gold' : c.symbol === 'IKA' ? 'wk-coin-frac--ika' : 'wk-coin-frac--other';
     if (_usdMode) {
       _coinChipsCache.push({ icon, val: usd, html: _fmtUsdChipHtml(usd, !c.isStable, fracCls), key: c.symbol.toLowerCase(), colorCls, tooltip });
     } else {

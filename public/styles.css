@@ -2816,7 +2816,18 @@ body {
 .wk-coin-frac--sui { color: rgba(147, 197, 253, 0.6); }
 .wk-coin-frac--usd { color: rgba(74, 222, 128, 0.7); }
 .wk-coin-frac--gold { color: rgba(212, 160, 23, 0.7); }
+.wk-coin-frac--ika { color: rgba(238, 43, 91, 0.7); }
 .wk-coin-frac--other { color: rgba(165, 148, 249, 0.6); }
+
+.wk-coin-item--ika { border-color: rgba(238, 43, 91, 0.3); background: rgba(238, 43, 91, 0.08); }
+@media (hover: hover) {
+  .wk-coin-item--ika:hover { border-color: rgba(238, 43, 91, 0.6); background: rgba(238, 43, 91, 0.16); }
+}
+.wk-coin-item--ika.wk-coin-item--selected {
+  border-color: rgba(238, 43, 91, 0.6);
+  background: rgba(238, 43, 91, 0.16);
+  box-shadow: 0 0 0 1px rgba(238, 43, 91, 0.2) inset, 0 0 8px rgba(238, 43, 91, 0.15);
+}
 
 .wk-coin-item--other:hover,
 .wk-coin-item--other.wk-coin-item--selected {
