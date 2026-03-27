@@ -5212,8 +5212,8 @@ body {
   order: -1;
 }
 .ski-demo:not(.open) .ski-demo-qr {
-  width: 48px;
-  height: 48px;
+  width: 96px;
+  height: 96px;
   border-radius: 8px;
   cursor: pointer;
 }
@@ -5371,6 +5371,7 @@ body {
 .ski-demo.open {
   max-width: 95vw;
   width: 95vw;
+  margin-top: -26px;
 }
 
 /* Medium and small screens: stack vertically */
