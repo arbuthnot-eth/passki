@@ -2968,9 +2968,14 @@ function _renderSkiBtnEl(el: HTMLElement) {
       ? `<svg class="ski-btn-price-icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="#22c55e" stroke="white" stroke-width="3"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">$</text></svg>`
       : `<svg class="ski-btn-price-icon" viewBox="0 0 40 40" aria-hidden="true"><rect x="1" y="1" width="38" height="38" rx="6" fill="#4da2ff" stroke="white" stroke-width="2"/><g transform="translate(10,7) scale(0.067)" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g></svg>`;
     const rawUsd = fmtUsd(app.usd);
+    const fmtBalSplit = (raw: string) => {
+      const dot = raw.indexOf('.');
+      if (dot < 0) return `<span class="ski-btn-bal-whole">${esc(raw)}</span>`;
+      return `<span class="ski-btn-bal-whole">${esc(raw.slice(0, dot))}</span><span class="ski-btn-bal-dec">.${esc(raw.slice(dot + 1))}</span>`;
+    };
     const balLabel = balView === 'usd'
-      ? `<span class="ski-btn-price-label ski-btn-price-label--usd">${esc(rawUsd ? rawUsd.replace(/^\$/, '') : '--')}</span>`
-      : `<span class="ski-btn-price-label">${esc(fmtSui(getTotalSui()))}</span>`;
+      ? `<span class="ski-btn-price-label ski-btn-price-label--usd">${fmtBalSplit(rawUsd ? rawUsd.replace(/^\$/, '') : '--')}</span>`
+      : `<span class="ski-btn-price-label">${fmtBalSplit(fmtSui(getTotalSui()))}</span>`;
     el.innerHTML = `<span class="ski-btn-dot" title="SKI Menu" aria-label="Switch USD/SUI">${dotSvg}</span>${balLabel}`;
     return;
   }
