@@ -15,7 +15,7 @@ Real Bitcoin, Ethereum, and Solana addresses controlled by your Sui account — 
 
 [![Superteam Demo](public/assets/superteam-poster.jpg)](https://sui.ski/superteam)
 
-> *Click to watch the demo — streamed from [Walrus](https://walrus.xyz), Sui's decentralized storage protocol.*
+> *[▶ Watch the demo](https://sui.ski/superteam) — streamed from [Walrus](https://walrus.xyz), Sui's decentralized storage protocol.*
 
 ### What One Sui Account Controls
 
