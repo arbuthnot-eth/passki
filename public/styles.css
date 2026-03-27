@@ -5195,14 +5195,31 @@ body {
   gap: 6px;
   flex-shrink: 0;
 }
-/* Collapsed: horizontal row layout */
-.ski-demo:not(.open) .ski-demo-sidebar {
-  flex-direction: row;
+/* Collapsed: horizontal compact row */
+.ski-demo:not(.open) .ski-demo-top-row {
+  display: flex;
   align-items: center;
   gap: 6px;
 }
-.ski-demo:not(.open) .ski-demo-qr,
+.ski-demo:not(.open) .ski-demo-top-info { display: contents; }
+.ski-demo:not(.open) .ski-demo-qr { display: none; }
 .ski-demo:not(.open) .ski-demo-addr { display: none; }
+.ski-demo:not(.open) .ski-demo-nets--stacked { flex-direction: row; }
+
+/* Open: QR top-left, label+suiami to its right, nets stacked */
+.ski-demo.open .ski-demo-top-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ski-demo.open .ski-demo-top-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ski-demo.open .ski-demo-nets--stacked {
+  flex-direction: column;
+}
 .ski-demo-card-label {
   font-size: 18px;
   font-weight: 700;
@@ -5212,6 +5229,7 @@ body {
 }
 .ski-demo-card-label:hover { opacity: 0.8; }
 .ski-demo-nets { display: flex; gap: 2px; }
+.ski-demo-nets--stacked { flex-direction: column; }
 .ski-demo-qr {
   width: 120px;
   height: 120px;
@@ -5331,40 +5349,8 @@ body {
 
 /* Medium and small screens: stack vertically */
 @media (max-width: 900px) {
-  .ski-demo.open .ski-demo-body {
-    display: grid;
-    grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto;
-  }
-  .ski-demo.open .ski-demo-sidebar {
-    grid-row: 1;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-  }
-  .ski-demo.open .ski-demo-sidebar .ski-demo-qr { display: none; }
-  .ski-demo.open .ski-demo-sidebar .ski-demo-chips { display: none; }
-  .ski-demo.open .ski-demo-player {
-    grid-row: 2;
-    max-width: 100%;
-  }
-  /* Duplicate QR below video via a pseudo-approach won't work — use JS to move it */
-}
-
-/* Mobile QR below video */
-.ski-demo-qr-below { display: none; }
-@media (max-width: 900px) {
-  .ski-demo.open .ski-demo-qr-below {
-    display: block;
-    padding: 8px 16px 16px;
-  }
-  .ski-demo.open .ski-demo-qr-below canvas {
-    width: 100%;
-    height: auto;
-    aspect-ratio: 1;
-    border-radius: 10px;
-  }
+  .ski-demo.open .ski-demo-body { flex-direction: column; }
+  .ski-demo.open .ski-demo-player { max-width: 100%; }
 }
 .ski-demo-player video:fullscreen,
 .ski-demo-player video:-webkit-full-screen {
