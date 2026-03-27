@@ -4,22 +4,28 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>.SKI</title>
-  <meta name="description" content=".SKI — your Sui wallet, everywhere.">
+  <meta name="description" content=".Sui Key-In — .SKI once, everywhere. Native Bitcoin &amp; Solana via IKA dWallets.">
 
   <!-- Open Graph -->
-  <meta property="og:type" content="website">
+  <meta property="og:type" content="video.other">
   <meta property="og:url" content="https://sui.ski/">
-  <meta property="og:title" content=".SKI">
-  <meta property="og:description" content="Your Sui wallet, everywhere.">
-  <meta property="og:image" content="https://sui.ski/assets/ski-512.png">
-  <meta property="og:image:width" content="512">
-  <meta property="og:image:height" content="512">
+  <meta property="og:title" content=".SKI — Native Bitcoin &amp; Solana via IKA dWallets">
+  <meta property="og:description" content="Two DKGs. Two dWallets. Seven chains. One Sui account. Powered by IKA 2PC-MPC + Walrus decentralized storage.">
+  <meta property="og:video" content="https://aggregator.walrus-testnet.walrus.space/v1/blobs/w-YsMSmoAgV-RQt_SinhQuEoM107nqC52WPUEi11ofI">
+  <meta property="og:video:type" content="video/mp4">
+  <meta property="og:video:width" content="1920">
+  <meta property="og:video:height" content="1080">
+  <meta property="og:image" content="https://sui.ski/assets/superteam-poster.jpg">
+  <meta property="og:site_name" content="sui.ski">
 
   <!-- Twitter / X Card -->
-  <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content=".SKI">
-  <meta name="twitter:description" content="Your Sui wallet, everywhere.">
-  <meta name="twitter:image" content="https://sui.ski/assets/ski-512.png">
+  <meta name="twitter:card" content="player">
+  <meta name="twitter:title" content=".SKI — Native Bitcoin &amp; Solana via IKA dWallets">
+  <meta name="twitter:description" content="Two DKGs. Two dWallets. Seven chains. One Sui account.">
+  <meta name="twitter:player" content="https://sui.ski/superteam/embed">
+  <meta name="twitter:player:width" content="1920">
+  <meta name="twitter:player:height" content="1080">
+  <meta name="twitter:image" content="https://sui.ski/assets/superteam-poster.jpg">
 
   <link rel="icon" id="ski-favicon" href="./assets/ski-192.png" type="image/png">
   <link rel="apple-touch-icon" href="./assets/ski-192.png">
@@ -42,10 +48,173 @@
     </div>
 
     <div id="ski-sign" style="display:none"></div>
+
+    <div class="ski-demo" id="ski-demo">
+      <div class="ski-demo-body" id="ski-demo-card">
+        <div class="ski-demo-sidebar">
+          <div class="ski-demo-card-label">Superteam</div>
+          <div class="ski-demo-nets">
+            <button class="ski-demo-net ski-demo-net--btc active" data-net="btc" title="Bitcoin">
+              <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#F7931A" stroke="white" stroke-width="3"/><text x="20" y="21" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">&#8383;</text></svg>
+            </button>
+            <button class="ski-demo-net ski-demo-net--sol" data-net="sol" title="Solana">
+              <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#0B1022"/><g transform="translate(-1,1) scale(0.85)"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#ds1)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#ds2)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#ds3)"/></g><defs><linearGradient id="ds1" x1="28.4" y1="8.49" x2="14.03" y2="35.32" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="ds2" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="ds3" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs></svg>
+            </button>
+            <button class="ski-demo-net ski-demo-net--sui" data-net="sui" title="Sui">
+              <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><rect x="4.5" y="4.5" width="31" height="31" rx="7" fill="#4da2ff" stroke="white" stroke-width="3"/><g transform="translate(10,8.5) scale(0.062)"><path fill-rule="evenodd" clip-rule="evenodd" d="M240.057 159.914C255.698 179.553 265.052 204.39 265.052 231.407C265.052 258.424 255.414 284.019 239.362 303.768L237.971 305.475L237.608 303.31C237.292 301.477 236.929 299.613 236.502 297.749C228.46 262.421 202.265 232.134 159.148 207.597C130.029 191.071 113.361 171.195 108.985 148.586C106.157 133.972 108.258 119.294 112.318 106.717C116.379 94.1569 122.414 83.6187 127.549 77.2831L144.328 56.7754C147.267 53.1731 152.781 53.1731 155.719 56.7754L240.073 159.914H240.057ZM266.584 139.422L154.155 1.96703C152.007 -0.655678 147.993 -0.655678 145.845 1.96703L33.4316 139.422L33.0683 139.881C12.3868 165.555 0 198.181 0 233.698C0 316.408 67.1635 383.461 150 383.461C232.837 383.461 300 316.408 300 233.698C300 198.181 287.613 165.555 266.932 139.896L266.568 139.438L266.584 139.422ZM60.3381 159.472L70.3866 147.164L70.6868 149.439C70.9237 151.24 71.2239 153.041 71.5715 154.858C78.0809 189.001 101.322 217.456 140.173 239.496C173.952 258.724 193.622 280.828 199.278 305.064C201.648 315.176 202.059 325.129 201.032 333.835L200.969 334.372L200.479 334.609C185.233 342.05 168.09 346.237 149.984 346.237C86.4546 346.237 34.9484 294.826 34.9484 231.391C34.9484 204.153 44.4439 179.142 60.3065 159.44L60.3381 159.472Z" fill="white"/></g></svg>
+            </button>
+          </div>
+          <canvas class="ski-demo-qr" id="ski-demo-qr" width="120" height="120"></canvas>
+          <div class="ski-demo-addr ski-demo-addr--btc" id="ski-demo-addr" title="bc1qtxapc28p93g54gpv5jjllh2tk7axr9lrm7hw23">bc1qtx...7hw23</div>
+          <div class="ski-demo-hints">
+            <span class="ski-demo-badge">Walrus</span>
+            <span class="ski-demo-play-hint">&#9654; Play</span>
+          </div>
+        </div>
+        <div class="ski-demo-player" id="ski-demo-player">
+          <video
+            src="https://aggregator.walrus-testnet.walrus.space/v1/blobs/w-YsMSmoAgV-RQt_SinhQuEoM107nqC52WPUEi11ofI"
+            controls muted playsinline preload="none"
+            poster="./assets/superteam-poster.jpg"
+          ></video>
+        </div>
+      </div>
+    </div>
   </main>
 
   <div id="ski-modal"></div>
 
   <script type="module" src="./dist/ski.js?v=20260321c"></script>
+  <script>
+    (function() {
+      var addrs = {
+        btc: { full: 'bc1qtxapc28p93g54gpv5jjllh2tk7axr9lrm7hw23', color: '#f7931a', bg: '#2a1a00' },
+        sol: { full: 'FtdgskzfMMZ87cZR1Qv5mxFSJJVgNp9kh7v59bp6L9dh', color: '#9945FF', bg: '#1a0a2e' },
+        sui: { full: '0x3ca0da71d19d9a1837ad3da155f03aab776aa33963864064eb81569f10e5222b', color: '#4da2ff', bg: '#0a1a2e' }
+      };
+      var addrEl = document.getElementById('ski-demo-addr');
+      var qrCanvas = document.getElementById('ski-demo-qr');
+      var currentNet = 'btc';
+
+      var netLogoUrls = {
+        btc: './assets/btc-icon.svg',
+        sol: './assets/sol-icon.svg',
+        sui: './assets/sui-icon.svg'
+      };
+      var netLogoCache = {};
+      function getLogoImg(net, cb) {
+        if (netLogoCache[net]) { cb(netLogoCache[net]); return; }
+        var img = new Image();
+        img.onload = function() { netLogoCache[net] = img; cb(img); };
+        img.src = netLogoUrls[net];
+      }
+
+      function drawQR(canvas, text, fgColor, net) {
+        var size = 120;
+        canvas.width = size;
+        canvas.height = size;
+        var ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, size, size);
+        var s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
+        s.onload = function() {
+          var qr = qrcode(0, 'L');
+          qr.addData(text);
+          qr.make();
+          var modules = qr.getModuleCount();
+          var pad = 6;
+          var cellSize = (size - pad * 2) / modules;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, size, size);
+          // Draw QR modules, skip center area for logo
+          var cx = size / 2, cy = size / 2, logoR = 16;
+          ctx.fillStyle = fgColor;
+          for (var r = 0; r < modules; r++) {
+            for (var c = 0; c < modules; c++) {
+              if (qr.isDark(r, c)) {
+                var px = pad + c * cellSize + cellSize/2;
+                var py = pad + r * cellSize + cellSize/2;
+                var dist = Math.sqrt((px-cx)*(px-cx) + (py-cy)*(py-cy));
+                if (dist > logoR + 2) {
+                  ctx.fillRect(pad + c * cellSize, pad + r * cellSize, cellSize + 0.5, cellSize + 0.5);
+                }
+              }
+            }
+          }
+          // Draw logo in center
+          ctx.beginPath(); ctx.arc(cx, cy, logoR + 2, 0, Math.PI*2); ctx.fillStyle = '#ffffff'; ctx.fill();
+          getLogoImg(net, function(img) {
+            var d = logoR * 2;
+            ctx.drawImage(img, cx - logoR, cy - logoR, d, d);
+          });
+        };
+        if (window.qrcode) { s.onload(); } else { document.head.appendChild(s); }
+      }
+
+      function truncAddr(addr) {
+        if (addr.length <= 16) return addr;
+        return addr.slice(0, 6) + '...' + addr.slice(-5);
+      }
+
+      function updateAddr(net) {
+        currentNet = net;
+        var a = addrs[net];
+        addrEl.textContent = truncAddr(a.full);
+        addrEl.title = a.full;
+        addrEl.dataset.full = a.full;
+        addrEl.dataset.short = truncAddr(a.full);
+        addrEl.className = 'ski-demo-addr ski-demo-addr--' + net;
+        drawQR(qrCanvas, a.full, a.color, net);
+        var demo = document.getElementById('ski-demo');
+        demo.className = demo.classList.contains('open') ? 'ski-demo open ski-demo--' + net : 'ski-demo ski-demo--' + net;
+      }
+
+      // Card click opens/closes video
+      document.getElementById('ski-demo-card').addEventListener('click', function(e) {
+        if (e.target.closest('.ski-demo-net') || e.target.closest('.ski-demo-addr') || e.target.closest('.ski-demo-qr')) return;
+        var demo = document.getElementById('ski-demo');
+        var video = demo.querySelector('video');
+        demo.classList.toggle('open');
+        if (demo.classList.contains('open')) { video.volume = 0.07; video.muted = false; video.play(); }
+        else { video.pause(); }
+      });
+
+      // Network buttons switch address + QR
+      document.querySelectorAll('.ski-demo-net').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          document.querySelectorAll('.ski-demo-net').forEach(function(b) { b.classList.remove('active'); });
+          btn.classList.add('active');
+          updateAddr(btn.dataset.net);
+        });
+      });
+
+      // Click address to copy
+      addrEl.addEventListener('click', function(e) {
+        e.stopPropagation();
+        navigator.clipboard.writeText(addrEl.dataset.full || addrEl.title).then(function() {
+          var orig = addrEl.textContent;
+          addrEl.textContent = '\u2713 Copied';
+          setTimeout(function() { addrEl.textContent = orig; }, 1000);
+        });
+      });
+
+      // QR click cycles network
+      var netOrder = ['btc', 'sol', 'sui'];
+      qrCanvas.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var idx = (netOrder.indexOf(currentNet) + 1) % netOrder.length;
+        var next = netOrder[idx];
+        document.querySelectorAll('.ski-demo-net').forEach(function(b) { b.classList.remove('active'); });
+        document.querySelector('.ski-demo-net--' + next).classList.add('active');
+        updateAddr(next);
+      });
+
+      // Initial state
+      document.getElementById('ski-demo').classList.add('ski-demo--btc');
+      drawQR(qrCanvas, addrs.btc.full, addrs.btc.color, 'btc');
+    })();
+  </script>
 </body>
 </html>

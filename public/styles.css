@@ -5163,3 +5163,129 @@ body {
 }
 
 .ski-suins-qr-popup[hidden] { display: none; }
+
+/* ── Superteam demo card + player ─────────────────────────────────── */
+.ski-demo {
+  max-width: 90vw;
+  width: fit-content;
+  margin: -26px auto 0;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+.ski-demo--btc { background: linear-gradient(135deg, rgba(247,147,26,0.08), var(--panel) 60%); border-color: rgba(247,147,26,0.15); }
+.ski-demo--btc:hover { border-color: rgba(247,147,26,0.35); }
+.ski-demo--sol { background: linear-gradient(135deg, rgba(153,69,255,0.08), var(--panel) 60%); border-color: rgba(153,69,255,0.15); }
+.ski-demo--sol:hover { border-color: rgba(153,69,255,0.35); }
+.ski-demo--sui { background: linear-gradient(135deg, rgba(77,162,255,0.08), var(--panel) 60%); border-color: rgba(77,162,255,0.15); }
+.ski-demo--sui:hover { border-color: rgba(77,162,255,0.35); }
+.ski-demo:hover { border-color: rgba(247, 147, 26, 0.3); }
+.ski-demo-body {
+  cursor: pointer;
+  display: flex;
+  align-items: stretch;
+}
+.ski-demo-sidebar {
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  flex-shrink: 0;
+}
+/* Collapsed: horizontal row layout */
+.ski-demo:not(.open) .ski-demo-sidebar {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.ski-demo:not(.open) .ski-demo-qr,
+.ski-demo:not(.open) .ski-demo-addr { display: none; }
+.ski-demo-card-label {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+.ski-demo-nets { display: flex; gap: 2px; }
+.ski-demo-qr {
+  width: 120px;
+  height: 120px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.ski-demo-net {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  border: 1.5px solid transparent;
+  opacity: 0.35;
+  transition: opacity 0.15s, border-color 0.15s, transform 0.1s;
+}
+.ski-demo-net svg { width: 28px; height: 28px; }
+.ski-demo-net:hover { opacity: 0.7; transform: scale(1.06); }
+.ski-demo-net.active { opacity: 1; }
+.ski-demo-net--sui.active { border-color: rgba(77, 162, 255, 0.5); border-radius: 10px; }
+.ski-demo-net--btc.active { border-color: rgba(247, 147, 26, 0.6); }
+.ski-demo-net--sol.active { border-color: rgba(220, 31, 255, 0.4); background: linear-gradient(135deg, rgba(40,10,60,0.4), rgba(0,40,30,0.3)); }
+.ski-demo-addr {
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.04);
+  transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+.ski-demo-addr:hover { background: rgba(255,255,255,0.08); }
+.ski-demo-addr--btc { color: #F7931A; }
+.ski-demo-addr--sol { color: #9945FF; }
+.ski-demo-addr--sui { color: #4da2ff; }
+.ski-demo-hints {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ski-demo-badge {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: rgba(77, 162, 255, 0.12);
+  color: #4da2ff;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.ski-demo-play-hint {
+  font-size: 12px;
+  color: var(--muted);
+  transition: color 0.15s;
+}
+.ski-demo-body:hover .ski-demo-play-hint { color: var(--text); }
+.ski-demo.open .ski-demo-play-hint { display: none; }
+/* Player: horizontal expand to the right */
+.ski-demo-player {
+  max-width: 0;
+  overflow: hidden;
+  transition: max-width 0.4s ease, opacity 0.3s ease;
+  opacity: 0;
+}
+.ski-demo.open .ski-demo-player {
+  max-width: calc(90vw - 170px);
+  opacity: 1;
+  flex: 1;
+}
+.ski-demo-player video {
+  width: 100%;
+  height: 100%;
+  max-height: calc(100vh - 100px);
+  display: block;
+  object-fit: contain;
+}
