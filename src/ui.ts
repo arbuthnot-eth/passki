@@ -6040,8 +6040,10 @@ function renderSkiMenu() {
     const validLabel = isValidNsLabel(val);
     try { if (validLabel) localStorage.setItem('ski:ns-label', val); } catch {}
     // Clear all price/availability state on name change
-    nsPriceUsd = (validLabel && val.length >= 5 && ns5CharPriceUsd != null) ? ns5CharPriceUsd : null;
-    nsAvail = null;
+    // Don't show optimistic price if the name is in our owned roster
+    const _inRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === val);
+    nsPriceUsd = (validLabel && val.length >= 5 && ns5CharPriceUsd != null && !_inRoster) ? ns5CharPriceUsd : null;
+    nsAvail = _inRoster ? 'owned' : null;
     nsGraceEndMs = 0;
     nsTargetAddress = null;
     pendingSendAmount = '';
