@@ -3317,6 +3317,17 @@ async function fetchAndShowNsPrice(label: string) {
       : null;
     nsTradeportListing = tp;
     if (sr) _maybeDiscoverRealOwner(sr);
+    // Clear stale amount if name isn't actionable (no mint, no listing to buy)
+    const actionable = nsAvail === 'available' || nsAvail === 'grace' || nsKioskListing || nsTradeportListing;
+    if (!actionable && pendingSendAmount) {
+      pendingSendAmount = '';
+      const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+      if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+      const _ac = document.getElementById('wk-send-clear');
+      if (_ac) _ac.style.display = 'none';
+      const _sb = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+      if (_sb) _sb.disabled = true;
+    }
     _patchNsPrice();
     _patchNsStatus();
     _patchNsRoute();
