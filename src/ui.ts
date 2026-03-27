@@ -3764,6 +3764,7 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
   _nftPopoverPinned = false;
   const popover = _ensureNftPopover();
   popover.classList.remove('ski-nft-popover--pinned');
+  popover.dataset.domain = domainBare;
   const domain = `${domainBare}.sui`;
   const suiSkiUrl = `https://${domainBare}.sui.ski`;
 
@@ -3828,29 +3829,15 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
 function _attachNftPopoverListeners() {
   const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
   if (!grid) return;
-  grid.addEventListener('mouseenter', (e) => {
-    const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
-    if (!chip?.dataset.domain) return;
-    // Don't show NFT popover for shade/wishlist chips or dimmed (filtered-out) chips
-    if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
-    if (chip.classList.contains('wk-ns-owned-chip--dim')) return;
-    _showNftPopover(chip, chip.dataset.domain);
-  }, true);
-  grid.addEventListener('mouseleave', (e) => {
-    const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
-    if (!chip) return;
-    _hideNftPopover();
-  }, true);
-  // Dimmed chips: show popover on click instead of hover
+  // Click to show/toggle popover for any chip (replaces hover)
   grid.addEventListener('click', (e) => {
     const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
     if (!chip?.dataset.domain) return;
-    if (!chip.classList.contains('wk-ns-owned-chip--dim')) return;
     if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
     e.stopPropagation();
-    // Toggle: if popover is already showing for this chip, hide it
-    if (_nftPopover && !_nftPopover.hasAttribute('hidden')) {
-      _nftPopover.setAttribute('hidden', '');
+    // Toggle: if popover is already showing for this domain, hide it
+    if (_nftPopover && !_nftPopover.hasAttribute('hidden') && _nftPopover.dataset.domain === chip.dataset.domain) {
+      _hideNftPopover();
       return;
     }
     _showNftPopover(chip, chip.dataset.domain);
