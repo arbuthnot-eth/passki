@@ -1848,7 +1848,8 @@ export async function buildConsolidateToUsdcTx(
 
   // ── SUI → USDC (DeepBook: SUI is base) — optional ──
   if (shouldSwapSui) {
-    const swapAmount = totalSui - 500_000_000n;
+    // Swap 75% of SUI, keep 25% for gas + reserves
+    const swapAmount = (totalSui * 75n) / 100n;
     const [suiPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(swapAmount)]);
 
     const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
@@ -1895,7 +1896,7 @@ export async function buildConsolidateToUsdcTx(
     swaps.push({ symbol: 'XAUM', amount: Number(totalXaum) / 1e9 });
   }
 
-  // ── IKA → USDC (two-hop: Cetus IKA→SUI, then DeepBook SUI→USDC) ──
+  // ── IKA → SUI (Cetus single hop — SUI gets swept to USDC by the SUI step above) ──
   if (shouldSwapIka) {
     const CETUS_ROUTER = '0xb2db7142fa83210a7d78d9c12ac49c043b3cbbd482224fea6e3da00aa5a5ae2d';
     const CETUS_GLOBAL_CONFIG = '0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f';
@@ -1906,10 +1907,10 @@ export async function buildConsolidateToUsdcTx(
     if (ikaCoins.length > 1) {
       tx.mergeCoins(ikaCoin, ikaCoins.slice(1).map(c => tx.objectRef(c)));
     }
-    // Step 1: IKA → SUI via Cetus (Pool<IKA, SUI>, a_to_b = true)
+    // IKA → SUI via Cetus (Pool<IKA, SUI>, a_to_b = true)
     const [zeroSui] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [SUI_TYPE] });
     const [ikaValue] = tx.moveCall({ target: '0x2::coin::value', typeArguments: [IKA_TYPE], arguments: [ikaCoin] });
-    const [ikaDust, suiFromCetus] = tx.moveCall({
+    const [ikaDust, suiFromIka] = tx.moveCall({
       target: `${CETUS_ROUTER}::router::swap`,
       typeArguments: [IKA_TYPE, SUI_TYPE],
       arguments: [
@@ -1919,17 +1920,8 @@ export async function buildConsolidateToUsdcTx(
         tx.pure.u128(CETUS_MIN_SQRT), tx.pure.bool(false), tx.object('0x6'),
       ],
     });
-    // Step 2: SUI → USDC via DeepBook
-    const [zeroDEEP_ika] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
-    const ikaDbResult = tx.moveCall({
-      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
-      typeArguments: [SUI_TYPE, USDC_TYPE],
-      arguments: [
-        tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
-        suiFromCetus, zeroDEEP_ika, tx.pure.u64(0), tx.object.clock(),
-      ],
-    });
-    tx.transferObjects([ikaDbResult[0], ikaDbResult[1], ikaDbResult[2], ikaDust], tx.pure.address(walletAddress));
+    // Transfer SUI + IKA dust back to wallet — SUI gets included in the 75% SUI→USDC sweep
+    tx.transferObjects([suiFromIka, ikaDust], tx.pure.address(walletAddress));
     swaps.push({ symbol: 'IKA', amount: Number(totalIka) / 1e9 });
   }
 

@@ -5183,7 +5183,7 @@ function renderSkiMenu() {
 
       // 1. Try main consolidation (NS, WAL, XAUM, SUI)
       try {
-        const result = await buildConsolidateToUsdcTx(ws2.address);
+        const result = await buildConsolidateToUsdcTx(ws2.address, undefined, true);
         if (result.swaps.length > 0) {
           if (result.sponsorAddress) {
             await signAndExecuteSponsoredTx(result.txBytes);
