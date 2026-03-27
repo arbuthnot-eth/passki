@@ -2299,7 +2299,7 @@ function coinShortName(coinType: string): string {
 // Decimals per coinType — fetched on-chain and cached
 // One-time purge of stale coin caches (NS decimals/balance were incorrectly cached)
 try {
-  if (!localStorage.getItem('ski:dec:v3')) {
+  if (!localStorage.getItem('ski:dec:v4')) {
     localStorage.removeItem('ski:decimals');
     localStorage.removeItem('ski:coin-meta');
     localStorage.removeItem('ski:token-prices');
@@ -2307,7 +2307,7 @@ try {
     for (const k of Object.keys(localStorage)) {
       if (k.startsWith('ski:balances:')) localStorage.removeItem(k);
     }
-    localStorage.setItem('ski:dec:v3', '1');
+    localStorage.setItem('ski:dec:v4', '1');
   }
 } catch {}
 const _decimalsCache: Record<string, number> = {
