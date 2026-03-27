@@ -4045,8 +4045,11 @@ function _nsVariant(): SkiDotVariant {
   if (nsAvail === 'available') return 'green-circle';
   if (nsAvail === 'grace') return 'red-hexagon';
   if (nsAvail === 'taken' || nsAvail === 'owned') return 'blue-square';
-  // Pending check — show green optimistically for valid names
-  if (isValidNsLabel(label)) return 'green-circle';
+  // Pending (nsAvail === null) — check owned roster first
+  const bareLabel = label.toLowerCase();
+  const inRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);
+  if (inRoster) return 'blue-square';
+  // Unknown — show black diamond until resolution completes (don't assume available)
   return 'black-diamond';
 }
 
@@ -4059,8 +4062,8 @@ function _patchNsStatus() {
   const isOwned = nsAvail === 'owned';
   const hasActiveShade = !!nsShadeOrder && nsShadeOrder.domain === nsLabel.trim();
   const isGrace = nsAvail === 'grace' || hasActiveShade;
-  // --available: confirmed available OR pending but likely available (valid > 3 chars)
-  const looksAvailable = (nsAvail === 'available' && !hasActiveShade) || (nsAvail === null && variant === 'green-circle');
+  // --available: only when confirmed available (not pending)
+  const looksAvailable = nsAvail === 'available' && !hasActiveShade;
   const walletAddrLower = getState().address?.toLowerCase() ?? '';
   const isSelfTarget = walletAddrLower !== '' && (
     (!!nsTargetAddress && nsTargetAddress.toLowerCase() === walletAddrLower) ||
@@ -4895,7 +4898,7 @@ function renderSkiMenu() {
   const coinBreakdownHtml = _selChip ? `<div class="wk-coin-breakdown-wrap"><div class="wk-coin-breakdown"><button class="wk-coin-arrow wk-coin-arrow--left wk-coin-arrow--to-${_prevColor}" id="wk-coin-prev" type="button"${_arrowDisabled} title="${esc(_prevTip)}">\u2039</button><span class="wk-coin-item ${_selChip.colorCls} wk-coin-item--selected" data-coin="${esc(_selChip.key)}" id="wk-coin-selected" title="${esc(_selChip.tooltip ?? _selChip.key)}">${_selChip.icon}<span class="wk-coin-val">${_selChip.html}</span></span><button class="wk-coin-arrow wk-coin-arrow--right wk-coin-arrow--to-${_nextColor}" id="wk-coin-next" type="button"${_arrowDisabled} title="${esc(_nextTip)}">\u203A</button></div>${_coinGridHtml}</div>` : '';
 
   const _nsInitVariant = _nsVariant();
-  const _nsInitLooksAvailable = nsAvail === 'available' || (nsAvail === null && _nsInitVariant === 'green-circle');
+  const _nsInitLooksAvailable = nsAvail === 'available';
   const _nsInitWalletAddr = getState().address?.toLowerCase() ?? '';
   const _nsInitSelfTarget = _nsInitWalletAddr !== '' && (
     (!!nsTargetAddress && nsTargetAddress.toLowerCase() === _nsInitWalletAddr) ||
