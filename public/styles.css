@@ -5229,7 +5229,7 @@ body {
   gap: 2px;
 }
 .ski-demo:not(.open) .ski-demo-card-label {
-  font-size: 16px;
+  font-size: 22px;
 }
 
 /* Open: QR + nets row, label below */
@@ -5247,7 +5247,7 @@ body {
   gap: 6px;
 }
 .ski-demo-card-label {
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 700;
   color: var(--text);
   letter-spacing: -0.02em;
