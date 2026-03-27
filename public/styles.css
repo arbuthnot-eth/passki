@@ -3008,7 +3008,7 @@ body {
   color: rgba(255, 255, 255, 0.5);
 }
 .ski-btn-price-label--usd .ski-btn-bal-whole { color: #ffffff; }
-.ski-btn-price-label--usd .ski-btn-bal-dec { color: #2ee89a; }
+.ski-btn-price-label--usd .ski-btn-bal-dec { color: #00d26a; }
 
 .ski-btn-inline-drop {
   width: 18px;
@@ -3024,6 +3024,14 @@ body {
   box-shadow:
     0 10px 20px rgba(30, 64, 175, 0.2),
     0 0 0 1px rgba(59, 130, 246, 0.2) inset;
+}
+/* USD view: green hover glow */
+.ski-btn.ski-bal-usd:hover,
+.ski-btn.ski-bal-usd.ski-menu-open {
+  border-color: rgba(0, 210, 106, 0.86);
+  box-shadow:
+    0 10px 20px rgba(0, 140, 70, 0.2),
+    0 0 0 1px rgba(0, 210, 106, 0.2) inset;
 }
 
 .ski-btn svg,

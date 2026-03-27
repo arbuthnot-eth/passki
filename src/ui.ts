@@ -2961,6 +2961,7 @@ function _renderSkiBtnEl(el: HTMLElement) {
 
   const hasPrimary = !!app.suinsName;
   el.classList.toggle('ski-menu-open', app.skiMenuOpen);
+  el.classList.toggle('ski-bal-usd', balView === 'usd');
   const showDrop = app.splashSponsor || hasValidSkiSession(ws.address);
 
   if (hasPrimary) {
