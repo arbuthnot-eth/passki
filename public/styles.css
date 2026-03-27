@@ -5213,8 +5213,8 @@ body {
   order: -1;
 }
 .ski-demo:not(.open) .ski-demo-qr {
-  width: 140px;
-  height: 140px;
+  width: 210px;
+  height: 210px;
   border-radius: 8px;
   cursor: pointer;
 }
