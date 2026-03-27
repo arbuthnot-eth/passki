@@ -315,7 +315,10 @@ window.addEventListener('ski:request-signin', async () => {
 
 // ─── SUIAMI from Superteam card ──────────────────────────────────────
 window.addEventListener('ski:request-suiami', async (e) => {
-  const { network } = (e as CustomEvent).detail ?? {};
+  const cardNet = (e as CustomEvent).detail?.network;
+  // Use SKI menu's network selection if available, fallback to card's network
+  const skiNet = (() => { try { return localStorage.getItem('ski:network-pref'); } catch { return null; } })();
+  const network = skiNet || cardNet || 'sui';
   let ws = getState();
 
   // Not connected — connect via WaaP directly
