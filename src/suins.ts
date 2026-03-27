@@ -2195,8 +2195,12 @@ export async function buildSwapTx(
   const CETUS_MIN_SQRT = '4295048016';
   const CETUS_MAX_SQRT = '79226673515401279992447579055';
 
+  // Pool is Pool<IKA, SUI> — IKA is coinA, SUI is coinB
+  // IKA→SUI = a_to_b (selling IKA for SUI)
+  // SUI→IKA = !a_to_b (buying IKA with SUI)
+
   if (inputCoinType === IKA_TYPE && outputCoinType === SUI_TYPE) {
-    // IKA → SUI: sell IKA (coinY) for SUI (coinX) = b_to_a = !a_to_b
+    // IKA → SUI: a_to_b = true
     const ikaCoins = await listCoinsOfType(transport, walletAddress, IKA_TYPE);
     if (!ikaCoins.length) throw new Error('No IKA found');
     const ikaCoin = tx.objectRef(ikaCoins[0]);
@@ -2206,33 +2210,35 @@ export async function buildSwapTx(
     const [ikaValue] = tx.moveCall({ target: '0x2::coin::value', typeArguments: [IKA_TYPE], arguments: [ikaForSwap] });
     const [receiveA, receiveB] = tx.moveCall({
       target: `${CETUS_ROUTER}::router::swap`,
-      typeArguments: [SUI_TYPE, IKA_TYPE],
+      typeArguments: [IKA_TYPE, SUI_TYPE],
       arguments: [
         tx.object(CETUS_GLOBAL_CONFIG), tx.object(CETUS_IKA_SUI_POOL),
-        zeroSui, ikaForSwap,
-        tx.pure.bool(false), tx.pure.bool(true), ikaValue,
-        tx.pure.u128(CETUS_MAX_SQRT), tx.pure.bool(false), tx.object('0x6'),
+        ikaForSwap, zeroSui,
+        tx.pure.bool(true), tx.pure.bool(true), ikaValue,
+        tx.pure.u128(CETUS_MIN_SQRT), tx.pure.bool(false), tx.object('0x6'),
       ],
     });
+    // receiveA = IKA dust, receiveB = SUI out
     tx.transferObjects([receiveA, receiveB, ikaCoin], tx.pure.address(walletAddress));
     return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'IKA', toSymbol: 'SUI' };
   }
 
   if (inputCoinType === SUI_TYPE && outputCoinType === IKA_TYPE) {
-    // SUI → IKA: buy IKA (coinY) with SUI (coinX) = a_to_b
+    // SUI → IKA: a_to_b = false (buying IKA with SUI)
     const [suiForSwap] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
     const [zeroIka] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [IKA_TYPE] });
     const [suiValue] = tx.moveCall({ target: '0x2::coin::value', typeArguments: [SUI_TYPE], arguments: [suiForSwap] });
     const [receiveA, receiveB] = tx.moveCall({
       target: `${CETUS_ROUTER}::router::swap`,
-      typeArguments: [SUI_TYPE, IKA_TYPE],
+      typeArguments: [IKA_TYPE, SUI_TYPE],
       arguments: [
         tx.object(CETUS_GLOBAL_CONFIG), tx.object(CETUS_IKA_SUI_POOL),
-        suiForSwap, zeroIka,
-        tx.pure.bool(true), tx.pure.bool(true), suiValue,
-        tx.pure.u128(CETUS_MIN_SQRT), tx.pure.bool(false), tx.object('0x6'),
+        zeroIka, suiForSwap,
+        tx.pure.bool(false), tx.pure.bool(true), suiValue,
+        tx.pure.u128(CETUS_MAX_SQRT), tx.pure.bool(false), tx.object('0x6'),
       ],
     });
+    // receiveA = IKA out, receiveB = SUI dust
     tx.transferObjects([receiveA, receiveB], tx.pure.address(walletAddress));
     return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'SUI', toSymbol: 'IKA' };
   }
@@ -2244,17 +2250,17 @@ export async function buildSwapTx(
     const ikaCoin = tx.objectRef(ikaCoins[0]);
     if (ikaCoins.length > 1) tx.mergeCoins(ikaCoin, ikaCoins.slice(1).map(c => tx.objectRef(c)));
     const [ikaForSwap] = tx.splitCoins(ikaCoin, [tx.pure.u64(amount)]);
-    // Step 1: IKA → SUI via Cetus
+    // Step 1: IKA → SUI via Cetus (a_to_b = true)
     const [zeroSui] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [SUI_TYPE] });
     const [ikaValue] = tx.moveCall({ target: '0x2::coin::value', typeArguments: [IKA_TYPE], arguments: [ikaForSwap] });
-    const [suiFromCetus, ikaDust] = tx.moveCall({
+    const [ikaDust, suiFromCetus] = tx.moveCall({
       target: `${CETUS_ROUTER}::router::swap`,
-      typeArguments: [SUI_TYPE, IKA_TYPE],
+      typeArguments: [IKA_TYPE, SUI_TYPE],
       arguments: [
         tx.object(CETUS_GLOBAL_CONFIG), tx.object(CETUS_IKA_SUI_POOL),
-        zeroSui, ikaForSwap,
-        tx.pure.bool(false), tx.pure.bool(true), ikaValue,
-        tx.pure.u128(CETUS_MAX_SQRT), tx.pure.bool(false), tx.object('0x6'),
+        ikaForSwap, zeroSui,
+        tx.pure.bool(true), tx.pure.bool(true), ikaValue,
+        tx.pure.u128(CETUS_MIN_SQRT), tx.pure.bool(false), tx.object('0x6'),
       ],
     });
     // Step 2: SUI → USDC via DeepBook
