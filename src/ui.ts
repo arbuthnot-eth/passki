@@ -3829,18 +3829,38 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
 function _attachNftPopoverListeners() {
   const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
   if (!grid) return;
-  // Click to show/toggle popover for any chip (replaces hover)
+
+  // Hover: show popover on enter, hide instantly on leave (unless pinned by click)
+  grid.addEventListener('mouseenter', (e) => {
+    const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
+    if (!chip?.dataset.domain) return;
+    if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
+    if (_nftPopoverPinned) return; // don't override pinned popover
+    _showNftPopover(chip, chip.dataset.domain);
+  }, true);
+  grid.addEventListener('mouseleave', (e) => {
+    const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
+    if (!chip) return;
+    if (_nftPopoverPinned) return; // pinned — don't hide
+    _hideNftPopover(true); // instant hide
+  }, true);
+
+  // Click: pin/unpin popover + fill input (bubbles to parent handler)
   grid.addEventListener('click', (e) => {
     const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
     if (!chip?.dataset.domain) return;
     if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
-    // Don't stopPropagation — let click bubble to parent handler that fills the input
-    // Toggle: if popover is already showing for this domain, hide it
-    if (_nftPopover && !_nftPopover.hasAttribute('hidden') && _nftPopover.dataset.domain === chip.dataset.domain) {
-      _hideNftPopover();
+    // Toggle pin: if already pinned on this domain, unpin
+    if (_nftPopoverPinned && _nftPopover?.dataset.domain === chip.dataset.domain) {
+      _nftPopoverPinned = false;
+      _nftPopover?.classList.remove('ski-nft-popover--pinned');
+      _hideNftPopover(true);
       return;
     }
+    // Pin the popover
     _showNftPopover(chip, chip.dataset.domain);
+    _nftPopoverPinned = true;
+    _nftPopover?.classList.add('ski-nft-popover--pinned');
   });
 }
 

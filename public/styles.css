@@ -2262,6 +2262,9 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 
+.ski-nft-popover--pinned .ski-nft-card {
+  border-color: #ffffff;
+}
 .ski-nft-card {
   background: #000000;
   border: 1px solid rgba(96, 165, 250, 0.25);
