@@ -991,24 +991,10 @@ body {
   gap: 6px;
 }
 .wk-send-dollar {
-  all: unset;
   font-size: 1.1rem;
   font-weight: 700;
   color: rgba(34, 197, 94, 0.7);
   flex-shrink: 0;
-  cursor: pointer;
-  transition: color 0.15s;
-  padding: 2px;
-  line-height: 1;
-}
-.wk-send-dollar:hover {
-  color: #f87171;
-}
-.wk-send-dollar:hover::after {
-  content: '\00d7';
-  font-size: 0.65em;
-  vertical-align: super;
-  color: #f87171;
 }
 .wk-send-amount {
   flex: 1;
