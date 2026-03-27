@@ -16,7 +16,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { ripemd160 } from '@noble/hashes/legacy.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
-import { bech32 } from '@scure/base';
+import { bech32, base58 } from '@scure/base';
 
 // ─── IKA Curve & Algorithm Enums ─────────────────────────────────────
 // Mirrors @ika.xyz/sdk values so we don't need to import the full SDK
@@ -115,6 +115,18 @@ function evmAddress(compressedPubkey: Uint8Array): string {
 }
 
 /**
+ * Solana address — base58 encoding of the raw 32-byte ed25519 public key.
+ * No hashing, no prefix — just the pubkey bytes in base58.
+ */
+function solanaAddress(pubkey: Uint8Array): string {
+  // Ed25519 pubkeys from IKA are 32 bytes
+  if (pubkey.length !== 32) {
+    throw new Error(`Expected 32-byte ed25519 pubkey, got ${pubkey.length}`);
+  }
+  return base58.encode(pubkey);
+}
+
+/**
  * Sui address — BLAKE2b-256([flag_byte=0x01] || compressed_secp256k1_pubkey).
  * Flag 0x01 = secp256k1 scheme in Sui's multi-scheme addressing.
  */
@@ -185,6 +197,17 @@ export const CHAIN_REGISTRY: Record<string, ChainConfig> = {
     deriveAddress: evmAddress,
   },
 
+  // ── Solana ──────────────────────────────────────────────────────
+  'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': {
+    caipId: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+    name: 'Solana',
+    curve: IkaCurve.ED25519,
+    signatureAlgorithm: SignatureAlgorithm.EdDSA,
+    hashScheme: HashScheme.SHA512,
+    coinType: 501,
+    deriveAddress: solanaAddress,
+  },
+
   // ── Sui ──────────────────────────────────────────────────────────
   'sui:mainnet': {
     caipId: 'sui:mainnet',
@@ -208,6 +231,8 @@ const CHAIN_ALIASES: Record<string, string> = {
   polygon: 'eip155:137',
   arbitrum: 'eip155:42161',
   optimism: 'eip155:10',
+  solana: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+  sol: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
   sui: 'sui:mainnet',
 };
 
