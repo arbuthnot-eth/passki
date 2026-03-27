@@ -7085,22 +7085,21 @@ function render() {
   });
   renderModalLogo();
 
-  // Scale the top bar down proportionally if it overflows the viewport.
-  // Uses the header container so the scale covers the PFP + name + balance pill.
+  // Scale the header to fit viewport width on mobile.
+  // Measures the actual bounding box of first-to-last child to detect overflow.
   requestAnimationFrame(() => {
     const header = (slots.widget as HTMLElement | null)?.closest('.ski-header') as HTMLElement | null;
     if (!header) return;
-    header.style.transform = '';
-    header.style.transformOrigin = '';
-    const sw = header.scrollWidth;
-    const cw = header.clientWidth || window.innerWidth;
-    if (sw > cw + 2) {
-      const scale = (cw / sw) * 0.85;
-      header.style.transform = `scale(${scale.toFixed(4)})`;
-      header.style.transformOrigin = 'top left';
-      header.style.marginBottom = `-${Math.round(header.offsetHeight * (1 - scale))}px`;
-    } else {
-      header.style.marginBottom = '';
+    // Reset previous zoom
+    header.style.zoom = '';
+    const children = header.children;
+    if (!children.length) return;
+    const first = children[0].getBoundingClientRect();
+    const last = children[children.length - 1].getBoundingClientRect();
+    const contentWidth = last.right - first.left;
+    const vw = window.innerWidth;
+    if (contentWidth > vw - 8) { // 4px margin each side
+      header.style.zoom = `${((vw - 8) / contentWidth).toFixed(4)}`;
     }
   });
 
