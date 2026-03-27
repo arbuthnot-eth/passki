@@ -318,18 +318,26 @@ window.addEventListener('ski:request-suiami', async (e) => {
   const { network } = (e as CustomEvent).detail ?? {};
   let ws = getState();
 
-  // Not connected — trigger WaaP sign-in first
+  // Not connected — connect via WaaP directly
   if (!ws.address) {
-    showToast('Signing in...');
-    await signIn();
-    // Wait for connection
-    await new Promise<void>((resolve) => {
-      const check = () => { if (getState().address) resolve(); else setTimeout(check, 300); };
-      check();
-      setTimeout(resolve, 15000); // 15s timeout
-    });
-    ws = getState();
-    if (!ws.address) { showToast('Sign in to create a SUIAMI proof'); return; }
+    showToast('Key-in with WaaP...');
+    try {
+      const wallets = getSuiWallets();
+      const waapWallet = wallets.find(w => /waap/i.test(w.name));
+      if (!waapWallet) { showToast('WaaP not available'); return; }
+      await connect(waapWallet, { skipSilent: true });
+      // Wait for state to update
+      await new Promise<void>((resolve) => {
+        const onConnect = () => { window.removeEventListener('ski:wallet-connected', onConnect); resolve(); };
+        window.addEventListener('ski:wallet-connected', onConnect);
+        setTimeout(() => { window.removeEventListener('ski:wallet-connected', onConnect); resolve(); }, 30000);
+      });
+      ws = getState();
+      if (!ws.address) { showToast('Connection cancelled'); return; }
+    } catch (err) {
+      showToast('WaaP connection failed');
+      return;
+    }
   }
 
   const name = ws.suinsName?.replace(/\.sui$/, '') || 'nobody';
