@@ -5224,9 +5224,11 @@ body {
   grid-column: 2;
   align-self: end;
 }
-.ski-demo:not(.open) .ski-demo-suiami {
+.ski-demo:not(.open) .ski-demo-addr-row {
   grid-row: 2;
   grid-column: 2;
+}
+.ski-demo:not(.open) .ski-demo-suiami {
   align-self: start;
   justify-self: start;
 }
@@ -5239,7 +5241,8 @@ body {
 .ski-demo:not(.open) .ski-demo-nets--stacked {
   display: none;
 }
-.ski-demo:not(.open) .ski-demo-addr-row { display: none; }
+.ski-demo:not(.open) .ski-demo-addr-row .ski-demo-addr { display: none; }
+.ski-demo:not(.open) .ski-demo-addr-row .ski-demo-gear-abs { display: none; }
 .ski-demo:not(.open) .ski-demo-addr { display: none; }
 .ski-demo:not(.open) .ski-chip--gear { display: none; }
 .ski-demo:not(.open) .ski-demo-nets--stacked { display: none; }
