@@ -3195,7 +3195,6 @@ function _persistRosterOpen() { try { sessionStorage.setItem('ski:roster-open', 
 function _toggleRoster() {
   nsRosterOpen = !nsRosterOpen;
   _persistRosterOpen();
-  if (!nsRosterOpen) _clearNsInput();
   const list = document.getElementById('wk-ns-owned-list');
   if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
   // Close balance section when roster opens
