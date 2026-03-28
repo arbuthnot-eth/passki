@@ -6314,6 +6314,26 @@ function renderSkiMenu() {
         setTimeout(() => { addrSpan.textContent = orig; copyRow.classList.remove('wk-ns-target-row--copied'); }, 1800);
       }
     }
+    // Transfer button — open recipient input
+    if (target.id === 'wk-ns-transfer-btn') {
+      e.stopPropagation();
+      nsTransferInputOpen = true;
+      nsTransferRecipient = '';
+      _patchNsRoute();
+      setTimeout(() => {
+        const inp = document.getElementById('wk-ns-transfer-input') as HTMLInputElement | null;
+        if (inp) inp.focus();
+      }, 50);
+      return;
+    }
+    // Transfer cancel
+    if (target.id === 'wk-ns-transfer-cancel') {
+      e.stopPropagation();
+      nsTransferInputOpen = false;
+      nsTransferRecipient = '';
+      _patchNsRoute();
+      return;
+    }
     // Target cancel
     if (target.id === 'wk-ns-target-cancel') {
       nsShowTargetInput = false;
@@ -6340,6 +6360,9 @@ function renderSkiMenu() {
     if (target.id === 'wk-ns-target-input') {
       nsNewTargetAddr = (target as HTMLInputElement).value.trim();
     }
+    if (target.id === 'wk-ns-transfer-input') {
+      nsTransferRecipient = (target as HTMLInputElement).value.trim();
+    }
   });
   document.getElementById('wk-ns-route')?.addEventListener('keydown', (e) => {
     const target = e.target as HTMLElement;
@@ -6350,6 +6373,15 @@ function renderSkiMenu() {
     if (target.id === 'wk-ns-target-input' && (e as KeyboardEvent).key === 'Escape') {
       nsShowTargetInput = false;
       nsNewTargetAddr = '';
+      _patchNsRoute();
+    }
+    if (target.id === 'wk-ns-transfer-input' && (e as KeyboardEvent).key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('wk-ns-transfer-submit')?.click();
+    }
+    if (target.id === 'wk-ns-transfer-input' && (e as KeyboardEvent).key === 'Escape') {
+      nsTransferInputOpen = false;
+      nsTransferRecipient = '';
       _patchNsRoute();
     }
   });
