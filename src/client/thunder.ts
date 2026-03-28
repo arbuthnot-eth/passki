@@ -115,27 +115,26 @@ export async function buildThunderSendTx(
 
 // ─── Query ───────────────────────────────────────────────────────────
 
-/** Count pending thunder for a SuiNS name. */
+const RPC_URL = 'https://sui-rpc.publicnode.com';
+
+/** Count pending strikes for a SuiNS name by querying the Cloud dynamic field directly. */
 export async function getThunderCount(recipientName: string): Promise<number> {
   const ns = nameHash(recipientName.replace(/\.sui$/i, '').toLowerCase());
-  const tx = new Transaction();
-  tx.moveCall({
-    package: THUNDER_PACKAGE_ID,
-    module: 'thunder',
-    function: 'count',
-    arguments: [tx.object(STORM_ID), tx.pure.vector('u8', Array.from(ns))],
-  });
   try {
-    const result = await gqlClient.devInspectTransactionBlock({
-      transactionBlock: tx,
-      sender: '0x0000000000000000000000000000000000000000000000000000000000000000',
+    // Find the dynamic field keyed by this name hash
+    const res = await fetch(RPC_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'suix_getDynamicFieldObject',
+        params: [STORM_ID, { type: 'vector<u8>', value: Array.from(ns) }],
+      }),
     });
-    const rv = (result as any)?.results?.[0]?.returnValues;
-    if (!rv?.[0]) return 0;
-    const bytes = new Uint8Array(rv[0][0]);
-    let count = 0;
-    for (let i = 0; i < Math.min(bytes.length, 8); i++) count += bytes[i] * (256 ** i);
-    return count;
+    const json = await res.json() as any;
+    const cloud = json?.result?.data?.content?.fields?.value?.fields;
+    if (!cloud?.strikes) return 0;
+    return Array.isArray(cloud.strikes) ? cloud.strikes.length : 0;
   } catch { return 0; }
 }
 
