@@ -1,0 +1,9 @@
+[package]
+name = "thunder"
+edition = "2024.beta"
+
+[dependencies]
+suins = { git = "https://github.com/MystenLabs/suins-contracts.git", subdir = "packages/suins", rev = "main" }
+
+[addresses]
+thunder = "0x0"
