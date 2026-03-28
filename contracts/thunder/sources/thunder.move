@@ -3,7 +3,7 @@
 
 /// Thunder — Seal-encrypt messaging between SuiNS identities.
 ///
-/// Thunderbun is a shared object. Anyone can deposit a pointer
+/// Thunder is a shared object. Anyone can deposit a pointer
 /// (permissionless send). Only the SuiNS name owner can pop/read
 /// (Seal-gated decrypt + NFT ownership check).
 ///
@@ -37,7 +37,7 @@ public struct ThunderPopped has copy, drop {
 
 // ─── Types ──────────────────────────────────────────────────────────
 
-public struct Thunderbun has key {
+public struct Thunder has key {
     id: UID,
 }
 
@@ -54,7 +54,7 @@ public struct ThunderInbox has store {
 // ─── Init ───────────────────────────────────────────────────────────
 
 fun init(ctx: &mut TxContext) {
-    let mailbox = Thunderbun {
+    let mailbox = Thunder {
         id: object::new(ctx),
     };
     transfer::share_object(mailbox);
@@ -64,7 +64,7 @@ fun init(ctx: &mut TxContext) {
 
 /// Deposit a Thunder pointer. Permissionless — anyone can send.
 entry fun deposit(
-    mailbox: &mut Thunderbun,
+    mailbox: &mut Thunder,
     name_hash: vector<u8>,
     blob_id: vector<u8>,
     sealed_namespace: vector<u8>,
@@ -87,7 +87,7 @@ entry fun deposit(
 
 /// Pop the first Thunder pointer. Requires the SuinsRegistration NFT.
 entry fun pop(
-    mailbox: &mut Thunderbun,
+    mailbox: &mut Thunder,
     name_hash: vector<u8>,
     nft: &SuinsRegistration,
     _ctx: &TxContext,
@@ -105,14 +105,14 @@ entry fun pop(
 }
 
 /// Count pending Thunders. Permissionless read.
-public fun count(mailbox: &Thunderbun, name_hash: vector<u8>): u64 {
+public fun count(mailbox: &Thunder, name_hash: vector<u8>): u64 {
     if (!dynamic_field::exists_(&mailbox.id, name_hash)) return 0;
     let inbox: &ThunderInbox = dynamic_field::borrow(&mailbox.id, name_hash);
     inbox.pointers.length()
 }
 
 /// Read the first pointer without popping. Permissionless (blob is encrypt anyway).
-public fun peek(mailbox: &Thunderbun, name_hash: vector<u8>): (vector<u8>, vector<u8>, u64) {
+public fun peek(mailbox: &Thunder, name_hash: vector<u8>): (vector<u8>, vector<u8>, u64) {
     let inbox: &ThunderInbox = dynamic_field::borrow(&mailbox.id, name_hash);
     assert!(!inbox.pointers.is_empty(), EEmptyInbox);
     let p = &inbox.pointers[0];
