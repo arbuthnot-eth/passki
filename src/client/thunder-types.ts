@@ -3,10 +3,10 @@
 export const THUNDER_VERSION = 1;
 
 /** Thunder package ID (mainnet). */
-export const THUNDER_PACKAGE_ID = '0xbe63cc5a29f9cd4e6184eac15a38841ed27063f798796c0fe56433d3e2cec8b7';
+export const THUNDER_PACKAGE_ID = '0x61b485ab25b64ca2b8cc8464b1d95bffbe2574e1f628a748bd3fea6d735c3310';
 
 /** Thunder.in shared object ID (mainnet). */
-export const THUNDER_IN_ID = '0x00acc8be52a265ec821a25dc88442178f133f6ea7bc24783c435315dd5deecaa';
+export const THUNDER_IN_ID = '0x44b0044c1e540d42a95c1095e6029fcf03defa386012c583920dec367c05a777';
 
 /** Thunder payload — the cleartext inside the encrypt blob. */
 export interface ThunderPayload {

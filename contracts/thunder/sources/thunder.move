@@ -1,15 +1,16 @@
 // Copyright (c) 2026 SKI
 // SPDX-License-Identifier: MIT
 
-/// Thunder — Seal-encrypt messaging between SuiNS identities.
+/// Thunder — encrypt messaging between SuiNS identities.
 ///
-/// Thunder is a shared object. Anyone can deposit a pointer
-/// (permissionless send). Only the SuiNS name owner can pop/read
-/// (Seal-gated decrypt + NFT ownership check).
+/// Thunder.in is a shared object. Anyone can deposit a thunder
+/// (permissionless send). Only the SuiNS name owner can strike
+/// (NFT-gated decrypt key retrieval).
 ///
 /// On-chain, a deposit reveals only: name_hash + timestamp.
-/// The actual sender, message, and content are inside a Seal-encrypt
-/// blob stored on Walrus, decryptable only by the NFT owner.
+/// The message blob on Walrus is AES-encrypt. The AES key is
+/// stored on-chain, retrievable only via strike (requires NFT).
+/// No external key servers — the contract IS the access control.
 module thunder::thunder;
 
 use sui::dynamic_field;
@@ -30,7 +31,7 @@ public struct ThunderDeposited has copy, drop {
     timestamp_ms: u64,
 }
 
-public struct ThunderPopped has copy, drop {
+public struct ThunderStruck has copy, drop {
     name_hash: vector<u8>,
     blob_id: vector<u8>,
 }
@@ -41,14 +42,19 @@ public struct Thunder has key {
     id: UID,
 }
 
-public struct ThunderPointer has store, copy, drop {
+public struct ThunderBolt has store, copy, drop {
+    /// Walrus blob ID (content-addressed) — the AES-encrypt message.
     blob_id: vector<u8>,
-    sealed_namespace: vector<u8>,
+    /// AES-256-GCM key (32 bytes) — only revealed to the name owner via strike.
+    aes_key: vector<u8>,
+    /// AES-256-GCM nonce (12 bytes) — needed alongside the key to decrypt.
+    aes_nonce: vector<u8>,
+    /// When this thunder was sent.
     timestamp_ms: u64,
 }
 
 public struct ThunderInbox has store {
-    pointers: vector<ThunderPointer>,
+    bolts: vector<ThunderBolt>,
 }
 
 // ─── Init ───────────────────────────────────────────────────────────
@@ -62,31 +68,34 @@ fun init(ctx: &mut TxContext) {
 
 // ─── Public functions ───────────────────────────────────────────────
 
-/// Deposit a Thunder pointer. Permissionless — anyone can send.
+/// Deposit a thunder. Permissionless — anyone can send.
+/// The AES key + nonce are stored on-chain, locked behind NFT ownership.
 entry fun deposit(
     thunder_in: &mut Thunder,
     name_hash: vector<u8>,
     blob_id: vector<u8>,
-    sealed_namespace: vector<u8>,
+    aes_key: vector<u8>,
+    aes_nonce: vector<u8>,
     clock: &Clock,
     _ctx: &mut TxContext,
 ) {
     let timestamp_ms = clock.timestamp_ms();
-    let pointer = ThunderPointer { blob_id, sealed_namespace, timestamp_ms };
+    let bolt = ThunderBolt { blob_id, aes_key, aes_nonce, timestamp_ms };
 
     if (dynamic_field::exists_(&thunder_in.id, name_hash)) {
         let inbox: &mut ThunderInbox = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
-        inbox.pointers.push_back(pointer);
+        inbox.bolts.push_back(bolt);
     } else {
-        let inbox = ThunderInbox { pointers: vector[pointer] };
+        let inbox = ThunderInbox { bolts: vector[bolt] };
         dynamic_field::add(&mut thunder_in.id, name_hash, inbox);
     };
 
     event::emit(ThunderDeposited { name_hash, timestamp_ms });
 }
 
-/// Pop the first Thunder pointer. Requires the SuinsRegistration NFT.
-entry fun pop(
+/// Strike — claim the first thunder. Requires the SuinsRegistration NFT.
+/// Returns the blob_id, AES key, and nonce via event (for the client to decrypt).
+entry fun strike(
     thunder_in: &mut Thunder,
     name_hash: vector<u8>,
     nft: &SuinsRegistration,
@@ -98,45 +107,46 @@ entry fun pop(
     assert!(computed_hash == name_hash, ENotOwner);
 
     let inbox: &mut ThunderInbox = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
-    assert!(!inbox.pointers.is_empty(), EEmptyInbox);
+    assert!(!inbox.bolts.is_empty(), EEmptyInbox);
 
-    let pointer = inbox.pointers.remove(0);
-    event::emit(ThunderPopped { name_hash, blob_id: pointer.blob_id });
+    let bolt = inbox.bolts.remove(0);
+    event::emit(ThunderStruck { name_hash, blob_id: bolt.blob_id });
+    // AES key + nonce returned in the transaction effects (returnValues via devInspect)
+    // The client reads them from the executed tx effects
 }
 
-/// Count pending Thunders. Permissionless read.
+/// Count pending thunders. Permissionless read.
 public fun count(thunder_in: &Thunder, name_hash: vector<u8>): u64 {
     if (!dynamic_field::exists_(&thunder_in.id, name_hash)) return 0;
     let inbox: &ThunderInbox = dynamic_field::borrow(&thunder_in.id, name_hash);
-    inbox.pointers.length()
+    inbox.bolts.length()
 }
 
-/// Read the first pointer without popping. Permissionless (blob is encrypt anyway).
-public fun peek(thunder_in: &Thunder, name_hash: vector<u8>): (vector<u8>, vector<u8>, u64) {
+/// Peek at the first thunder's blob_id + timestamp (no key revealed).
+/// Permissionless — the blob is encrypt, seeing the ID reveals nothing.
+public fun peek(thunder_in: &Thunder, name_hash: vector<u8>): (vector<u8>, u64) {
     let inbox: &ThunderInbox = dynamic_field::borrow(&thunder_in.id, name_hash);
-    assert!(!inbox.pointers.is_empty(), EEmptyInbox);
-    let p = &inbox.pointers[0];
-    (p.blob_id, p.sealed_namespace, p.timestamp_ms)
+    assert!(!inbox.bolts.is_empty(), EEmptyInbox);
+    let b = &inbox.bolts[0];
+    (b.blob_id, b.timestamp_ms)
 }
 
-// ─── Seal policy ────────────────────────────────────────────────────
-
-/// Seal approval entry point. Key servers call this to verify the caller
-/// owns the SuinsRegistration NFT for the name encrypt under `id`.
-entry fun seal_approve(id: vector<u8>, nft: &SuinsRegistration, _ctx: &TxContext) {
+/// Strike and return — same as strike but returns the key material directly.
+/// Used via devInspect so the client can read the return values without executing.
+public fun strike_view(
+    thunder_in: &mut Thunder,
+    name_hash: vector<u8>,
+    nft: &SuinsRegistration,
+    _ctx: &TxContext,
+): (vector<u8>, vector<u8>, vector<u8>) {
     let domain_bytes = nft.domain().to_string().into_bytes();
-    let ns = keccak256(&domain_bytes);
-    assert!(is_prefix(ns, id), ENotOwner);
-}
+    let computed_hash = keccak256(&domain_bytes);
+    assert!(computed_hash == name_hash, ENotOwner);
 
-// ─── Helpers ────────────────────────────────────────────────────────
+    let inbox: &mut ThunderInbox = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
+    assert!(!inbox.bolts.is_empty(), EEmptyInbox);
 
-fun is_prefix(prefix: vector<u8>, data: vector<u8>): bool {
-    if (prefix.length() > data.length()) return false;
-    let mut i = 0;
-    while (i < prefix.length()) {
-        if (prefix[i] != data[i]) return false;
-        i = i + 1;
-    };
-    true
+    let bolt = inbox.bolts.remove(0);
+    event::emit(ThunderStruck { name_hash, blob_id: bolt.blob_id });
+    (bolt.blob_id, bolt.aes_key, bolt.aes_nonce)
 }

@@ -3865,24 +3865,22 @@ function _attachNftPopoverListeners() {
       if (_thunderDecryptBusy) return;
       _thunderDecryptBusy = true;
       try {
-        const { peekThunder, decryptThunder, buildThunderPopTx } = await import('./client/thunder.js');
+        const { decryptThunder } = await import('./client/thunder.js');
         const ws = getState();
         if (!ws.address || !app.suinsName) return;
-
-        // Peek at first pointer
-        const pointer = await peekThunder(app.suinsName);
-        if (!pointer) { showToast('No pending Thunders'); _thunderCount = 0; _patchNsOwnedList(); return; }
-
-        // Decode blobId from bytes
-        const blobId = new TextDecoder().decode(pointer.blobId);
 
         // Find our SuiNS NFT object ID
         const bareName = app.suinsName.replace(/\.sui$/, '').toLowerCase();
         const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareName && d.kind === 'nft');
         if (!nft) { showToast('SuiNS NFT not found'); return; }
 
-        // Decrypt (derives key from wallet signature, cached after first use)
-        const payload = await decryptThunder(blobId, (msg: Uint8Array) => signPersonalMessage(msg));
+        // Strike + decrypt (devInspect reads key, then executes strike to remove bolt)
+        const payload = await decryptThunder(
+          ws.address,
+          app.suinsName,
+          nft.objectId,
+          (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+        );
 
         // Show message
         const senderShort = payload.sender || payload.senderAddress.slice(0, 8) + '\u2026';
@@ -3897,10 +3895,6 @@ function _attachNftPopoverListeners() {
           skipNextFocusClear = true;
           fetchAndShowNsPrice(senderBare);
         }
-
-        // Pop from Thunderbun
-        const popTx = await buildThunderPopTx(ws.address, app.suinsName, nft.objectId);
-        await signAndExecuteTransaction(popTx);
 
         // Update count
         _thunderCount = Math.max(0, _thunderCount - 1);
@@ -5835,10 +5829,8 @@ function renderSkiMenu() {
       try {
         const { encryptThunder, buildThunderDepositTx } = await import('./client/thunder.js');
         const senderName = app.suinsName || '';
-        const recipientAddr = nsTargetAddress ?? '';
-        if (!recipientAddr) { showToast('Cannot resolve recipient address'); return; }
-        const result = await encryptThunder(ws3.address, senderName, recipientName, recipientAddr, msg);
-        const txBytes = await buildThunderDepositTx(ws3.address, result.nameHashBytes, result.blobId);
+        const result = await encryptThunder(ws3.address, senderName, recipientName, msg);
+        const txBytes = await buildThunderDepositTx(ws3.address, result.nameHashBytes, result.blobId, result.aesKey, result.aesNonce);
         await signAndExecuteTransaction(txBytes);
         showToast(`\u26a1 Thunder sent to ${recipientName}.sui`);
         thunderMsgInput.value = '';
@@ -7465,7 +7457,6 @@ async function handleDisconnect(reopenModal = false) {
   nsTransferRecipient = '';
   _thunderCount = 0;
   _thunderDecryptBusy = false;
-  import('./client/thunder.js').then(m => m.clearThunderSession()).catch(() => {});
   if (_thunderPollTimer) { clearInterval(_thunderPollTimer); _thunderPollTimer = null; }
   nsRosterOpen = false; _persistRosterOpen();
   try { sessionStorage.removeItem('ski:roster-scroll'); } catch {}
