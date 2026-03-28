@@ -3153,7 +3153,7 @@ let nsShowTargetInput = false; // target-address inline editor open
 let nsNewTargetAddr = ''; // value in the target-address input
 let nsTransferInputOpen = false; // transfer-recipient inline editor open
 let nsTransferRecipient = ''; // value in the transfer-recipient input
-let _thunderCount = 0; // pending Thunders for user's primary SuiNS name
+let _thunderCounts: Record<string, number> = {}; // name → pending thunder count
 let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
 let _thunderDecryptBusy = false;
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
@@ -3525,8 +3525,11 @@ function _nsRouteHtml(): string {
 }
 
 function _nsOwnedListHtml(): string {
-  // Sort owned: kiosk first → expiration ascending → no-expiry last
+  // Sort owned: thunder count desc → kiosk first → expiration ascending → no-expiry last
   const sorted = [...nsOwnedDomains].sort((a, b) => {
+    const ta = _thunderCounts[a.name.replace(/\.sui$/, '').toLowerCase()] ?? 0;
+    const tb = _thunderCounts[b.name.replace(/\.sui$/, '').toLowerCase()] ?? 0;
+    if (ta !== tb) return tb - ta; // most thunder first
     if (a.inKiosk !== b.inKiosk) return a.inKiosk ? -1 : 1;
     const ea = a.expirationMs ?? Infinity;
     const eb = b.expirationMs ?? Infinity;
@@ -3567,8 +3570,9 @@ function _nsOwnedListHtml(): string {
     if (d.inKiosk) badge = '<span class="wk-ns-owned-kiosk">listed</span>';
     else if (d.kind === 'cap') badge = '<span class="wk-ns-owned-cap">cap</span>';
     let thunderHtml = '';
-    if (_thunderCount > 0 && app.suinsName && bare.toLowerCase() === app.suinsName.replace(/\.sui$/, '').toLowerCase()) {
-      thunderHtml = `<span class="wk-ns-thunder-badge" data-thunder-count="${_thunderCount}">\u26a1${_thunderCount > 1 ? _thunderCount : ''}</span>`;
+    const _tc = _thunderCounts[bare.toLowerCase()] ?? 0;
+    if (_tc > 0) {
+      thunderHtml = `<span class="wk-ns-thunder-badge" data-thunder-count="${_tc}" data-domain="${esc(bare)}">\u26a1${_tc > 1 ? _tc : ''}</span>`;
     }
     const kioskCls = d.inKiosk ? ' wk-ns-owned-chip--kiosk' : '';
     const dimCls = hasFilter && !matches ? ' wk-ns-owned-chip--dim' : '';
@@ -3859,31 +3863,33 @@ function _attachNftPopoverListeners() {
   // Click: thunderbolt decrypt OR pin/unpin inline card
   grid.addEventListener('click', async (e) => {
     // Thunderbolt click — decrypt next pending Thunder
-    const thunderBadge = (e.target as HTMLElement).closest('.wk-ns-thunder-badge');
-    if (thunderBadge && _thunderCount > 0) {
+    const thunderBadge = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-thunder-badge');
+    const badgeDomain = thunderBadge?.dataset.domain?.toLowerCase();
+    const badgeCount = badgeDomain ? (_thunderCounts[badgeDomain] ?? 0) : 0;
+    if (thunderBadge && badgeDomain && badgeCount > 0) {
       e.stopPropagation();
       if (_thunderDecryptBusy) return;
       _thunderDecryptBusy = true;
       try {
         const { decryptAndQuest } = await import('./client/thunder.js');
         const ws = getState();
-        if (!ws.address || !app.suinsName) return;
+        if (!ws.address) return;
 
-        // Find our SuiNS NFT object ID
-        const bareName = app.suinsName.replace(/\.sui$/, '').toLowerCase();
-        const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareName && d.kind === 'nft');
+        // Find the NFT for the clicked name
+        const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === badgeDomain && d.kind === 'nft');
         if (!nft) { showToast('SuiNS NFT not found'); return; }
+        const fullName = badgeDomain + '.sui';
 
-        // Batch quest all pending thunder
+        // Batch quest all pending thunder for this name
         const payloads = await decryptAndQuest(
           ws.address,
-          app.suinsName,
+          fullName,
           nft.objectId,
-          _thunderCount,
+          badgeCount,
           (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
         );
 
-        if (payloads.length === 0) { showToast('No thunders decrypted'); _thunderCount = 0; _patchNsOwnedList(); return; }
+        if (payloads.length === 0) { showToast('No thunders decrypted'); _thunderCounts[badgeDomain] = 0; _patchNsOwnedList(); return; }
 
         // Show first message in thunder input + toast, populate sender for reply
         const first = payloads[0];
@@ -3919,8 +3925,8 @@ function _attachNftPopoverListeners() {
           fetchAndShowNsPrice(senderBare);
         }
 
-        // All struck — clear count
-        _thunderCount = 0;
+        // All struck — clear count for this name
+        _thunderCounts[badgeDomain] = 0;
         _patchNsOwnedList();
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Decrypt failed';
@@ -7264,18 +7270,24 @@ function renderSkiMenu() {
   // Thunder inbox polling
   if (_thunderPollTimer) clearInterval(_thunderPollTimer);
   const _pollThunder = async () => {
-    if (!app.suinsName) return;
+    if (nsOwnedDomains.length === 0) return;
     try {
       const { getThunderCount } = await import('./client/thunder.js');
-      const count = await getThunderCount(app.suinsName);
-      if (count !== _thunderCount) {
-        _thunderCount = count;
-        _patchNsOwnedList();
-      }
+      const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name);
+      let changed = false;
+      await Promise.all(nftNames.map(async (name) => {
+        const count = await getThunderCount(name);
+        const bare = name.replace(/\.sui$/, '').toLowerCase();
+        if ((_thunderCounts[bare] ?? 0) !== count) {
+          _thunderCounts[bare] = count;
+          changed = true;
+        }
+      }));
+      if (changed) _patchNsOwnedList();
     } catch { /* silent */ }
   };
   _pollThunder();
-  _thunderPollTimer = setInterval(_pollThunder, 30_000);
+  _thunderPollTimer = setInterval(_pollThunder, 7_000);
 
   // Prune stale shade orders (consumed/cancelled) on first menu open
   // + auto-schedule any unscheduled orders with the ShadeExecutorAgent DO
@@ -7479,7 +7491,7 @@ async function handleDisconnect(reopenModal = false) {
   nsShowTargetInput = false;
   nsTransferInputOpen = false;
   nsTransferRecipient = '';
-  _thunderCount = 0;
+  _thunderCounts = {};
   _thunderDecryptBusy = false;
   if (_thunderPollTimer) { clearInterval(_thunderPollTimer); _thunderPollTimer = null; }
   nsRosterOpen = false; _persistRosterOpen();
