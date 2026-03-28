@@ -14,6 +14,7 @@
 ::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
 ::-webkit-scrollbar-thumb { background: #ffffff; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #e0e0e0; }
+.wk-send-amount { text-align: right; }
 
 body {
   margin: 0;

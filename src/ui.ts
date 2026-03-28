@@ -5940,28 +5940,20 @@ function renderSkiMenu() {
   // NS clear button — clear name input
   document.getElementById('wk-ns-clear-btn')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    const nsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
-    const hasName = nsInput && nsInput.value.trim().length > 0;
+    // Clear name input first
+    _clearNsInput();
+    // Then clear amount
+    pendingSendAmount = '';
     const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-    const hasAmount = _ai && _ai.value.trim().length > 0 && _ai.value !== '0.00';
-
-    if (hasName) {
-      // First click: clear the name input
-      _clearNsInput();
-      _updateSendBtnMode();
-    } else if (hasAmount) {
-      // Second click (name already empty): clear the amount
-      pendingSendAmount = '';
-      if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
-      document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
-      const _ac = document.getElementById('wk-send-clear');
-      if (_ac) _ac.style.display = 'none';
-      const _sb = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-      if (_sb) _sb.disabled = true;
-      const nsClearBtn = document.getElementById('wk-ns-clear-btn');
-      if (nsClearBtn) nsClearBtn.style.display = 'none';
-      _updateSendBtnMode();
-    }
+    if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+    document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+    const _ac = document.getElementById('wk-send-clear');
+    if (_ac) _ac.style.display = 'none';
+    const _sb = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (_sb) _sb.disabled = true;
+    const nsClearBtn = document.getElementById('wk-ns-clear-btn');
+    if (nsClearBtn) nsClearBtn.style.display = 'none';
+    _updateSendBtnMode();
   });
 
   // Custom swap output select
