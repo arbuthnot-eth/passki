@@ -3874,19 +3874,13 @@ function _attachNftPopoverListeners() {
         const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareName && d.kind === 'nft');
         if (!nft) { showToast('SuiNS NFT not found'); return; }
 
-        // Batch quest all pending thunder — sponsored for non-WaaP
-        const isWaap = /waap/i.test(ws.walletName || '');
-        const sponsorAddr = !isWaap ? getSponsorState().keeperAddress : undefined;
-        const executeTx = isWaap
-          ? (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes)
-          : (txBytes: Uint8Array) => signAndExecuteSponsoredTx(txBytes);
+        // Batch quest all pending thunder
         const payloads = await decryptAndQuest(
           ws.address,
           app.suinsName,
           nft.objectId,
           _thunderCount,
-          executeTx,
-          sponsorAddr,
+          (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
         );
 
         if (payloads.length === 0) { showToast('No thunders decrypted'); _thunderCount = 0; _patchNsOwnedList(); return; }
