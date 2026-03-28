@@ -13,7 +13,7 @@ import { grpcClient, gqlClient } from '../rpc.js';
 import {
   THUNDER_VERSION,
   THUNDER_PACKAGE_ID,
-  THUNDER_OBJECT_ID,
+  THUNDER_IN_ID,
   SEAL_SERVER_CONFIGS,
   SEAL_THRESHOLD,
   type ThunderPayload,
@@ -123,7 +123,7 @@ export async function buildThunderDepositTx(
     module: 'thunder',
     function: 'deposit',
     arguments: [
-      tx.object(THUNDER_OBJECT_ID),
+      tx.object(THUNDER_IN_ID),
       tx.pure.vector('u8', Array.from(nameHashBytes)),
       tx.pure.vector('u8', Array.from(new TextEncoder().encode(blobId))),
       tx.pure.vector('u8', Array.from(nameHashBytes)),
@@ -148,7 +148,7 @@ export async function getThunderCount(recipientName: string): Promise<number> {
     module: 'thunder',
     function: 'count',
     arguments: [
-      tx.object(THUNDER_OBJECT_ID),
+      tx.object(THUNDER_IN_ID),
       tx.pure.vector('u8', Array.from(ns)),
     ],
   });
@@ -184,7 +184,7 @@ export async function peekThunder(recipientName: string): Promise<ThunderPointer
     module: 'thunder',
     function: 'peek',
     arguments: [
-      tx.object(THUNDER_OBJECT_ID),
+      tx.object(THUNDER_IN_ID),
       tx.pure.vector('u8', Array.from(ns)),
     ],
   });
@@ -263,7 +263,7 @@ export async function buildThunderPopTx(
     module: 'thunder',
     function: 'pop',
     arguments: [
-      tx.object(THUNDER_OBJECT_ID),
+      tx.object(THUNDER_IN_ID),
       tx.pure.vector('u8', Array.from(ns)),
       tx.object(nftObjectId),
     ],

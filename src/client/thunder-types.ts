@@ -3,10 +3,10 @@
 export const THUNDER_VERSION = 1;
 
 /** Thunder package ID (mainnet). */
-export const THUNDER_PACKAGE_ID = '0x9c60285c03504612b7f0b6ac7613519b822b02f72cf7625b452dfbebbd9c2803';
+export const THUNDER_PACKAGE_ID = '0xbe63cc5a29f9cd4e6184eac15a38841ed27063f798796c0fe56433d3e2cec8b7';
 
-/** Thunder shared object ID (mainnet). */
-export const THUNDER_OBJECT_ID = '0x70d618272558778578f953145892ad8e7ec07d22dc590bd28d027eba8dcc53cd';
+/** Thunder.in shared object ID (mainnet). */
+export const THUNDER_IN_ID = '0x00acc8be52a265ec821a25dc88442178f133f6ea7bc24783c435315dd5deecaa';
 
 /** Seal key server configs (Overclock, NodeInfra, Studio Mirai). */
 export const SEAL_SERVER_CONFIGS = [

@@ -54,17 +54,17 @@ public struct ThunderInbox has store {
 // ─── Init ───────────────────────────────────────────────────────────
 
 fun init(ctx: &mut TxContext) {
-    let mailbox = Thunder {
+    let thunder_in = Thunder {
         id: object::new(ctx),
     };
-    transfer::share_object(mailbox);
+    transfer::share_object(thunder_in);
 }
 
 // ─── Public functions ───────────────────────────────────────────────
 
 /// Deposit a Thunder pointer. Permissionless — anyone can send.
 entry fun deposit(
-    mailbox: &mut Thunder,
+    thunder_in: &mut Thunder,
     name_hash: vector<u8>,
     blob_id: vector<u8>,
     sealed_namespace: vector<u8>,
@@ -74,12 +74,12 @@ entry fun deposit(
     let timestamp_ms = clock.timestamp_ms();
     let pointer = ThunderPointer { blob_id, sealed_namespace, timestamp_ms };
 
-    if (dynamic_field::exists_(&mailbox.id, name_hash)) {
-        let inbox: &mut ThunderInbox = dynamic_field::borrow_mut(&mut mailbox.id, name_hash);
+    if (dynamic_field::exists_(&thunder_in.id, name_hash)) {
+        let inbox: &mut ThunderInbox = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
         inbox.pointers.push_back(pointer);
     } else {
         let inbox = ThunderInbox { pointers: vector[pointer] };
-        dynamic_field::add(&mut mailbox.id, name_hash, inbox);
+        dynamic_field::add(&mut thunder_in.id, name_hash, inbox);
     };
 
     event::emit(ThunderDeposited { name_hash, timestamp_ms });
@@ -87,7 +87,7 @@ entry fun deposit(
 
 /// Pop the first Thunder pointer. Requires the SuinsRegistration NFT.
 entry fun pop(
-    mailbox: &mut Thunder,
+    thunder_in: &mut Thunder,
     name_hash: vector<u8>,
     nft: &SuinsRegistration,
     _ctx: &TxContext,
@@ -97,7 +97,7 @@ entry fun pop(
     let computed_hash = keccak256(&domain_bytes);
     assert!(computed_hash == name_hash, ENotOwner);
 
-    let inbox: &mut ThunderInbox = dynamic_field::borrow_mut(&mut mailbox.id, name_hash);
+    let inbox: &mut ThunderInbox = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
     assert!(!inbox.pointers.is_empty(), EEmptyInbox);
 
     let pointer = inbox.pointers.remove(0);
@@ -105,15 +105,15 @@ entry fun pop(
 }
 
 /// Count pending Thunders. Permissionless read.
-public fun count(mailbox: &Thunder, name_hash: vector<u8>): u64 {
-    if (!dynamic_field::exists_(&mailbox.id, name_hash)) return 0;
-    let inbox: &ThunderInbox = dynamic_field::borrow(&mailbox.id, name_hash);
+public fun count(thunder_in: &Thunder, name_hash: vector<u8>): u64 {
+    if (!dynamic_field::exists_(&thunder_in.id, name_hash)) return 0;
+    let inbox: &ThunderInbox = dynamic_field::borrow(&thunder_in.id, name_hash);
     inbox.pointers.length()
 }
 
 /// Read the first pointer without popping. Permissionless (blob is encrypt anyway).
-public fun peek(mailbox: &Thunder, name_hash: vector<u8>): (vector<u8>, vector<u8>, u64) {
-    let inbox: &ThunderInbox = dynamic_field::borrow(&mailbox.id, name_hash);
+public fun peek(thunder_in: &Thunder, name_hash: vector<u8>): (vector<u8>, vector<u8>, u64) {
+    let inbox: &ThunderInbox = dynamic_field::borrow(&thunder_in.id, name_hash);
     assert!(!inbox.pointers.is_empty(), EEmptyInbox);
     let p = &inbox.pointers[0];
     (p.blob_id, p.sealed_namespace, p.timestamp_ms)
