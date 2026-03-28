@@ -3,10 +3,10 @@
 export const THUNDER_VERSION = 1;
 
 /** Thunder package ID (mainnet). */
-export const THUNDER_PACKAGE_ID = '0xda24db9d7ac4bd18c57641c01dc6312bb4bf04db25baf19e3b6273310b72d254';
+export const THUNDER_PACKAGE_ID = '0xc164180c5aca24b42c5b865c6fcf9160deeed8eafee37635135ac54ab6632a1a';
 
 /** Storm shared object ID (mainnet). */
-export const STORM_ID = '0xeaf9a43f3b919fcb1fad61428b472661abb990a22a99518e0dd62112bad8f495';
+export const STORM_ID = '0x00dffb7759cbf71c5f205b431c2484c0f7f40ff2fae900bc265fdae98454f4cb';
 
 /** Thunder payload — the cleartext inside the encrypt blob. */
 export interface ThunderPayload {

@@ -22,8 +22,10 @@ import {
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
-function nameHash(bareName: string): Uint8Array {
-  return keccak_256(new TextEncoder().encode(bareName.toLowerCase()));
+/** Hash the full domain with .sui — matches the Move contract's keccak256(nft.domain().to_string()). */
+function nameHash(name: string): Uint8Array {
+  const full = name.toLowerCase().replace(/\.sui$/, '') + '.sui';
+  return keccak_256(new TextEncoder().encode(full));
 }
 
 function xorBytes(data: Uint8Array, mask: Uint8Array): Uint8Array {
