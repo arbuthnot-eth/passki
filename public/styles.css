@@ -2199,15 +2199,14 @@ body {
 }
 .wk-ns-owned-logo-wrap {
   display: inline-block;
-  height: 28px;
+  height: 18px;
   overflow: hidden;
-  /* Clip the fin (right ~30% of the SVG) */
-  width: 56px;
+  width: 40px;
 }
 .wk-ns-owned-logo {
-  height: 28px;
+  height: 36px;
   width: auto;
-  margin-right: -20px;
+  margin-top: -14px;
 }
 .wk-ns-owned-label {
   font-size: 0.85rem;
