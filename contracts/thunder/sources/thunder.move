@@ -3,13 +3,10 @@
 
 /// Thunder — encrypt messaging between SuiNS identities.
 ///
-/// Thunder.in is a shared object. Anyone can deposit a thunder
-/// (permissionless send). Only the SuiNS name owner can strike
-/// (NFT-gated — key material emitted in events).
-///
-/// The AES key is XOR-masked with keccak256(nft_object_id) on-chain.
-/// strike un-XORs and emits the real key + payload in a ThunderStruck event.
-/// Multiple strikes can be batched in a single PTB.
+/// Storm is the shared object. Anyone can deposit a strike.
+/// Only the SuiNS name owner can claim (NFT-gated).
+/// Cloud holds strikes per name. Claiming emits Struck events
+/// with the decrypt key. Empty clouds are removed for storage rebate.
 module thunder::thunder;
 
 use sui::dynamic_field;
@@ -21,17 +18,18 @@ use suins::suins_registration::SuinsRegistration;
 // ─── Errors ──────────────────────────────────────────────────────────
 
 const ENotOwner: u64 = 0;
-const EEmptyInbox: u64 = 1;
+const EEmpty: u64 = 1;
 
 // ─── Events ─────────────────────────────────────────────────────────
 
-public struct ThunderDeposited has copy, drop {
+/// Emitted on deposit — lightning bolt hits the cloud.
+public struct Bolt has copy, drop {
     name_hash: vector<u8>,
     timestamp_ms: u64,
 }
 
-/// Emitted on strike — contains everything the client needs to decrypt.
-public struct ThunderStruck has copy, drop {
+/// Emitted on claim — contains everything the client needs to decrypt.
+public struct Struck has copy, drop {
     name_hash: vector<u8>,
     payload: vector<u8>,
     aes_key: vector<u8>,
@@ -40,36 +38,35 @@ public struct ThunderStruck has copy, drop {
 
 // ─── Types ──────────────────────────────────────────────────────────
 
-public struct Thunder has key {
+/// The shared object — always-on infrastructure.
+public struct Storm has key {
     id: UID,
 }
 
-public struct ThunderBolt has store, copy, drop {
-    /// AES-encrypt ciphertext (the message).
+/// A single encrypt message.
+public struct Strike has store, copy, drop {
     payload: vector<u8>,
-    /// AES-256-GCM key (32 bytes) — XOR-masked with keccak256(nft_object_id).
     aes_key: vector<u8>,
-    /// AES-256-GCM nonce (12 bytes).
     aes_nonce: vector<u8>,
     timestamp_ms: u64,
 }
 
-public struct ThunderIn has store {
-    bolts: vector<ThunderBolt>,
+/// Per-name inbox. Dynamic field on Storm, keyed by name_hash.
+public struct Cloud has store {
+    strikes: vector<Strike>,
 }
 
 // ─── Init ───────────────────────────────────────────────────────────
 
 fun init(ctx: &mut TxContext) {
-    transfer::share_object(Thunder { id: object::new(ctx) });
+    transfer::share_object(Storm { id: object::new(ctx) });
 }
 
-// ─── Deposit (permissionless) ───────────────────────────────────────
+// ─── Deposit ────────────────────────────────────────────────────────
 
-/// Deposit a thunder. Anyone can send.
-/// payload = AES-encrypt ciphertext, masked_aes_key = key XOR'd with keccak256(nft_id).
+/// Deposit a strike into someone's cloud. Permissionless — anyone can send.
 entry fun deposit(
-    thunder_in: &mut Thunder,
+    storm: &mut Storm,
     name_hash: vector<u8>,
     payload: vector<u8>,
     masked_aes_key: vector<u8>,
@@ -78,25 +75,25 @@ entry fun deposit(
     _ctx: &mut TxContext,
 ) {
     let timestamp_ms = clock.timestamp_ms();
-    let bolt = ThunderBolt { payload, aes_key: masked_aes_key, aes_nonce, timestamp_ms };
+    let strike = Strike { payload, aes_key: masked_aes_key, aes_nonce, timestamp_ms };
 
-    if (dynamic_field::exists_(&thunder_in.id, name_hash)) {
-        let inbox: &mut ThunderIn = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
-        inbox.bolts.push_back(bolt);
+    if (dynamic_field::exists_(&storm.id, name_hash)) {
+        let cloud: &mut Cloud = dynamic_field::borrow_mut(&mut storm.id, name_hash);
+        cloud.strikes.push_back(strike);
     } else {
-        dynamic_field::add(&mut thunder_in.id, name_hash, ThunderIn { bolts: vector[bolt] });
+        dynamic_field::add(&mut storm.id, name_hash, Cloud { strikes: vector[strike] });
     };
 
-    event::emit(ThunderDeposited { name_hash, timestamp_ms });
+    event::emit(Bolt { name_hash, timestamp_ms });
 }
 
-// ─── Strike (NFT-gated) ────────────────────────────────────────────
+// ─── Claim (NFT-gated) ─────────────────────────────────────────────
 
-/// Strike — claim the first thunder. Requires the SuinsRegistration NFT.
-/// Un-XORs the AES key and emits payload + key + nonce in ThunderStruck.
-/// Batch multiple strikes in one PTB to decrypt all pending thunder.
-entry fun strike(
-    thunder_in: &mut Thunder,
+/// Claim the first strike from your cloud. Requires SuinsRegistration NFT.
+/// Un-XORs the AES key and emits Struck with payload + key + nonce.
+/// Batch multiple claims in one PTB.
+entry fun claim(
+    storm: &mut Storm,
     name_hash: vector<u8>,
     nft: &SuinsRegistration,
     _ctx: &TxContext,
@@ -105,37 +102,37 @@ entry fun strike(
     let computed_hash = keccak256(&domain_bytes);
     assert!(computed_hash == name_hash, ENotOwner);
 
-    let inbox: &mut ThunderIn = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
-    assert!(!inbox.bolts.is_empty(), EEmptyInbox);
+    let cloud: &mut Cloud = dynamic_field::borrow_mut(&mut storm.id, name_hash);
+    assert!(!cloud.strikes.is_empty(), EEmpty);
 
-    let bolt = inbox.bolts.remove(0);
-    let empty = inbox.bolts.is_empty();
+    let strike = cloud.strikes.remove(0);
+    let empty = cloud.strikes.is_empty();
 
-    // If that was the last bolt, remove the dynamic field entirely → full storage rebate
+    // Remove empty cloud → full storage rebate
     if (empty) {
-        let ThunderIn { bolts: _ } = dynamic_field::remove<vector<u8>, ThunderIn>(&mut thunder_in.id, name_hash);
+        let Cloud { strikes: _ } = dynamic_field::remove<vector<u8>, Cloud>(&mut storm.id, name_hash);
     };
 
     // Un-XOR the key
     let nft_id_bytes = object::id(nft).to_bytes();
     let mask = keccak256(&nft_id_bytes);
-    let real_key = xor_bytes(bolt.aes_key, mask);
+    let real_key = xor_bytes(strike.aes_key, mask);
 
-    event::emit(ThunderStruck {
+    event::emit(Struck {
         name_hash,
-        payload: bolt.payload,
+        payload: strike.payload,
         aes_key: real_key,
-        aes_nonce: bolt.aes_nonce,
+        aes_nonce: strike.aes_nonce,
     });
 }
 
-// ─── Read-only queries ──────────────────────────────────────────────
+// ─── Queries ────────────────────────────────────────────────────────
 
-/// Count pending thunder. Permissionless.
-public fun count(thunder_in: &Thunder, name_hash: vector<u8>): u64 {
-    if (!dynamic_field::exists_(&thunder_in.id, name_hash)) return 0;
-    let inbox: &ThunderIn = dynamic_field::borrow(&thunder_in.id, name_hash);
-    inbox.bolts.length()
+/// Count pending strikes. Permissionless.
+public fun count(storm: &Storm, name_hash: vector<u8>): u64 {
+    if (!dynamic_field::exists_(&storm.id, name_hash)) return 0;
+    let cloud: &Cloud = dynamic_field::borrow(&storm.id, name_hash);
+    cloud.strikes.length()
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@
  * Thunder client — encrypt messaging between SuiNS identities.
  *
  * Send: AES encrypt → deposit payload + masked key on-chain (one PTB).
- * Receive: batch strike (one PTB) → parse ThunderStruck events →
+ * Receive: batch strike (one PTB) → parse Struck events →
  *          AES decrypt all payloads from events directly.
  *
  * No external storage — the encrypt payload lives on-chain in the
@@ -16,7 +16,7 @@ import { gqlClient } from '../rpc.js';
 import {
   THUNDER_VERSION,
   THUNDER_PACKAGE_ID,
-  THUNDER_IN_ID,
+  STORM_ID,
   type ThunderPayload,
 } from './thunder-types.js';
 
@@ -102,7 +102,7 @@ export async function buildThunderSendTx(
     module: 'thunder',
     function: 'deposit',
     arguments: [
-      tx.object(THUNDER_IN_ID),
+      tx.object(STORM_ID),
       tx.pure.vector('u8', Array.from(ns)),
       tx.pure.vector('u8', Array.from(ciphertext)),
       tx.pure.vector('u8', Array.from(maskedKey)),
@@ -123,7 +123,7 @@ export async function getThunderCount(recipientName: string): Promise<number> {
     package: THUNDER_PACKAGE_ID,
     module: 'thunder',
     function: 'count',
-    arguments: [tx.object(THUNDER_IN_ID), tx.pure.vector('u8', Array.from(ns))],
+    arguments: [tx.object(STORM_ID), tx.pure.vector('u8', Array.from(ns))],
   });
   try {
     const result = await gqlClient.devInspectTransactionBlock({
@@ -142,7 +142,7 @@ export async function getThunderCount(recipientName: string): Promise<number> {
 // ─── Strike (batch) ──────────────────────────────────────────────────
 
 /** Build a batched strike PTB — one tx claims N thunder. */
-export async function buildBatchStrikeTx(
+export async function buildBatchClaimTx(
   recipientAddress: string,
   recipientName: string,
   nftObjectId: string,
@@ -155,9 +155,9 @@ export async function buildBatchStrikeTx(
     tx.moveCall({
       package: THUNDER_PACKAGE_ID,
       module: 'thunder',
-      function: 'strike',
+      function: 'claim',
       arguments: [
-        tx.object(THUNDER_IN_ID),
+        tx.object(STORM_ID),
         tx.pure.vector('u8', Array.from(ns)),
         tx.object(nftObjectId),
       ],
@@ -166,12 +166,12 @@ export async function buildBatchStrikeTx(
   return tx.build({ client: gqlClient as never });
 }
 
-/** Parse ThunderStruck events from tx effects. */
-function parseThunderStruckEvents(effects: any): Array<{ payload: Uint8Array; aesKey: Uint8Array; aesNonce: Uint8Array }> {
+/** Parse Struck events from tx effects. */
+function parseStruckEvents(effects: any): Array<{ payload: Uint8Array; aesKey: Uint8Array; aesNonce: Uint8Array }> {
   const results: Array<{ payload: Uint8Array; aesKey: Uint8Array; aesNonce: Uint8Array }> = [];
   const rawEvents = effects?.events ?? [];
   for (const evt of rawEvents) {
-    if (!evt?.type?.includes('::thunder::ThunderStruck')) continue;
+    if (!evt?.type?.includes('::thunder::Struck')) continue;
     const fields = evt.parsedJson ?? evt.json ?? {};
     results.push({
       payload: new Uint8Array(fields.payload ?? []),
@@ -186,18 +186,18 @@ function parseThunderStruckEvents(effects: any): Array<{ payload: Uint8Array; ae
  * Strike all pending thunder in one PTB, then decrypt all payloads.
  * One wallet signature. Returns all decrypted messages.
  */
-export async function strikeAndDecryptAll(
+export async function claimAndDecryptAll(
   recipientAddress: string,
   recipientName: string,
   nftObjectId: string,
   count: number,
   signAndExecuteTransaction: (txBytes: Uint8Array) => Promise<{ digest: string; effects?: any }>,
 ): Promise<ThunderPayload[]> {
-  const txBytes = await buildBatchStrikeTx(recipientAddress, recipientName, nftObjectId, count);
+  const txBytes = await buildBatchClaimTx(recipientAddress, recipientName, nftObjectId, count);
   const result = await signAndExecuteTransaction(txBytes);
 
-  const struck = parseThunderStruckEvents(result.effects ?? result);
-  if (struck.length === 0) throw new Error('No ThunderStruck events in tx effects');
+  const struck = parseStruckEvents(result.effects ?? result);
+  if (struck.length === 0) throw new Error('No Struck events in tx effects');
 
   // Decrypt all payloads in parallel
   return Promise.all(

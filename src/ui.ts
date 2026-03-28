@@ -3865,7 +3865,7 @@ function _attachNftPopoverListeners() {
       if (_thunderDecryptBusy) return;
       _thunderDecryptBusy = true;
       try {
-        const { strikeAndDecryptAll } = await import('./client/thunder.js');
+        const { claimAndDecryptAll } = await import('./client/thunder.js');
         const ws = getState();
         if (!ws.address || !app.suinsName) return;
 
@@ -3879,7 +3879,7 @@ function _attachNftPopoverListeners() {
         const executeTx = isWaap
           ? (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes)
           : (txBytes: Uint8Array) => signAndExecuteSponsoredTx(txBytes);
-        const payloads = await strikeAndDecryptAll(
+        const payloads = await claimAndDecryptAll(
           ws.address,
           app.suinsName,
           nft.objectId,
