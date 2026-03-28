@@ -3865,7 +3865,7 @@ function _attachNftPopoverListeners() {
       if (_thunderDecryptBusy) return;
       _thunderDecryptBusy = true;
       try {
-        const { decryptThunder } = await import('./client/thunder.js');
+        const { strikeAndDecryptAll } = await import('./client/thunder.js');
         const ws = getState();
         if (!ws.address || !app.suinsName) return;
 
@@ -3874,21 +3874,25 @@ function _attachNftPopoverListeners() {
         const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareName && d.kind === 'nft');
         if (!nft) { showToast('SuiNS NFT not found'); return; }
 
-        // Strike + decrypt (devInspect reads key, then executes strike to remove bolt)
-        const payload = await decryptThunder(
+        // Batch strike all pending thunders — one PTB, one signature
+        const payloads = await strikeAndDecryptAll(
           ws.address,
           app.suinsName,
           nft.objectId,
+          _thunderCount,
           (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
         );
 
-        // Show message
-        const senderShort = payload.sender || payload.senderAddress.slice(0, 8) + '\u2026';
-        showToast(`\u26a1 ${senderShort}: ${payload.message}`);
+        if (payloads.length === 0) { showToast('No thunders decrypted'); _thunderCount = 0; _patchNsOwnedList(); return; }
 
-        // Populate sender name into NS input for reply
-        if (payload.sender) {
-          const senderBare = payload.sender.replace(/\.sui$/, '');
+        // Show first message, populate sender for reply
+        const first = payloads[0];
+        const senderShort = first.sender || first.senderAddress.slice(0, 8) + '\u2026';
+        const extra = payloads.length > 1 ? ` (+${payloads.length - 1} more)` : '';
+        showToast(`\u26a1 ${senderShort}: ${first.message}${extra}`);
+
+        if (first.sender) {
+          const senderBare = first.sender.replace(/\.sui$/, '');
           nsLabel = senderBare;
           const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
           if (inp) inp.value = senderBare;
@@ -3896,8 +3900,8 @@ function _attachNftPopoverListeners() {
           fetchAndShowNsPrice(senderBare);
         }
 
-        // Update count
-        _thunderCount = Math.max(0, _thunderCount - 1);
+        // All struck — clear count
+        _thunderCount = 0;
         _patchNsOwnedList();
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Decrypt failed';
