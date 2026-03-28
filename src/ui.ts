@@ -5344,7 +5344,8 @@ function renderSkiMenu() {
     // SUIAMI: input = output AND target is self
     const suiamiSendMode = coinChipsOpen && !mintMode && !marketMode && !resolving && inEqualsOut && selfTarget && !sendingToOther;
     // SEND: sending to someone else (any token combo), colored by output
-    const sendMode = coinChipsOpen && !mintMode && !marketMode && !resolving && !swapMode && !suiamiSendMode;
+    // Show SEND even when coins are collapsed if target is someone else
+    const sendMode = !mintMode && !marketMode && !resolving && sendingToOther && !(swapMode || suiamiSendMode);
 
     btn.classList.remove('wk-send-btn--suiami', 'wk-send-btn--suiami-green', 'wk-send-btn--send', 'wk-send-btn--market', 'wk-send-btn--resolving', 'wk-send-btn--mint', 'wk-send-btn--swap-usd', 'wk-send-btn--swap-sui', 'wk-send-btn--swap-gold');
     if (mintMode) btn.classList.add('wk-send-btn--mint');
@@ -5355,9 +5356,9 @@ function renderSkiMenu() {
     else if (suiamiPurple) btn.classList.add('wk-send-btn--suiami');
     else if (marketMode) btn.classList.add('wk-send-btn--market');
     else if (resolving) btn.classList.add('wk-send-btn--resolving');
-    // Hide price chip when balance is expanded — except when name is available (show mint cost)
+    // Hide price chip when sending, swapping, or name is taken (not mintable)
     const priceChip = document.getElementById('wk-ns-price-chip');
-    if (priceChip) priceChip.style.display = (sendMode || swapMode) && !mintMode ? 'none' : '';
+    if (priceChip) priceChip.style.display = ((sendMode || swapMode) && !mintMode) || (isTaken && !isOwned && !hasListing) ? 'none' : '';
 
     // Auto-configure swap for minting: set amount to mint price (with NS discount)
     if (mintMode && coinChipsOpen) {
