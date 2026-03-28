@@ -92,8 +92,11 @@ export async function buildThunderSendTx(
   // AES encrypt
   const { ciphertext, key, nonce } = await aesEncrypt(new TextEncoder().encode(JSON.stringify(payload)));
 
-  // XOR mask the AES key
-  const mask = keccak_256(new TextEncoder().encode(recipientNftObjectId.toLowerCase()));
+  // XOR mask the AES key — hash raw 32 bytes of the NFT object ID (matches Move's object::id().to_bytes())
+  const nftHex = recipientNftObjectId.toLowerCase().replace(/^0x/, '');
+  const nftRawBytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) nftRawBytes[i] = parseInt(nftHex.slice(i * 2, i * 2 + 2), 16);
+  const mask = keccak_256(nftRawBytes);
   const maskedKey = xorBytes(key, mask);
 
   // Build PTB — one move call, payload stored on-chain
