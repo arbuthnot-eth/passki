@@ -2197,9 +2197,25 @@ body {
   align-items: center;
   gap: 5px;
 }
+.wk-ns-owned-logo-wrap {
+  display: inline-block;
+  height: 28px;
+  overflow: hidden;
+  /* Clip the fin (right ~30% of the SVG) */
+  width: 56px;
+}
 .wk-ns-owned-logo {
-  height: 20px;
+  height: 28px;
   width: auto;
+  margin-right: -20px;
+}
+.wk-ns-owned-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .wk-ns-owned-tally {
   font-size: 0.75rem;
