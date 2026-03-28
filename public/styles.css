@@ -2494,6 +2494,21 @@ body {
 .ski-nft-expiry--warn { color: rgba(251, 191, 36, 0.7); }
 .ski-nft-expiry--urgent { color: rgba(239, 68, 68, 0.7); }
 
+.ski-nft-card--thunder {
+  border-color: rgba(250, 204, 21, 0.35);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.8), 0 0 24px rgba(250, 204, 21, 0.1);
+}
+.ski-nft-card--thunder .ski-nft-tld {
+  color: rgba(250, 204, 21, 0.7);
+}
+.ski-nft-thunder {
+  margin-left: 6px;
+  font-size: 0.75rem;
+  color: #facc15;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
 .ski-nft-owner {
   width: 100%;
   display: flex;

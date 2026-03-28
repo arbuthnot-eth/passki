@@ -1,12 +1,12 @@
 // Copyright (c) 2026 SKI
 // SPDX-License-Identifier: MIT
 
-/// Thunder — encrypt messaging between SuiNS identities.
+/// Thunder — encrypt signals between SuiNS identities.
 ///
-/// Storm is the shared object. Anyone can deposit a strike.
-/// Only the SuiNS name owner can claim (NFT-gated).
-/// Cloud holds strikes per name. Claiming emits Struck events
-/// with the decrypt key. Empty clouds are removed for storage rebate.
+/// Storm is the shared object. Anyone can send a signal.
+/// Only the SuiNS name owner can quest (NFT-gated).
+/// Ragtag holds signals per name. Questing emits decrypted keys.
+/// Empty ragtags are removed for storage rebate.
 module thunder::thunder;
 
 use sui::dynamic_field;
@@ -22,14 +22,14 @@ const EEmpty: u64 = 1;
 
 // ─── Events ─────────────────────────────────────────────────────────
 
-/// Emitted on deposit — lightning bolt hits the cloud.
-public struct Bolt has copy, drop {
+/// Emitted when a signal is sent.
+public struct Signaled has copy, drop {
     name_hash: vector<u8>,
     timestamp_ms: u64,
 }
 
-/// Emitted on claim — contains everything the client needs to decrypt.
-public struct Struck has copy, drop {
+/// Emitted on quest — contains everything the client needs to decrypt.
+public struct Questfi has copy, drop {
     name_hash: vector<u8>,
     payload: vector<u8>,
     aes_key: vector<u8>,
@@ -43,17 +43,17 @@ public struct Storm has key {
     id: UID,
 }
 
-/// A single encrypt message.
-public struct Strike has store, copy, drop {
+/// A single encrypt signal.
+public struct Signal has store, copy, drop {
     payload: vector<u8>,
     aes_key: vector<u8>,
     aes_nonce: vector<u8>,
     timestamp_ms: u64,
 }
 
-/// Per-name inbox. Dynamic field on Storm, keyed by name_hash.
-public struct Cloud has store {
-    strikes: vector<Strike>,
+/// Per-name ragtag. Dynamic field on Storm, keyed by name_hash.
+public struct Ragtag has store {
+    signals: vector<Signal>,
 }
 
 // ─── Init ───────────────────────────────────────────────────────────
@@ -62,10 +62,10 @@ fun init(ctx: &mut TxContext) {
     transfer::share_object(Storm { id: object::new(ctx) });
 }
 
-// ─── Deposit ────────────────────────────────────────────────────────
+// ─── Send ──────────────────────────────────────────────────────────
 
-/// Bolt a strike into someone's cloud. Permissionless — anyone can send.
-entry fun bolt(
+/// Send a signal to someone's ragtag. Permissionless — anyone can send.
+entry fun signal(
     storm: &mut Storm,
     name_hash: vector<u8>,
     payload: vector<u8>,
@@ -75,22 +75,22 @@ entry fun bolt(
     _ctx: &mut TxContext,
 ) {
     let timestamp_ms = clock.timestamp_ms();
-    let strike = Strike { payload, aes_key: masked_aes_key, aes_nonce, timestamp_ms };
+    let sig = Signal { payload, aes_key: masked_aes_key, aes_nonce, timestamp_ms };
 
     if (dynamic_field::exists_(&storm.id, name_hash)) {
-        let cloud: &mut Cloud = dynamic_field::borrow_mut(&mut storm.id, name_hash);
-        cloud.strikes.push_back(strike);
+        let ragtag: &mut Ragtag = dynamic_field::borrow_mut(&mut storm.id, name_hash);
+        ragtag.signals.push_back(sig);
     } else {
-        dynamic_field::add(&mut storm.id, name_hash, Cloud { strikes: vector[strike] });
+        dynamic_field::add(&mut storm.id, name_hash, Ragtag { signals: vector[sig] });
     };
 
-    event::emit(Bolt { name_hash, timestamp_ms });
+    event::emit(Signaled { name_hash, timestamp_ms });
 }
 
 // ─── Claim (NFT-gated) ─────────────────────────────────────────────
 
-/// Quest — claim the first strike from your cloud. Requires SuinsRegistration NFT.
-/// Un-XORs the AES key and emits Struck with payload + key + nonce.
+/// Quest — claim the first signal from your ragtag. Requires SuinsRegistration NFT.
+/// Un-XORs the AES key and emits Questfi with payload + key + nonce.
 /// Batch multiple quests in one PTB.
 entry fun quest(
     storm: &mut Storm,
@@ -102,37 +102,37 @@ entry fun quest(
     let computed_hash = keccak256(&domain_bytes);
     assert!(computed_hash == name_hash, ENotOwner);
 
-    let cloud: &mut Cloud = dynamic_field::borrow_mut(&mut storm.id, name_hash);
-    assert!(!cloud.strikes.is_empty(), EEmpty);
+    let ragtag: &mut Ragtag = dynamic_field::borrow_mut(&mut storm.id, name_hash);
+    assert!(!ragtag.signals.is_empty(), EEmpty);
 
-    let strike = cloud.strikes.remove(0);
-    let empty = cloud.strikes.is_empty();
+    let sig = ragtag.signals.remove(0);
+    let empty = ragtag.signals.is_empty();
 
-    // Remove empty cloud → full storage rebate
+    // Remove empty ragtag → full storage rebate
     if (empty) {
-        let Cloud { strikes: _ } = dynamic_field::remove<vector<u8>, Cloud>(&mut storm.id, name_hash);
+        let Ragtag { signals: _ } = dynamic_field::remove<vector<u8>, Ragtag>(&mut storm.id, name_hash);
     };
 
     // Un-XOR the key
     let nft_id_bytes = object::id(nft).to_bytes();
     let mask = keccak256(&nft_id_bytes);
-    let real_key = xor_bytes(strike.aes_key, mask);
+    let real_key = xor_bytes(sig.aes_key, mask);
 
-    event::emit(Struck {
+    event::emit(Questfi {
         name_hash,
-        payload: strike.payload,
+        payload: sig.payload,
         aes_key: real_key,
-        aes_nonce: strike.aes_nonce,
+        aes_nonce: sig.aes_nonce,
     });
 }
 
 // ─── Queries ────────────────────────────────────────────────────────
 
-/// Count pending strikes. Permissionless.
+/// Count pending signals. Permissionless.
 public fun count(storm: &Storm, name_hash: vector<u8>): u64 {
     if (!dynamic_field::exists_(&storm.id, name_hash)) return 0;
-    let cloud: &Cloud = dynamic_field::borrow(&storm.id, name_hash);
-    cloud.strikes.length()
+    let ragtag: &Ragtag = dynamic_field::borrow(&storm.id, name_hash);
+    ragtag.signals.length()
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────

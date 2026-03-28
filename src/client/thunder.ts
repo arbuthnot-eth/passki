@@ -1,12 +1,11 @@
 /**
- * Thunder client — encrypt messaging between SuiNS identities.
+ * Thunder client — encrypt signals between SuiNS identities.
  *
- * Send: AES encrypt → deposit payload + masked key on-chain (one PTB).
- * Receive: batch strike (one PTB) → parse Struck events →
- *          AES decrypt all payloads from events directly.
+ * Signal: AES encrypt → deposit into recipient's ragtag on Storm (one PTB).
+ * Quest: batch quest (one PTB) → parse Questfi events → AES decrypt all signals.
  *
- * No external storage — the encrypt payload lives on-chain in the
- * ThunderBolt struct, removed on strike. The contract IS the access control.
+ * Storm is the shared object. Ragtag is the per-name collection (dynamic field).
+ * Empty ragtages are removed for storage rebate.
  */
 
 import { Transaction } from '@mysten/sui/transactions';
@@ -62,10 +61,10 @@ export async function lookupRecipientNftId(name: string): Promise<string | null>
   } catch { return null; }
 }
 
-// ─── Send ────────────────────────────────────────────────────────────
+// ─── Signal (send) ──────────────────────────────────────────────────
 
 /**
- * Build the full Thunder send PTB — AES encrypt + deposit in one tx.
+ * Build the Thunder signal PTB — AES encrypt + deposit in one tx.
  * Returns tx bytes ready for signing.
  */
 export async function buildThunderSendTx(
@@ -79,7 +78,7 @@ export async function buildThunderSendTx(
   const bareName = recipientName.replace(/\.sui$/i, '').toLowerCase();
   const ns = nameHash(bareName);
 
-  // Build payload
+  // Build signal
   const payload: ThunderPayload = {
     v: THUNDER_VERSION,
     sender: senderName,
@@ -99,13 +98,13 @@ export async function buildThunderSendTx(
   const mask = keccak_256(nftRawBytes);
   const maskedKey = xorBytes(key, mask);
 
-  // Build PTB — one move call, payload stored on-chain
+  // Build PTB — one move call: thunder::thunder::signal
   const tx = new Transaction();
   tx.setSender(normalizeSuiAddress(senderAddress));
   tx.moveCall({
     package: THUNDER_PACKAGE_ID,
     module: 'thunder',
-    function: 'bolt',
+    function: 'signal',
     arguments: [
       tx.object(STORM_ID),
       tx.pure.vector('u8', Array.from(ns)),
@@ -118,9 +117,9 @@ export async function buildThunderSendTx(
   return tx.build({ client: gqlClient as never });
 }
 
-// ─── Query ───────────────────────────────────────────────────────────
+// ─── Query ──────────────────────────────────────────────────────────
 
-/** Count pending strikes for a single SuiNS name. */
+/** Count pending signals for a single SuiNS name. */
 export async function getThunderCount(recipientName: string): Promise<number> {
   const counts = await getThunderCountsBatch([recipientName]);
   const bare = recipientName.replace(/\.sui$/i, '').toLowerCase();
@@ -129,7 +128,7 @@ export async function getThunderCount(recipientName: string): Promise<number> {
 
 /**
  * Get thunder presence for ALL names in one gRPC call.
- * Lists dynamic fields on Storm — if a cloud exists for a name hash, it has ≥1 strike.
+ * Lists dynamic fields on Storm — if an ragtag exists for a name hash, it has ≥1 signal.
  * Returns a map of bareName → 1 (has thunder) or 0 (no thunder).
  */
 export async function getThunderCountsBatch(names: string[]): Promise<Record<string, number>> {
@@ -147,18 +146,18 @@ export async function getThunderCountsBatch(names: string[]): Promise<Record<str
   }
 
   try {
-    // One gRPC call — list all clouds on Storm
+    // One gRPC call — list all ragtages on Storm
     const { grpcClient } = await import('../rpc.js');
     const dfResult = await grpcClient.listDynamicFields({ parentId: STORM_ID });
     const fields = dfResult.dynamicFields ?? [];
 
-    // Match clouds to our names
+    // Match ragtages to our names
     for (const df of fields) {
       const bcsValues = Object.values(df.name.bcs as Record<string, number>);
       const nameBytes = bcsValues.slice(1); // skip BCS length prefix
       const hex = nameBytes.map((b: number) => b.toString(16).padStart(2, '0')).join('');
       if (hashToBare[hex]) {
-        result[hashToBare[hex]] = 1; // cloud exists = has thunder
+        result[hashToBare[hex]] = 1; // ragtag exists = has signal
       }
     }
   } catch { /* return cached zeros */ }
@@ -166,9 +165,9 @@ export async function getThunderCountsBatch(names: string[]): Promise<Record<str
   return result;
 }
 
-// ─── Strike (batch) ──────────────────────────────────────────────────
+// ─── Quest (batch) ──────────────────────────────────────────────────
 
-/** Build a batched quest PTB — one tx claims N thunder.
+/** Build a batched quest PTB — one tx claims N signals.
  *  If sponsorAddress is provided, sets it as gas owner (2-sig sponsored tx). */
 export async function buildBatchQuestTx(
   recipientAddress: string,
@@ -198,12 +197,12 @@ export async function buildBatchQuestTx(
   return tx.build({ client: gqlClient as never });
 }
 
-/** Parse Struck events from tx effects. */
-function parseStruckEvents(effects: any): Array<{ payload: Uint8Array; aesKey: Uint8Array; aesNonce: Uint8Array }> {
+/** Parse Questfi events from tx effects. */
+function parseQuestfiEvents(effects: any): Array<{ payload: Uint8Array; aesKey: Uint8Array; aesNonce: Uint8Array }> {
   const results: Array<{ payload: Uint8Array; aesKey: Uint8Array; aesNonce: Uint8Array }> = [];
   const rawEvents = effects?.events ?? [];
   for (const evt of rawEvents) {
-    if (!evt?.type?.includes('::thunder::Struck')) continue;
+    if (!evt?.type?.includes('::thunder::Questfi')) continue;
     const fields = evt.parsedJson ?? evt.json ?? {};
     results.push({
       payload: new Uint8Array(fields.payload ?? []),
@@ -215,8 +214,8 @@ function parseStruckEvents(effects: any): Array<{ payload: Uint8Array; aesKey: U
 }
 
 /**
- * Strike all pending thunder in one PTB, then decrypt all payloads.
- * One wallet signature. Returns all decrypted messages.
+ * Quest all pending signals in one PTB, then decrypt them.
+ * One wallet signature. Returns all decrypted signals.
  */
 export async function decryptAndQuest(
   recipientAddress: string,
@@ -230,10 +229,10 @@ export async function decryptAndQuest(
   const result = await executeTx(txBytes);
 
   // Try parsing events from wallet response first
-  let struck = parseStruckEvents(result.effects ?? result);
+  let quested = parseQuestfiEvents(result.effects ?? result);
 
   // If no events found, fetch tx details from RPC (wallet may not return events)
-  if (struck.length === 0 && result.digest) {
+  if (quested.length === 0 && result.digest) {
     // Wait briefly for tx to be indexed
     await new Promise(r => setTimeout(r, 2000));
     const txRes = await fetch('/api/sui-rpc', {
@@ -246,19 +245,19 @@ export async function decryptAndQuest(
       }),
     });
     const txJson = await txRes.json() as any;
-    struck = parseStruckEvents(txJson?.result ?? {});
+    quested = parseQuestfiEvents(txJson?.result ?? {});
   }
 
-  if (struck.length === 0) throw new Error('No Struck events in tx effects');
+  if (quested.length === 0) throw new Error('No Questfi events in tx effects');
 
-  // Decrypt all payloads in parallel — skip any that fail (bad key from old deploys)
+  // Decrypt all signals in parallel — skip any that fail (bad key from old deploys)
   const results: ThunderPayload[] = [];
   await Promise.all(
-    struck.map(async (s) => {
+    quested.map(async (s) => {
       try {
         const cleartext = await aesDecrypt(s.payload, s.aesKey, s.aesNonce);
         results.push(JSON.parse(new TextDecoder().decode(cleartext)) as ThunderPayload);
-      } catch { /* skip — likely stale strike from old deploy */ }
+      } catch { /* skip — likely stale signal from old deploy */ }
     }),
   );
   return results;

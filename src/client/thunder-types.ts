@@ -1,18 +1,18 @@
-/** Thunder — encrypt SuiNS messaging types and constants. */
+/** Thunder — encrypt signals between SuiNS identities. Types and constants. */
 
 export const THUNDER_VERSION = 1;
 
 /**
- * Thunder mainnet deployment.
- * Package: 0xc164...::thunder (module)
- * Storm:   0xe8e7...::thunder::Storm (shared object — NOT the UpgradeCap)
+ * Thunder mainnet deployment (v3 — signal/quest/cloud).
+ * Package: 0x5a60...::thunder (module)
+ * Storm:   0xfaf8...::thunder::Storm (shared object — NOT the UpgradeCap)
  *
  * To verify: sui client object <STORM_ID> → type should be ...::thunder::Storm
  */
-export const THUNDER_PACKAGE_ID = '0xc164180c5aca24b42c5b865c6fcf9160deeed8eafee37635135ac54ab6632a1a';
-export const STORM_ID = '0xe8e7d1a55a1cd4ea73be796bb73a2d2f3371c772de5fbdc4c084e939100b45a0';
+export const THUNDER_PACKAGE_ID = '0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581';
+export const STORM_ID = '0x56a811bd698022fe1d5a00dd34fd0d5d101fd14c03f1cd54409357dc28e594ef';
 
-/** Thunder payload — the cleartext inside the encrypt payload. */
+/** Thunder signal — the cleartext content. */
 export interface ThunderPayload {
   v: typeof THUNDER_VERSION;
   sender: string;
