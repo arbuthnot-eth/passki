@@ -1957,20 +1957,20 @@ body {
 }
 .wk-thunder-msg {
   width: 100%;
-  background: transparent;
-  border: 1px solid rgba(255, 184, 0, 0.2);
+  background: rgba(255, 184, 0, 0.06);
+  border: 1px solid rgba(255, 184, 0, 0.35);
   border-radius: 8px;
   outline: none;
-  color: rgba(255, 184, 0, 0.9);
+  color: #FFB800;
   font-family: inherit;
-  font-size: 0.8rem;
-  font-weight: 500;
-  padding: 6px 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 8px 12px;
   min-width: 0;
   box-sizing: border-box;
 }
-.wk-thunder-msg::placeholder { color: rgba(255, 184, 0, 0.35); }
-.wk-thunder-msg:focus { border-color: rgba(255, 184, 0, 0.5); }
+.wk-thunder-msg::placeholder { color: rgba(255, 184, 0, 0.55); font-weight: 500; }
+.wk-thunder-msg:focus { border-color: #FFB800; background: rgba(255, 184, 0, 0.1); }
 /* Thunderbolt badge on roster chip */
 .wk-ns-thunder-badge {
   font-size: 0.65rem;

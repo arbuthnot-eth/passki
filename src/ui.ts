@@ -5055,7 +5055,7 @@ function renderSkiMenu() {
           <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn${nsAvail === 'grace' && !_nsInitShadeOrder ? ' wk-shade-ready' : nsAvail === 'grace' && _nsInitShadeOrder && _nsInitGraceExpired ? ' wk-shade-execute' : nsAvail === 'grace' && _nsInitShadeOrder ? ' wk-shade-active' : ''}" type="button"${_registerDisabled ? ' disabled' : ''} title="${_registerTitle}" style="display:none">${nsAvail === 'grace' && !_nsInitShadeOrder ? '\u2299' : nsAvail === 'grace' && _nsInitShadeOrder && !_nsInitGraceExpired ? '\u2713' : '\u2192'}</button>
         </div>
         <div id="wk-ns-route" class="wk-ns-route-wrap${nsRouteOpen ? '' : ' wk-ns-route-wrap--hidden'}">${_nsRouteInitHtml}</div>
-        <div id="wk-thunder-row" class="wk-thunder-row" style="display:none"><input id="wk-thunder-msg" class="wk-thunder-msg" type="text" placeholder="sealed message\u2026" spellcheck="false" autocomplete="off"></div>
+        <div id="wk-thunder-row" class="wk-thunder-row" style="display:none"><input id="wk-thunder-msg" class="wk-thunder-msg" type="text" placeholder="private thunder\u2026" spellcheck="false" autocomplete="off"></div>
         <div id="wk-ns-owned-list" class="wk-ns-owned-list${nsRosterOpen ? '' : ' wk-ns-owned-list--hidden'}">${_nsOwnedListHtml()}</div>
       </div>`;
 
@@ -5415,13 +5415,13 @@ function renderSkiMenu() {
     const swapMode = coinChipsOpen && !mintMode && !marketMode && !resolving && !inEqualsOut && !sendingToOther;
     // SUIAMI: input = output AND target is self
     const suiamiSendMode = coinChipsOpen && !mintMode && !marketMode && !resolving && inEqualsOut && selfTarget && !sendingToOther;
+    // THUNDER: viewing someone else's taken name, no amount — takes priority over SEND
+    const hasAmount = !!pendingSendAmount && Number(pendingSendAmount) > 0;
+    const thunderMode = !mintMode && !marketMode && !resolving && !suiamiMode
+      && hasLabel && isTaken && !isOwned && nsTargetAddress != null && !hasAmount;
     // SEND: sending to someone else (any token combo), colored by output
     // Show SEND even when coins are collapsed if target is someone else
-    const sendMode = !mintMode && !marketMode && !resolving && sendingToOther && !(swapMode || suiamiSendMode);
-    // THUNDER: viewing someone else's taken name, no amount needed
-    const thunderMode = !mintMode && !marketMode && !resolving && !suiamiMode
-      && hasLabel && isTaken && !isOwned && nsTargetAddress != null
-      && (!pendingSendAmount || Number(pendingSendAmount) <= 0);
+    const sendMode = !thunderMode && !mintMode && !marketMode && !resolving && sendingToOther && !(swapMode || suiamiSendMode);
 
     btn.classList.remove('wk-send-btn--suiami', 'wk-send-btn--suiami-green', 'wk-send-btn--send', 'wk-send-btn--market', 'wk-send-btn--resolving', 'wk-send-btn--mint', 'wk-send-btn--swap-usd', 'wk-send-btn--swap-sui', 'wk-send-btn--swap-gold', 'wk-send-btn--thunder');
     if (mintMode) btn.classList.add('wk-send-btn--mint');
