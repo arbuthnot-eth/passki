@@ -3191,6 +3191,21 @@ function _persistRouteOpen() {
 }
 let _suiamiVerifyHtml = ''; // persists SuiAMI result across re-renders
 function _persistRosterOpen() { try { sessionStorage.setItem('ski:roster-open', nsRosterOpen ? '1' : '0'); } catch {} }
+/** Toggle the NS roster; when opening, collapse the balance/coins section. */
+function _toggleRoster() {
+  nsRosterOpen = !nsRosterOpen;
+  _persistRosterOpen();
+  if (!nsRosterOpen) _clearNsInput();
+  const list = document.getElementById('wk-ns-owned-list');
+  if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
+  // Close balance section when roster opens
+  if (nsRosterOpen && coinChipsOpen) {
+    coinChipsOpen = false;
+    _persistCoinChipsOpen();
+    document.getElementById('wk-coins-collapse')?.classList.toggle('wk-qr-collapse--hidden', true);
+    _updateSendBtnMode();
+  }
+}
 let nsSectionOpen = (() => {
   try {
     const stored = sessionStorage.getItem('ski:ns-section-open');
@@ -6246,11 +6261,7 @@ function renderSkiMenu() {
     const t = e.target as HTMLElement;
     // Don't toggle if the user clicked the input, register button, pin button, or price chip
     if (t.closest('#wk-ns-label-input') || t.closest('#wk-dd-ns-register') || t.closest('#wk-ns-pin-btn') || t.closest('#wk-ns-price-chip') || t.closest('#wk-send-btn')) return;
-    nsRosterOpen = !nsRosterOpen;
-    _persistRosterOpen();
-    if (!nsRosterOpen) _clearNsInput();
-    const list = document.getElementById('wk-ns-owned-list');
-    if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
+    _toggleRoster();
   });
 
   document.getElementById('wk-ns-route')?.addEventListener('click', (e) => {
@@ -6275,30 +6286,18 @@ function renderSkiMenu() {
     }
     // Target icon — click to toggle roster
     if (target.closest('#wk-ns-target-edit-btn') || target.closest('.wk-ns-target-icon')) {
-      nsRosterOpen = !nsRosterOpen;
-      _persistRosterOpen();
-      if (!nsRosterOpen) _clearNsInput();
-      const list = document.getElementById('wk-ns-owned-list');
-      if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
+      _toggleRoster();
       return;
     }
     // Grace date span — click to toggle roster
     if (target.closest('.wk-ns-target-grace')) {
-      nsRosterOpen = !nsRosterOpen;
-      _persistRosterOpen();
-      if (!nsRosterOpen) _clearNsInput();
-      const list = document.getElementById('wk-ns-owned-list');
-      if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
+      _toggleRoster();
       return;
     }
     // Dim target row — click to toggle roster (names list) instead of copy
     const dimRow = target.closest<HTMLElement>('.wk-ns-target-row--dim');
     if (dimRow) {
-      nsRosterOpen = !nsRosterOpen;
-      _persistRosterOpen();
-      if (!nsRosterOpen) _clearNsInput();
-      const list = document.getElementById('wk-ns-owned-list');
-      if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
+      _toggleRoster();
       return;
     }
     // Whole target row — click to copy address
