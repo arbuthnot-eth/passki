@@ -1795,29 +1795,41 @@ export function mountBalanceCycler(el: HTMLElement): () => void {
   };
 }
 
+/** In-memory thunder encryption key — derived from lockin signature. Only the private key holder can produce this. */
+let _thunderCryptoKey: CryptoKey | null = null;
+
+/** Derive the thunder AES key from a lockin signature. */
+async function _deriveThunderKeyFromSig(signature: string): Promise<CryptoKey> {
+  const sigBytes = Uint8Array.from(atob(signature), c => c.charCodeAt(0));
+  const hash = await crypto.subtle.digest('SHA-256', sigBytes);
+  return crypto.subtle.importKey('raw', hash, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+/** The deterministic lockin message — no nonce, so the same wallet always produces the same signature → same thunder key. */
+function _thunderLockinMessage(address: string): string {
+  return [`Lock in`, '', address].join('\n');
+}
+
 async function lockInIdentity(): Promise<void> {
   const ws = getState();
   if (ws.status !== 'connected' || !ws.address) return;
-  const issuedAt = new Date().toISOString();
   const name = app.suinsName
     ? app.suinsName.replace(/\.sui$/, '') + '.sui'
     : truncAddr(ws.address);
-  const message = [
-    `Lock in ${name}`,
-    '',
-    ws.address,
-    '',
-    `Nonce: ${crypto.randomUUID()}`,
-    `Issued At: ${issuedAt}`,
-  ].join('\n');
+  // Deterministic message — no random nonce. The signature is the thunder
+  // encryption key seed, so it must be reproducible across sessions.
+  const message = _thunderLockinMessage(ws.address);
   try {
     const result = await signPersonalMessage(new TextEncoder().encode(message));
+    // Derive thunder encryption key from signature — only this wallet can produce it
+    _thunderCryptoKey = await _deriveThunderKeyFromSig(result.signature);
     // Detect WaaP auth method from account label
     const isWaap = /waap/i.test(ws.walletName || '');
     const waapProvider = isWaap && ws.account?.label
       ? detectWaapProvider(ws.account.label)
       : null;
     // Cache proof locally (7-day expiry)
+    const issuedAt = new Date().toISOString();
     const proof = {
       address: ws.address,
       suinsName: app.suinsName || null,
@@ -1830,6 +1842,8 @@ async function lockInIdentity(): Promise<void> {
     };
     try { localStorage.setItem('ski:session', JSON.stringify(proof)); } catch {}
     if (waapProvider) storeWaapProvider(ws.address, waapProvider);
+    // Decrypt conversations now that we have the key
+    _refreshThunderLocalCounts().then(() => _syncNftCardToInput());
     showToast(`Locked in as ${esc(name)}`);
     render();
   } catch (err) {
@@ -3347,14 +3361,25 @@ function _restoreConversation() {
 }
 
 // ─── Encrypted local thunder log ─────────────────────────────────────
-// Bolted and quested strikes are AES-GCM encrypted in localStorage keyed
-// by the user's primary SuiNS name. The encryption key is derived from the
-// wallet address so the log is only readable in the same browser session.
+// Signals are AES-GCM encrypted in localStorage. The encryption key is
+// derived from the lockin signature — only the private key holder can decrypt.
+// On session restore, the cached signature re-derives the same key.
 
-async function _deriveThunderKey(seed: string): Promise<CryptoKey> {
-  const raw = new TextEncoder().encode(`ski:thunder:${seed}`);
-  const hash = await crypto.subtle.digest('SHA-256', raw);
-  return crypto.subtle.importKey('raw', hash, 'AES-GCM', false, ['encrypt', 'decrypt']);
+async function _deriveThunderKey(_seed: string): Promise<CryptoKey> {
+  if (_thunderCryptoKey) return _thunderCryptoKey;
+  // Try to restore from cached session signature
+  try {
+    const raw = localStorage.getItem('ski:session');
+    if (raw) {
+      const session = JSON.parse(raw);
+      if (session.signature) {
+        _thunderCryptoKey = await _deriveThunderKeyFromSig(session.signature);
+        return _thunderCryptoKey;
+      }
+    }
+  } catch {}
+  // No session — conversations stay locked until lockin
+  throw new Error('Thunder locked — lockin required');
 }
 
 interface ThunderLogEntry {
@@ -3368,7 +3393,8 @@ interface ThunderLogEntry {
 async function _storeThunderLocal(_ownerName: string, recipientName: string, message: string, dir: 'in' | 'out' = 'out', fromName?: string): Promise<void> {
   const ws = getState();
   if (!ws.address) return;
-  const key = await _deriveThunderKey(ws.address);
+  let key: CryptoKey;
+  try { key = await _deriveThunderKey(ws.address); } catch { return; } // locked
   // Key by wallet address — stable across primary name changes
   const storageKey = `ski:thunder-log:${ws.address}`;
 
@@ -3404,7 +3430,8 @@ async function _storeThunderLocal(_ownerName: string, recipientName: string, mes
 async function _readThunderLog(): Promise<ThunderLogEntry[]> {
   const ws = getState();
   if (!ws.address) return [];
-  const key = await _deriveThunderKey(ws.address);
+  let key: CryptoKey;
+  try { key = await _deriveThunderKey(ws.address); } catch { return []; } // locked
   const storageKey = `ski:thunder-log:${ws.address}`;
   try {
     const raw = localStorage.getItem(storageKey);
@@ -3434,7 +3461,8 @@ async function _getConversation(counterparty: string): Promise<ThunderLogEntry[]
 async function _removeLastThunderLocal(_senderName: string): Promise<void> {
   const ws = getState();
   if (!ws.address) return;
-  const key = await _deriveThunderKey(ws.address);
+  let key: CryptoKey;
+  try { key = await _deriveThunderKey(ws.address); } catch { return; } // locked
   const storageKey = `ski:thunder-log:${ws.address}`;
   try {
     const raw = localStorage.getItem(storageKey);
@@ -7908,6 +7936,7 @@ async function handleDisconnect(reopenModal = false) {
   _thunderLocalCounts = {};
   _thunderDecryptBusy = false;
   _thunderConvoOpen = false;
+  _thunderCryptoKey = null;
   try { localStorage.removeItem('ski:thunder-card-open'); } catch {}
   try { localStorage.removeItem('ski:ns-variant'); } catch {}
   try { sessionStorage.removeItem('ski:thunder-convo'); } catch {}
