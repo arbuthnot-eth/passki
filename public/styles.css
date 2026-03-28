@@ -2197,16 +2197,10 @@ body {
   align-items: center;
   gap: 5px;
 }
-.wk-ns-owned-logo-wrap {
-  display: inline-block;
-  height: 18px;
-  overflow: hidden;
-  width: 40px;
-}
 .wk-ns-owned-logo {
-  height: 36px;
+  height: 18px;
   width: auto;
-  margin-top: -14px;
+  fill: white;
 }
 .wk-ns-owned-label {
   font-size: 0.85rem;
