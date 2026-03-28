@@ -3647,7 +3647,7 @@ function _nsOwnedListHtml(): string {
   if (yearlyUsd > 0) {
     statsHtml = `<div class="wk-ns-owned-stats"><span class="wk-ns-owned-renewal">$${monthlyUsd.toFixed(2)}/mo</span><span class="wk-ns-owned-savings">-$${monthlySavings.toFixed(2)}/mo</span></div>`;
   }
-  const header = `<div class="wk-ns-owned-header"><span class="wk-ns-owned-title">SKI Roster<span class="wk-ns-owned-tally">${totalOwned}</span></span>${statsHtml}</div>`;
+  const header = `<div class="wk-ns-owned-header"><span class="wk-ns-owned-title"><img src="${SKI_SVG_URI}" alt="SKI" class="wk-ns-owned-logo"><span class="wk-ns-owned-tally">${totalOwned}</span></span>${statsHtml}</div>`;
 
   // QR code — render inline from cache when possible, async-load on miss
   // Shade-aware: red QR when shade order exists or domain is in grace with no shade
