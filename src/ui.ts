@@ -7295,7 +7295,7 @@ function renderSkiMenu() {
     } catch { /* silent */ }
   };
   _pollThunder();
-  _thunderPollTimer = setInterval(_pollThunder, 7_000);
+  _thunderPollTimer = setInterval(_pollThunder, 30_000);
 
   // Prune stale shade orders (consumed/cancelled) on first menu open
   // + auto-schedule any unscheduled orders with the ShadeExecutorAgent DO

@@ -245,6 +245,17 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
  * When senderAddress is provided, requires the sender to own a SuiNS
  * registration NFT (403 if not).
  */
+// Proxy JSON-RPC to PublicNode (avoids CORS from browser)
+app.post('/api/sui-rpc', async (c) => {
+  const body = await c.req.text();
+  const res = await fetch('https://sui-rpc.publicnode.com', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body,
+  });
+  return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
+});
+
 app.post('/api/sponsor-gas', async (c) => {
   const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
   if (!key) return c.json({ error: 'Gas sponsorship not configured' }, 503);

@@ -120,8 +120,6 @@ export async function buildThunderSendTx(
 
 // ─── Query ───────────────────────────────────────────────────────────
 
-const RPC_URL = 'https://sui-rpc.publicnode.com';
-
 /** Count pending strikes for a single SuiNS name. */
 export async function getThunderCount(recipientName: string): Promise<number> {
   const counts = await getThunderCountsBatch([recipientName]);
@@ -130,9 +128,9 @@ export async function getThunderCount(recipientName: string): Promise<number> {
 }
 
 /**
- * Get thunder counts for ALL names in one batch.
- * 1 gRPC call (listDynamicFields) + 1 JSON-RPC batch (getObject per cloud).
- * Returns a map of bareName → count.
+ * Get thunder presence for ALL names in one gRPC call.
+ * Lists dynamic fields on Storm — if a cloud exists for a name hash, it has ≥1 strike.
+ * Returns a map of bareName → 1 (has thunder) or 0 (no thunder).
  */
 export async function getThunderCountsBatch(names: string[]): Promise<Record<string, number>> {
   const result: Record<string, number> = {};
@@ -149,42 +147,18 @@ export async function getThunderCountsBatch(names: string[]): Promise<Record<str
   }
 
   try {
-    // 1. List all clouds on Storm via gRPC (one call)
+    // One gRPC call — list all clouds on Storm
     const { grpcClient } = await import('../rpc.js');
     const dfResult = await grpcClient.listDynamicFields({ parentId: STORM_ID });
     const fields = dfResult.dynamicFields ?? [];
-    if (fields.length === 0) return result;
 
     // Match clouds to our names
-    const cloudIds: Array<{ fieldId: string; bare: string }> = [];
     for (const df of fields) {
-      // Extract name hash from BCS (skip length prefix byte)
       const bcsValues = Object.values(df.name.bcs as Record<string, number>);
-      const nameBytes = bcsValues.slice(1); // skip length prefix
+      const nameBytes = bcsValues.slice(1); // skip BCS length prefix
       const hex = nameBytes.map((b: number) => b.toString(16).padStart(2, '0')).join('');
       if (hashToBare[hex]) {
-        cloudIds.push({ fieldId: df.fieldId, bare: hashToBare[hex] });
-      }
-    }
-
-    if (cloudIds.length === 0) return result;
-
-    // 2. Batch fetch all matching cloud objects via JSON-RPC (one call)
-    const batchReq = cloudIds.map((c, i) => ({
-      jsonrpc: '2.0', id: i,
-      method: 'sui_getObject',
-      params: [c.fieldId, { showContent: true }],
-    }));
-    const res = await fetch(RPC_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(batchReq),
-    });
-    const batchRes = await res.json() as any[];
-    for (let i = 0; i < batchRes.length; i++) {
-      const strikes = batchRes[i]?.result?.data?.content?.fields?.value?.fields?.strikes;
-      if (Array.isArray(strikes)) {
-        result[cloudIds[i].bare] = strikes.length;
+        result[hashToBare[hex]] = 1; // cloud exists = has thunder
       }
     }
   } catch { /* return cached zeros */ }
@@ -262,7 +236,7 @@ export async function decryptAndQuest(
   if (struck.length === 0 && result.digest) {
     // Wait briefly for tx to be indexed
     await new Promise(r => setTimeout(r, 2000));
-    const txRes = await fetch(RPC_URL, {
+    const txRes = await fetch('/api/sui-rpc', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
