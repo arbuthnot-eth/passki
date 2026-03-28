@@ -3153,6 +3153,10 @@ let nsShowTargetInput = false; // target-address inline editor open
 let nsNewTargetAddr = ''; // value in the target-address input
 let nsTransferInputOpen = false; // transfer-recipient inline editor open
 let nsTransferRecipient = ''; // value in the transfer-recipient input
+let _thunderCount = 0; // pending Thunders for user's primary SuiNS name
+let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
+let _thunderSessionKey: import('@mysten/seal').SessionKey | null = null;
+let _thunderDecryptBusy = false;
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
 let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
 let nsRealOwnerAddr = ''; // discovered on-chain owner address (WaaP wallets differ from wallet address)
@@ -3563,10 +3567,14 @@ function _nsOwnedListHtml(): string {
     let badge = '';
     if (d.inKiosk) badge = '<span class="wk-ns-owned-kiosk">listed</span>';
     else if (d.kind === 'cap') badge = '<span class="wk-ns-owned-cap">cap</span>';
+    let thunderHtml = '';
+    if (_thunderCount > 0 && app.suinsName && bare.toLowerCase() === app.suinsName.replace(/\.sui$/, '').toLowerCase()) {
+      thunderHtml = `<span class="wk-ns-thunder-badge" data-thunder-count="${_thunderCount}">\u26a1${_thunderCount > 1 ? _thunderCount : ''}</span>`;
+    }
     const kioskCls = d.inKiosk ? ' wk-ns-owned-chip--kiosk' : '';
     const dimCls = hasFilter && !matches ? ' wk-ns-owned-chip--dim' : '';
     return {
-      html: `<button class="wk-ns-owned-chip${kioskCls}${dimCls}" data-domain="${esc(bare)}" type="button" title="${esc(d.name)}">${shapeSvg}${esc(bare)}${badge}${expiryHtml}</button>`,
+      html: `<button class="wk-ns-owned-chip${kioskCls}${dimCls}" data-domain="${esc(bare)}" type="button" title="${esc(d.name)}">${shapeSvg}${esc(bare)}${badge}${expiryHtml}${thunderHtml}</button>`,
       matches,
     };
   });
@@ -7180,6 +7188,22 @@ function renderSkiMenu() {
   _discoverRealOwner();
   _fetchOwnedDomains();
 
+  // Thunder inbox polling
+  if (_thunderPollTimer) clearInterval(_thunderPollTimer);
+  const _pollThunder = async () => {
+    if (!app.suinsName) return;
+    try {
+      const { getThunderCount } = await import('./client/thunder.js');
+      const count = await getThunderCount(app.suinsName);
+      if (count !== _thunderCount) {
+        _thunderCount = count;
+        _patchNsOwnedList();
+      }
+    } catch { /* silent */ }
+  };
+  _pollThunder();
+  _thunderPollTimer = setInterval(_pollThunder, 30_000);
+
   // Prune stale shade orders (consumed/cancelled) on first menu open
   // + auto-schedule any unscheduled orders with the ShadeExecutorAgent DO
   if (!nsShadeOrdersPruned && ws.address) {
@@ -7382,6 +7406,10 @@ async function handleDisconnect(reopenModal = false) {
   nsShowTargetInput = false;
   nsTransferInputOpen = false;
   nsTransferRecipient = '';
+  _thunderCount = 0;
+  _thunderSessionKey = null;
+  _thunderDecryptBusy = false;
+  if (_thunderPollTimer) { clearInterval(_thunderPollTimer); _thunderPollTimer = null; }
   nsRosterOpen = false; _persistRosterOpen();
   try { sessionStorage.removeItem('ski:roster-scroll'); } catch {}
   closeModal();
