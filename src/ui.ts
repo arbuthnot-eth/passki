@@ -3155,7 +3155,6 @@ let nsTransferInputOpen = false; // transfer-recipient inline editor open
 let nsTransferRecipient = ''; // value in the transfer-recipient input
 let _thunderCount = 0; // pending Thunders for user's primary SuiNS name
 let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
-let _thunderSessionKey: import('@mysten/seal').SessionKey | null = null;
 let _thunderDecryptBusy = false;
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
 let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
@@ -3866,17 +3865,9 @@ function _attachNftPopoverListeners() {
       if (_thunderDecryptBusy) return;
       _thunderDecryptBusy = true;
       try {
-        const { peekThunder, decryptThunder, buildThunderPopTx, createThunderSessionKey } = await import('./client/thunder.js');
+        const { peekThunder, decryptThunder, buildThunderPopTx } = await import('./client/thunder.js');
         const ws = getState();
         if (!ws.address || !app.suinsName) return;
-
-        // Create session key if needed (one-time wallet signature)
-        if (!_thunderSessionKey) {
-          _thunderSessionKey = await createThunderSessionKey(
-            ws.address,
-            (msg: Uint8Array) => signPersonalMessage(msg),
-          );
-        }
 
         // Peek at first pointer
         const pointer = await peekThunder(app.suinsName);
@@ -3890,8 +3881,8 @@ function _attachNftPopoverListeners() {
         const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareName && d.kind === 'nft');
         if (!nft) { showToast('SuiNS NFT not found'); return; }
 
-        // Decrypt
-        const payload = await decryptThunder(blobId, nft.objectId, _thunderSessionKey);
+        // Decrypt (derives key from wallet signature, cached after first use)
+        const payload = await decryptThunder(blobId, (msg: Uint8Array) => signPersonalMessage(msg));
 
         // Show message
         const senderShort = payload.sender || payload.senderAddress.slice(0, 8) + '\u2026';
@@ -5844,7 +5835,9 @@ function renderSkiMenu() {
       try {
         const { encryptThunder, buildThunderDepositTx } = await import('./client/thunder.js');
         const senderName = app.suinsName || '';
-        const result = await encryptThunder(ws3.address, senderName, recipientName, msg);
+        const recipientAddr = nsTargetAddress ?? '';
+        if (!recipientAddr) { showToast('Cannot resolve recipient address'); return; }
+        const result = await encryptThunder(ws3.address, senderName, recipientName, recipientAddr, msg);
         const txBytes = await buildThunderDepositTx(ws3.address, result.nameHashBytes, result.blobId);
         await signAndExecuteTransaction(txBytes);
         showToast(`\u26a1 Thunder sent to ${recipientName}.sui`);
@@ -7471,8 +7464,8 @@ async function handleDisconnect(reopenModal = false) {
   nsTransferInputOpen = false;
   nsTransferRecipient = '';
   _thunderCount = 0;
-  _thunderSessionKey = null;
   _thunderDecryptBusy = false;
+  import('./client/thunder.js').then(m => m.clearThunderSession()).catch(() => {});
   if (_thunderPollTimer) { clearInterval(_thunderPollTimer); _thunderPollTimer = null; }
   nsRosterOpen = false; _persistRosterOpen();
   try { sessionStorage.removeItem('ski:roster-scroll'); } catch {}
