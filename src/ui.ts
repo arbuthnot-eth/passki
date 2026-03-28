@@ -3151,6 +3151,8 @@ let nsLastDigest = ''; // digest from last successful registration; shown in rou
 let nsSubnameParent: OwnedDomain | null = null; // when set, we're in subname-creation mode
 let nsShowTargetInput = false; // target-address inline editor open
 let nsNewTargetAddr = ''; // value in the target-address input
+let nsTransferInputOpen = false; // transfer-recipient inline editor open
+let nsTransferRecipient = ''; // value in the transfer-recipient input
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
 let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
 let nsRealOwnerAddr = ''; // discovered on-chain owner address (WaaP wallets differ from wallet address)
@@ -3489,10 +3491,20 @@ function _nsRouteHtml(): string {
   let extra = '';
   if (nsAvail === 'grace') extra = `<span class="wk-ns-target-grace">${nsShadeOrder ? _graceCountdownPrecise() : _graceEndDate()}</span>`;
 
+  // Transfer input mode — replace target row with recipient input
+  if (nsTransferInputOpen && canEditTarget) {
+    return `<div class="wk-ns-target-row wk-ns-target-row--green wk-ns-target-row--transfer-input">
+      <input id="wk-ns-transfer-input" class="wk-ns-transfer-input" type="text" value="${esc(nsTransferRecipient)}" placeholder="name.sui or 0x\u2026" spellcheck="false" autocomplete="off">
+      <button id="wk-ns-transfer-submit" class="wk-ns-transfer-submit" type="button" title="Transfer NFT">\u2192</button>
+      <button id="wk-ns-transfer-cancel" class="wk-ns-transfer-cancel" type="button" title="Cancel">\u2715</button>
+    </div>`;
+  }
+
   const isDim = colorClass === 'wk-ns-target-row--dim';
   const rowCls = isDim ? 'wk-ns-target-row--toggle' : 'wk-ns-target-row--copy';
   const rowTitle = isDim ? 'Show names' : `Copy Target ${shortAddr}`;
-  return `<div class="wk-ns-target-row ${colorClass} ${rowCls}"${isDim ? '' : ` data-copy-target="${esc(displayAddr)}"`} title="${rowTitle}"><span class="wk-ns-target-icon${canEditTarget ? ' wk-ns-target-icon--editable' : ''}"${iconId}${iconTitle}>\u25ce</span><span class="wk-ns-target-addr">${shortAddr}</span>${extra}</div>`;
+  const transferBtn = canEditTarget ? `<button id="wk-ns-transfer-btn" class="wk-ns-transfer-btn" type="button" title="Transfer ${esc(nsLabel)}.sui NFT">\u27a4</button>` : '';
+  return `<div class="wk-ns-target-row ${colorClass} ${rowCls}"${isDim ? '' : ` data-copy-target="${esc(displayAddr)}"`} title="${rowTitle}"><span class="wk-ns-target-icon${canEditTarget ? ' wk-ns-target-icon--editable' : ''}"${iconId}${iconTitle}>\u25ce</span><span class="wk-ns-target-addr">${shortAddr}</span>${extra}${transferBtn}</div>`;
 }
 
 function _nsOwnedListHtml(): string {
