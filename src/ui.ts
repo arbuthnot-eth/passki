@@ -8856,9 +8856,22 @@ function bindEvents() {
         const btn = e.currentTarget as HTMLButtonElement;
         btn.style.opacity = '0.4';
         try {
-          // Calculate 95% of SUI balance (keep 5% for gas)
-          const suiBal = app.sui;
-          const swapAmount = Math.floor(suiBal * 0.95 * 1e9); // 95% in MIST
+          // Fetch fresh SUI balance via RPC (don't rely on cached app.sui)
+          const { grpcClient: _gc } = await import('../rpc.js');
+          const _bals = await _gc.core.listBalances({ owner: ws.address }).catch(() => null);
+          let suiBalMist = 0n;
+          if (_bals?.balances) {
+            for (const b of _bals.balances) {
+              if (b.coinType?.includes('::sui::SUI') || b.coinType?.includes('0x2::sui::SUI')) {
+                suiBalMist = BigInt(b.totalBalance ?? '0');
+              }
+            }
+          }
+          if (suiBalMist === 0n) {
+            // Fallback to app.sui
+            suiBalMist = BigInt(Math.floor((app.sui || 0) * 1e9));
+          }
+          const swapAmount = Number(suiBalMist * 95n / 100n); // 95%
           if (swapAmount < 10_000_000) { showToast('Insufficient balance'); return; }
 
           // Build PTB: attest SUI as collateral → mint iUSD
