@@ -39,6 +39,23 @@ const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe1
 
 // ─── Types ────────────────────────────────────────────────────────────
 
+// ─── t2000 Agent Registry ─────────────────────────────────────────────
+
+interface T2000Agent {
+  designation: string;
+  mission: 'arb' | 'sweep' | 'snipe' | 'farm' | 'watch' | 'route' | 'storm';
+  objectId: string;        // on-chain T2000 object ID
+  dwalletId: string;       // IKA dWallet controlling this agent
+  operator: address;
+  deployed_ms: number;
+  total_profit_mist: string;
+  last_run_ms: number;
+  runs: number;
+  active: boolean;
+}
+
+type address = string;
+
 interface YieldPosition {
   protocol: string;     // 'navi' | 'scallop'
   asset: string;        // coin type
@@ -60,6 +77,7 @@ interface ArbOpportunity {
 export interface TreasuryAgentsState {
   positions: YieldPosition[];
   arb_history: ArbOpportunity[];
+  t2000s: T2000Agent[];
   total_arb_profit_mist: string;
   total_yield_earned_mist: string;
   last_rebalance_ms: number;
@@ -87,6 +105,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   initialState: TreasuryAgentsState = {
     positions: [],
     arb_history: [],
+    t2000s: [],
     total_arb_profit_mist: '0',
     total_yield_earned_mist: '0',
     last_rebalance_ms: 0,
@@ -106,10 +125,27 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
+    if ((url.pathname.endsWith('/register-t2000') || url.searchParams.has('register-t2000')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as Parameters<typeof this.registerT2000>[0];
+        const result = await this.registerT2000(params);
+        return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    if (url.pathname.endsWith('/t2000s') || url.searchParams.has('t2000s')) {
+      return new Response(JSON.stringify({ agents: this.state.t2000s ?? [] }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
     if (url.pathname.endsWith('/status') || url.searchParams.has('status')) {
       return new Response(JSON.stringify({
         positions: this.state.positions,
         arb_count: this.state.arb_history.length,
+        t2000_count: (this.state.t2000s ?? []).filter(a => a.active).length,
         total_arb_profit: this.state.total_arb_profit_mist,
         total_yield_earned: this.state.total_yield_earned_mist,
         last_rebalance: this.state.last_rebalance_ms,
@@ -145,8 +181,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     });
 
     try {
-      // Every tick: scan for arb
+      // Every tick: scan for arb + run t2000 missions
       await this._scanArb();
+      await this._runT2000Missions();
 
       // Every 15 min: check yield rotation
       const FIFTEEN_MIN = 15 * 60 * 1000;
@@ -420,6 +457,154 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   @callable()
   async getArbHistory(): Promise<ArbOpportunity[]> {
     return this.state.arb_history;
+  }
+
+  // ─── t2000 Agent Management ──────────────────────────────────────────
+
+  /** Register a deployed t2000 agent. Called after on-chain deploy(). */
+  @callable()
+  async registerT2000(params: {
+    designation: string;
+    mission: T2000Agent['mission'];
+    objectId: string;
+    dwalletId: string;
+    operator: string;
+  }): Promise<{ success: boolean }> {
+    const existing = (this.state.t2000s ?? []).find(a => a.objectId === params.objectId);
+    if (existing) return { success: false };
+
+    const agent: T2000Agent = {
+      ...params,
+      deployed_ms: Date.now(),
+      total_profit_mist: '0',
+      last_run_ms: 0,
+      runs: 0,
+      active: true,
+    };
+
+    this.setState({
+      ...this.state,
+      t2000s: [...(this.state.t2000s ?? []), agent],
+    });
+
+    console.log(`[TreasuryAgents] t2000 registered: ${params.designation} (${params.mission})`);
+    return { success: true };
+  }
+
+  /** Deactivate a t2000 agent. */
+  @callable()
+  async deactivateT2000(params: { objectId: string }): Promise<{ success: boolean }> {
+    this.setState({
+      ...this.state,
+      t2000s: (this.state.t2000s ?? []).map(a =>
+        a.objectId === params.objectId ? { ...a, active: false } : a,
+      ),
+    });
+    return { success: true };
+  }
+
+  /** Get all registered t2000 agents. */
+  @callable()
+  async getT2000s(): Promise<T2000Agent[]> {
+    return this.state.t2000s ?? [];
+  }
+
+  /** Execute missions for all active t2000 agents. Called from _tick(). */
+  private async _runT2000Missions() {
+    const agents = (this.state.t2000s ?? []).filter(a => a.active);
+    if (agents.length === 0) return;
+
+    for (const agent of agents) {
+      try {
+        let profitMist = 0n;
+
+        switch (agent.mission) {
+          case 'arb':
+            // Arb agents run the same scanner but track profit per-agent
+            await this._scanArb();
+            break;
+
+          case 'sweep':
+            // Sweep agents run fee collection
+            const sweepResult = await this.sweepFees();
+            if (sweepResult.swept && sweepResult.amount) {
+              profitMist = BigInt(sweepResult.amount) / 100n; // attribute 1% as agent profit
+            }
+            break;
+
+          case 'farm':
+            // Farm agents are the yield rotator
+            // Profit attributed from yield earned since last run
+            break;
+
+          case 'watch':
+            // Liquidation monitor — scans health factors
+            // TODO: implement liquidation scanning + execution
+            break;
+
+          case 'route':
+            // Maker bot — places resting limit orders on DeepBook
+            // TODO: implement maker order placement
+            break;
+
+          case 'storm':
+            // Thunder Storm agent — sweeps ragtags, manages thunder counts
+            // TODO: implement ragtag sweep scheduling
+            break;
+
+          case 'snipe':
+            // Shade sniper — handled by ShadeExecutorAgent
+            break;
+        }
+
+        // Update agent stats
+        this.setState({
+          ...this.state,
+          t2000s: (this.state.t2000s ?? []).map(a => {
+            if (a.objectId !== agent.objectId) return a;
+            return {
+              ...a,
+              last_run_ms: Date.now(),
+              runs: a.runs + 1,
+              total_profit_mist: String(BigInt(a.total_profit_mist) + profitMist),
+            };
+          }),
+        });
+
+        // Report profit on-chain if significant (>0.01 SUI)
+        if (profitMist > 10_000_000n && this.env.SHADE_KEEPER_PRIVATE_KEY) {
+          try {
+            const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+            const keeperAddr = keypair.getPublicKey().toSuiAddress();
+            const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+            const T2000_PKG = '0x3e708a6e1dfd6f96b54e0145613d505e508577df4a80aa5523caf380abba5e33';
+
+            const tx = new Transaction();
+            tx.setSender(normalizeSuiAddress(keeperAddr));
+            tx.moveCall({
+              package: T2000_PKG,
+              module: 't2000',
+              function: 'report_mission',
+              arguments: [
+                tx.object(agent.objectId),
+                tx.pure.vector('u8', Array.from(new TextEncoder().encode(agent.mission))),
+                tx.pure.u64(profitMist),
+                tx.object('0x6'),
+              ],
+            });
+
+            const txBytes = await tx.build({ client: transport as never });
+            const { signature } = await keypair.signTransaction(txBytes);
+            await this._submitTx(txBytes, signature);
+            console.log(`[TreasuryAgents] t2000 ${agent.designation}: reported ${profitMist} MIST profit`);
+          } catch (err) {
+            console.error(`[TreasuryAgents] t2000 ${agent.designation}: report_mission failed:`, err);
+          }
+        }
+      } catch (err) {
+        console.error(`[TreasuryAgents] t2000 ${agent.designation} mission failed:`, err);
+      }
+    }
   }
 
   // ─── IKA DKG (emergency provisioning) ────────────────────────────────
