@@ -8881,57 +8881,57 @@ function bindEvents() {
           const TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
           const TREASURY_CAP = '0x868d560ab460e416ced3d348dc62e808557fb9f516cecc5dae9f914f6466bc05';
 
-          const tx = new Transaction();
-          tx.setSender(walletAddr);
-
-          // 1. Attest SUI value as senior tranche collateral
-          // Value in MIST = swapAmount (1 SUI MIST = 1 iUSD MIST at $3/SUI...
-          // but we need USD value. Use suiPrice if available)
           const suiPrice = suiPriceCache?.price ?? 3;
-          const usdValue = Math.floor((swapAmount / 1e9) * suiPrice * 1e6); // iUSD has 6 decimals
-          const collateralValueMist = BigInt(swapAmount); // store raw SUI MIST as value
+          const collateralValueMist = BigInt(swapAmount);
+          const usdValue = Math.floor((swapAmount / 1e9) * suiPrice * 1e6);
+          const mintAmount = BigInt(Math.floor(usdValue / 1.5));
+          if (mintAmount <= 0n) { showToast('Amount too small'); return; }
 
-          tx.moveCall({
+          // Step 1: Attest collateral
+          showToast('\ud83c\udf0d Attesting collateral...');
+          const tx1 = new Transaction();
+          tx1.setSender(walletAddr);
+          tx1.moveCall({
             package: IUSD_PKG,
             module: 'iusd',
             function: 'update_collateral',
             arguments: [
-              tx.object(TREASURY),
-              tx.pure.vector('u8', Array.from(new TextEncoder().encode('SUI'))),
-              tx.pure.vector('u8', Array.from(new TextEncoder().encode('sui'))),
-              tx.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
-              tx.pure.u64(collateralValueMist),
-              tx.pure.u8(0), // senior tranche
-              tx.object('0x6'),
+              tx1.object(TREASURY),
+              tx1.pure.vector('u8', Array.from(new TextEncoder().encode('SUI'))),
+              tx1.pure.vector('u8', Array.from(new TextEncoder().encode('sui'))),
+              tx1.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+              tx1.pure.u64(collateralValueMist),
+              tx1.pure.u8(0),
+              tx1.object('0x6'),
             ],
           });
+          let bytes1: Uint8Array & { tx?: unknown };
+          try { bytes1 = await tx1.build({ client: grpcClient as never }) as any; }
+          catch { const { SuiGraphQLClient: G } = await import('@mysten/sui/graphql'); bytes1 = await tx1.build({ client: new G({ url: GQL_URL, network: 'mainnet' }) as never }) as any; }
+          bytes1.tx = tx1;
+          await signAndExecuteTransaction(bytes1);
 
-          // 2. Mint iUSD — amount based on collateral at 150% ratio
-          const mintAmount = BigInt(Math.floor(usdValue / 1.5)); // 150% collateral ratio
-          if (mintAmount <= 0n) { showToast('Amount too small'); return; }
-
-          tx.moveCall({
+          // Step 2: Mint iUSD
+          showToast('\ud83c\udf0d Minting iUSD...');
+          const tx2 = new Transaction();
+          tx2.setSender(walletAddr);
+          tx2.moveCall({
             package: IUSD_PKG,
             module: 'iusd',
             function: 'mint_and_transfer',
             arguments: [
-              tx.object(TREASURY_CAP),
-              tx.object(TREASURY),
-              tx.pure.u64(mintAmount),
-              tx.pure.address(walletAddr),
+              tx2.object(TREASURY_CAP),
+              tx2.object(TREASURY),
+              tx2.pure.u64(mintAmount),
+              tx2.pure.address(walletAddr),
             ],
           });
+          let bytes2: Uint8Array & { tx?: unknown };
+          try { bytes2 = await tx2.build({ client: grpcClient as never }) as any; }
+          catch { const { SuiGraphQLClient: G } = await import('@mysten/sui/graphql'); bytes2 = await tx2.build({ client: new G({ url: GQL_URL, network: 'mainnet' }) as never }) as any; }
+          bytes2.tx = tx2;
+          await signAndExecuteTransaction(bytes2);
 
-          let bytes: Uint8Array & { tx?: unknown };
-          try {
-            bytes = await tx.build({ client: grpcClient as never }) as Uint8Array & { tx?: unknown };
-          } catch {
-            const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
-            const _gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-            bytes = await tx.build({ client: _gql as never }) as Uint8Array & { tx?: unknown };
-          }
-          bytes.tx = tx;
-          await signAndExecuteTransaction(bytes);
           showToast(`\ud83c\udf0d ${(Number(mintAmount) / 1e6).toFixed(2)} iUSD minted`);
           refreshPortfolio(true);
         } catch (err) {
@@ -9059,9 +9059,10 @@ function bindEvents() {
         };
         setTimeout(_tryClickSuiami, 500);
       };
-      // GIF click triggers SUIAMI (overlay stays), but not on focus-restore click
+      // GIF click triggers SUIAMI (overlay stays), but not on iUSD button or focus-restore
       _idleOverlay.querySelector('.ski-idle-media')?.addEventListener('click', (e) => {
         e.stopPropagation();
+        if ((e.target as HTMLElement).closest('#ski-idle-iusd')) return; // handled by iUSD button
         if (!_hadFocus) return; // first click is just restoring window focus
         _triggerSuiami();
       });
