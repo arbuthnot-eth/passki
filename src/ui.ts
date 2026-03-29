@@ -8829,15 +8829,18 @@ function bindEvents() {
         const addr = nsTargetAddress || nsNftOwner || ws.address || '';
         if (!addr) return;
         const short = `${addr.slice(0, 10)}\u2026${addr.slice(-6)}`;
-        const btcLine = app.btcAddress ? `<span class="ski-idle-addr-chain">btc ${app.btcAddress.slice(0, 8)}\u2026${app.btcAddress.slice(-4)}</span>` : '';
-        const solLine = app.solAddress ? `<span class="ski-idle-addr-chain">sol ${app.solAddress.slice(0, 6)}\u2026${app.solAddress.slice(-4)}</span>` : '';
-        const ethLine = app.ethAddress ? `<span class="ski-idle-addr-chain">eth ${app.ethAddress.slice(0, 6)}\u2026${app.ethAddress.slice(-4)}</span>` : '';
-        addrRow.innerHTML = `
-          <span class="ski-idle-addr-text" title="${addr}" style="cursor:pointer">sui ${short}</span>
-          ${btcLine}${solLine}${ethLine}
-        `;
+        const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
+        const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
+        const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
+        const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#627eea" stroke="white" stroke-width="3"/><text x="20" y="21" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="20" font-weight="700" fill="white">\u039E</text></svg></span>`;
+
+        const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
+        const btcLine = app.btcAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${app.btcAddress}">${btcIcon} ${app.btcAddress.slice(0, 8)}\u2026${app.btcAddress.slice(-4)}</span>` : '';
+        const solLine = app.solAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${app.solAddress}">${solIcon} ${app.solAddress.slice(0, 6)}\u2026${app.solAddress.slice(-4)}</span>` : '';
+        const ethLine = app.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${app.ethAddress}">${ethIcon} ${app.ethAddress.slice(0, 6)}\u2026${app.ethAddress.slice(-4)}</span>` : '';
+        addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}`;
         addrRow.removeAttribute('hidden');
-        addrRow.querySelectorAll('.ski-idle-addr-text, .ski-idle-addr-chain').forEach(el => {
+        addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
           el.addEventListener('click', (ev) => {
             ev.stopPropagation();
             const full = (el as HTMLElement).title || addr;
