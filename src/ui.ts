@@ -8664,13 +8664,26 @@ function bindEvents() {
       _idleOverlay.style.width = `${width}px`;
       _idleOverlay.style.height = `${height}px`;
       _idleOverlay.innerHTML = `
-        <a href="https://x.com/brando_sui/status/2038116096675344614" target="_blank" rel="noopener" class="ski-idle-media">
+        <div class="ski-idle-media">
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
-        </a>
+        </div>
         <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow">Follow @brando_sui</a>
       `;
+      const _dismissIdle = () => {
+        _idleOverlay?.remove(); _idleOverlay = null; _resetIdle();
+        if (!app.skiMenuOpen && getState().address) {
+          app.skiMenuOpen = true;
+          try { localStorage.setItem('ski:lift', '1'); } catch {}
+          render();
+        }
+      };
+      // GIF click dismisses, only Follow button redirects
+      _idleOverlay.querySelector('.ski-idle-media')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _dismissIdle();
+      });
       _idleOverlay.addEventListener('click', (e) => {
-        if (!(e.target as HTMLElement).closest('a')) { _idleOverlay?.remove(); _idleOverlay = null; _resetIdle(); }
+        if (!(e.target as HTMLElement).closest('a')) _dismissIdle();
       });
       document.body.appendChild(_idleOverlay);
     }, IDLE_MS);
