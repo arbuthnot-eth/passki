@@ -2990,6 +2990,7 @@ body {
   display: flex;
   width: 100%;
   position: relative;
+  margin-top: -4px;
 }
 .ski-idle-thunder-input {
   width: 100%;
