@@ -22,6 +22,28 @@ async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown
   return bytes;
 }
 
+// ─── iUSD Treasury Fee ─────────────────────────────────────────────────
+
+/** iUSD treasury address — receives 5% registration cut + other protocol fees.
+ *  Will be updated to IKA dWallet-controlled multisig. */
+const IUSD_TREASURY = '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57'; // TODO: update to multisig
+
+/** Add a 5% treasury fee to a registration PTB. Splits from gas coin.
+ *  @param tx - the Transaction to modify
+ *  @param priceUsd - the full USD price of the name (not discounted)
+ *  @param suiPrice - current SUI/USD price for conversion
+ */
+function addRegistrationFee(tx: InstanceType<typeof Transaction>, priceUsd: number, suiPrice?: number) {
+  if (!suiPrice || suiPrice <= 0 || priceUsd <= 0) return;
+  const feePct = 0.05; // 5%
+  const feeUsd = priceUsd * feePct;
+  const feeSui = feeUsd / suiPrice;
+  const feeMist = BigInt(Math.ceil(feeSui * 1e9));
+  if (feeMist <= 0n) return;
+  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(feeMist)]);
+  tx.transferObjects([feeCoin], tx.pure.address(IUSD_TREASURY));
+}
+
 // ─── Contract constants ────────────────────────────────────────────────
 
 /** Original mainnet subdomains package (new_leaf / new). */
@@ -808,6 +830,9 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     // Return NS remainder to wallet
     tx.transferObjects([nsCoin], tx.pure.address(walletAddress));
 
+    // 5% of full price → iUSD treasury
+    addRegistrationFee(tx, basePriceUsd, suiPrice);
+
     return buildWithTx(tx, transport);
   };
 
@@ -849,6 +874,9 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     tx.transferObjects([nsCoin], tx.pure.address('0x0'));
     tx.transferObjects([usdcSwapChange, usdcCoin, deepChange], tx.pure.address(walletAddress));
 
+    // 5% of full price → iUSD treasury
+    addRegistrationFee(tx, basePriceUsd, suiPrice);
+
     return buildWithTx(tx, transport);
   };
 
@@ -878,6 +906,9 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     tx.transferObjects([nft], tx.pure.address(walletAddress));
 
     tx.mergeCoins(tx.gas, [suiPayment]);
+
+    // 5% of full price → iUSD treasury
+    addRegistrationFee(tx, basePriceUsd, suiPrice);
 
     return buildWithTx(tx, transport);
   };

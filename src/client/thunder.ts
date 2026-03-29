@@ -98,9 +98,12 @@ export async function buildThunderSendTx(
   const mask = keccak_256(nftRawBytes);
   const maskedKey = xorBytes(key, mask);
 
-  // Build PTB — one move call: thunder::thunder::signal
+  // Build PTB — signal with fee
+  // Fee: 0.003 SUI ≈ $0.009 iUSD equivalent, split from gas coin
+  const SIGNAL_FEE_MIST = 3_000_000; // 0.003 SUI
   const tx = new Transaction();
   tx.setSender(normalizeSuiAddress(senderAddress));
+  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(SIGNAL_FEE_MIST)]);
   tx.moveCall({
     package: THUNDER_PACKAGE_ID,
     module: 'thunder',
@@ -111,6 +114,7 @@ export async function buildThunderSendTx(
       tx.pure.vector('u8', Array.from(ciphertext)),
       tx.pure.vector('u8', Array.from(maskedKey)),
       tx.pure.vector('u8', Array.from(nonce)),
+      feeCoin,
       tx.object('0x6'),
     ],
   });

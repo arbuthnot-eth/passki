@@ -133,6 +133,7 @@ public fun execute(
     execute_after_ms: u64,
     target_address: address,
     salt: vector<u8>,
+    treasury: address,
     clock: &Clock,
     ctx: &mut TxContext,
 ): Coin<SUI> {
@@ -147,19 +148,29 @@ public fun execute(
     let hash = keccak256(&preimage);
     assert!(hash == order.commitment, EInvalidCommitment);
 
+    let deposit_amount = order.deposit.value();
+
     // Emit before consuming
     event::emit(OrderExecuted {
         order_id: object::id(&order),
         executor: ctx.sender(),
         domain,
         target_address,
-        deposit: order.deposit.value(),
+        deposit: deposit_amount,
     });
 
-    // Consume order → coin
+    // Consume order
     let ShadeOrder { id, owner: _, deposit, commitment: _, sealed_payload: _ } = order;
     id.delete();
-    coin::from_balance(deposit, ctx)
+
+    // Split 10% to iUSD treasury, return 90% for registration
+    let fee_amount = deposit_amount / 10;
+    let mut deposit_balance = deposit;
+    let fee_balance = deposit_balance.split(fee_amount);
+    let fee_coin = coin::from_balance(fee_balance, ctx);
+    transfer::public_transfer(fee_coin, treasury);
+
+    coin::from_balance(deposit_balance, ctx)
 }
 
 // ─── Cancel ──────────────────────────────────────────────────────────
