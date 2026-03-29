@@ -8934,11 +8934,9 @@ function bindEvents() {
         if (e.key === 'Enter') { e.preventDefault(); _sendIdleThunder(); }
       });
       _idleThunderSend?.addEventListener('click', (e) => { e.stopPropagation(); _sendIdleThunder(); });
-      // Click outside GIF/input/follow dismisses
+      // Nothing in the overlay dismisses it — only successful action or header button
       _idleOverlay.addEventListener('click', (e) => {
-        const t = e.target as HTMLElement;
-        if (t.closest('a') || t.closest('.ski-idle-media') || t.closest('.ski-idle-thunder-row')) return;
-        _dismissIdle();
+        e.stopPropagation();
       });
       document.body.appendChild(_idleOverlay);
   };
