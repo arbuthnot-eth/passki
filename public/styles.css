@@ -1284,9 +1284,12 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
-  max-width: 100%;
-  overflow: hidden;
+}
+.wk-send-quick-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex-shrink: 0;
 }
 /* Amount input wrapper for inline clear button */
 .wk-send-amount-wrap {

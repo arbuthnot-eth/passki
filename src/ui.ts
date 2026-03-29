@@ -5735,8 +5735,10 @@ function renderSkiMenu() {
                   </div>
                 </div>
                 <div class="wk-send-row-below">
-                  <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
-                  <button id="wk-send-min" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 0.01">0.01</button>
+                  <div class="wk-send-quick-stack">
+                    <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
+                    <button id="wk-send-min" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 0.01">0.01</button>
+                  </div>
                   <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
               </div>
