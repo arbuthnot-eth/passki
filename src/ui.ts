@@ -8693,7 +8693,10 @@ function bindEvents() {
           <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off">
           <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button">\u26a1</button>
         </div>
-        <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
+        <div class="ski-idle-bottom-row">
+          <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
+          <button class="ski-idle-next" id="ski-idle-next" type="button" title="Next page">\u203a</button>
+        </div>
       `;
 
       // Populate card if we have a domain
@@ -8798,6 +8801,58 @@ function bindEvents() {
       });
 
       _updateIdleStatus();
+
+      // Next page → t2000 page
+      _idleOverlay.querySelector('#ski-idle-next')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!_idleOverlay) return;
+        const t2000s = (self as any).__skiT2000s ?? [];
+        const agentCount = t2000s.length;
+        // Replace overlay content with t2000 page
+        const mediaEl = _idleOverlay.querySelector('.ski-idle-media');
+        const bottomRow = _idleOverlay.querySelector('.ski-idle-bottom-row');
+        const thunderRow = _idleOverlay.querySelector('.ski-idle-thunder-row');
+        const cardEl = _idleOverlay.querySelector('.ski-idle-card');
+        if (mediaEl) mediaEl.innerHTML = `
+          <div class="ski-idle-t2000">
+            <div class="ski-idle-t2000-header">\ud83e\udd16 t2000 Ship</div>
+            <div class="ski-idle-t2000-stat">
+              <span>Agents deployed</span>
+              <span>${agentCount}</span>
+            </div>
+            <div class="ski-idle-t2000-stat">
+              <span>Deploy cost</span>
+              <span>$4.50 iUSD</span>
+            </div>
+            <div class="ski-idle-t2000-missions">
+              <div class="ski-idle-t2000-mission" data-mission="arb">\u26a1 arb</div>
+              <div class="ski-idle-t2000-mission" data-mission="sweep">\ud83e\uddf9 sweep</div>
+              <div class="ski-idle-t2000-mission" data-mission="farm">\ud83c\udf3e farm</div>
+              <div class="ski-idle-t2000-mission" data-mission="watch">\ud83d\udc41 watch</div>
+              <div class="ski-idle-t2000-mission" data-mission="route">\ud83d\udcca route</div>
+              <div class="ski-idle-t2000-mission" data-mission="snipe">\ud83c\udfaf snipe</div>
+              <div class="ski-idle-t2000-mission" data-mission="storm">\u26c8\ufe0f storm</div>
+            </div>
+            <div class="ski-idle-t2000-motto">destroys bridges and wormholes</div>
+          </div>
+        `;
+        // Swap next arrow to back arrow
+        if (bottomRow) {
+          const nextBtn = bottomRow.querySelector('#ski-idle-next');
+          if (nextBtn) {
+            nextBtn.textContent = '\u2039';
+            nextBtn.setAttribute('title', 'Back');
+            (nextBtn as HTMLElement).id = 'ski-idle-back';
+            nextBtn.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              // Rebuild the overlay
+              _idleOverlay?.remove(); _idleOverlay = null;
+              _showIdleOverlay();
+            });
+          }
+        }
+      });
+
       const _dismissIdle = (keepOverlay = false) => {
         if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; }
         _resetIdle();

@@ -3142,6 +3142,89 @@ body {
   background: #1a1a1a;
   border-color: rgba(255, 255, 255, 0.4);
 }
+.ski-idle-bottom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  justify-content: center;
+}
+.ski-idle-next {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  font-size: 1.4rem;
+  font-weight: 300;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.ski-idle-next:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+/* t2000 page on idle overlay */
+.ski-idle-t2000 {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 16px;
+  width: 100%;
+  text-align: center;
+}
+.ski-idle-t2000-header {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: 1px;
+}
+.ski-idle-t2000-stat {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 600;
+}
+.ski-idle-t2000-stat span:last-child { color: #fff; }
+.ski-idle-t2000-missions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+.ski-idle-t2000-mission {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ski-idle-t2000-mission:hover {
+  background: rgba(255, 184, 0, 0.15);
+  border-color: rgba(255, 184, 0, 0.4);
+  color: #FFB800;
+}
+.ski-idle-t2000-motto {
+  font-size: 0.6rem;
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.25);
+  letter-spacing: 0.5px;
+}
 
 /* ─── Settings panel ──────────────────────────────────────────────── */
 .wk-settings-header {
