@@ -8687,8 +8687,10 @@ function bindEvents() {
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
           <div class="ski-idle-ns-row">
             <span class="wk-ns-status" id="ski-idle-status">${_nsStatusSvg(_idleVariant)}</span>
-            <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63">
-            <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled>SUIAMI</button>
+            <div class="ski-idle-ns-input-wrap">
+              <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63">
+              <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled>SUIAMI</button>
+            </div>
             <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}">\u2715</button>
             <span class="wk-ns-dot-sui">.sui</span>
           </div>

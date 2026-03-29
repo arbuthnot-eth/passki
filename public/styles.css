@@ -3006,8 +3006,19 @@ body {
   text-shadow: 0 1px 3px rgba(0,0,0,0.8);
   flex-shrink: 0;
 }
-.ski-idle-ns-input {
+.ski-idle-ns-input-wrap {
   flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.ski-idle-ns-input-wrap .ski-idle-ns-action {
+  position: absolute;
+  right: 4px;
+  z-index: 1;
+}
+.ski-idle-ns-input {
+  width: 100%;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 6px;
@@ -3016,7 +3027,7 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
   font-weight: 600;
-  padding: 5px 12px;
+  padding: 5px 60px 5px 12px;
   box-sizing: border-box;
   backdrop-filter: blur(4px);
 }
