@@ -8689,7 +8689,7 @@ function bindEvents() {
             <span class="wk-ns-status" id="ski-idle-status" title="Identity status — click to show address" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
             <div class="ski-idle-ns-input-wrap">
               <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63" title="Search SuiNS names">
-              <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="Sign identity">SUIAMI</button>
+              <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
             </div>
             <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}" title="Clear">\u2715</button>
             <span class="wk-ns-dot-sui" title=".sui namespace">.sui</span>
@@ -8742,25 +8742,31 @@ function bindEvents() {
 
         const label = nsLabel.trim();
         const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
+        const _iamName = label || app.suinsName?.replace(/\.sui$/, '') || 'you';
         if (!label) {
           _idleActionBtn.textContent = 'SUIAMI';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
+          _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
           _idleActionBtn.disabled = !app.suinsName;
         } else if (nsAvail === 'available') {
           _idleActionBtn.textContent = 'MINT';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--mint';
+          _idleActionBtn.title = `Mint ${label}.sui`;
           _idleActionBtn.disabled = false;
         } else if (nsAvail === 'taken' && !isOwned) {
           _idleActionBtn.textContent = 'Thunder';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--thunder';
+          _idleActionBtn.title = `Thunder \u2014 encrypt a signal to ${label}.sui`;
           _idleActionBtn.disabled = false;
         } else if (isOwned) {
           _idleActionBtn.textContent = 'SUIAMI';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami-active';
+          _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
           _idleActionBtn.disabled = false;
         } else {
           _idleActionBtn.textContent = 'SUIAMI';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
+          _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
           _idleActionBtn.disabled = true;
         }
       };
