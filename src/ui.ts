@@ -8677,13 +8677,13 @@ function bindEvents() {
       const _idleInputVal = nsLabel.trim();
 
       _idleOverlay.innerHTML = `
-        <div class="ski-idle-ns-row">
-          <span class="wk-ns-status">${_nsStatusSvg(_idleVariant)}</span>
-          <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63">
-          <span class="wk-ns-dot-sui">.sui</span>
-        </div>
         <div class="ski-idle-media">
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
+          <div class="ski-idle-ns-row">
+            <span class="wk-ns-status">${_nsStatusSvg(_idleVariant)}</span>
+            <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63">
+            <span class="wk-ns-dot-sui">.sui</span>
+          </div>
         </div>
         <div id="ski-idle-card" class="ski-idle-card"></div>
         <div class="ski-idle-thunder-row">

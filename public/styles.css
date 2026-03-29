@@ -2979,6 +2979,7 @@ body {
   flex: 1;
   align-items: center;
   justify-content: center;
+  position: relative;
 }
 .ski-idle-img {
   width: 100%;
@@ -2990,9 +2991,11 @@ body {
   display: flex;
   align-items: center;
   gap: 4px;
-  width: 100%;
-  margin-bottom: -6px;
-  z-index: 1;
+  width: calc(100% - 16px);
+  position: absolute;
+  top: 35%;
+  left: 8px;
+  z-index: 2;
 }
 .ski-idle-ns-input {
   flex: 1;
