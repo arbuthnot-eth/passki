@@ -8644,8 +8644,25 @@ function bindEvents() {
     if (_idleOverlay) return;
     _idleTimer = setTimeout(() => {
       if (!app.skiMenuOpen) return;
+      // Position overlay to match the header buttons width
+      const headerEl = els.skiBtn || els.skiDot || els.widget;
+      const headerRect = headerEl?.getBoundingClientRect();
+      const menuRect = els.skiMenu?.getBoundingClientRect();
+      if (!headerRect || !menuRect) return;
+
       _idleOverlay = document.createElement('div');
       _idleOverlay.className = 'ski-idle-overlay';
+      // Span from left edge of header to right edge of header
+      const left = Math.min(headerRect.left, menuRect.left);
+      const right = Math.max(headerRect.right, menuRect.right);
+      const width = right - left;
+      const height = width * 1.78; // ~16:9 portrait ratio, proportional to width
+      const top = headerRect.top;
+      _idleOverlay.style.position = 'fixed';
+      _idleOverlay.style.left = `${left}px`;
+      _idleOverlay.style.top = `${top}px`;
+      _idleOverlay.style.width = `${width}px`;
+      _idleOverlay.style.height = `${height}px`;
       _idleOverlay.innerHTML = `
         <a href="https://x.com/brando_sui/status/2038116096675344614" target="_blank" rel="noopener" class="ski-idle-media">
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
@@ -8655,7 +8672,7 @@ function bindEvents() {
       _idleOverlay.addEventListener('click', (e) => {
         if (!(e.target as HTMLElement).closest('a')) { _idleOverlay?.remove(); _idleOverlay = null; _resetIdle(); }
       });
-      els.skiMenu?.appendChild(_idleOverlay);
+      document.body.appendChild(_idleOverlay);
     }, IDLE_MS);
   };
 
