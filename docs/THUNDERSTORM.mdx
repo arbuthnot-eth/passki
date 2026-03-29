@@ -22,9 +22,10 @@
 
 | Asset | Chain | Custody | Yield | Weight |
 |-------|-------|---------|-------|--------|
-| USDC | Sui + Solana | Native | Kamino/NAVI 4-5% | 20% |
-| BUIDL | Ethereum | IKA secp256k1 | T-bills 4.5% | 20% |
-| VBILL | Solana | IKA ed25519 | T-bills 4.5% | 5% |
+| USD1 | Solana + Ethereum | IKA ed25519 / secp256k1 | T-bills 4.5% + WL Markets lending 3-6% | 20% |
+| USDC | Sui + Solana | Native | Kamino/NAVI 4-5% | 10% |
+| BUIDL (BlackRock T-bills) | Ethereum | IKA secp256k1 | T-bills 4.5% | 10% |
+| VBILL (VanEck T-bills) | Solana | IKA ed25519 | T-bills 4.5% | 5% |
 | Staked SUI | Sui | Native | PoS 3.5% | 8% |
 | Staked SOL | Solana | IKA ed25519 | PoS 7% | 7% |
 
@@ -32,15 +33,18 @@
 
 | Asset | Chain | Custody | Yield | Weight |
 |-------|-------|---------|-------|--------|
-| XAUM gold | Sui | Native | 8-15% | 8% |
-| PAXG gold | Ethereum | IKA secp256k1 | 8-15% | 4% |
-| XAGM silver | Ethereum | IKA secp256k1 | 8-15% | 4% |
+| XAUM gold | Sui | Native | 8-15% | 6% |
+| PAXG gold | Ethereum | IKA secp256k1 | 8-15% | 3% |
+| XAGM silver | Ethereum | IKA secp256k1 | 8-15% | 3% |
 | TSLAx | Solana | IKA ed25519 | 20-40% | 5% |
 | NVDAx | Solana | IKA ed25519 | 20-40% | 5% |
-| SPYx | Solana | IKA ed25519 | 10-15% | 4% |
-| BTC | Bitcoin | IKA secp256k1 | Appreciation | 6% |
+| SPYx | Solana | IKA ed25519 | 10-15% | 3% |
+| BTC | Bitcoin | IKA secp256k1 | Appreciation | 5% |
 | WTI crude perp | Hyperliquid | IKA secp256k1 | Contango carry | 2% |
 | LITRO crude | Arbitrum | IKA secp256k1 | Physical oil (2027) | 2% |
+| WLFI RWA Oil | ETH/SOL | IKA | Commodity 10-20% | 2% |
+| WLFI RWA Gas | ETH/SOL | IKA | Commodity 10-20% | 2% |
+| WLFI RWA Timber | ETH/SOL | IKA | Sustainable 5-8% | 2% |
 
 ### Loss Waterfall
 
