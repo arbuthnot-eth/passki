@@ -8907,7 +8907,6 @@ function bindEvents() {
               tx.object(TREASURY),
               tx.pure.u64(mintAmount),
               tx.pure.address(walletAddr),
-              tx.pure.vector('u8', Array.from(new TextEncoder().encode('SUI'))),
             ],
           });
 
