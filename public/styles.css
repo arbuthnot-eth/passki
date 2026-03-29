@@ -2991,22 +2991,20 @@ body {
   all: unset;
   cursor: pointer;
   position: absolute;
-  top: 8%;
-  left: 6%;
+  top: 5%;
+  left: 4%;
   z-index: 3;
-  width: 22%;
-  height: auto;
+  width: 26%;
+  aspect-ratio: 1;
   border-radius: 50%;
-  transition: transform 0.2s, filter 0.2s;
+  background: transparent;
 }
 .ski-idle-iusd-btn:hover {
-  transform: scale(1.08);
-  filter: brightness(1.2) drop-shadow(0 0 8px rgba(255, 184, 0, 0.5));
+  background: rgba(255, 184, 0, 0.08);
+  box-shadow: 0 0 16px rgba(255, 184, 0, 0.3);
 }
 .ski-idle-iusd-icon {
-  width: 100%;
-  height: auto;
-  border-radius: 50%;
+  display: none;
 }
 .ski-idle-ns-row {
   display: flex;
