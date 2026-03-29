@@ -3692,6 +3692,7 @@ function _persistAddrSectionOpen() {
 // Legacy alias — kept in sync with addrSectionOpen
 let balSectionOpen = addrSectionOpen;
 let skiSettingsOpen = false;
+let skiTreasuryOpen = false;
 function _saveRosterScroll() { try { const g = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null; if (g) localStorage.setItem('ski:roster-scroll', String(g.scrollLeft)); } catch {} }
 function _restoreRosterScroll() { try { const g = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null; const v = localStorage.getItem('ski:roster-scroll'); if (g && v) g.scrollLeft = Number(v); } catch {} }
 let _shadeCountdownTimer: ReturnType<typeof setInterval> | null = null; // live ticking countdown
@@ -5216,6 +5217,104 @@ function menuCopyAddress(e: Event) {
   copyAddress();
 }
 
+function _treasuryPanelHtml(): string {
+  const solPrice = getTokenPrice('SOL') ?? 82;
+  const solUsd = app.solBalance > 0 ? (app.solBalance * solPrice).toFixed(2) : '0.00';
+  const totalRevenue = app.usd != null ? (app.usd * 0.05).toFixed(2) : '0.00'; // 5% of portfolio as proxy
+
+  return `
+    <div class="wk-settings-header">
+      <button class="wk-settings-back" id="wk-treasury-back" type="button">\u2190</button>
+      <span class="wk-settings-title">Treasury</span>
+    </div>
+    <div class="wk-treasury-body">
+      <div class="wk-treasury-section">
+        <div class="wk-treasury-label">Reserve Health</div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Senior (peg floor)</span>
+          <span class="wk-treasury-val wk-treasury-val--green">60%</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Junior (growth)</span>
+          <span class="wk-treasury-val wk-treasury-val--yellow">40%</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Collateral Ratio</span>
+          <span class="wk-treasury-val">150%+</span>
+        </div>
+      </div>
+      <div class="wk-treasury-section">
+        <div class="wk-treasury-label">Yield Sources</div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">NAVI Lending</span>
+          <span class="wk-treasury-val">SUI ~3.5%</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Kamino (Solana)</span>
+          <span class="wk-treasury-val">xStocks collateral</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Scallop</span>
+          <span class="wk-treasury-val">USDC ~4.5%</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">DeepBook Maker</span>
+          <span class="wk-treasury-val">Rebates</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Full Sail LP</span>
+          <span class="wk-treasury-val">oSAIL + fees</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Aftermath afSUI</span>
+          <span class="wk-treasury-val">Staking + farms</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Flash Arb (NAVI)</span>
+          <span class="wk-treasury-val">0% fee arb</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">USD1 (WL Markets)</span>
+          <span class="wk-treasury-val">T-bills + lending</span>
+        </div>
+      </div>
+      <div class="wk-treasury-section">
+        <div class="wk-treasury-label">Cross-Chain (IKA dWallet)</div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">SOL Balance</span>
+          <span class="wk-treasury-val">${app.solBalance > 0 ? app.solBalance.toFixed(4) : '—'} SOL ($${solUsd})</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Chains</span>
+          <span class="wk-treasury-val">Sui · Sol · ETH · BTC · Base</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Assets</span>
+          <span class="wk-treasury-val">20 across 6 chains</span>
+        </div>
+      </div>
+      <div class="wk-treasury-section">
+        <div class="wk-treasury-label">Revenue Streams</div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Thunder $0.009/signal</span>
+          <span class="wk-treasury-val wk-treasury-val--yellow">\u26a1 live</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Registration 5%</span>
+          <span class="wk-treasury-val wk-treasury-val--yellow">\u26a1 live</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Shade 10% escrow</span>
+          <span class="wk-treasury-val wk-treasury-val--yellow">\u26a1 live</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Swap spread 0.1%</span>
+          <span class="wk-treasury-val">pending</span>
+        </div>
+      </div>
+    </div>`;
+}
+
 function _skiSettingsHtml(): string {
   const ws = getState();
   const addrShort2 = ws.address ? `${ws.address.slice(0, 6)}\u2026${ws.address.slice(-4)}` : '\u2014';
@@ -5602,6 +5701,7 @@ function renderSkiMenu() {
             <div class="wk-popout-actions">
               <button class="wk-dd-item wk-dd-ski" id="wk-dd-switch">Lockin</button>
               <button class="wk-dd-item wk-dd-settings" id="wk-dd-settings" title="Settings">\u2699</button>
+              <button class="wk-dd-item wk-dd-treasury-btn" id="wk-dd-treasury-btn" title="Treasury">\ud83c\udfdb\ufe0f</button>
               <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Deactivate</button>
             </div>
             ${nameBadgeHtml}
@@ -5646,6 +5746,9 @@ function renderSkiMenu() {
           </div>
           <div class="wk-dd-panel wk-dd-panel--settings">
             ${settingsHtml}
+          </div>
+          <div class="wk-dd-panel wk-dd-panel--treasury">
+            ${_treasuryPanelHtml()}
           </div>
         </div>
       </div>`;
@@ -5946,6 +6049,19 @@ function renderSkiMenu() {
   document.getElementById('wk-settings-back')?.addEventListener('click', () => {
     skiSettingsOpen = false;
     document.querySelector('.wk-dd-slider')?.classList.remove('wk-dd-slider--settings');
+  });
+
+  // Treasury slide-in
+  document.getElementById('wk-dd-treasury-btn')?.addEventListener('click', () => {
+    skiTreasuryOpen = true;
+    skiSettingsOpen = false;
+    const slider = document.querySelector('.wk-dd-slider');
+    slider?.classList.remove('wk-dd-slider--settings');
+    slider?.classList.add('wk-dd-slider--treasury');
+  });
+  document.getElementById('wk-treasury-back')?.addEventListener('click', () => {
+    skiTreasuryOpen = false;
+    document.querySelector('.wk-dd-slider')?.classList.remove('wk-dd-slider--treasury');
   });
 
   // Toggle send button between send/swap mode and SuiAMI mode
