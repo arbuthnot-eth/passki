@@ -8665,7 +8665,7 @@ function bindEvents() {
       const width = baseWidth * 1.1; // 10% wider
       const left = baseLeft - (width - baseWidth) / 2; // center the extra width
       const height = width * 1.78; // portrait ratio, proportional
-      const top = headerRect.bottom + 28; // well below header buttons
+      const top = headerRect.bottom + 48; // well clear of header buttons
       _idleOverlay.style.position = 'fixed';
       _idleOverlay.style.left = `${left}px`;
       _idleOverlay.style.top = `${top}px`;

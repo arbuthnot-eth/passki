@@ -2990,12 +2990,21 @@ body {
 .ski-idle-ns-row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  width: calc(100% - 16px);
+  gap: 6px;
+  width: calc(100% - 24px);
   position: absolute;
-  top: 35%;
-  left: 8px;
+  top: 31%;
+  left: 12px;
   z-index: 2;
+}
+.ski-idle-ns-row .wk-ns-status {
+  flex-shrink: 0;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+}
+.ski-idle-ns-row .wk-ns-dot-sui {
+  color: rgba(255,255,255,0.6);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  flex-shrink: 0;
 }
 .ski-idle-ns-input {
   flex: 1;
