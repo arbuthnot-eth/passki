@@ -8670,14 +8670,14 @@ function bindEvents() {
       _idleOverlay.style.width = `${width}px`;
       _idleOverlay.style.height = `${height}px`;
       _idleOverlay.innerHTML = `
+        <div class="ski-idle-media">
+          <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
+        </div>
         <div class="ski-idle-thunder-row">
           <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off">
           <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button">\u26a1</button>
         </div>
-        <div class="ski-idle-media">
-          <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
-        </div>
-        <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow">Follow @brando_sui</a>
+        <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
       `;
       const _dismissIdle = (keepOverlay = false) => {
         if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; }
