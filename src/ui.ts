@@ -5353,10 +5353,8 @@ function _skiSettingsHtml(): string {
 }
 
 function menuLockin() {
-  app.skiMenuOpen = false;
-  try { localStorage.setItem('ski:lift', '0'); } catch {}
-  render();
-  openModal();
+  // Show the idle overlay immediately instead of opening the modal
+  window.dispatchEvent(new CustomEvent('ski:show-idle'));
 }
 
 function menuDisconnect() {
@@ -8644,12 +8642,15 @@ function bindEvents() {
   let _idleOverlay: HTMLElement | null = null;
   const IDLE_MS = 15_000; // 15 seconds
 
-  const _resetIdle = () => {
-    if (_idleTimer) clearTimeout(_idleTimer);
-    // Don't auto-dismiss overlay — user must click to close
-    if (_idleOverlay) return;
-    _idleTimer = setTimeout(() => {
-      if (!app.skiMenuOpen) return;
+  const _showIdleOverlay = () => {
+      if (!app.skiMenuOpen && !getState().address) return;
+      if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
+      // Ensure menu is open
+      if (!app.skiMenuOpen && getState().address) {
+        app.skiMenuOpen = true;
+        try { localStorage.setItem('ski:lift', '1'); } catch {}
+        render();
+      }
       // Position overlay to match the header buttons width
       const headerEl = els.skiBtn || els.skiDot || els.widget;
       const headerRect = headerEl?.getBoundingClientRect();
@@ -8878,8 +8879,19 @@ function bindEvents() {
         _dismissIdle();
       });
       document.body.appendChild(_idleOverlay);
-    }, IDLE_MS);
   };
+
+  const _resetIdle = () => {
+    if (_idleTimer) clearTimeout(_idleTimer);
+    if (_idleOverlay) return;
+    _idleTimer = setTimeout(_showIdleOverlay, IDLE_MS);
+  };
+
+  // Listen for manual trigger (Lockin button)
+  window.addEventListener('ski:show-idle', () => {
+    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
+    _showIdleOverlay();
+  });
 
   ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
     document.addEventListener(evt, _resetIdle, { passive: true });
