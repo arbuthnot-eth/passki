@@ -8665,15 +8665,13 @@ function bindEvents() {
       _idleOverlay = document.createElement('div');
       _idleOverlay.className = 'ski-idle-overlay';
       // Span from left edge of header to right edge of header
-      // Size to header buttons width, capped, centered
-      const headerWidth = headerRect.right - headerRect.left;
-      const maxWidth = Math.min(headerWidth, 380);
-      const width = maxWidth;
-      const headerCenter = (headerRect.left + headerRect.right) / 2;
-      const left = headerCenter - width / 2;
-      const maxHeight = window.innerHeight - headerRect.bottom - 80;
-      const height = Math.min(width * 1.6, maxHeight);
-      const top = headerRect.bottom + 12;
+      const baseLeft = Math.min(headerRect.left, menuRect.left);
+      const baseRight = Math.max(headerRect.right, menuRect.right);
+      const baseWidth = baseRight - baseLeft;
+      const width = baseWidth * 1.1; // 10% wider
+      const left = baseLeft - (width - baseWidth) / 2; // center the extra width
+      const height = width * 1.78; // portrait ratio, proportional
+      const top = headerRect.bottom + 48; // well clear of header buttons
       _idleOverlay.style.position = 'fixed';
       _idleOverlay.style.left = `${left}px`;
       _idleOverlay.style.top = `${top}px`;
