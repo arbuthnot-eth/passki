@@ -2993,7 +2993,7 @@ body {
   gap: 6px;
   width: calc(100% - 24px);
   position: absolute;
-  top: 24%;
+  top: 22%;
   left: 12px;
   z-index: 2;
 }
