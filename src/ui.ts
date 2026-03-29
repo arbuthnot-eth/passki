@@ -8563,9 +8563,12 @@ function render() {
 
 // ─── Global event bindings ───────────────────────────────────────────
 
+let _idleOverlay: HTMLElement | null = null;
+
 function bindEvents() {
   els.skiDot?.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
     if (modalOpen) { closeModal(); return; }
     if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:lift', '0'); } catch {} render(); }
     openModal();
@@ -8573,6 +8576,9 @@ function bindEvents() {
 
   els.skiBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
+
+    // Dismiss idle overlay if showing
+    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
 
     if (!getState().address) {
       if (modalOpen) { closeModal(); return; }
@@ -8637,9 +8643,8 @@ function bindEvents() {
     if (getState().address && document.visibilityState === 'visible') refreshPortfolio(true);
   });
 
-  // Idle screensaver — show SKI pixel art over menu after 2 min idle
+  // Idle screensaver — show SKI pixel art over menu
   let _idleTimer: ReturnType<typeof setTimeout> | null = null;
-  let _idleOverlay: HTMLElement | null = null;
   const IDLE_MS = 15_000; // 15 seconds
 
   const _showIdleOverlay = () => {
