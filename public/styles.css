@@ -3011,10 +3011,11 @@ body {
   position: relative;
   display: flex;
   align-items: center;
+  margin-right: -2px;
 }
 .ski-idle-ns-input-wrap .ski-idle-ns-action {
   position: absolute;
-  right: 4px;
+  right: 2px;
   z-index: 1;
 }
 .ski-idle-ns-input {
@@ -3027,7 +3028,7 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
   font-weight: 600;
-  padding: 5px 60px 5px 10px;
+  padding: 5px 56px 5px 10px;
   box-sizing: border-box;
   backdrop-filter: blur(4px);
   text-align: left;
