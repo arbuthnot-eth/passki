@@ -3275,6 +3275,16 @@ body {
   border: 1px solid rgba(77, 162, 255, 0.4);
   color: #93c5fd;
 }
+.ski-idle-bubble--fresh {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  color: #fff !important;
+}
+.ski-idle-bubble--confirm-delete {
+  background: rgba(239, 68, 68, 0.25) !important;
+  border-color: rgba(239, 68, 68, 0.5) !important;
+  opacity: 0.7;
+}
 .ski-idle-bubble--failed {
   background: rgba(239, 68, 68, 0.2);
   border-color: rgba(239, 68, 68, 0.5);

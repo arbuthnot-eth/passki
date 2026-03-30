@@ -9404,6 +9404,7 @@ function bindEvents() {
         _triggerSuiami();
       });
       // Thunder input — doesn't dismiss, Enter sends
+      const _freshQuestTs = new Set<number>(); // timestamps of messages quested this session
       const _idleThunderInput = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
       const _idleThunderSend = _idleOverlay.querySelector('#ski-idle-thunder-send');
       const _sendIdleThunder = async () => {
@@ -9426,10 +9427,12 @@ function bindEvents() {
               const { digest, effects } = await signAndExecuteTransaction(txBytes);
               return { digest: digest || '', effects };
             });
-            // Store decrypted messages in local log
+            // Store decrypted messages in local log + mark as fresh
             const _myLog = app.suinsName?.replace(/\.sui$/, '') || questName;
             for (const p of payloads) {
               const _pSender = p.sender || p.senderAddress.slice(0, 8);
+              const ts = Date.now();
+              _freshQuestTs.add(ts);
               await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
             }
             // Refresh counts and re-render
@@ -9549,13 +9552,53 @@ function bindEvents() {
           let msgText = e.msg;
           if (!isOut && !e.dir) msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
-          return `<div class="ski-idle-bubble ${cls}">${esc(msgText)}</div>`;
+          const freshCls = _freshQuestTs.has(e.ts) ? ' ski-idle-bubble--fresh' : '';
+          return `<div class="ski-idle-bubble ${cls}${freshCls}" data-ts="${e.ts}">${esc(msgText)}</div>`;
         }).join('');
         const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
         const title = `<div class="ski-idle-convo-title">\u26a1 ${esc(bare)}<span class="ski-nft-tld">.sui</span></div>`;
         convoEl.innerHTML = title + bubbles;
         convoEl.removeAttribute('hidden');
         convoEl.scrollTop = convoEl.scrollHeight;
+
+        // Click-to-delete: tap a bubble to remove from local log
+        convoEl.querySelectorAll('.ski-idle-bubble').forEach(bubble => {
+          bubble.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            const ts = parseInt((bubble as HTMLElement).dataset.ts || '0', 10);
+            if (!ts) return;
+            // Confirm with visual feedback
+            if (!(bubble as HTMLElement).classList.contains('ski-idle-bubble--confirm-delete')) {
+              (bubble as HTMLElement).classList.add('ski-idle-bubble--confirm-delete');
+              setTimeout(() => (bubble as HTMLElement).classList.remove('ski-idle-bubble--confirm-delete'), 2000);
+              return;
+            }
+            // Delete from local log
+            const ws = getState();
+            if (!ws.address) return;
+            try {
+              const key = await _deriveThunderKey(ws.address);
+              const storageKey = `ski:thunder-log:${ws.address}`;
+              const raw = localStorage.getItem(storageKey);
+              if (raw) {
+                const { ct, iv } = JSON.parse(raw);
+                const plaintext = await crypto.subtle.decrypt(
+                  { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
+                  key, Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
+                );
+                let all: any[] = JSON.parse(new TextDecoder().decode(plaintext));
+                all = all.filter(entry => entry.ts !== ts);
+                const updated = new TextEncoder().encode(JSON.stringify(all));
+                const newIv = crypto.getRandomValues(new Uint8Array(12));
+                const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
+                localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
+              }
+            } catch {}
+            (bubble as HTMLElement).remove();
+            _freshQuestTs.delete(ts);
+            await _refreshThunderLocalCounts();
+          });
+        });
       };
       // @ autocomplete for thunder input
       let _atDropdown: HTMLElement | null = null;
