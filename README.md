@@ -136,6 +136,64 @@ SUI-Authenticated Message Identity — cryptographic proof that a SuiNS name bel
 
 Used for sender authentication in Thunder signals and as a standalone identity primitive.
 
+## iUSD — Yield-Bearing Stable
+
+A dollar-pegged stablecoin backed by a diversified reserve of gold, silver, equities, energy, and dollar instruments — custodied natively across Bitcoin, Ethereum, Solana, and Sui via IKA dWallet threshold signatures. No bridges. No algorithms. Just reserves.
+
+### Reserve Composition
+
+| Tranche | Assets | Chains | Target |
+|---------|--------|--------|--------|
+| **Senior (60%)** — peg floor | USDC, BUIDL (BlackRock T-bills), staked SUI/SOL | Sui, Solana, Ethereum | ≥100% of supply |
+| **Junior (40%)** — growth engine | XAUM (gold), XAGM (silver), TSLAx/NVDAx/SPYx (equities), BTC, crude oil | Sui, Ethereum, Solana, Bitcoin | Absorbs losses first |
+
+150% minimum collateral ratio enforced on-chain. Senior tranche alone must cover 100% of iUSD supply.
+
+### 9-Decimal Steganographic Encoding
+
+iUSD uses 9 decimals (vs USDC's 6). The last 3 digits after cents encode transaction metadata — invisible to humans, identifiable on-chain:
+
+```
+$10.000003141  ← 3141 = truncated signal ID
+     ^^^^^^    ^^^^
+     visible   hidden identifier
+```
+
+Every iUSD mint is fingerprinted to the specific purchase that created it.
+
+### Purchase Routing
+
+Name registration routes through iUSD to grow treasury collateral:
+
+1. User deposits SUI → keeper attests collateral → mints iUSD
+2. Keeper swaps iUSD → USDC (DeepBook 1:1 pool) → NS (multi-DEX racing)
+3. Keeper sends NS to user → user registers name with 25% NS discount
+4. Surplus stays in treasury
+
+Multi-DEX racing (Aftermath aggregator vs direct DeepBook) picks the best USDC → NS rate. Aftermath internally races across 15+ DEXes including Cetus, Bluefin, FlowX, Kriya, and Turbos.
+
+**Contract:** `0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515`
+
+### Revenue Streams
+
+| Source | Mechanism |
+|--------|-----------|
+| SuiNS registration 5% cut | PTB fee extraction on every mint |
+| Shade order 10% escrow | Fee on execute() |
+| Thunder protocol fees | 0.009 iUSD per signal |
+| Swap spread | 0.1% on DeepBook/Cetus/Bluefin routing |
+| Treasury asset appreciation | Blended yield on diversified reserve |
+| Lending yield | NAVI + Scallop + Kamino |
+
+## Marketplace Purchase
+
+Buy SuiNS names listed on Tradeport or in on-chain kiosks directly from the SKI menu or idle overlay:
+
+- **Detection** — name input checks Tradeport API for active listings, caches in sessionStorage
+- **TRADE button** — shows listing price in Tradeport orange, appears in both SKI menu and idle overlay
+- **Atomic purchase** — single-PTB with optional token swap (any held token → SUI → purchase)
+- **Enter key** — triggers the action button globally while overlay is open
+
 ---
 
 ## Session layer
@@ -295,7 +353,7 @@ The worker hosts five Durable Objects:
 | `SponsorAgent` | Manages Splash sponsor state |
 | `SplashDeviceAgent` | Tracks per-device Splash activation (keyed by FingerprintJS `visitorId`) |
 | `ShadeExecutorAgent` | Auto-executes Shade orders at grace-period expiry via DO Alarms |
-| `TreasuryAgents` | Treasury management agents |
+| `TreasuryAgents` | iUSD minting, collateral attestation, NS acquisition, pool management |
 
 API routes served by the worker:
 
@@ -353,10 +411,11 @@ Chain registry and signing ceremony adapted from [inkwell-finance/ows-ika](https
 ## Stack
 
 - `@mysten/sui` ^2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.2, `@ika.xyz/sdk` ^0.3.1
+- DEX: `aftermath-ts-sdk` (aggregation), DeepBook v3 (direct pools), Bluefin CLMM, Cetus CLMM
 - Transport: `SuiGrpcClient` primary with `SuiGraphQLClient` fallback (no JSON-RPC)
 - Crypto: `@noble/hashes` (SHA-256, RIPEMD-160), `@scure/base` (bech32)
 - Build: `bun build src/ski.ts --outdir public/dist --target browser`
-- Deploy: Cloudflare Workers + Wrangler 4.77
+- Deploy: Cloudflare Workers + Wrangler 4.78
 
 ## Local development
 
