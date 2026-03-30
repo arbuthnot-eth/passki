@@ -8,10 +8,10 @@
  *   2. Client calls schedule() to register the order with this DO.
  *   3. DO sets a Durable Object Alarm for the grace expiry timestamp.
  *   4. When alarm fires, DO builds the execute+register PTB, signs with
- *      a keeper keypair (Worker secret), and submits to Sui.
+ *      the ultron keypair (Worker secret), and submits to Sui.
  *   5. Domain is registered and NFT transferred to the user's target address.
  *
- * The keeper keypair pays gas (~0.01 SUI per execution). The shade order's
+ * The ultron keypair pays gas (~0.01 SUI per execution). The shade order's
  * escrowed deposit covers the SuiNS registration cost. Any excess deposit
  * is sent back to the user.
  */
@@ -75,7 +75,7 @@ export interface ShadeExecutorState {
 }
 
 interface Env {
-  SHADE_KEEPER_PRIVATE_KEY?: string;
+  SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -261,20 +261,20 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     return { success: true };
   }
 
-  // ─── Cleanup cancelled on-chain orders (keeper-signed delete) ───────
+  // ─── Cleanup cancelled on-chain orders (ultron-signed delete) ───────
 
   @callable()
   async reapCancelled(params: { objectId: string }): Promise<{ success: boolean; digest?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
-      return { success: false, error: 'No keeper private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)' };
+      return { success: false, error: 'No ultron private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)' };
     }
     try {
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddress = keypair.toSuiAddress();
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY); // ultron.sui signing key
+      const ultronAddr = keypair.toSuiAddress();
 
       const tx = new Transaction();
-      tx.setSender(keeperAddress);
+      tx.setSender(ultronAddr);
       tx.moveCall({
         target: `${SHADE_PACKAGE}::shade::reap_cancelled`,
         arguments: [tx.object(params.objectId)],
@@ -413,23 +413,23 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
       this.updateOrder(order.objectId, {
         status: 'failed',
-        error: 'No keeper private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)',
+        error: 'No ultron private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)',
       });
       return;
     }
 
-    // Pre-flight: verify keeper has gas before building routes
+    // Pre-flight: verify ultron has gas before building routes
     try {
       const gqlCheck = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-      const keypairCheck = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = keypairCheck.toSuiAddress();
+      const keypairCheck = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY); // ultron.sui signing key
+      const ultronAddr = keypairCheck.toSuiAddress();
       const balResult = await gqlCheck.query({
-        query: `{ address(address: "${keeperAddr}") { balance(coinType: "0x2::sui::SUI") { totalBalance } } }`,
+        query: `{ address(address: "${ultronAddr}") { balance(coinType: "0x2::sui::SUI") { totalBalance } } }`,
       });
-      const keeperBalance = BigInt((balResult.data as any)?.address?.balance?.totalBalance ?? '0');
-      if (keeperBalance < 50_000_000n) { // need at least 0.05 SUI for gas
+      const ultronBalance = BigInt((balResult.data as any)?.address?.balance?.totalBalance ?? '0');
+      if (ultronBalance < 50_000_000n) { // need at least 0.05 SUI for gas
         const retries = (order.retries ?? 0) + 1;
-        const msg = `Keeper has insufficient gas: ${keeperBalance} MIST (need ≥50M). Fund ${keeperAddr}`;
+        const msg = `Ultron has insufficient gas: ${ultronBalance} MIST (need ≥50M). Fund ${ultronAddr}`;
         console.warn(`[ShadeExecutor] ${msg}`);
         if (retries >= MAX_RETRIES) {
           this.updateOrder(order.objectId, { status: 'failed', error: msg, retries });
@@ -439,7 +439,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
         }
         return;
       }
-      console.log(`[ShadeExecutor] Keeper gas OK: ${keeperBalance} MIST`);
+      console.log(`[ShadeExecutor] Ultron gas OK: ${ultronBalance} MIST`);
     } catch (err) {
       console.warn('[ShadeExecutor] Gas check failed (proceeding anyway):', err);
     }
@@ -471,8 +471,8 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     try {
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddress = keypair.toSuiAddress();
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY); // ultron.sui signing key
+      const ultronAddr = keypair.toSuiAddress();
 
       const domainBytes = Array.from(new TextEncoder().encode(order.domain));
       const saltBytes = Array.from(hexToBytes(order.salt));
@@ -490,7 +490,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       // 1.5% buffer + round up to nearest cent (covers DeepBook slippage)
       const usdcNeeded = BigInt(Math.ceil(discountedUsd * 1.015 * 100) * 10000);
 
-      const buildArgs = [transport, suinsClient, keeperAddress, order, domainBytes, saltBytes, targetAddr, fullDomain, usdcNeeded] as const;
+      const buildArgs = [transport, suinsClient, ultronAddr, order, domainBytes, saltBytes, targetAddr, fullDomain, usdcNeeded] as const;
 
       // Build both routes in parallel — submit fastest, skip dry-runs for speed.
       // Route order decided at creation time based on user's balance:
@@ -536,7 +536,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       if (!digest) {
         console.log(`[ShadeExecutor] All swap routes failed [${routeErrors.join(' | ')}], trying SUI direct fallback`);
         try {
-          const fallbackBytes = await this.buildRouteFallback(transport, suinsClient, keeperAddress, order, domainBytes, saltBytes, targetAddr, fullDomain);
+          const fallbackBytes = await this.buildRouteFallback(transport, suinsClient, ultronAddr, order, domainBytes, saltBytes, targetAddr, fullDomain);
           console.log(`[ShadeExecutor] Fallback build OK (${fallbackBytes.length} bytes)`);
           const { signature } = await keypair.signTransaction(fallbackBytes);
           digest = await this.submitTransaction(fallbackBytes, signature);
@@ -626,7 +626,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       priceInfoObjectId,
     });
     suinsTx.setTargetAddress({ nft, address: targetAddr });
-    // setDefault skipped — keeper can't set reverse lookup for the target user
+    // setDefault skipped — ultron can't set reverse lookup for the target user
     tx.transferObjects([nft], tx.pure.address(targetAddr));
     return nsCoin; // still alive — has remainder after register splits what it needs
   }
@@ -639,7 +639,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   private async buildRouteA(
     transport: SuiGraphQLClient,
     suinsClient: InstanceType<typeof SuinsClient>,
-    keeperAddress: string,
+    ultronAddr: string,
     order: ShadeExecutorOrder,
     domainBytes: number[],
     saltBytes: number[],
@@ -648,7 +648,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     _usdcNeeded: bigint, // unused — Route A swaps SUI directly
   ): Promise<Uint8Array> {
     const tx = new Transaction();
-    tx.setSender(keeperAddress);
+    tx.setSender(ultronAddr);
 
     // 1. shade::execute → Coin<SUI>
     const [releasedCoin] = this.shadeExecute(tx, order, domainBytes, saltBytes, targetAddr);
@@ -698,7 +698,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   private async buildRouteB(
     transport: SuiGraphQLClient,
     suinsClient: InstanceType<typeof SuinsClient>,
-    keeperAddress: string,
+    ultronAddr: string,
     order: ShadeExecutorOrder,
     domainBytes: number[],
     saltBytes: number[],
@@ -707,7 +707,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     usdcNeeded: bigint,
   ): Promise<Uint8Array> {
     const tx = new Transaction();
-    tx.setSender(keeperAddress);
+    tx.setSender(ultronAddr);
 
     // 1. shade::execute → Coin<SUI>
     const [releasedCoin] = this.shadeExecute(tx, order, domainBytes, saltBytes, targetAddr);
@@ -762,7 +762,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   private async buildRouteFallback(
     transport: SuiGraphQLClient,
     suinsClient: InstanceType<typeof SuinsClient>,
-    keeperAddress: string,
+    ultronAddr: string,
     order: ShadeExecutorOrder,
     domainBytes: number[],
     saltBytes: number[],
@@ -770,7 +770,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     fullDomain: string,
   ): Promise<Uint8Array> {
     const tx = new Transaction();
-    tx.setSender(keeperAddress);
+    tx.setSender(ultronAddr);
 
     // 1. shade::execute → Coin<SUI> (full deposit)
     const [releasedCoin] = this.shadeExecute(tx, order, domainBytes, saltBytes, targetAddr);
@@ -801,7 +801,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       priceInfoObjectId,
     });
     suinsTx.setTargetAddress({ nft, address: targetAddr });
-    // setDefault skipped — keeper can't set reverse lookup for the target user
+    // setDefault skipped — ultron can't set reverse lookup for the target user
     tx.transferObjects([nft], tx.pure.address(targetAddr));
 
     // 5. Return all excess SUI to user (suiPayment remainder + releasedCoin remainder)
@@ -869,13 +869,13 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
   private async executeSweep(sweep: ThunderSweepEntry) {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
-      console.error('[ShadeExecutor] sweep: no keeper key');
+      console.error('[ShadeExecutor] sweep: no ultron key');
       return;
     }
     try {
       console.log(`[ShadeExecutor] sweeping storm for ${sweep.domain}`);
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = keypair.getPublicKey().toSuiAddress();
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY); // ultron.sui signing key
+      const ultronAddr = keypair.getPublicKey().toSuiAddress();
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
       const THUNDER_PKG = '0xab627152bfbafeb06f567c1932f4d2eba11799160042219d2edaa0706c306ee6';
@@ -883,7 +883,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
       const nameHashBytes = Array.from(hexToBytes(sweep.nameHash));
       const tx = new Transaction();
-      tx.setSender(normalizeSuiAddress(keeperAddr));
+      tx.setSender(normalizeSuiAddress(ultronAddr));
       tx.moveCall({
         package: THUNDER_PKG,
         module: 'thunder',

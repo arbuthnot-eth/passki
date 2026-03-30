@@ -161,10 +161,10 @@ export async function requestSponsoredTransaction(params: {
 
   if (!client) throw new Error('Not connected to sponsor agent');
 
-  // 1. Get DO state to detect keeper mode
+  // 1. Get DO state to detect ultron mode
   const doState = await client.call<SponsorState>('getSponsorState', []);
-  const gasOwner = doState.keeperMode && doState.keeperAddress
-    ? doState.keeperAddress
+  const gasOwner = doState.ultronMode && doState.ultronAddress
+    ? doState.ultronAddress
     : sponsorAddress;
 
   // 2. Get sponsor gas coins from DO
@@ -260,15 +260,15 @@ export async function removeSplashTarget(address: string): Promise<void> {
 }
 
 /**
- * Keeper-mode sponsored transaction: user signs first, keeper signs the exact
+ * Ultron-mode sponsored transaction: user signs first, ultron signs the exact
  * same bytes on the server, then we submit with both signatures.
  *
  * Unlike requestSponsoredTransaction (where the DO gets bytes first and the
  * sponsor browser-wallet signs later), this flow guarantees byte-match by
  * letting the wallet produce the canonical bytes via sign, then forwarding
- * those to the keeper.
+ * those to ultron.
  */
-export async function requestKeeperSponsoredTransaction(params: {
+export async function requestUltronSponsoredTransaction(params: {
   tx: Transaction;
   senderAddress: string;
   sponsorAddress: string;
@@ -280,25 +280,25 @@ export async function requestKeeperSponsoredTransaction(params: {
 
   if (!client) throw new Error('Not connected to sponsor agent');
 
-  // 1. Get DO state — need keeper address for gasOwner
+  // 1. Get DO state — need ultron address for gasOwner
   const doState = await client.call<SponsorState>('getSponsorState', []);
-  if (!doState.keeperMode || !doState.keeperAddress) {
-    throw new Error('Keeper mode not active on DO');
+  if (!doState.ultronMode || !doState.ultronAddress) {
+    throw new Error('Ultron mode not active on DO');
   }
 
-  // 2. Get keeper gas coins
+  // 2. Get ultron gas coins
   const gasData = await client.call<{ coins: GasCoin[]; refreshedAt: number } | null>(
     'getGasCoins', [],
   );
   if (!gasData || gasData.coins.length === 0) {
-    throw new Error('Keeper has no gas coins');
+    throw new Error('Ultron has no gas coins');
   }
 
   // 3. Build the sponsored transaction
   const kindBytes = await tx.build({ client: grpcClient, onlyTransactionKind: true });
   const sponsoredTx = Transaction.fromKind(kindBytes);
   sponsoredTx.setSender(senderAddress);
-  sponsoredTx.setGasOwner(doState.keeperAddress);
+  sponsoredTx.setGasOwner(doState.ultronAddress);
   sponsoredTx.setGasPayment(gasData.coins);
 
   const txBytes = await sponsoredTx.build({ client: grpcClient });
@@ -337,14 +337,14 @@ export async function requestKeeperSponsoredTransaction(params: {
   return { digest };
 }
 
-export async function enableKeeperMode(): Promise<{ success: boolean; keeperAddress?: string; error?: string }> {
+export async function enableUltronMode(): Promise<{ success: boolean; ultronAddress?: string; error?: string }> {
   if (!client) throw new Error('Not connected to sponsor agent');
-  return client.call<{ success: boolean; keeperAddress?: string; error?: string }>('enableKeeperMode', []);
+  return client.call<{ success: boolean; ultronAddress?: string; error?: string }>('enableUltronMode', []);
 }
 
-export async function disableKeeperMode(): Promise<{ success: boolean }> {
+export async function disableUltronMode(): Promise<{ success: boolean }> {
   if (!client) throw new Error('Not connected to sponsor agent');
-  return client.call<{ success: boolean }>('disableKeeperMode', []);
+  return client.call<{ success: boolean }>('disableUltronMode', []);
 }
 
 let _autoSignInterval: ReturnType<typeof setInterval> | null = null;
@@ -359,7 +359,7 @@ export function startAutoSigning(
     try {
       // Skip browser-wallet auto-signing when keeper mode handles it server-side
       const state = await client.call<SponsorState>('getSponsorState', []);
-      if (state.keeperMode) return;
+      if (state.ultronMode) return;
       await processPendingRequests({ signTransaction: signFn });
     } catch { /* non-blocking */ }
   }, 5_000);

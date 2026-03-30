@@ -361,11 +361,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // 4. Repay flash loan
       // 5. Keep profit
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = keypair.getPublicKey().toSuiAddress();
+      const ultronAddr = keypair.getPublicKey().toSuiAddress();
 
       const arbAmount = 100_000_000n; // 100 USDC (start small)
       const tx = new Transaction();
-      tx.setSender(normalizeSuiAddress(keeperAddr));
+      tx.setSender(normalizeSuiAddress(ultronAddr));
 
       // Flash borrow from NAVI
       const [flashBalance, flashReceipt] = tx.moveCall({
@@ -439,7 +439,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       });
 
       // Keep profit + dust
-      tx.transferObjects([usdcChange, suiDust, deepDust, deepChange], tx.pure.address(keeperAddr));
+      tx.transferObjects([usdcChange, suiDust, deepDust, deepChange], tx.pure.address(ultronAddr));
 
       const txBytes = await tx.build({ client: transport as never });
       const { signature } = await keypair.signTransaction(txBytes);
@@ -541,7 +541,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   // ─── Dust Sweep (recursive treasury growth) ─────────────────────────
   //
   // Every NS acquisition leaves USDC change, DEEP change, and rounding dust
-  // in the keeper's wallet. This sweep converts all non-SUI dust → SUI via
+  // in the ultron wallet. This sweep converts all non-SUI dust → SUI via
   // DeepBook, then attests it as collateral and mints iUSD. The treasury
   // literally grows from swap rounding errors across thousands of transactions.
   //
@@ -554,12 +554,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
       // Check for USDC dust
       const balRes = await transport.query({
-        query: `query { address(address: "${keeperAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
+        query: `query { address(address: "${ultronAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
       });
       const balances = (balRes.data as any)?.address?.balances?.nodes ?? [];
 
@@ -575,13 +575,13 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       if (usdcBal === 0n && deepBal === 0n) return { swept: false };
 
       const tx = new Transaction();
-      tx.setSender(keeperAddr);
+      tx.setSender(ultronAddr);
       let totalSuiExpected = 0n;
 
       // USDC → SUI via DeepBook
       if (usdcBal > 0n) {
         const usdcCoinsRes = await transport.query({
-          query: `query { address(address: "${keeperAddr}") { coins(type: "${TreasuryAgents.USDC_TYPE}") { nodes { address version digest contents { json } } } } }`,
+          query: `query { address(address: "${ultronAddr}") { coins(type: "${TreasuryAgents.USDC_TYPE}") { nodes { address version digest contents { json } } } } }`,
         });
         // Simplified: use the balance amount, swap all of it
         const [usdcPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(0)]); // placeholder
@@ -598,7 +598,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       if (totalSuiExpected > 0n) {
         // Attest the dust as collateral
         const tx2 = new Transaction();
-        tx2.setSender(keeperAddr);
+        tx2.setSender(ultronAddr);
         tx2.moveCall({
           package: TreasuryAgents.IUSD_PKG,
           module: 'iusd',
@@ -623,7 +623,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           const cents = Math.round(dustUsd * 100);
           const iusdRaw = BigInt(cents) * 10_000_000n + 999n * 10_000n; // tag 999 = dust
           const tx3 = new Transaction();
-          tx3.setSender(keeperAddr);
+          tx3.setSender(ultronAddr);
           tx3.moveCall({
             package: TreasuryAgents.IUSD_PKG,
             module: 'iusd',
@@ -632,7 +632,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
               tx3.object(TreasuryAgents.IUSD_TREASURY_CAP),
               tx3.object(TreasuryAgents.IUSD_TREASURY),
               tx3.pure.u64(iusdRaw),
-              tx3.pure.address(keeperAddr),
+              tx3.pure.address(ultronAddr),
             ],
           });
           const txBytes3 = await tx3.build({ client: transport as never });
@@ -791,12 +791,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (profitMist > 10_000_000n && this.env.SHADE_KEEPER_PRIVATE_KEY) {
           try {
             const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-            const keeperAddr = keypair.getPublicKey().toSuiAddress();
+            const ultronAddr = keypair.getPublicKey().toSuiAddress();
             const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
             const T2000_PKG = '0x3e708a6e1dfd6f96b54e0145613d505e508577df4a80aa5523caf380abba5e33';
 
             const tx = new Transaction();
-            tx.setSender(normalizeSuiAddress(keeperAddr));
+            tx.setSender(normalizeSuiAddress(ultronAddr));
             tx.moveCall({
               package: T2000_PKG,
               module: 't2000',
@@ -826,15 +826,15 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   // ─── IKA DKG (emergency provisioning) ────────────────────────────────
 
   /** Request a DKG session. The DO can't run WASM but can build the PTB.
-   *  Returns the unsigned transaction bytes — the caller (browser or keeper)
-   *  must sign and execute. If keeper key is available, signs server-side. */
+   *  Returns the unsigned transaction bytes — the caller (browser or ultron)
+   *  must sign and execute. If ultron key is available, signs server-side. */
   @callable()
   async requestDKG(params: {
     curve: 'secp256k1' | 'ed25519';
     userAddress: string;
   }): Promise<{ txBytes?: string; digest?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
-      return { error: 'No keeper key — DKG requires browser-side WASM for user contribution' };
+      return { error: 'No ultron key — DKG requires browser-side WASM for user contribution' };
     }
 
     try {
@@ -842,7 +842,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // run WASM directly. Instead, we build the PTB structure and return
       // it for the browser to complete with the WASM contribution.
       //
-      // For server-side DKG (keeper-only dWallets with no user share),
+      // For server-side DKG (ultron-only dWallets with no user share),
       // we could use IKA's imported-key path. But zero-trust dWallets
       // require user participation by design — that's the whole point.
       //
@@ -861,7 +861,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
-  // ─── iUSD Mint (keeper-signed) ──────────────────────────────────────
+  // ─── iUSD Mint (ultron-signed) ──────────────────────────────────────
 
   private static readonly IUSD_PKG = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9'; // v2: 9 decimals
   private static readonly IUSD_TREASURY = '0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb';
@@ -872,16 +872,16 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private static readonly THUNDER_PKG = '0xecd7cec9058d82b6c7fbae3cbc0a0c2cf58fe4be2e87679ff9667ee7a0309e0f';
   private static readonly STORM_OBJ = '0xd67490b2047490e81f7467eedb25c726e573a311f9139157d746e4559282844f';
 
-  /** Set Thunder signal fee. Admin only (keeper is Storm admin). */
+  /** Set Thunder signal fee. Admin only (ultron is Storm admin). */
   @callable()
   async setThunderFee(params: { feeMist: number }): Promise<{ digest?: string; error?: string }> {
-    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const tx = new Transaction();
-      tx.setSender(keeperAddr);
+      tx.setSender(ultronAddr);
       tx.moveCall({
         package: TreasuryAgents.THUNDER_PKG,
         module: 'thunder',
@@ -903,12 +903,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   // ─── Thunder Strike Relay ─────────────────────────────────────────
 
-  /** Strike signals via relay — verify auth server-side, keeper submits on-chain. */
+  /** Strike signals via relay — verify auth server-side, ultron submits on-chain. */
   @callable()
   async strikeRelay(params: {
     nameHash: string; nftId: string; authMsg: string; authSig: string; senderAddress: string; count: number;
   }): Promise<{ digest?: string; error?: string }> {
-    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
       // Verify the user's signPersonalMessage signature server-side
       const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
@@ -916,7 +916,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       await verifyPersonalMessageSignature(authMsgBytes, params.authSig, { address: params.senderAddress });
 
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
       const nameHashBytes = Array.from(Uint8Array.from(atob(params.nameHash), c => c.charCodeAt(0)));
@@ -932,7 +932,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       ];
 
       const tx = new Transaction();
-      tx.setSender(keeperAddr);
+      tx.setSender(ultronAddr);
       let totalCalls = 0;
 
       // Helper: check if a storm has signals for this name via GraphQL
@@ -970,7 +970,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Legacy storms: use old destructive quest (no admin check, needs NFT — but legacy quest is permissionless with NFT object)
       // Legacy contracts don't have strike_relay, only quest which needs &SuinsRegistration.
-      // The keeper can't pass someone else's NFT. For legacy, we skip — they'll be auto-struck client-side for non-WaaP wallets.
+      // Ultron can't pass someone else's NFT. For legacy, we skip — they'll be auto-struck client-side for non-WaaP wallets.
       // For WaaP: legacy signals are stuck unless the user transfers to a non-WaaP wallet.
       // TODO: sweep legacy storms to clean up
 
@@ -988,17 +988,17 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
-  /** Attest collateral only — keeper signs as oracle. Mint is done by the wallet that owns the TreasuryCap. */
+  /** Attest collateral only — ultron signs as oracle. Mint is done by the wallet that owns the TreasuryCap. */
   @callable()
   async attestCollateral(params: { collateralValueMist: string }): Promise<{ digest?: string; error?: string }> {
-    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
       const tx = new Transaction();
-      tx.setSender(keeperAddr);
+      tx.setSender(ultronAddr);
       tx.moveCall({
         package: TreasuryAgents.IUSD_PKG,
         module: 'iusd',
@@ -1025,7 +1025,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
-  /** Attest collateral + mint iUSD, signed by keeper (oracle + minter). */
+  /** Attest collateral + mint iUSD, signed by ultron (oracle + minter). */
   @callable()
   async mintIusd(params: {
     recipient: string;
@@ -1033,7 +1033,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     mintAmount: string;
   }): Promise<{ digest1?: string; digest2?: string; minted?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
-      return { error: 'No keeper key configured' };
+      return { error: 'No ultron key configured' };
     }
 
     const { recipient, collateralValueMist, mintAmount } = params;
@@ -1043,12 +1043,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
       // Step 1: Attest collateral (oracle-gated)
       const tx1 = new Transaction();
-      tx1.setSender(keeperAddr);
+      tx1.setSender(ultronAddr);
       tx1.moveCall({
         package: TreasuryAgents.IUSD_PKG,
         module: 'iusd',
@@ -1071,7 +1071,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Step 2: Mint iUSD (minter-gated)
       const tx2 = new Transaction();
-      tx2.setSender(keeperAddr);
+      tx2.setSender(ultronAddr);
       tx2.moveCall({
         package: TreasuryAgents.IUSD_PKG,
         module: 'iusd',
@@ -1097,7 +1097,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
-  // ─── iUSD Purchase Route (keeper acquires NS for user) ──────────────
+  // ─── iUSD Purchase Route (ultron acquires NS for user) ──────────────
 
   private static readonly DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
   private static readonly DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
@@ -1111,7 +1111,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   /**
    * Full iUSD purchase route: attest collateral → mint iUSD → swap iUSD → USDC → NS → send NS to user.
-   * Surplus stays in treasury. Keeper signs all txs server-side.
+   * Surplus stays in treasury. Ultron signs all txs server-side.
    *
    * @param recipient - User's wallet address (receives NS tokens)
    * @param collateralValueMist - SUI collateral value in MIST (9 decimals)
@@ -1125,14 +1125,14 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     domainPriceUsd: number;
     signalId: number;
   }): Promise<{ digest?: string; nsDigest?: string; error?: string }> {
-    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
 
     const { recipient, collateralValueMist, domainPriceUsd, signalId } = params;
     if (!recipient || !collateralValueMist || !domainPriceUsd) return { error: 'Missing params' };
 
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
       // Encode iUSD amount with steganographic tag (2% buffer over domain price)
@@ -1143,7 +1143,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Step 1: Attest collateral
       const tx1 = new Transaction();
-      tx1.setSender(keeperAddr);
+      tx1.setSender(ultronAddr);
       tx1.moveCall({
         package: TreasuryAgents.IUSD_PKG,
         module: 'iusd',
@@ -1163,11 +1163,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const digest1 = await this._submitTx(txBytes1, sig1.signature);
       console.log(`[TreasuryAgents] Collateral attested: ${digest1}`);
 
-      // Step 2: Mint iUSD to keeper (not user) → swap iUSD → USDC → NS → send NS to user
+      // Step 2: Mint iUSD to ultron (not user) → swap iUSD → USDC → NS → send NS to user
       const tx2 = new Transaction();
-      tx2.setSender(keeperAddr);
+      tx2.setSender(ultronAddr);
 
-      // Mint iUSD to keeper
+      // Mint iUSD to ultron
       tx2.moveCall({
         package: TreasuryAgents.IUSD_PKG,
         module: 'iusd',
@@ -1176,7 +1176,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           tx2.object(TreasuryAgents.IUSD_TREASURY_CAP),
           tx2.object(TreasuryAgents.IUSD_TREASURY),
           tx2.pure.u64(iusdRaw),
-          tx2.pure.address(keeperAddr), // mint to keeper, not user
+          tx2.pure.address(ultronAddr), // mint to ultron, not user
         ],
       });
 
@@ -1184,15 +1184,15 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const txBytes2 = await tx2.build({ client: transport as never });
       const sig2 = await keypair.signTransaction(txBytes2);
       const digest2 = await this._submitTx(txBytes2, sig2.signature);
-      console.log(`[TreasuryAgents] iUSD minted to keeper: ${digest2}, amount: ${iusdRaw}`);
+      console.log(`[TreasuryAgents] iUSD minted to ultron: ${digest2}, amount: ${iusdRaw}`);
 
       // Step 3: Acquire NS for user
       // Route: SUI → USDC (DeepBook) → NS (DeepBook) → transfer to user
-      // iUSD minted above is the accounting layer; the actual swap uses keeper's SUI
+      // iUSD minted above is the accounting layer; the actual swap uses ultron's SUI
       // When iUSD/USDC pool is live, we'll route iUSD → USDC → NS instead
       const suiForNs = BigInt(collateralValueMist); // Use the collateral SUI amount
       const tx3 = new Transaction();
-      tx3.setSender(keeperAddr);
+      tx3.setSender(ultronAddr);
 
       // SUI → USDC via DeepBook
       const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
@@ -1221,7 +1221,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Send NS to user, keep everything else (SUI change + USDC dust + DEEP change)
       tx3.transferObjects([nsCoin], tx3.pure.address(normalizeSuiAddress(recipient)));
-      tx3.transferObjects([suiChange, usdcChange, deepChange1, deepChange2], tx3.pure.address(keeperAddr));
+      tx3.transferObjects([suiChange, usdcChange, deepChange1, deepChange2], tx3.pure.address(ultronAddr));
 
       const txBytes3 = await tx3.build({ client: transport as never });
       const sig3 = await keypair.signTransaction(txBytes3);
@@ -1257,15 +1257,15 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    */
   @callable()
   async swapSuiForDeep(params?: { amountMist?: string }): Promise<{ digest?: string; deepAcquired?: string; error?: string }> {
-    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
       // Check current DEEP balance
       const balRes = await transport.query({
-        query: `query { address(address: "${keeperAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
+        query: `query { address(address: "${ultronAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
       });
       const balances = (balRes.data as any)?.address?.balances?.nodes ?? [];
       let deepBal = 0n;
@@ -1320,7 +1320,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       console.log(`[TreasuryAgents] SUI→DEEP route: ${route.hops.length} hops, expected out: ${route.amountOut}`);
 
       const tx = new Transaction();
-      tx.setSender(keeperAddr);
+      tx.setSender(ultronAddr);
 
       // Split SUI from gas for the swap
       const [suiCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(suiAmount)]);
@@ -1354,10 +1354,10 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
             });
             // The output we want is quoteOut (coinY), transfer dust back
             if (i === route.hops.length - 1) {
-              tx.transferObjects([baseOut, deepOut], tx.pure.address(keeperAddr));
+              tx.transferObjects([baseOut, deepOut], tx.pure.address(ultronAddr));
               currentCoin = quoteOut;
             } else {
-              tx.transferObjects([baseOut, deepOut], tx.pure.address(keeperAddr));
+              tx.transferObjects([baseOut, deepOut], tx.pure.address(ultronAddr));
               currentCoin = quoteOut;
             }
           } else {
@@ -1371,10 +1371,10 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
               ],
             });
             if (i === route.hops.length - 1) {
-              tx.transferObjects([quoteOut, deepOut], tx.pure.address(keeperAddr));
+              tx.transferObjects([quoteOut, deepOut], tx.pure.address(ultronAddr));
               currentCoin = baseOut;
             } else {
-              tx.transferObjects([quoteOut, deepOut], tx.pure.address(keeperAddr));
+              tx.transferObjects([quoteOut, deepOut], tx.pure.address(ultronAddr));
               currentCoin = baseOut;
             }
           }
@@ -1395,10 +1395,10 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           });
           // Output is receiveB if swapXtoY (we get coinY), receiveA if !swapXtoY (we get coinX)
           if (swapXtoY) {
-            tx.transferObjects([receiveA], tx.pure.address(keeperAddr));
+            tx.transferObjects([receiveA], tx.pure.address(ultronAddr));
             currentCoin = receiveB;
           } else {
-            tx.transferObjects([receiveB], tx.pure.address(keeperAddr));
+            tx.transferObjects([receiveB], tx.pure.address(ultronAddr));
             currentCoin = receiveA;
           }
         } else {
@@ -1408,8 +1408,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         currentType = outType;
       }
 
-      // Transfer final DEEP coins to keeper
-      tx.transferObjects([currentCoin], tx.pure.address(keeperAddr));
+      // Transfer final DEEP coins to ultron
+      tx.transferObjects([currentCoin], tx.pure.address(ultronAddr));
 
       const txBytes = await tx.build({ client: transport as never });
       const { signature } = await keypair.signTransaction(txBytes);
@@ -1427,7 +1427,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   /**
    * Create the iUSD/USDC DeepBook v3 pool. Run once.
    *
-   * Requires 500 DEEP in keeper wallet (call swapSuiForDeep first if needed).
+   * Requires 500 DEEP in ultron wallet (call swapSuiForDeep first if needed).
    * Calls create_permissionless_pool<IUSD, USDC> with:
    *   - Registry object
    *   - tick_size: 1000 (0.001 USDC granularity — iUSD is 9 decimals, USDC is 6)
@@ -1438,15 +1438,15 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    */
   @callable()
   async createIusdUsdcPool(): Promise<{ digest?: string; error?: string }> {
-    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
       // Check DEEP balance
       const balRes = await transport.query({
-        query: `query { address(address: "${keeperAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
+        query: `query { address(address: "${ultronAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
       });
       const balances = (balRes.data as any)?.address?.balances?.nodes ?? [];
       let deepBal = 0n;
@@ -1461,7 +1461,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // Fetch DEEP coin objects to build the fee payment
       const deepCoinsRes = await transport.query({
         query: `query {
-          address(address: "${keeperAddr}") {
+          address(address: "${ultronAddr}") {
             coins(type: "${TreasuryAgents.DB_DEEP_TYPE}") {
               nodes {
                 address
@@ -1479,7 +1479,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
 
       const tx = new Transaction();
-      tx.setSender(keeperAddr);
+      tx.setSender(ultronAddr);
 
       // Build DEEP coin: merge all DEEP coins into one, then split exact fee
       const deepRefs = deepCoins.map((c: any) => ({
@@ -1516,8 +1516,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         ],
       });
 
-      // Return leftover DEEP to keeper
-      tx.transferObjects([primaryDeep], tx.pure.address(keeperAddr));
+      // Return leftover DEEP to ultron
+      tx.transferObjects([primaryDeep], tx.pure.address(ultronAddr));
 
       const txBytes = await tx.build({ client: transport as never });
       const sig = await keypair.signTransaction(txBytes);
@@ -1536,9 +1536,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   // ─── Rumble — server-side IKA dWallet provisioning for ultron.sui ───
 
   /**
-   * Rumble for ultron.sui — check/provision all IKA dWallets using the keeper keypair.
+   * Rumble for ultron.sui — check/provision all IKA dWallets using the ultron keypair.
    *
-   * Queries existing DWalletCap objects owned by the keeper, extracts public outputs,
+   * Queries existing DWalletCap objects owned by ultron, extracts public outputs,
    * and derives all cross-chain addresses (BTC, ETH, SOL, Base, Polygon, etc.).
    *
    * DKG LIMITATION: The DKG provisioning flow requires:
@@ -1551,7 +1551,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    */
   @callable()
   async rumbleUltron(): Promise<{
-    keeperAddress: string;
+    ultronAddress: string;
     btcAddress: string;
     ethAddress: string;
     solAddress: string;
@@ -1562,7 +1562,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
       return {
-        keeperAddress: '', btcAddress: '', ethAddress: '', solAddress: '',
+        ultronAddress: '', btcAddress: '', ethAddress: '', solAddress: '',
         addresses: [], dwalletCaps: [],
         needsDkg: { secp256k1: true, ed25519: true },
         error: 'SHADE_KEEPER_PRIVATE_KEY not set',
@@ -1570,16 +1570,16 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
 
     const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-    const keeperAddress = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
-    console.log(`[TreasuryAgents:rumble] Keeper: ${keeperAddress}`);
+    const ultronAddress = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+    console.log(`[TreasuryAgents:rumble] Ultron: ${ultronAddress}`);
 
-    // Query all DWalletCap objects owned by the keeper via JSON-RPC
+    // Query all DWalletCap objects owned by ultron via JSON-RPC
     const DWALLET_CAP_TYPE = '0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317::coordinator_inner::DWalletCap';
 
     let caps: Array<{ objectId: string; dwalletId: string }> = [];
     try {
       const owned = await raceJsonRpc<any>('suix_getOwnedObjects', [
-        keeperAddress,
+        ultronAddress,
         { StructType: DWALLET_CAP_TYPE },
         null, // cursor
         10,   // limit
@@ -1596,7 +1596,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     } catch (err) {
       console.error('[TreasuryAgents:rumble] Failed to query DWalletCaps:', err);
       return {
-        keeperAddress, btcAddress: '', ethAddress: '', solAddress: '',
+        ultronAddress, btcAddress: '', ethAddress: '', solAddress: '',
         addresses: [], dwalletCaps: [],
         needsDkg: { secp256k1: true, ed25519: true },
         error: `Failed to query DWalletCaps: ${err instanceof Error ? err.message : String(err)}`,
@@ -1674,13 +1674,13 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // - gRPC: CF Workers lack HTTP/2 bidirectional streaming (see https://github.com/cloudflare/workerd/issues/6455)
       // - WASM: IKA SDK's prepareDKGAsync / UserShareEncryptionKeys are browser-only WASM modules
       //
-      // The keeper already has 148.94 IKA tokens, so the SUI→IKA swap is not needed.
+      // Ultron already has 148.94 IKA tokens, so the SUI→IKA swap is not needed.
       // DKG only requires IKA tokens as payment + SUI for gas.
       //
       // Workaround options:
       //   1. Trigger DKG from the browser using the existing client-side `rumble()` function
       //   2. Run DKG on a non-CF server (e.g., a VPS with Node.js + gRPC support)
-      //   3. Use `ika-provision.ts` from a local script with the keeper key
+      //   3. Use `ika-provision.ts` from a local script with the ultron key
       //
       // Once dWallets are provisioned, this method will detect them and derive all addresses.
       const missing = [
@@ -1692,7 +1692,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     console.log(`[TreasuryAgents:rumble] Result: BTC=${btcAddress || 'none'}, ETH=${ethAddress || 'none'}, SOL=${solAddress || 'none'}, caps=${dwalletCaps.length}`);
     return {
-      keeperAddress,
+      ultronAddress,
       btcAddress,
       ethAddress,
       solAddress,

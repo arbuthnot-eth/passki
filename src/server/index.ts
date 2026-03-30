@@ -9,7 +9,7 @@ interface Env {
   TreasuryAgents: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
-  SHADE_KEEPER_PRIVATE_KEY?: string;
+  SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -237,7 +237,7 @@ async function hasSuinsNft(address: string): Promise<boolean> {
   }
 }
 
-// ── Gas sponsorship via Shade keeper ─────────────────────────────────
+// ── Gas sponsorship via ultron ─────────────────────────────────
 
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 
@@ -246,9 +246,9 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
  * Body: { txBytes: string, senderAddress?: string } (base64-encoded transaction bytes)
  * Returns: { sponsorSig: string, sponsorAddress: string }
  *
- * Signs the transaction as gas sponsor using the Shade keeper keypair.
+ * Signs the transaction as gas sponsor using the ultron keypair.
  * The client must have built the tx with setGasOwner(sponsorAddress)
- * and setGasPayment pointing to the keeper's SUI coins.
+ * and setGasPayment pointing to ultron's SUI coins.
  *
  * When senderAddress is provided, requires the sender to own a SuiNS
  * registration NFT (403 if not).
@@ -290,7 +290,7 @@ app.post('/api/sponsor-gas', async (c) => {
 
 /**
  * GET /api/sponsor-info
- * Returns the keeper's address and gas coins so clients can build sponsored txs.
+ * Returns ultron's address and gas coins so clients can build sponsored txs.
  */
 app.get('/api/sponsor-info', async (c) => {
   const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
@@ -332,7 +332,7 @@ app.get('/api/sponsor-info', async (c) => {
   }
 });
 
-// ── IKA token funding (keeper → user) ────────────────────────────────
+// ── IKA token funding (ultron → user) ────────────────────────────────
 
 import { Transaction } from '@mysten/sui/transactions';
 
@@ -343,9 +343,9 @@ const IKA_FUND_AMOUNT = 5_000_000_000n; // 5 IKA (9 decimals)
  * POST /api/ika/fund
  * Body: { address: string }
  *
- * Transfers a small amount of IKA from the keeper to the user.
+ * Transfers a small amount of IKA from ultron to the user.
  * SuiNS-gated. Called before DKG so the user has IKA for the DKG fee.
- * Keeper signs and submits directly (no user signature needed).
+ * Ultron signs and submits directly (no user signature needed).
  */
 app.post('/api/ika/fund', async (c) => {
   const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
@@ -360,9 +360,9 @@ app.post('/api/ika/fund', async (c) => {
     if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
 
     const keypair = Ed25519Keypair.fromSecretKey(key);
-    const keeperAddress = keypair.toSuiAddress();
+    const ultronAddress = keypair.toSuiAddress();
 
-    // Find keeper's IKA coin
+    // Find ultron's IKA coin
     const coinRes = await fetch(SUINS_GQL_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -374,16 +374,16 @@ app.post('/api/ika/fund', async (c) => {
             }
           }
         }`,
-        variables: { a: keeperAddress, t: `0x2::coin::Coin<${IKA_COIN_TYPE}>` },
+        variables: { a: ultronAddress, t: `0x2::coin::Coin<${IKA_COIN_TYPE}>` },
       }),
     });
     const coinJson = await coinRes.json() as any;
     const ikaCoinObj = coinJson?.data?.address?.objects?.nodes?.[0];
-    if (!ikaCoinObj) return c.json({ error: 'Keeper has no IKA' }, 503);
+    if (!ikaCoinObj) return c.json({ error: 'Ultron has no IKA' }, 503);
 
     // Build tx: split IKA and transfer to user
     const tx = new Transaction();
-    tx.setSender(keeperAddress);
+    tx.setSender(ultronAddress);
     const ikaSplit = tx.splitCoins(tx.object(ikaCoinObj.address), [tx.pure.u64(IKA_FUND_AMOUNT.toString())]);
     tx.transferObjects([ikaSplit], tx.pure.address(address));
 
@@ -413,16 +413,16 @@ app.post('/api/ika/fund', async (c) => {
   }
 });
 
-// ── IKA dWallet creation (keeper-submitted, for WaaP) ────────────────
+// ── IKA dWallet creation (ultron-submitted, for WaaP) ────────────────
 
 /**
  * POST /api/ika/create
  * Body: { address, authSignature, authBytes, dkgData }
  *
- * WaaP path: user can't sign transactions, so the keeper submits the DKG tx.
+ * WaaP path: user can't sign transactions, so ultron submits the DKG tx.
  * The user proves intent via signPersonalMessage (authSignature).
  * Browser runs WASM prepareDKGAsync and sends the results as dkgData.
- * Keeper builds + signs + submits the tx, transfers DWalletCap to user.
+ * Ultron builds + signs + submits the tx, transfers DWalletCap to user.
  *
  * Uses requestDWalletDKGWithPublicUserShare (shared dWallet).
  */
@@ -454,9 +454,9 @@ app.post('/api/ika/create', async (c) => {
     // TODO: verify authSignature matches address (cryptographic proof of intent)
 
     const keypair = Ed25519Keypair.fromSecretKey(key);
-    const keeperAddress = keypair.toSuiAddress();
+    const ultronAddress = keypair.toSuiAddress();
 
-    // Fetch keeper's coins
+    // Fetch ultron's coins
     const GQL = 'https://graphql.mainnet.sui.io/graphql';
     const IKA_COIN_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
 
@@ -465,7 +465,7 @@ app.post('/api/ika/create', async (c) => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         query: `query($a:SuiAddress!,$t:String!){ address(address:$a){ objects(filter:{type:$t},first:${limit}){ nodes{ address version digest } } } }`,
-        variables: { a: keeperAddress, t: `0x2::coin::Coin<${coinType}>` },
+        variables: { a: ultronAddress, t: `0x2::coin::Coin<${coinType}>` },
       }),
     }).then(r => r.json()) as Promise<any>;
 
@@ -479,12 +479,12 @@ app.post('/api/ika/create', async (c) => {
     const suiCoins = mapCoins(suiRes);
     const ikaCoins = mapCoins(ikaRes);
 
-    if (!suiCoins.length) return c.json({ error: 'Keeper has no SUI' }, 503);
-    if (!ikaCoins.length) return c.json({ error: 'Keeper has no IKA' }, 503);
+    if (!suiCoins.length) return c.json({ error: 'Ultron has no SUI' }, 503);
+    if (!ikaCoins.length) return c.json({ error: 'Ultron has no IKA' }, 503);
 
-    // Build the DKG transaction — keeper is sender
+    // Build the DKG transaction — ultron is sender
     const tx = new Transaction();
-    tx.setSender(keeperAddress);
+    tx.setSender(ultronAddress);
     tx.setGasPayment(suiCoins.slice(0, 3));
 
     const ikaCoin = tx.object(ikaCoins[0].objectId);
@@ -559,9 +559,9 @@ app.post('/api/ika/create', async (c) => {
       ],
     });
 
-    // Transfer DWalletCap to the user + return leftover coins to keeper
+    // Transfer DWalletCap to the user + return leftover coins to ultron
     tx.transferObjects([dWalletCap], tx.pure.address(address));
-    tx.transferObjects([suiCoin], tx.pure.address(keeperAddress));
+    tx.transferObjects([suiCoin], tx.pure.address(ultronAddress));
 
     // Build with a real JSON-RPC client (Workers can't use gRPC)
     const { SuiJsonRpcClient: BuildClient } = await import('@mysten/sui/jsonRpc');
@@ -594,12 +594,12 @@ app.post('/api/ika/create', async (c) => {
 /**
  * POST /api/ika/provision
  * Body: { address: string }
- * Returns: { success, keeperAddress, suiCoins, ikaCoins }
+ * Returns: { success, ultronAddress, suiCoins, ikaCoins }
  *
- * SuiNS-gated. Returns keeper wallet info so the client can build
- * a DKG transaction with the keeper as gas sponsor. The DKG WASM
+ * SuiNS-gated. Returns ultron wallet info so the client can build
+ * a DKG transaction with ultron as gas sponsor. The DKG WASM
  * runs in the browser. Once built, the client sends the tx bytes
- * to /api/sponsor-gas for the keeper's gas signature (which also
+ * to /api/sponsor-gas for ultron's gas signature (which also
  * has the SuiNS gate), then co-signs and submits.
  */
 app.post('/api/ika/provision', async (c) => {
@@ -615,9 +615,9 @@ app.post('/api/ika/provision', async (c) => {
     if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
 
     const keypair = Ed25519Keypair.fromSecretKey(key);
-    const keeperAddress = keypair.toSuiAddress();
+    const ultronAddress = keypair.toSuiAddress();
 
-    // Fetch keeper's gas coins + IKA coins via GraphQL
+    // Fetch ultron's gas coins + IKA coins via GraphQL
     const GQL = 'https://graphql.mainnet.sui.io/graphql';
     const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
 
@@ -632,7 +632,7 @@ app.post('/api/ika/provision', async (c) => {
             }
           }
         }`,
-        variables: { a: keeperAddress, t: `0x2::coin::Coin<${coinType}>` },
+        variables: { a: ultronAddress, t: `0x2::coin::Coin<${coinType}>` },
       }),
     }).then(r => r.json()) as Promise<any>;
 
@@ -649,7 +649,7 @@ app.post('/api/ika/provision', async (c) => {
 
     return c.json({
       success: true,
-      keeperAddress,
+      ultronAddress,
       suiCoins,
       ikaCoins,
     });
@@ -775,7 +775,7 @@ app.post('/api/suiami/verify', async (c) => {
   }
 });
 
-// ── Thunder strike relay (keeper submits, user authorizes via signPersonalMessage) ──
+// ── Thunder strike relay (ultron submits, user authorizes via signPersonalMessage) ──
 app.post('/api/thunder/strike-relay', async (c) => {
   try {
     const body = await c.req.json() as {
@@ -799,7 +799,7 @@ app.post('/api/thunder/strike-relay', async (c) => {
   }
 });
 
-// ── iUSD attest collateral (keeper signs, oracle-gated) ───────────
+// ── iUSD attest collateral (ultron signs, oracle-gated) ───────────
 app.post('/api/iusd/attest', async (c) => {
   try {
     const body = await c.req.json() as { collateralValueMist: string };
@@ -845,7 +845,7 @@ app.post('/api/iusd/mint', async (c) => {
   }
 });
 
-// ── Thunder admin (set fee via TreasuryAgents keeper) ──────────────
+// ── Thunder admin (set fee via TreasuryAgents ultron) ──────────────
 app.post('/api/thunder/set-fee', async (c) => {
   try {
     const body = await c.req.json() as { feeMist: number };

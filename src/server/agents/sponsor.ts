@@ -47,14 +47,14 @@ export interface SponsorState {
   totalSponsored: number;
   /** Resolved Sui addresses allowed to request sponsorship. Empty = open (any sender). */
   approvedList: string[];
-  /** When true, the server-side keeper keypair auto-signs sponsor gas instead of the browser wallet. */
-  keeperMode: boolean;
-  /** Derived Sui address of the keeper keypair (set when keeperMode is enabled). */
-  keeperAddress: string;
+  /** When true, the server-side ultron keypair auto-signs sponsor gas instead of the browser wallet. */
+  ultronMode: boolean;
+  /** Derived Sui address of the ultron keypair (set when ultronMode is enabled). */
+  ultronAddress: string;
 }
 
 interface Env {
-  SHADE_KEEPER_PRIVATE_KEY?: string;
+  SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
 }
 
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — mirrors .SKI session TTL
@@ -73,8 +73,8 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     pendingRequests: [],
     totalSponsored: 0,
     approvedList: [],
-    keeperMode: false,
-    keeperAddress: '',
+    ultronMode: false,
+    ultronAddress: '',
   };
 
   // ─── Sponsor Registration ────────────────────────────────────────────
@@ -136,43 +136,43 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     return { success: true };
   }
 
-  // ─── Keeper Mode ────────────────────────────────────────────────────
+  // ─── Ultron Mode ────────────────────────────────────────────────────
 
   @callable()
-  async enableKeeperMode(): Promise<{ success: boolean; keeperAddress?: string; error?: string }> {
+  async enableUltronMode(): Promise<{ success: boolean; ultronAddress?: string; error?: string }> {
     if (!this.state.active) return { success: false, error: 'Sponsor not active' };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
-      return { success: false, error: 'No keeper private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)' };
+      return { success: false, error: 'No ultron private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)' };
     }
 
     const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-    const keeperAddress = keypair.toSuiAddress();
+    const ultronAddress = keypair.toSuiAddress();
 
-    // Fetch keeper gas coins via GraphQL so getGasCoins() returns them
-    const coins = await this.fetchKeeperGasCoins(keeperAddress);
+    // Fetch ultron gas coins via GraphQL so getGasCoins() returns them
+    const coins = await this.fetchUltronGasCoins(ultronAddress);
 
     this.setState({
       ...this.state,
-      keeperMode: true,
-      keeperAddress,
+      ultronMode: true,
+      ultronAddress,
       gasCoins: coins,
       gasCoinsRefreshedAt: Date.now(),
     });
 
-    return { success: true, keeperAddress };
+    return { success: true, ultronAddress };
   }
 
   @callable()
-  async disableKeeperMode(): Promise<{ success: boolean }> {
+  async disableUltronMode(): Promise<{ success: boolean }> {
     this.setState({
       ...this.state,
-      keeperMode: false,
-      keeperAddress: '',
+      ultronMode: false,
+      ultronAddress: '',
     });
     return { success: true };
   }
 
-  private async fetchKeeperGasCoins(keeperAddress: string): Promise<GasCoin[]> {
+  private async fetchUltronGasCoins(ultronAddress: string): Promise<GasCoin[]> {
     const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
     const res = await fetch(GQL_URL, {
       method: 'POST',
@@ -185,7 +185,7 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
             }
           }
         }`,
-        variables: { a: keeperAddress },
+        variables: { a: ultronAddress },
       }),
     });
     const json = await res.json() as {
@@ -199,7 +199,7 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     }));
   }
 
-  private async signWithKeeper(requestId: string): Promise<void> {
+  private async signWithUltron(requestId: string): Promise<void> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return;
 
     const idx = this.state.pendingRequests.findIndex(r => r.id === requestId);
@@ -222,7 +222,7 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
       requests[idx] = updated;
       this.setState({ ...this.state, pendingRequests: requests });
     } catch (err) {
-      console.error('[SponsorAgent] Keeper signing failed:', err);
+      console.error('[SponsorAgent] Ultron signing failed:', err);
     }
   }
 
@@ -247,11 +247,11 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
       return null;
     }
 
-    // In keeper mode, auto-refresh coins if stale (>30s)
-    if (this.state.keeperMode && this.state.keeperAddress) {
+    // In ultron mode, auto-refresh coins if stale (>30s)
+    if (this.state.ultronMode && this.state.ultronAddress) {
       const staleMs = 30_000;
       if (Date.now() - this.state.gasCoinsRefreshedAt > staleMs) {
-        const coins = await this.fetchKeeperGasCoins(this.state.keeperAddress);
+        const coins = await this.fetchUltronGasCoins(this.state.ultronAddress);
         this.setState({
           ...this.state,
           gasCoins: coins,
@@ -304,9 +304,9 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
       pendingRequests: [...this.state.pendingRequests, request],
     });
 
-    // In keeper mode, auto-sign the sponsor's gas signature immediately
-    if (this.state.keeperMode) {
-      await this.signWithKeeper(requestId);
+    // In ultron mode, auto-sign the sponsor's gas signature immediately
+    if (this.state.ultronMode) {
+      await this.signWithUltron(requestId);
     }
 
     return { requestId };
