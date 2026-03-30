@@ -3921,9 +3921,11 @@ async function fetchAndShowNsPrice(label: string) {
     _patchNsPrice(); _patchNsStatus();
     return;
   }
-  if (label === nsPriceFetchFor && (nsPriceUsd != null || nsAvail != null)) return;
+  if (label === nsPriceFetchFor && nsPriceUsd != null) return;
   nsPriceFetchFor = label;
   if (nsAvail !== 'owned') { nsAvail = null; _patchNsStatus(); }
+  // Clear sessionStorage cache after first fetch — it was only for instant first render
+  try { sessionStorage.removeItem('ski:ns-resolve'); } catch {}
 
   /** Apply status + Tradeport listing results to module state and re-render. */
   const _applyStatusAndListing = (sr: DomainStatusResult | null, tp: TradeportListing | null) => {
