@@ -9156,6 +9156,7 @@ function bindEvents() {
 
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
+          <span class="ski-idle-version">v3.0</span>
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
           <div class="ski-idle-iusd-btn" id="ski-idle-iusd" title="Swap 95% of wallet to iUSD"></div>
           <div class="ski-idle-ns-row">
@@ -9441,6 +9442,24 @@ function bindEvents() {
           } catch {}
         })();
       };
+
+      // Click card → populate name input with the card's name
+      _idleOverlay.querySelector('#ski-idle-card')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const nameEl = _idleOverlay?.querySelector('.ski-idle-card-name') as HTMLElement | null;
+        if (!nameEl || !_idleNsInput) return;
+        const name = nameEl.textContent?.replace(/\.sui$/, '').trim() || '';
+        if (!name) return;
+        _idleNsInput.value = name;
+        nsLabel = name;
+        const _clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+        if (_clearBtn) _clearBtn.style.display = name ? '' : 'none';
+        const mainInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+        if (mainInput) mainInput.value = name;
+        nsAvail = null;
+        _updateIdleStatus();
+        fetchAndShowNsPrice(name).then(() => { _updateIdleStatus(); _updateIdleCard(name); _expandIdleConvo(name); });
+      });
 
       _idleNsInput?.addEventListener('click', (e) => e.stopPropagation());
       _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());

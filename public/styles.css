@@ -3128,6 +3128,18 @@ body {
   transition: background 0.15s, border-color 0.15s;
 }
 .ski-idle-ns-action:disabled { opacity: 0.5; cursor: default; }
+.ski-idle-version {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.55rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.3);
+  letter-spacing: 0.05em;
+  pointer-events: none;
+}
 .ski-idle-price-row {
   display: flex;
   align-items: center;
