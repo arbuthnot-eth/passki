@@ -985,15 +985,14 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     const tx = new Transaction();
     tx.setSender(walletAddress);
 
-    // Pyth oracle fee — small split from gas coin, fine
+    // Pyth oracle fee from gas
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
       tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
     );
 
-    // Registration coin — use coinWithBalance so the SDK resolves a separate coin.
-    // SUI payment uses full price (no NS discount). 10% buffer for slippage.
+    // Split registration coin from gas — simple, no coinWithBalance resolution issues
     const regMist = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.10 * 1e9));
-    const regCoin = coinWithBalance({ balance: regMist });
+    const [regCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(regMist)]);
 
     const suinsTx = new SuinsTransaction(suinsClient, tx);
     const nft = suinsTx.register({
