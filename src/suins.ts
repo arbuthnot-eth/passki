@@ -8,7 +8,7 @@
  *   - new_leaf_with_cap / new_with_cap — parent holds SubnameCap
  */
 
-import { Transaction } from '@mysten/sui/transactions';
+import { coinWithBalance, Transaction } from '@mysten/sui/transactions';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
@@ -984,20 +984,22 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     if (!suiPrice || suiPrice <= 0) return null;
     const tx = new Transaction();
     tx.setSender(walletAddress);
-    // Note: SUI path splits from tx.gas for payment — no gas sponsorship here
-    // since tx.gas belongs to whoever pays gas
 
+    // Pyth oracle fee — small split from gas coin, fine
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
       tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
     );
 
-    // Pass tx.gas directly — no split. The SuiNS contract takes exactly what Pyth says it needs.
-    // This avoids stale-price mismatches entirely.
+    // Registration coin — use coinWithBalance so the SDK resolves a separate coin.
+    // Triple-drawing from tx.gas (Pyth fee + registration + gas) exhausts it.
+    const regMist = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.50 * 1e9));
+    const regCoin = coinWithBalance({ balance: regMist });
+
     const suinsTx = new SuinsTransaction(suinsClient, tx);
     const nft = suinsTx.register({
       domain, years: 1,
       coinConfig: mainPackage.mainnet.coins.SUI,
-      coin: tx.gas,
+      coin: regCoin,
       priceInfoObjectId,
     });
     suinsTx.setTargetAddress({ nft, address: walletAddress });
