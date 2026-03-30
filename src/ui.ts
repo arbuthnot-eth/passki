@@ -9352,7 +9352,31 @@ function bindEvents() {
       const _updateIdleCard = (name: string) => {
         const card = _idleOverlay?.querySelector('#ski-idle-card') as HTMLElement | null;
         if (!card) return;
-        if (!name || !nsAvail || nsAvail === 'available') { card.innerHTML = ''; return; }
+        if (!name && !app.suinsName) { card.innerHTML = ''; return; }
+        // For available names or no status: show user's primary SuiNS name card instead
+        if (!nsAvail || nsAvail === 'available') {
+          const primaryName = app.suinsName?.replace(/\.sui$/, '') || '';
+          if (!primaryName) { card.innerHTML = ''; return; }
+          // Show primary name card with SUIAMI balance
+          const primaryThunder = _thunderCounts[primaryName.toLowerCase()] ?? 0;
+          const primaryLocal = _thunderLocalCounts[primaryName.toLowerCase()] ?? 0;
+          const badgeHtml = (primaryLocal > 0 ? `\u26c8\ufe0f${primaryLocal} ` : '') + (primaryThunder > 0 ? `\u26a1${primaryThunder}` : '');
+          card.innerHTML = `<a class="ski-idle-card-name" href="https://${esc(primaryName)}.sui.ski" target="_blank" rel="noopener" title="${esc(primaryName)}.sui.ski">${esc(primaryName)}<span class="ski-nft-tld">.sui</span></a>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span>`;
+          // Fetch primary name's balance
+          (async () => {
+            try {
+              const ws = getState();
+              if (!ws.address) return;
+              const balEl = card.querySelector('#ski-idle-card-bal');
+              if (!balEl) return;
+              const totalUsd = app.usd ?? 0;
+              if (totalUsd >= 0.50) {
+                balEl.innerHTML = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span>`;
+              }
+            } catch {}
+          })();
+          return;
+        }
         // Persist as authoritative domain — drives NS input on refresh and menu open
         _lastNftCardDomain = name;
         try { sessionStorage.setItem('ski:nft-card-domain', name); } catch {}

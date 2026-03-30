@@ -3161,9 +3161,9 @@ body {
   color: #86efac;
 }
 .ski-idle-ns-action--quest-bounty {
-  background: linear-gradient(135deg, rgba(255, 184, 0, 0.3), rgba(255, 140, 0, 0.25));
-  border: 1px solid rgba(255, 184, 0, 0.5);
-  color: #FFB800;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.3), rgba(77, 162, 255, 0.25));
+  border: 1px solid rgba(77, 162, 255, 0.5);
+  color: #93c5fd;
 }
 .ski-idle-ns-action--thunder {
   background: rgba(255, 184, 0, 0.15);
