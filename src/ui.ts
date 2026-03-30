@@ -9139,6 +9139,18 @@ function bindEvents() {
         const _localCount = _thunderLocalCounts[_initLabel.toLowerCase()] ?? 0;
         if (_pendingCount > 0 || _localCount > 0) {
           _expandIdleConvo(_initLabel);
+          // Transform send button to quest button if user owns this name and has pending signals
+          const _isOwnedName = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === _initLabel.toLowerCase());
+          if (_isOwnedName && _pendingCount > 0) {
+            const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
+            if (sendBtn) {
+              sendBtn.innerHTML = '\u26c8\ufe0f';
+              sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--quest';
+              sendBtn.title = `Quest ${_pendingCount} signal${_pendingCount > 1 ? 's' : ''}`;
+              sendBtn.dataset.questMode = '1';
+              sendBtn.dataset.questName = _initLabel;
+            }
+          }
         }
       }
 
@@ -9389,6 +9401,53 @@ function bindEvents() {
       const _idleThunderInput = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
       const _idleThunderSend = _idleOverlay.querySelector('#ski-idle-thunder-send');
       const _sendIdleThunder = async () => {
+        // Quest mode: decrypt pending signals instead of sending
+        const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
+        if (sendBtn?.dataset.questMode === '1') {
+          const questName = sendBtn.dataset.questName || '';
+          if (!questName) return;
+          sendBtn.innerHTML = '\u2026';
+          sendBtn.disabled = true;
+          try {
+            const ws = getState();
+            if (!ws.address) return;
+            const { decryptAndQuest, getThunderCountsBatch } = await import('./client/thunder.js');
+            // Find the NFT object ID for this name
+            const nftEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === questName.toLowerCase());
+            if (!nftEntry) { showToast('NFT not found'); return; }
+            const count = _thunderCounts[questName.toLowerCase()] ?? 1;
+            const payloads = await decryptAndQuest(ws.address, questName, nftEntry.nftId, count, async (txBytes) => {
+              const { digest, effects } = await signAndExecuteTransaction(txBytes);
+              return { digest: digest || '', effects };
+            });
+            // Store decrypted messages in local log
+            const _myLog = app.suinsName?.replace(/\.sui$/, '') || questName;
+            for (const p of payloads) {
+              const _pSender = p.sender || p.senderAddress.slice(0, 8);
+              await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
+            }
+            // Refresh counts and re-render
+            const freshCounts = await getThunderCountsBatch([questName]);
+            _thunderCounts[questName.toLowerCase()] = freshCounts[questName.toLowerCase()] ?? 0;
+            await _refreshThunderLocalCounts();
+            _expandIdleConvo(questName);
+            // Reset button to send mode
+            sendBtn.innerHTML = '\u26a1';
+            sendBtn.className = 'ski-idle-thunder-send';
+            sendBtn.title = 'Send signal';
+            delete sendBtn.dataset.questMode;
+            delete sendBtn.dataset.questName;
+            sendBtn.disabled = false;
+            showToast(`\u26a1 ${payloads.length} signal${payloads.length > 1 ? 's' : ''} decrypted`);
+          } catch (err) {
+            sendBtn.innerHTML = '\u26c8\ufe0f';
+            sendBtn.disabled = false;
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!msg.toLowerCase().includes('reject')) showToast(msg);
+          }
+          return;
+        }
+
         const raw = _idleThunderInput?.value.trim() || '';
         if (!raw) return;
         const ws = getState();

@@ -3327,6 +3327,12 @@ body {
   line-height: 1;
 }
 .ski-idle-thunder-send:hover { background: rgba(255, 184, 0, 0.3); }
+.ski-idle-thunder-send--quest {
+  background: rgba(77, 162, 255, 0.2);
+  border: 1px solid rgba(77, 162, 255, 0.5);
+  color: #93c5fd;
+}
+.ski-idle-thunder-send--quest:hover { background: rgba(77, 162, 255, 0.35); }
 .ski-idle-thunder-send--loading { pointer-events: auto !important; }
 .ski-idle-thunder-send--loading:hover {
   background: rgba(239, 68, 68, 0.3);
