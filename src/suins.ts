@@ -1045,52 +1045,60 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     return null; // TODO: implement multi-token combo PTB
   };
 
-  // ── Rumble USDC+SUI combo: use all USDC + supplement with SUI ──
+  // ── Rumble combo: swap USDC→SUI, merge into gas, then register with SUI ──
   const buildUsdcSuiCombo = async (): Promise<Uint8Array | null> => {
     if (usdcCoins.length === 0 || totalUsdc === 0n) return null;
     if (!suiPrice || suiPrice <= 0) return null;
     // Only use this if we have SOME USDC but not enough for full USDC path
-    if (totalUsdc >= usdcNeeded) return null; // full USDC path handles this
+    if (totalUsdc >= usdcNeeded) return null;
+
+    // Check if USDC + SUI together cover the registration cost
+    const regCostUsd = discountedUsd * 1.10; // 10% buffer over discounted price
+    const suiValueUsd = 4.29 * suiPrice; // approximate SUI value
+    const usdcValueUsd = Number(totalUsdc) / 1e6;
+    if (suiValueUsd + usdcValueUsd < regCostUsd) return null; // truly insufficient
 
     const tx = new Transaction();
     tx.setSender(walletAddress);
 
-    // Pyth price feed for NS
-    const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-      tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
-    );
-
-    // Swap ALL USDC → NS via DeepBook
-    const dbPool = tx.sharedObjectRef({
-      objectId: DB_NS_USDC_POOL,
-      initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION,
-      mutable: true,
-    });
+    // Step 1: Swap ALL USDC → SUI via DeepBook (SUI/USDC pool)
+    const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
+    const DB_SUI_USDC_POOL_ISV = 389750322;
     const usdcCoin = tx.objectRef(usdcCoins[0]);
     if (usdcCoins.length > 1) {
       tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c => tx.objectRef(c)));
     }
-
     const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
-    const [nsCoin, usdcChange, deepChange] = tx.moveCall({
+    // swap_exact_quote_for_base: USDC (quote) → SUI (base)
+    const [suiFromSwap, usdcChange, deepChange] = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
-      typeArguments: [mainPackage.mainnet.coins.NS.type, mainPackage.mainnet.coins.USDC.type],
-      arguments: [dbPool, usdcCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock()],
+      typeArguments: ['0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI', mainPackage.mainnet.coins.USDC.type],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_ISV, mutable: true }),
+        usdcCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
     });
 
-    // Register with the NS we got from the swap + pay remainder from SUI gas
+    // Step 2: Merge swapped SUI into gas coin — now gas has original SUI + swapped SUI
+    tx.mergeCoins(tx.gas, [suiFromSwap]);
+
+    // Step 3: Pyth price feed + register with beefed-up gas coin
+    const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
+      tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
+    );
+
     const suinsTx = new SuinsTransaction(suinsClient, tx);
     const nft = suinsTx.register({
       domain, years: 1,
-      coinConfig: mainPackage.mainnet.coins.NS,
-      coin: nsCoin,
+      coinConfig: mainPackage.mainnet.coins.SUI,
+      coin: tx.gas,
       priceInfoObjectId,
     });
     suinsTx.setTargetAddress({ nft, address: walletAddress });
     if (setAsDefault) suinsTx.setDefault(domain);
     tx.transferObjects([nft], tx.pure.address(walletAddress));
 
-    // Return change
+    // Return USDC/DEEP dust
     tx.transferObjects([usdcChange, deepChange], tx.pure.address(walletAddress));
 
     return buildWithTx(tx, transport);
