@@ -9,7 +9,7 @@
  *   4. Rebalancer — checks reserve allocation drift, rebalances on schedule
  *
  * Single DO instance keyed by "treasury" — there's only one treasury.
- * Uses the same keeper keypair as ShadeExecutorAgent for signing.
+ * Signed by ultron.sui — the autonomous agent wallet (SHADE_KEEPER_PRIVATE_KEY).
  */
 
 import { Agent, callable } from 'agents';
@@ -86,7 +86,7 @@ export interface TreasuryAgentsState {
 }
 
 interface Env {
-  SHADE_KEEPER_PRIVATE_KEY?: string;
+  SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui — autonomous agent keypair
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
