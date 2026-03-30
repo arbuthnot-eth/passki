@@ -285,6 +285,51 @@ export async function buildBatchStrikeTx(
   return bytes;
 }
 
+/** Build a strike PTB that routes all storage rebate to iUSD treasury.
+ *  Strikes N signals (FIFO) and sends gas change to treasury. */
+export async function buildStrikeToTreasuryTx(
+  address: string,
+  recipientName: string,
+  nftObjectId: string,
+  strikeCount: number,
+): Promise<Uint8Array> {
+  const IUSD_TREASURY = '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57';
+  const ns = nameHash(recipientName.replace(/\.sui$/i, '').toLowerCase());
+  const addr = normalizeSuiAddress(address);
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+
+  // Strike all signals up to strikeCount
+  for (let i = 0; i < strikeCount; i++) {
+    tx.moveCall({
+      package: THUNDER_PACKAGE_ID,
+      module: 'thunder',
+      function: 'strike',
+      arguments: [
+        tx.object(STORM_ID),
+        tx.pure.vector('u8', Array.from(ns)),
+        tx.object(nftObjectId),
+        tx.object('0x6'),
+      ],
+    });
+  }
+
+  // Route storage rebate to iUSD treasury — split 0 from gas now,
+  // the VM adds rebate to gas coin, then transferObjects sends the change.
+  // We split a "rebate collector" coin that will hold the excess after gas.
+  const [rebateCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(0)]);
+  tx.transferObjects([rebateCoin], tx.pure.address(IUSD_TREASURY));
+
+  // Piggyback roster update
+  const { maybeAppendRoster } = await import('../suins.js');
+  maybeAppendRoster(tx, addr, recipientName);
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
 /** Build a combined PTB: strike N signals + send receipt back to sender. One signature. */
 export async function buildStrikeWithReceiptTx(
   recipientAddress: string,

@@ -9561,44 +9561,99 @@ function bindEvents() {
         convoEl.removeAttribute('hidden');
         convoEl.scrollTop = convoEl.scrollHeight;
 
-        // Click-to-delete: tap a bubble to remove from local log
+        // Click-to-delete: tap once = confirm (red), tap again = strike/delete
+        // Incoming signals on owned names → on-chain strike (rebate → treasury)
+        // Outgoing or local-only → local delete
         let _deleteBusy = false;
+        const _deleteFromLocalLog = async (ts: number) => {
+          const ws = getState();
+          if (!ws.address) return;
+          try {
+            const key = await _deriveThunderKey(ws.address);
+            const storageKey = `ski:thunder-log:${ws.address}`;
+            const raw = localStorage.getItem(storageKey);
+            if (raw) {
+              const { ct, iv } = JSON.parse(raw);
+              const plaintext = await crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
+                key, Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
+              );
+              let all: any[] = JSON.parse(new TextDecoder().decode(plaintext));
+              all = all.filter(entry => entry.ts !== ts);
+              const updated = new TextEncoder().encode(JSON.stringify(all));
+              const newIv = crypto.getRandomValues(new Uint8Array(12));
+              const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
+              localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
+            }
+          } catch {}
+        };
+
         convoEl.querySelectorAll('.ski-idle-bubble').forEach(bubble => {
           bubble.addEventListener('click', async (ev) => {
             ev.stopPropagation();
-            if (_deleteBusy) return; // prevent concurrent mutations
+            if (_deleteBusy) return;
             const ts = parseInt((bubble as HTMLElement).dataset.ts || '0', 10);
             if (!ts) return;
-            // Confirm with visual feedback — first tap turns red, second tap deletes
+            const isIncoming = (bubble as HTMLElement).classList.contains('ski-idle-bubble--in');
+
+            // First tap: confirm (red)
             if (!(bubble as HTMLElement).classList.contains('ski-idle-bubble--confirm-delete')) {
               (bubble as HTMLElement).classList.add('ski-idle-bubble--confirm-delete');
-              setTimeout(() => (bubble as HTMLElement).classList.remove('ski-idle-bubble--confirm-delete'), 2000);
+              setTimeout(() => (bubble as HTMLElement).classList.remove('ski-idle-bubble--confirm-delete'), 3000);
               return;
             }
+
             _deleteBusy = true;
+            const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
+            const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bare)
+              || (app.suinsName?.replace(/\.sui$/, '').toLowerCase() === bare);
+
             try {
-              const ws = getState();
-              if (!ws.address) return;
-              const key = await _deriveThunderKey(ws.address);
-              const storageKey = `ski:thunder-log:${ws.address}`;
-              const raw = localStorage.getItem(storageKey);
-              if (raw) {
-                const { ct, iv } = JSON.parse(raw);
-                const plaintext = await crypto.subtle.decrypt(
-                  { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-                  key, Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-                );
-                let all: any[] = JSON.parse(new TextDecoder().decode(plaintext));
-                all = all.filter(entry => entry.ts !== ts);
-                const updated = new TextEncoder().encode(JSON.stringify(all));
-                const newIv = crypto.getRandomValues(new Uint8Array(12));
-                const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
-                localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
+              if (isIncoming && isOwned) {
+                // On-chain strike: delete all signals up to this one + route rebate to treasury
+                const ws = getState();
+                if (!ws.address) { _deleteBusy = false; return; }
+                const nftEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === bare);
+                if (!nftEntry) { _deleteBusy = false; return; }
+
+                // Count how many incoming bubbles are at or before this one (FIFO order)
+                const allBubbles = Array.from(convoEl.querySelectorAll('.ski-idle-bubble--in'));
+                const idx = allBubbles.indexOf(bubble);
+                const strikeCount = idx >= 0 ? idx + 1 : 1;
+
+                (bubble as HTMLElement).textContent = '\u2026';
+                const { buildStrikeToTreasuryTx } = await import('./client/thunder.js');
+                const txBytes = await buildStrikeToTreasuryTx(ws.address, bare, nftEntry.nftId, strikeCount);
+                await signAndExecuteTransaction(txBytes);
+
+                // Delete all struck bubbles from local log + DOM
+                for (let i = 0; i <= idx; i++) {
+                  const b = allBubbles[i] as HTMLElement;
+                  const bTs = parseInt(b.dataset.ts || '0', 10);
+                  if (bTs) await _deleteFromLocalLog(bTs);
+                  _freshQuestTs.delete(bTs);
+                  b.remove();
+                }
+
+                // Update counts
+                const { getThunderCountsBatch } = await import('./client/thunder.js');
+                const freshCounts = await getThunderCountsBatch([bare]);
+                _thunderCounts[bare] = freshCounts[bare] ?? 0;
+                try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
+
+                showToast(`\u26a1 ${strikeCount} struck \u2014 rebate \u2192 treasury`);
+              } else {
+                // Local-only delete
+                await _deleteFromLocalLog(ts);
+                (bubble as HTMLElement).remove();
               }
-              (bubble as HTMLElement).remove();
               _freshQuestTs.delete(ts);
               await _refreshThunderLocalCounts();
-            } catch {}
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : '';
+              if (!msg.toLowerCase().includes('reject')) showToast(msg || 'Strike failed');
+              (bubble as HTMLElement).classList.remove('ski-idle-bubble--confirm-delete');
+            }
             _deleteBusy = false;
           });
         });
