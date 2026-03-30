@@ -168,7 +168,33 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       });
     }
 
-    return new Response('TreasuryAgents', { status: 200 });
+    if ((url.pathname.endsWith('/attest-collateral') || url.searchParams.has('attest-collateral')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as { collateralValueMist: string };
+        const result = await this.attestCollateral(params);
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    if ((url.pathname.endsWith('/mint-iusd') || url.searchParams.has('mint-iusd')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as Parameters<typeof this.mintIusd>[0];
+        const result = await this.mintIusd(params);
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    return super.onRequest(request);
   }
 
   // ─── Core Tick ───────────────────────────────────────────────────────
@@ -548,8 +574,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
             break;
 
           case 'storm':
-            // Thunder Storm agent — sweeps ragtags, manages thunder counts
-            // TODO: implement ragtag sweep scheduling
+            // Thunder Storm agent — sweeps storms, manages thunder counts
+            // TODO: implement storm sweep scheduling
             break;
 
           case 'snipe':
@@ -642,6 +668,121 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       };
     } catch (err) {
       return { error: String(err) };
+    }
+  }
+
+  // ─── iUSD Mint (keeper-signed) ──────────────────────────────────────
+
+  private static readonly IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515';
+  private static readonly IUSD_TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
+  private static readonly IUSD_TREASURY_CAP = '0x868d560ab460e416ced3d348dc62e808557fb9f516cecc5dae9f914f6466bc05';
+
+  /** Attest collateral only — keeper signs as oracle. Mint is done by the wallet that owns the TreasuryCap. */
+  @callable()
+  async attestCollateral(params: { collateralValueMist: string }): Promise<{ digest?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      const tx = new Transaction();
+      tx.setSender(keeperAddr);
+      tx.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'update_collateral',
+        arguments: [
+          tx.object(TreasuryAgents.IUSD_TREASURY),
+          tx.pure.vector('u8', Array.from(new TextEncoder().encode('SUI'))),
+          tx.pure.vector('u8', Array.from(new TextEncoder().encode('sui'))),
+          tx.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+          tx.pure.u64(BigInt(params.collateralValueMist)),
+          tx.pure.u8(0),
+          tx.object('0x6'),
+        ],
+      });
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      return { digest };
+    } catch (err) {
+      const errStr = err instanceof Error ? err.stack || err.message : String(err);
+      console.error('[TreasuryAgents] attestCollateral error:', errStr);
+      return { error: errStr };
+    }
+  }
+
+  /** Attest collateral + mint iUSD, signed by keeper (oracle + minter). */
+  @callable()
+  async mintIusd(params: {
+    recipient: string;
+    collateralValueMist: string;
+    mintAmount: string;
+  }): Promise<{ digest1?: string; digest2?: string; minted?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
+      return { error: 'No keeper key configured' };
+    }
+
+    const { recipient, collateralValueMist, mintAmount } = params;
+    if (!recipient || !collateralValueMist || !mintAmount) {
+      return { error: 'Missing required params' };
+    }
+
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      // Step 1: Attest collateral (oracle-gated)
+      const tx1 = new Transaction();
+      tx1.setSender(keeperAddr);
+      tx1.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'update_collateral',
+        arguments: [
+          tx1.object(TreasuryAgents.IUSD_TREASURY),
+          tx1.pure.vector('u8', Array.from(new TextEncoder().encode('SUI'))),
+          tx1.pure.vector('u8', Array.from(new TextEncoder().encode('sui'))),
+          tx1.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+          tx1.pure.u64(BigInt(collateralValueMist)),
+          tx1.pure.u8(0), // TRANCHE_SENIOR
+          tx1.object('0x6'),
+        ],
+      });
+
+      const txBytes1 = await tx1.build({ client: transport as never });
+      const sig1 = await keypair.signTransaction(txBytes1);
+      const digest1 = await this._submitTx(txBytes1, sig1.signature);
+      console.log(`[TreasuryAgents] Collateral attested: ${digest1}`);
+
+      // Step 2: Mint iUSD (minter-gated)
+      const tx2 = new Transaction();
+      tx2.setSender(keeperAddr);
+      tx2.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'mint_and_transfer',
+        arguments: [
+          tx2.object(TreasuryAgents.IUSD_TREASURY_CAP),
+          tx2.object(TreasuryAgents.IUSD_TREASURY),
+          tx2.pure.u64(BigInt(mintAmount)),
+          tx2.pure.address(normalizeSuiAddress(recipient)),
+        ],
+      });
+
+      const txBytes2 = await tx2.build({ client: transport as never });
+      const sig2 = await keypair.signTransaction(txBytes2);
+      const digest2 = await this._submitTx(txBytes2, sig2.signature);
+      console.log(`[TreasuryAgents] iUSD minted: ${digest2}, amount: ${mintAmount}, to: ${recipient}`);
+
+      return { digest1, digest2, minted: mintAmount };
+    } catch (err) {
+      const errStr = err instanceof Error ? err.stack || err.message : String(err);
+      console.error('[TreasuryAgents] mintIusd error:', errStr);
+      return { error: errStr };
     }
   }
 

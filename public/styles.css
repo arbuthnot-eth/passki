@@ -25,7 +25,7 @@ body {
     radial-gradient(55% 45% at 10% 100%, rgba(14, 165, 233, 0.08), transparent 70%),
     var(--bg);
   min-height: 100dvh;
-  padding: 24px;
+  padding: 60px 24px 24px;
 }
 
 .page {
@@ -60,13 +60,19 @@ body {
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
-  padding: 16px;
+  padding: 2px 8px;
   gap: 8px;
-  position: relative;
-  z-index: 10;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10001;
+  transform-origin: top right;
+  scale: clamp(0.65, calc(100vw / 520), 1);
 }
 
 .ski-tools-toggle {
+  display: none;
   order: -1;
   margin-right: auto;
   padding: 6px 10px;
@@ -2955,18 +2961,21 @@ body {
 
 /* Idle screensaver overlay */
 .ski-idle-overlay {
-  z-index: 10000;
+  z-index: 50;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  gap: 12px;
-  padding: 12px;
+  gap: 4px;
+  padding: 2px 12px 12px;
   background: rgba(0, 0, 0, 0.95);
   border-radius: 12px;
   cursor: pointer;
   animation: ski-idle-fade 0.5s ease-in;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  overflow: visible;
+  transform-origin: top right;
+  overflow: visible;
 }
 @keyframes ski-idle-fade {
   from { opacity: 0; }
@@ -2991,10 +3000,10 @@ body {
   all: unset;
   cursor: pointer;
   position: absolute;
-  top: 5%;
-  left: 4%;
+  top: 8%;
+  left: 8%;
   z-index: 3;
-  width: 26%;
+  width: 22%;
   aspect-ratio: 1;
   border-radius: 50%;
   background: transparent;
@@ -3010,9 +3019,9 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: calc(100% - 14px);
+  width: calc(100% - 32px);
   position: absolute;
-  top: 22%;
+  top: 27%;
   left: 12px;
   z-index: 2;
 }
@@ -3025,17 +3034,18 @@ body {
   text-shadow: 0 1px 3px rgba(0,0,0,0.8);
   flex-shrink: 0;
 }
+.ski-idle-ns-input-wrap .wk-ns-dot-sui {
+  position: absolute;
+  right: 6px;
+  pointer-events: none;
+  z-index: 1;
+}
 .ski-idle-ns-input-wrap {
   flex: 1;
   position: relative;
   display: flex;
   align-items: center;
-  margin-right: -2px;
-}
-.ski-idle-ns-input-wrap .ski-idle-ns-action {
-  position: absolute;
-  right: 2px;
-  z-index: 1;
+  min-width: 0;
 }
 .ski-idle-ns-input {
   width: 100%;
@@ -3047,7 +3057,7 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
   font-weight: 600;
-  padding: 5px 56px 5px 10px;
+  padding: 5px 30px 5px 10px;
   box-sizing: border-box;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -3060,7 +3070,7 @@ body {
   cursor: pointer;
   color: rgba(255, 255, 255, 0.4);
   font-size: 0.65rem;
-  margin-left: -28px;
+  margin-left: -42px;
   margin-right: 4px;
   z-index: 1;
 }
@@ -3069,19 +3079,21 @@ body {
   all: unset;
   cursor: pointer;
   flex-shrink: 0;
-  padding: 4px 10px;
+  padding: 3px 4px;
   border-radius: 6px;
+  margin-left: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 800;
+  line-height: 1;
   letter-spacing: 0.5px;
   transition: background 0.15s, border-color 0.15s;
 }
 .ski-idle-ns-action:disabled { opacity: 0.5; cursor: default; }
 .ski-idle-ns-action--suiami {
-  background: rgba(5, 5, 15, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.5);
+  background: rgba(90, 115, 145, 0.45);
+  border: 1px solid rgba(110, 140, 170, 0.5);
+  color: #a0b8d0;
 }
 .ski-idle-ns-action--suiami-active {
   background: linear-gradient(135deg, rgba(126, 34, 206, 0.3), rgba(168, 85, 247, 0.25));
@@ -3104,9 +3116,11 @@ body {
   gap: 2px;
   width: 100%;
   padding: 6px 0;
-  background: rgba(10, 10, 20, 0.92);
-  border: none;
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.65rem;
   z-index: 2;
@@ -3128,15 +3142,15 @@ body {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: 6px;
   cursor: pointer;
   font-weight: 600;
   font-size: 0.7rem;
-  background: rgba(20, 20, 30, 0.95);
+  background: rgba(255, 255, 255, 0.03);
   border: 1px solid;
   transition: background 0.15s, border-color 0.15s;
 }
-.ski-idle-addr-line:hover { background: rgba(30, 30, 45, 0.95); }
+.ski-idle-addr-line:hover { background: rgba(255, 255, 255, 0.06); }
 .ski-idle-addr-line--sui {
   color: #4da2ff;
   border-color: rgba(77, 162, 255, 0.35);
@@ -3174,11 +3188,59 @@ body {
 .ski-idle-card-name { font-weight: 700; color: #fff; }
 .ski-idle-card-badges { color: #FFB800; font-weight: 600; }
 .ski-idle-card-expiry { color: rgba(255, 255, 255, 0.4); font-size: 0.6rem; }
+.ski-idle-thunder-convo {
+  position: absolute;
+  bottom: 32px;
+  left: 0;
+  right: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  z-index: 2;
+}
+.ski-idle-thunder-convo[hidden] { display: none; }
+.ski-idle-bubble {
+  padding: 6px 12px;
+  margin: 2px 0;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  max-width: 80%;
+  word-break: break-word;
+}
+.ski-idle-bubble--out {
+  align-self: flex-end;
+  background: rgba(15, 15, 20, 0.55);
+  border: 1px solid rgba(255, 184, 0, 0.35);
+  color: #FFB800;
+}
+.ski-idle-bubble--in {
+  align-self: flex-start;
+  background: rgba(77, 162, 255, 0.15);
+  border: 1px solid rgba(77, 162, 255, 0.3);
+  color: #93c5fd;
+}
+.ski-idle-bubble--failed {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+}
+.ski-idle-bubble--sending {
+  opacity: 0.5;
+}
 .ski-idle-thunder-row {
   display: flex;
   width: 100%;
-  position: relative;
-  margin-top: -10px;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 .ski-idle-thunder-input {
   width: 100%;
@@ -3213,6 +3275,77 @@ body {
   line-height: 1;
 }
 .ski-idle-thunder-send:hover { background: rgba(255, 184, 0, 0.3); }
+.ski-idle-thunder-send--loading { pointer-events: auto !important; }
+.ski-idle-thunder-send--loading:hover {
+  background: rgba(239, 68, 68, 0.3);
+  border-color: rgba(239, 68, 68, 0.6);
+}
+.ski-idle-thunder-send--loading:hover .ski-idle-thunder-spinner {
+  display: none;
+}
+.ski-idle-thunder-send--loading:hover::after {
+  content: '\2715';
+  color: #f87171;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+.ski-idle-thunder-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 184, 0, 0.3);
+  border-top-color: #FFB800;
+  border-radius: 50%;
+  animation: ski-spin 0.6s linear infinite;
+}
+@keyframes ski-spin { to { transform: rotate(360deg); } }
+.ski-idle-at-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: rgba(10, 10, 20, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 184, 0, 0.3);
+  border-radius: 8px 8px 0 0;
+  padding: 4px 0;
+  z-index: 10;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.ski-idle-at-cols {
+  display: flex;
+  gap: 1px;
+}
+.ski-idle-at-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ski-idle-at-col--left { border-right: 1px solid rgba(255, 255, 255, 0.08); }
+.ski-idle-at-option {
+  padding: 6px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ski-idle-at-option--contact { color: #60a5fa; }
+.ski-idle-at-option--owned { color: #FFB800; text-align: right; }
+.ski-idle-at-option:hover, .ski-idle-at-option--active {
+  background: rgba(255, 255, 255, 0.08);
+}
+.ski-idle-at-empty {
+  padding: 6px 10px;
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.2);
+  font-style: italic;
+}
 .ski-idle-follow {
   display: flex;
   align-items: center;

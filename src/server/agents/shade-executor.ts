@@ -873,7 +873,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       return;
     }
     try {
-      console.log(`[ShadeExecutor] sweeping ragtag for ${sweep.domain}`);
+      console.log(`[ShadeExecutor] sweeping storm for ${sweep.domain}`);
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
       const keeperAddr = keypair.getPublicKey().toSuiAddress();
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
@@ -907,7 +907,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       console.log(`[ShadeExecutor] sweep completed for ${sweep.domain}: ${digest}`);
     } catch (err) {
       console.error(`[ShadeExecutor] sweep failed for ${sweep.domain}:`, err);
-      // Mark failed — don't retry (ragtag may have new signals)
+      // Mark failed — don't retry (storm may have new signals)
       const sweeps = (this.state.sweeps ?? []).map(s =>
         s.nameHash === sweep.nameHash ? { ...s, status: 'failed' as const } : s,
       );

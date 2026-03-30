@@ -1,11 +1,11 @@
 /**
  * Thunder client — encrypt signals between SuiNS identities.
  *
- * Signal: AES encrypt → deposit into recipient's ragtag on Storm (one PTB).
+ * Signal: AES encrypt → deposit into recipient's storm on Storm (one PTB).
  * Quest: batch quest (one PTB) → parse Questfi events → AES decrypt all signals.
  *
- * Storm is the shared object. Ragtag is the per-name collection (dynamic field).
- * Empty ragtages are removed for storage rebate.
+ * Storm is the shared object. Storm is the per-name collection (dynamic field).
+ * Empty stormes are removed for storage rebate.
  */
 
 import { Transaction } from '@mysten/sui/transactions';
@@ -16,6 +16,10 @@ import {
   THUNDER_VERSION,
   THUNDER_PACKAGE_ID,
   STORM_ID,
+  LEGACY_THUNDER_PACKAGE_ID,
+  LEGACY_STORM_ID,
+  LEGACY2_THUNDER_PACKAGE_ID,
+  LEGACY2_STORM_ID,
   type ThunderPayload,
 } from './thunder-types.js';
 
@@ -134,7 +138,7 @@ export async function getThunderCount(recipientName: string): Promise<number> {
 
 /**
  * Get thunder presence for ALL names in one gRPC call.
- * Lists dynamic fields on Storm — if an ragtag exists for a name hash, it has ≥1 signal.
+ * Lists dynamic fields on Storm — if an storm exists for a name hash, it has ≥1 signal.
  * Returns a map of bareName → 1 (has thunder) or 0 (no thunder).
  */
 export async function getThunderCountsBatch(names: string[]): Promise<Record<string, number>> {
@@ -152,19 +156,22 @@ export async function getThunderCountsBatch(names: string[]): Promise<Record<str
   }
 
   try {
-    // One gRPC call — list all ragtages on Storm
     const { grpcClient } = await import('../rpc.js');
-    const dfResult = await grpcClient.listDynamicFields({ parentId: STORM_ID });
-    const fields = dfResult.dynamicFields ?? [];
-
-    // Match ragtages to our names
-    for (const df of fields) {
-      const bcsValues = Object.values(df.name.bcs as Record<string, number>);
-      const nameBytes = bcsValues.slice(1); // skip BCS length prefix
-      const hex = nameBytes.map((b: number) => b.toString(16).padStart(2, '0')).join('');
-      if (hashToBare[hex]) {
-        result[hashToBare[hex]] = 1; // ragtag exists = has signal
-      }
+    // Check both new and legacy storms
+    const stormIds = [STORM_ID, LEGACY_STORM_ID, LEGACY2_STORM_ID];
+    for (const sid of stormIds) {
+      try {
+        const dfResult = await grpcClient.listDynamicFields({ parentId: sid });
+        const fields = dfResult.dynamicFields ?? [];
+        for (const df of fields) {
+          const bcsValues = Object.values(df.name.bcs as Record<string, number>);
+          const nameBytes = bcsValues.slice(1);
+          const hex = nameBytes.map((b: number) => b.toString(16).padStart(2, '0')).join('');
+          if (hashToBare[hex]) {
+            result[hashToBare[hex]] = (result[hashToBare[hex]] || 0) + 1;
+          }
+        }
+      } catch { /* skip this storm */ }
     }
   } catch { /* return cached zeros */ }
 
@@ -173,7 +180,27 @@ export async function getThunderCountsBatch(names: string[]): Promise<Record<str
 
 // ─── Quest (batch) ──────────────────────────────────────────────────
 
-/** Build a batched quest PTB — one tx claims N signals.
+/** Check pending signals on a specific storm for a name. */
+async function _countOnStorm(stormId: string, recipientName: string): Promise<number> {
+  try {
+    const bare = recipientName.replace(/\.sui$/i, '').toLowerCase();
+    const ns = nameHash(bare);
+    const hex = Array.from(ns).map(b => b.toString(16).padStart(2, '0')).join('');
+    const { grpcClient } = await import('../rpc.js');
+    const dfResult = await grpcClient.listDynamicFields({ parentId: stormId });
+    const fields = dfResult.dynamicFields ?? [];
+    for (const df of fields) {
+      const bcsValues = Object.values(df.name.bcs as Record<string, number>);
+      const nameBytes = bcsValues.slice(1);
+      const h = nameBytes.map((b: number) => b.toString(16).padStart(2, '0')).join('');
+      if (h === hex) return 1;
+    }
+  } catch { /* ignore */ }
+  return 0;
+}
+
+/** Build a batched quest PTB — reads N signals without deleting them.
+ *  Auto-strikes (deletes) legacy storm signals first.
  *  If sponsorAddress is provided, sets it as gas owner (2-sig sponsored tx). */
 export async function buildBatchQuestTx(
   recipientAddress: string,
@@ -188,7 +215,32 @@ export async function buildBatchQuestTx(
   if (sponsorAddress) {
     tx.setGasOwner(normalizeSuiAddress(sponsorAddress));
   }
-  for (let i = 0; i < count; i++) {
+
+  // Auto-strike legacy storm signals (destructive — old contracts only have destructive quest)
+  const legacyStorms: [string, string][] = [
+    [LEGACY_THUNDER_PACKAGE_ID, LEGACY_STORM_ID],
+    [LEGACY2_THUNDER_PACKAGE_ID, LEGACY2_STORM_ID],
+  ];
+  for (const [pkg, sid] of legacyStorms) {
+    const n = await _countOnStorm(sid, recipientName);
+    for (let i = 0; i < n; i++) {
+      tx.moveCall({
+        package: pkg,
+        module: 'thunder',
+        function: 'quest',
+        arguments: [
+          tx.object(sid),
+          tx.pure.vector('u8', Array.from(ns)),
+          tx.object(nftObjectId),
+          tx.object('0x6'),
+        ],
+      });
+    }
+  }
+
+  // Quest from current storm (non-destructive — reads by index)
+  const newStormCount = await _countOnStorm(STORM_ID, recipientName);
+  for (let i = 0; i < newStormCount; i++) {
     tx.moveCall({
       package: THUNDER_PACKAGE_ID,
       module: 'thunder',
@@ -196,8 +248,36 @@ export async function buildBatchQuestTx(
       arguments: [
         tx.object(STORM_ID),
         tx.pure.vector('u8', Array.from(ns)),
+        tx.pure.u64(i),
         tx.object(nftObjectId),
-        tx.object('0x6'), // clock
+      ],
+    });
+  }
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
+/** Build a batched strike PTB — decrypt and delete N signals. */
+export async function buildBatchStrikeTx(
+  recipientAddress: string,
+  recipientName: string,
+  nftObjectId: string,
+  count: number,
+): Promise<Uint8Array> {
+  const ns = nameHash(recipientName.replace(/\.sui$/i, '').toLowerCase());
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(recipientAddress));
+  for (let i = 0; i < count; i++) {
+    tx.moveCall({
+      package: THUNDER_PACKAGE_ID,
+      module: 'thunder',
+      function: 'strike',
+      arguments: [
+        tx.object(STORM_ID),
+        tx.pure.vector('u8', Array.from(ns)),
+        tx.object(nftObjectId),
+        tx.object('0x6'),
       ],
     });
   }
@@ -267,6 +347,131 @@ export async function decryptAndQuest(
         const cleartext = await aesDecrypt(s.payload, s.aesKey, s.aesNonce);
         results.push(JSON.parse(new TextDecoder().decode(cleartext)) as ThunderPayload);
       } catch { /* skip — likely stale signal from old deploy */ }
+    }),
+  );
+  return results;
+}
+
+// ─── Quest + Send (combined PTB) ────────────────────────────────────
+
+/**
+ * Build a single PTB that quests N pending signals AND sends a new signal.
+ * One wallet signature for both decrypt + reply.
+ */
+export async function buildQuestAndSendTx(
+  address: string,
+  senderName: string,
+  recipientName: string,
+  recipientNftObjectId: string,
+  ownNftObjectId: string,
+  questCount: number,
+  message: string,
+  suiamiToken?: string,
+): Promise<Uint8Array> {
+  const ownBare = senderName.replace(/\.sui$/i, '').toLowerCase();
+  const ownNs = nameHash(ownBare);
+  const recipBare = recipientName.replace(/\.sui$/i, '').toLowerCase();
+  const recipNs = nameHash(recipBare);
+  const addr = normalizeSuiAddress(address);
+
+  const payload: ThunderPayload = {
+    v: THUNDER_VERSION,
+    sender: senderName,
+    senderAddress: addr,
+    message,
+    timestamp: new Date().toISOString(),
+    ...(suiamiToken ? { suiami: suiamiToken } : {}),
+  };
+  const { ciphertext, key, nonce } = await aesEncrypt(new TextEncoder().encode(JSON.stringify(payload)));
+  const nftHex = recipientNftObjectId.toLowerCase().replace(/^0x/, '');
+  const nftRawBytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) nftRawBytes[i] = parseInt(nftHex.slice(i * 2, i * 2 + 2), 16);
+  const maskedKey = xorBytes(key, keccak_256(nftRawBytes));
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+
+  // Phase 1: Quest pending incoming signals (non-destructive)
+  for (let i = 0; i < questCount; i++) {
+    tx.moveCall({
+      package: THUNDER_PACKAGE_ID,
+      module: 'thunder',
+      function: 'quest',
+      arguments: [
+        tx.object(STORM_ID),
+        tx.pure.vector('u8', Array.from(ownNs)),
+        tx.pure.u64(i),
+        tx.object(ownNftObjectId),
+      ],
+    });
+  }
+
+  // Phase 2: Send new signal
+  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(3_000_000)]);
+  tx.moveCall({
+    package: THUNDER_PACKAGE_ID,
+    module: 'thunder',
+    function: 'signal',
+    arguments: [
+      tx.object(STORM_ID),
+      tx.pure.vector('u8', Array.from(recipNs)),
+      tx.pure.vector('u8', Array.from(ciphertext)),
+      tx.pure.vector('u8', Array.from(maskedKey)),
+      tx.pure.vector('u8', Array.from(nonce)),
+      feeCoin,
+      tx.object('0x6'),
+    ],
+  });
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
+/**
+ * Quest + send in one wallet interaction.
+ * Returns decrypted incoming signals from the quest phase.
+ */
+export async function questAndSend(
+  address: string,
+  senderName: string,
+  recipientName: string,
+  recipientNftObjectId: string,
+  ownNftObjectId: string,
+  questCount: number,
+  message: string,
+  executeTx: (txBytes: Uint8Array) => Promise<{ digest: string; effects?: any }>,
+  suiamiToken?: string,
+): Promise<ThunderPayload[]> {
+  const txBytes = await buildQuestAndSendTx(
+    address, senderName, recipientName, recipientNftObjectId, ownNftObjectId,
+    questCount, message, suiamiToken,
+  );
+  const result = await executeTx(txBytes);
+
+  let quested = parseQuestfiEvents(result.effects ?? result);
+  if (quested.length === 0 && result.digest) {
+    await new Promise(r => setTimeout(r, 2000));
+    const txRes = await fetch('/api/sui-rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'sui_getTransactionBlock',
+        params: [result.digest, { showEvents: true, showEffects: true }],
+      }),
+    });
+    const txJson = await txRes.json() as any;
+    quested = parseQuestfiEvents(txJson?.result ?? {});
+  }
+
+  const results: ThunderPayload[] = [];
+  await Promise.all(
+    quested.map(async (s) => {
+      try {
+        const cleartext = await aesDecrypt(s.payload, s.aesKey, s.aesNonce);
+        results.push(JSON.parse(new TextDecoder().decode(cleartext)) as ThunderPayload);
+      } catch { /* skip stale */ }
     }),
   );
   return results;

@@ -3179,7 +3179,7 @@ export function mountDotButton(el: HTMLElement): () => void {
 
 let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
-let nsLabel = ''; // always empty on hard refresh — card defaults to most-thundered
+let nsLabel = (() => { try { return localStorage.getItem('ski:ns-label') || ''; } catch { return ''; } })();
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -3434,7 +3434,7 @@ async function _renderConversation(counterparty: string, force = false) {
       await _refreshThunderLocalCounts();
       _renderConversation(cardDomain, true);
       _syncNftCardToInput();
-      // Schedule sweep for this ragtag (auto-cleanup after 7 days idle)
+      // Schedule sweep for this storm (auto-cleanup after 7 days idle)
       Promise.all([import('./client/shade.js'), import('./client/thunder.js')]).then(([{ scheduleThunderSweep }, { nameHash }]) => {
         const hash = nameHash(cardDomain);
         const hex = Array.from(hash).map((b: number) => b.toString(16).padStart(2, '0')).join('');
@@ -6518,7 +6518,7 @@ function renderSkiMenu() {
           btc: app.btcAddress || undefined,
           sol: app.solAddress || undefined,
           eth: app.ethAddress || undefined,
-        });
+        }, app.usd ?? undefined);
         const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));
         const { bytes, signature } = await signPersonalMessage(msgBytes);
         const proof = createSuiamiProof(message, bytes, signature);
@@ -7044,13 +7044,12 @@ function renderSkiMenu() {
       if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
       const txBytes = await buildThunderSendTx(ws.address, senderName, recipientName, recipientNftId, msg);
       const _logName = senderName || ws.address;
-      await _storeThunderLocal(_logName, recipientName, msg, 'out', undefined, nsTargetAddress ?? undefined);
       let _txOk = false;
       try {
         await signAndExecuteTransaction(txBytes);
         _txOk = true;
+        await _storeThunderLocal(_logName, recipientName, msg, 'out', undefined, nsTargetAddress ?? undefined);
       } catch (txErr) {
-        _removeLastThunderLocal(_logName).catch(() => {});
         throw txErr;
       }
       if (_txOk) {
@@ -8349,7 +8348,7 @@ function renderSkiMenu() {
       const { decryptAndQuest, getThunderCountsBatch } = await import('./client/thunder.js');
       const ws = getState();
       if (!ws.address) return;
-      // Fresh on-chain scan — list all ragtags on Storm via gRPC
+      // Fresh on-chain scan — list all storms on Storm via gRPC
       const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name);
       const freshCounts = await getThunderCountsBatch(nftNames);
       // Merge fresh counts into _thunderCounts
@@ -8568,7 +8567,7 @@ let _idleOverlay: HTMLElement | null = null;
 function bindEvents() {
   els.skiDot?.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; return; }
+    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; try { localStorage.removeItem('ski:idle-open'); } catch {} return; }
     if (modalOpen) { closeModal(); return; }
     if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:lift', '0'); } catch {} render(); }
     openModal();
@@ -8577,26 +8576,58 @@ function bindEvents() {
   els.skiBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
 
-    // If idle overlay is showing, just dismiss it and keep menu open
-    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; return; }
-
     if (!getState().address) {
       if (modalOpen) { closeModal(); return; }
       openModal();
       return;
     }
-    // Connected: only toggle SKI menu — close modal first if open
     if (modalOpen) closeModal();
-    if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:lift', '0'); } catch {} render(); return; }
-    app.skiMenuOpen = true;
-    try { localStorage.setItem('ski:lift', '1'); } catch {}
-    render();
+
+    // Three-state cycle: menu → overlay → menu(collapsed) → overlay → ...
+    if (_idleOverlay) {
+      // Overlay open → close it, open SKI menu collapsed
+      _idleOverlay.remove(); _idleOverlay = null;
+      try { localStorage.removeItem('ski:idle-open'); } catch {}
+      // Collapse all sections
+      addrSectionOpen = false; _persistAddrSectionOpen();
+      coinChipsOpen = false; _persistCoinChipsOpen();
+      nsRosterOpen = false; _persistRosterOpen();
+      _thunderConvoOpen = false;
+      _thunderConvoTarget = '';
+      _nftPopoverPinned = false;
+      try { localStorage.setItem('ski:thunder-card-open', '0'); } catch {}
+      try { sessionStorage.removeItem('ski:thunder-convo'); } catch {}
+      app.skiMenuOpen = true;
+      try { localStorage.setItem('ski:lift', '1'); } catch {}
+      render();
+    } else if (app.skiMenuOpen) {
+      // Menu open → close it, open overlay
+      app.skiMenuOpen = false;
+      try { localStorage.setItem('ski:lift', '0'); } catch {}
+      render();
+      _showIdleOverlay();
+    } else {
+      // Nothing open → open SKI menu
+      app.skiMenuOpen = true;
+      try { localStorage.setItem('ski:lift', '1'); } catch {}
+      render();
+    }
   });
 
   els.skiBtn?.addEventListener('keydown', (e) => {
     const key = (e as KeyboardEvent).key;
     if (key === 'Enter' || key === ' ' || key === 'ArrowDown') {
       e.preventDefault();
+      if (getState().address) {
+        if (!_idleOverlay) {
+          _showIdleOverlay();
+          setTimeout(() => {
+            const ti = document.getElementById('ski-idle-thunder') as HTMLInputElement | null;
+            if (ti) ti.focus();
+          }, 100);
+        }
+        return;
+      }
       if (modalOpen) { closeModal(); return; }
       openModal(true);
     }
@@ -8656,54 +8687,59 @@ function bindEvents() {
         try { localStorage.setItem('ski:lift', '1'); } catch {}
         render();
       }
-      // Position overlay to match the header buttons width
-      const headerEl = els.skiBtn || els.skiDot || els.widget;
-      const headerRect = headerEl?.getBoundingClientRect();
-      const menuRect = els.skiMenu?.getBoundingClientRect();
-      if (!headerRect || !menuRect) return;
+      // Position overlay to span from first to last visible header button
+      const headerBtns = Array.from(document.querySelectorAll('.ski-header > *')).filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+      if (!headerBtns.length) return;
+      let minL = Infinity, maxR = -Infinity, maxB = -Infinity;
+      for (const btn of headerBtns) {
+        const r = btn.getBoundingClientRect();
+        if (r.left < minL) minL = r.left;
+        if (r.right > maxR) maxR = r.right;
+        if (r.bottom > maxB) maxB = r.bottom;
+      }
+      const headerRect = { left: minL, right: maxR, bottom: maxB, width: maxR - minL };
 
       _idleOverlay = document.createElement('div');
       _idleOverlay.className = 'ski-idle-overlay';
-      // Span from left edge of header to right edge of header
-      const baseLeft = Math.min(headerRect.left, menuRect.left);
-      const baseRight = Math.max(headerRect.right, menuRect.right);
-      const baseWidth = baseRight - baseLeft;
-      const width = baseWidth * 1.1; // 10% wider
-      const left = baseLeft - (width - baseWidth) / 2; // center the extra width
-      const height = width * 1.78; // portrait ratio, proportional
-      const top = headerRect.bottom + 48; // well clear of header buttons
-      _idleOverlay.style.position = 'fixed';
-      _idleOverlay.style.left = `${left}px`;
-      _idleOverlay.style.top = `${top}px`;
+      const _headerEl = document.querySelector('.ski-header') as HTMLElement;
+      const headerBox = _headerEl?.getBoundingClientRect();
+      const width = headerRect.width;
+      const rightOffset = headerBox ? headerBox.right - headerRect.right : 0;
+      _idleOverlay.style.position = 'absolute';
+      _idleOverlay.style.right = `${rightOffset}px`;
+      _idleOverlay.style.left = 'auto';
+      _idleOverlay.style.top = '100%';
+      _idleOverlay.style.marginTop = '0';
       _idleOverlay.style.width = `${width}px`;
-      _idleOverlay.style.height = `${height}px`;
       // Build card + NS input for the idle overlay — mirrors full SKI menu NS row
       const _idleCardDomain = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';
-      const _idleVariant: SkiDotVariant = nsAvail === 'owned' ? 'blue-square' : nsAvail === 'taken' ? 'yellow-circle' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
+      const _idleVariant: SkiDotVariant = (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
       const _idleInputVal = nsLabel.trim();
 
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
-          <button class="ski-idle-iusd-btn" id="ski-idle-iusd" type="button" title="Swap 95% of wallet to iUSD">
-            <img src="/assets/iusd-256.png" class="ski-idle-iusd-icon" alt="iUSD">
-          </button>
+          <div class="ski-idle-iusd-btn" id="ski-idle-iusd" title="Swap 95% of wallet to iUSD"></div>
           <div class="ski-idle-ns-row">
             <span class="wk-ns-status" id="ski-idle-status" title="Identity status — click to show address" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
             <div class="ski-idle-ns-input-wrap">
               <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63" title="Search SuiNS names">
-              <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
+              <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}" title="Clear">\u2715</button>
+              <span class="wk-ns-dot-sui" title=".sui namespace">.sui</span>
             </div>
-            <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}" title="Clear">\u2715</button>
-            <span class="wk-ns-dot-sui" title=".sui namespace">.sui</span>
+            <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
           </div>
           <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
+          <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
+          <div class="ski-idle-thunder-row">
+            <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
+            <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
+          </div>
         </div>
         <div id="ski-idle-card" class="ski-idle-card"></div>
-        <div class="ski-idle-thunder-row">
-          <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
-          <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
-        </div>
         <div class="ski-idle-bottom-row">
           <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
           <button class="ski-idle-next" id="ski-idle-next" type="button" title="t2000 Ship">\u203a</button>
@@ -8736,8 +8772,7 @@ function bindEvents() {
 
       const _updateIdleStatus = () => {
         if (!_idleStatusEl || !_idleActionBtn) return;
-        const variant: SkiDotVariant = nsAvail === 'owned' ? 'blue-square'
-          : nsAvail === 'taken' ? 'yellow-circle'
+        const variant: SkiDotVariant = (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square'
           : nsAvail === 'available' ? 'green-circle'
           : nsAvail === 'grace' ? 'red-hexagon'
           : 'black-diamond';
@@ -8780,7 +8815,6 @@ function bindEvents() {
       const _resumeGif = () => { if (_gifImg) _gifImg.style.animationPlayState = ''; };
       const _freezeGif = () => {
         if (!_gifImg) return;
-        // Canvas freeze — capture current frame, swap src
         const canvas = document.createElement('canvas');
         canvas.width = _gifImg.naturalWidth || _gifImg.width;
         canvas.height = _gifImg.naturalHeight || _gifImg.height;
@@ -8790,11 +8824,13 @@ function bindEvents() {
           _gifImg.dataset.gifSrc = _gifImg.src;
           _gifImg.src = canvas.toDataURL();
         }
+        _idleOverlay?.querySelector('#ski-idle-thunder-convo')?.classList.add('ski-idle-thunder-convo--frozen');
       };
       const _unfreezeGif = () => {
         if (!_gifImg || !_gifImg.dataset.gifSrc) return;
         _gifImg.src = _gifImg.dataset.gifSrc;
         delete _gifImg.dataset.gifSrc;
+        _idleOverlay?.querySelector('#ski-idle-thunder-convo')?.classList.remove('ski-idle-thunder-convo--frozen');
       };
 
       _idleNsInput?.addEventListener('click', (e) => e.stopPropagation());
@@ -8835,22 +8871,49 @@ function bindEvents() {
         _idleNsInput?.focus();
       });
 
-      // Action button — mirrors main send button behavior
+      // Action button — handle directly from overlay, don't dismiss
       _idleActionBtn?.addEventListener('click', (e) => {
         e.stopPropagation();
-        _dismissIdle();
-        // Let the main menu handle the action
-        setTimeout(() => {
-          const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-          if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
-        }, 500);
+        const label = nsLabel.trim();
+        const btnText = _idleActionBtn!.textContent || '';
+        if (btnText === 'SUIAMI') {
+          const name = label || (app.suinsName?.replace(/\.sui$/, '') || '');
+          if (!name) return;
+          window.dispatchEvent(new CustomEvent('ski:request-suiami', { detail: { name } }));
+        } else if (btnText === 'MINT') {
+          // Open menu for mint flow
+          if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
+          setTimeout(() => {
+            const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+            if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
+          }, 500);
+        } else if (btnText === 'Storm' || btnText === 'Thunder') {
+          const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+          if (convoEl && !convoEl.hasAttribute('hidden')) {
+            convoEl.setAttribute('hidden', '');
+            _unfreezeGif();
+          } else if (label) {
+            _freezeGif();
+            _expandIdleConvo(label);
+            const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+            if (thunderInput) {
+              if (!thunderInput.value.includes(`@${label}`)) thunderInput.value = `@${label} `;
+              thunderInput.focus();
+            }
+          }
+        }
       });
 
       _updateIdleStatus();
+      // Trigger resolution if name was restored from localStorage
+      if (nsLabel.trim().length >= 3 && isValidNsLabel(nsLabel.trim()) && !nsAvail) {
+        fetchAndShowNsPrice(nsLabel.trim()).then(_updateIdleStatus);
+      }
 
       // iUSD coin click → swap 95% of wallet to iUSD
       _idleOverlay.querySelector('#ski-idle-iusd')?.addEventListener('click', async (e) => {
         e.stopPropagation();
+        e.stopImmediatePropagation();
         const ws = getState();
         if (!ws.address) { showToast('Connect wallet first'); return; }
         const btn = e.currentTarget as HTMLButtonElement;
@@ -8873,70 +8936,92 @@ function bindEvents() {
           const swapAmount = Number(suiBalMist * 95n / 100n); // 95%
           if (swapAmount < 10_000_000) { showToast('Insufficient balance'); return; }
 
-          // Build PTB: attest SUI as collateral → mint iUSD
-          const { Transaction } = await import('@mysten/sui/transactions');
+          // Compute collateral + mint amounts
           const { normalizeSuiAddress } = await import('@mysten/sui/utils');
           const walletAddr = normalizeSuiAddress(ws.address);
-          const IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515';
-          const TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
-          const TREASURY_CAP = '0x868d560ab460e416ced3d348dc62e808557fb9f516cecc5dae9f914f6466bc05';
-
           const suiPrice = suiPriceCache?.price ?? 3;
           const collateralValueMist = BigInt(swapAmount);
           const usdValue = Math.floor((swapAmount / 1e9) * suiPrice * 1e6);
           const mintAmount = BigInt(Math.floor(usdValue / 1.5));
           if (mintAmount <= 0n) { showToast('Amount too small'); return; }
 
-          // Step 1: Attest collateral
+          // Step 1: Keeper attests collateral (server-side, oracle-gated)
           showToast('\ud83c\udf0d Attesting collateral...');
-          const tx1 = new Transaction();
-          tx1.setSender(walletAddr);
-          tx1.moveCall({
-            package: IUSD_PKG,
-            module: 'iusd',
-            function: 'update_collateral',
-            arguments: [
-              tx1.object(TREASURY),
-              tx1.pure.vector('u8', Array.from(new TextEncoder().encode('SUI'))),
-              tx1.pure.vector('u8', Array.from(new TextEncoder().encode('sui'))),
-              tx1.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
-              tx1.pure.u64(collateralValueMist),
-              tx1.pure.u8(0),
-              tx1.object('0x6'),
-            ],
+          const attestRes = await fetch('/api/iusd/attest', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ collateralValueMist: String(collateralValueMist) }),
           });
-          let bytes1: Uint8Array & { tx?: unknown };
-          try { bytes1 = await tx1.build({ client: grpcClient as never }) as any; }
-          catch { const { SuiGraphQLClient: G } = await import('@mysten/sui/graphql'); bytes1 = await tx1.build({ client: new G({ url: GQL_URL, network: 'mainnet' }) as never }) as any; }
-          bytes1.tx = tx1;
-          await signAndExecuteTransaction(bytes1);
+          const attestResult = await attestRes.json() as { digest?: string; error?: string };
+          if (!attestRes.ok || attestResult.error) throw new Error(attestResult.error || 'Attest failed');
 
-          // Step 2: Mint iUSD
+          // Step 2: WaaP wallet signs mint (wallet owns the TreasuryCap)
           showToast('\ud83c\udf0d Minting iUSD...');
-          const tx2 = new Transaction();
-          tx2.setSender(walletAddr);
-          tx2.moveCall({
+          const { Transaction } = await import('@mysten/sui/transactions');
+          const IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515';
+          const TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
+          const TREASURY_CAP = '0x868d560ab460e416ced3d348dc62e808557fb9f516cecc5dae9f914f6466bc05';
+          const mintTx = new Transaction();
+          mintTx.setSender(walletAddr);
+          mintTx.moveCall({
             package: IUSD_PKG,
             module: 'iusd',
             function: 'mint_and_transfer',
             arguments: [
-              tx2.object(TREASURY_CAP),
-              tx2.object(TREASURY),
-              tx2.pure.u64(mintAmount),
-              tx2.pure.address(walletAddr),
+              mintTx.object(TREASURY_CAP),
+              mintTx.object(TREASURY),
+              mintTx.pure.u64(mintAmount),
+              mintTx.pure.address(walletAddr),
             ],
           });
-          let bytes2: Uint8Array & { tx?: unknown };
-          try { bytes2 = await tx2.build({ client: grpcClient as never }) as any; }
-          catch { const { SuiGraphQLClient: G } = await import('@mysten/sui/graphql'); bytes2 = await tx2.build({ client: new G({ url: GQL_URL, network: 'mainnet' }) as never }) as any; }
-          bytes2.tx = tx2;
-          await signAndExecuteTransaction(bytes2);
+          const mintBytes = await mintTx.build({ client: grpcClient as never }) as Uint8Array & { tx?: unknown };
+          mintBytes.tx = mintTx;
+          await signAndExecuteTransaction(mintBytes);
 
           showToast(`\ud83c\udf0d ${(Number(mintAmount) / 1e6).toFixed(2)} iUSD minted`);
           refreshPortfolio(true);
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Mint failed';
-          if (!msg.toLowerCase().includes('reject')) showToast(msg);
+          if (msg.includes('abort code: 0') || msg.includes('NotAuthorized')) {
+            showToast('Setting up treasury auth...');
+            try {
+              const { Transaction } = await import('@mysten/sui/transactions');
+              const { normalizeSuiAddress: norm } = await import('@mysten/sui/utils');
+              const IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515';
+              const TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
+              const KEEPER = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+              const sender = norm(ws.address);
+
+              const tx1 = new Transaction();
+              tx1.setSender(sender);
+              tx1.moveCall({ target: `${IUSD_PKG}::iusd::set_oracle`, arguments: [tx1.object(TREASURY), tx1.pure.address(KEEPER)] });
+              const b1 = await tx1.build({ client: grpcClient as never });
+              await signAndExecuteTransaction(Object.assign(b1, { tx: tx1 }));
+              showToast('Oracle set');
+
+              const tx2 = new Transaction();
+              tx2.setSender(sender);
+              tx2.moveCall({ target: `${IUSD_PKG}::iusd::set_minter`, arguments: [tx2.object(TREASURY), tx2.pure.address(KEEPER)] });
+              const b2 = await tx2.build({ client: grpcClient as never });
+              await signAndExecuteTransaction(Object.assign(b2, { tx: tx2 }));
+              showToast('Minter set — retrying mint...');
+
+              const res2 = await fetch('/api/iusd/mint', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ recipient: norm(ws.address), collateralValueMist: String(collateralValueMist), mintAmount: String(mintAmount) }),
+              });
+              const result2 = await res2.json() as { minted?: string; error?: string };
+              if (!res2.ok || result2.error) throw new Error(result2.error || 'Retry failed');
+              showToast(`\ud83c\udf0d ${(Number(mintAmount) / 1e6).toFixed(2)} iUSD minted`);
+              refreshPortfolio(true);
+            } catch (setupErr) {
+              const setupMsg = setupErr instanceof Error ? setupErr.message : 'Setup failed';
+              if (!setupMsg.toLowerCase().includes('reject')) showToast(setupMsg);
+            }
+          } else {
+            if (!msg.toLowerCase().includes('reject')) showToast(msg);
+          }
         } finally {
           btn.style.opacity = '';
         }
@@ -8949,6 +9034,7 @@ function bindEvents() {
         if (!addrRow) return;
         if (!addrRow.hasAttribute('hidden')) {
           addrRow.setAttribute('hidden', '');
+          _unfreezeGif();
           return;
         }
         const ws = getState();
@@ -8966,6 +9052,7 @@ function bindEvents() {
         const ethLine = app.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${app.ethAddress}">${ethIcon} ${app.ethAddress.slice(0, 6)}\u2026${app.ethAddress.slice(-4)}</span>` : '';
         addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}`;
         addrRow.removeAttribute('hidden');
+        _freezeGif();
         addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
           el.addEventListener('click', (ev) => {
             ev.stopPropagation();
@@ -9027,7 +9114,7 @@ function bindEvents() {
       });
 
       const _dismissIdle = (keepOverlay = false) => {
-        if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; }
+        if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; try { localStorage.removeItem('ski:idle-open'); } catch {} }
         _resetIdle();
       };
       const _triggerSuiami = () => {
@@ -9070,34 +9157,234 @@ function bindEvents() {
       const _idleThunderInput = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
       const _idleThunderSend = _idleOverlay.querySelector('#ski-idle-thunder-send');
       const _sendIdleThunder = async () => {
-        const msg = _idleThunderInput?.value.trim();
-        if (!msg) return;
+        const raw = _idleThunderInput?.value.trim() || '';
+        if (!raw) return;
         const ws = getState();
         if (!ws.address) return;
         try {
-          // Find recipient: most-thundered name or card domain
-          const top = Object.entries(_thunderCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
-          const topLocal = Object.entries(_thunderLocalCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
-          const recipientName = top?.[0] || topLocal?.[0] || '';
-          if (!recipientName) { showToast('No recipient'); return; }
+          // Extract @mentions as recipients
+          const mentions = [...raw.matchAll(/@([a-z0-9-]{3,63})/gi)].map(m => m[1].toLowerCase());
+          const msgText = raw.replace(/@[a-z0-9-]{3,63}/gi, '').trim() || raw;
+
+          // Determine recipients: @mentions if present, else default
+          let recipients: string[];
+          if (mentions.length > 0) {
+            recipients = [...new Set(mentions)];
+          } else {
+            const top = Object.entries(_thunderCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
+            const topLocal = Object.entries(_thunderLocalCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
+            const fallback = top?.[0] || topLocal?.[0] || '';
+            if (!fallback) { showToast('No recipient — use @name'); return; }
+            recipients = [fallback];
+          }
+
           const { buildThunderSendTx, lookupRecipientNftId } = await import('./client/thunder.js');
           const senderName = app.suinsName || '';
-          const recipientNftId = await lookupRecipientNftId(recipientName);
-          if (!recipientNftId) { showToast('Cannot find recipient'); return; }
-          const txBytes = await buildThunderSendTx(ws.address, senderName, recipientName, recipientNftId, msg);
-          await _storeThunderLocal(senderName || ws.address, recipientName, msg, 'out');
-          await signAndExecuteTransaction(txBytes);
-          if (_idleThunderInput) _idleThunderInput.value = '';
-          showToast(`\u26a1 Signal sent to ${recipientName}.sui`);
-          _addThunderContact(recipientName);
+          const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLElement | null;
+          const origBtnHtml = sendBtn?.innerHTML || '\u26a1';
+
+          // Show loading spinner on send button — hover reveals cancel
+          let _cancelled = false;
+          if (sendBtn) {
+            sendBtn.innerHTML = '<span class="ski-idle-thunder-spinner"></span>';
+            sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--loading';
+            sendBtn.title = 'Cancel';
+            const _onCancel = (ev: Event) => { ev.stopPropagation(); _cancelled = true; sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-thunder-send'; sendBtn.title = 'Send signal'; sendBtn.removeEventListener('click', _onCancel); };
+            sendBtn.addEventListener('click', _onCancel);
+          }
+
+          try {
+            for (const recip of recipients) {
+              if (_cancelled) break;
+              const nftId = await lookupRecipientNftId(recip);
+              if (!nftId) { showToast(`Cannot find ${recip}.sui`); continue; }
+              if (_cancelled) break;
+              const txBytes = await buildThunderSendTx(ws.address, senderName, recip, nftId, msgText);
+              if (_cancelled) break;
+              await signAndExecuteTransaction(txBytes);
+              await _storeThunderLocal(senderName || ws.address, recip, msgText, 'out');
+              _addThunderContact(recip);
+            }
+            // Success: show bubble, clear input, resume GIF
+            if (_idleThunderInput) _idleThunderInput.value = '';
+            _unfreezeGif();
+            const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+            const bubble = document.createElement('div');
+            bubble.className = 'ski-idle-bubble ski-idle-bubble--out';
+            bubble.textContent = msgText;
+            if (convoEl) { convoEl.appendChild(bubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
+            const names = recipients.map(r => `${r}.sui`).join(', ');
+            showToast(`\u26a1 Signal sent to ${names}`);
+            _expandIdleConvo(recipients[0]);
+          } catch (txErr) {
+            const txMsg = txErr instanceof Error ? txErr.message : 'Signal failed';
+            if (!txMsg.toLowerCase().includes('reject')) {
+              // Show failed bubble with retry
+              const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+              const failBubble = document.createElement('div');
+              failBubble.className = 'ski-idle-bubble ski-idle-bubble--out ski-idle-bubble--failed';
+              failBubble.textContent = msgText;
+              failBubble.title = txMsg;
+              failBubble.style.cursor = 'pointer';
+              if (convoEl) { convoEl.appendChild(failBubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
+              failBubble.addEventListener('click', () => {
+                failBubble.remove();
+                if (_idleThunderInput) _idleThunderInput.value = raw;
+                _sendIdleThunder();
+              }, { once: true });
+              showToast(txMsg);
+            }
+          } finally {
+            if (sendBtn) { sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-thunder-send'; sendBtn.title = 'Send signal'; }
+          }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : 'Signal failed';
           if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
         }
       };
+      const _expandIdleConvo = async (counterparty: string) => {
+        const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        if (!convoEl) return;
+        const entries = await _getConversation(counterparty);
+        if (!entries.length) { convoEl.setAttribute('hidden', ''); return; }
+        const bubbles = entries.slice(-20).map(e => {
+          const isOut = e.dir === 'out' || (!e.dir && !e.from);
+          let msgText = e.msg;
+          if (!isOut && !e.dir) msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
+          const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
+          return `<div class="ski-idle-bubble ${cls}">${esc(msgText)}</div>`;
+        }).join('');
+        convoEl.innerHTML = bubbles;
+        convoEl.removeAttribute('hidden');
+        convoEl.scrollTop = convoEl.scrollHeight;
+      };
+      // @ autocomplete for thunder input
+      let _atDropdown: HTMLElement | null = null;
+      let _atSelectedIdx = 0;
+      const _getAtCandidates = (): { contacts: string[]; owned: string[] } => {
+        const ownedSet = new Set<string>();
+        for (const d of nsOwnedDomains) {
+          const bare = d.name.replace(/\.sui$/, '').toLowerCase();
+          if (bare) ownedSet.add(bare);
+        }
+        if (app.suinsName) ownedSet.add(app.suinsName.replace(/\.sui$/, '').toLowerCase());
+
+        const contactSet = new Set<string>();
+        for (const n of Object.keys(_thunderLocalCounts)) {
+          const bare = n.toLowerCase();
+          if (!ownedSet.has(bare)) contactSet.add(bare);
+        }
+        for (const n of Object.keys(_thunderCounts)) {
+          const bare = n.toLowerCase();
+          if (!ownedSet.has(bare)) contactSet.add(bare);
+        }
+
+        return {
+          contacts: [...contactSet].sort(),
+          owned: [...ownedSet].sort(),
+        };
+      };
+      const _showAtDropdown = (filter: string) => {
+        _dismissAtDropdown();
+        const { contacts, owned } = _getAtCandidates();
+        const f = filter.toLowerCase();
+        const filteredContacts = contacts.filter(n => n.startsWith(f)).slice(0, 6);
+        const filteredOwned = owned.filter(n => n.startsWith(f)).slice(0, 4);
+        if (!filteredContacts.length && !filteredOwned.length) return;
+        _atDropdown = document.createElement('div');
+        _atDropdown.className = 'ski-idle-at-dropdown';
+        _atSelectedIdx = 0;
+
+        const leftHtml = filteredContacts.map(n =>
+          `<div class="ski-idle-at-option ski-idle-at-option--contact" data-name="${n}">@${n}</div>`
+        ).join('');
+        const rightHtml = filteredOwned.map(n =>
+          `<div class="ski-idle-at-option ski-idle-at-option--owned" data-name="${n}">@${n}</div>`
+        ).join('');
+
+        _atDropdown.innerHTML = `<div class="ski-idle-at-cols">`
+          + `<div class="ski-idle-at-col ski-idle-at-col--left">${leftHtml || '<div class="ski-idle-at-empty">no contacts</div>'}</div>`
+          + `<div class="ski-idle-at-col ski-idle-at-col--right">${rightHtml || '<div class="ski-idle-at-empty">no names</div>'}</div>`
+          + `</div>`;
+
+        // Mark first option active
+        const allOpts = _atDropdown.querySelectorAll('.ski-idle-at-option');
+        if (allOpts[0]) allOpts[0].classList.add('ski-idle-at-option--active');
+
+        _atDropdown.querySelectorAll('.ski-idle-at-option').forEach(el => {
+          el.addEventListener('mousedown', (ev) => {
+            ev.preventDefault();
+            _insertAtName((el as HTMLElement).dataset.name || '');
+          });
+        });
+        const thunderRow = _idleOverlay?.querySelector('.ski-idle-thunder-row');
+        if (thunderRow) thunderRow.appendChild(_atDropdown);
+      };
+      const _dismissAtDropdown = () => { _atDropdown?.remove(); _atDropdown = null; };
+      const _insertAtName = (name: string) => {
+        if (!_idleThunderInput) return;
+        const val = _idleThunderInput.value;
+        const cursor = _idleThunderInput.selectionStart ?? val.length;
+        const before = val.slice(0, cursor);
+        const atIdx = before.lastIndexOf('@');
+        if (atIdx === -1) return;
+        const after = val.slice(cursor);
+        _idleThunderInput.value = before.slice(0, atIdx) + '@' + name + ' ' + after;
+        _idleThunderInput.selectionStart = _idleThunderInput.selectionEnd = atIdx + name.length + 2;
+        _dismissAtDropdown();
+        _idleThunderInput.focus();
+        // Populate the NS name input with the tagged name
+        const idleNsInput = _idleOverlay?.querySelector('#ski-idle-ns') as HTMLInputElement | null;
+        if (idleNsInput) { idleNsInput.value = name; nsLabel = name; }
+        const mainNsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+        if (mainNsInput) mainNsInput.value = name;
+        // Freeze GIF and expand conversation history for tagged name
+        _freezeGif();
+        _expandIdleConvo(name);
+      };
+
       _idleThunderInput?.addEventListener('click', (e) => e.stopPropagation());
+      _idleThunderInput?.addEventListener('input', () => {
+        const val = _idleThunderInput!.value;
+        const cursor = _idleThunderInput!.selectionStart ?? val.length;
+        const before = val.slice(0, cursor);
+        const atIdx = before.lastIndexOf('@');
+        if (atIdx !== -1 && !before.slice(atIdx).includes(' ')) {
+          const partial = before.slice(atIdx + 1);
+          _showAtDropdown(partial);
+        } else {
+          _dismissAtDropdown();
+        }
+        // Sync last completed @tag to NS name input + resolve
+        const tags = [...val.matchAll(/@([a-z0-9-]{3,63})/gi)].map(m => m[1].toLowerCase());
+        if (tags.length > 0) {
+          const latest = tags[tags.length - 1];
+          const idleNsInput = _idleOverlay?.querySelector('#ski-idle-ns') as HTMLInputElement | null;
+          if (idleNsInput && idleNsInput.value !== latest) {
+            idleNsInput.value = latest;
+            nsLabel = latest;
+            const clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+            if (clearBtn) clearBtn.style.display = latest ? '' : 'none';
+            nsAvail = null;
+            _updateIdleStatus();
+            if (latest.length >= 3 && isValidNsLabel(latest)) {
+              fetchAndShowNsPrice(latest).then(_updateIdleStatus);
+            }
+          }
+          const mainNsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+          if (mainNsInput && mainNsInput.value !== latest) mainNsInput.value = latest;
+        }
+      });
+      _idleThunderInput?.addEventListener('blur', () => setTimeout(_dismissAtDropdown, 150));
       _idleThunderInput?.addEventListener('keydown', (e) => {
         e.stopPropagation();
+        if (_atDropdown) {
+          const opts = _atDropdown.querySelectorAll('.ski-idle-at-option');
+          if (e.key === 'ArrowDown') { e.preventDefault(); _atSelectedIdx = Math.min(_atSelectedIdx + 1, opts.length - 1); opts.forEach((o, i) => o.classList.toggle('ski-idle-at-option--active', i === _atSelectedIdx)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); _atSelectedIdx = Math.max(_atSelectedIdx - 1, 0); opts.forEach((o, i) => o.classList.toggle('ski-idle-at-option--active', i === _atSelectedIdx)); }
+          else if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); const sel = opts[_atSelectedIdx] as HTMLElement; if (sel) _insertAtName(sel.dataset.name || ''); else if (e.key === 'Enter') _sendIdleThunder(); return; }
+          else if (e.key === 'Escape') { _dismissAtDropdown(); return; }
+        }
         if (e.key === 'Enter') { e.preventDefault(); _sendIdleThunder(); }
       });
       _idleThunderSend?.addEventListener('click', (e) => { e.stopPropagation(); _sendIdleThunder(); });
@@ -9105,7 +9392,9 @@ function bindEvents() {
       _idleOverlay.addEventListener('click', (e) => {
         e.stopPropagation();
       });
-      document.body.appendChild(_idleOverlay);
+      const headerEl = document.querySelector('.ski-header') as HTMLElement;
+      (headerEl || document.body).appendChild(_idleOverlay);
+      try { localStorage.setItem('ski:idle-open', '1'); } catch {}
   };
 
   const _resetIdle = () => {
@@ -9123,7 +9412,12 @@ function bindEvents() {
   ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
     document.addEventListener(evt, _resetIdle, { passive: true });
   });
-  _resetIdle();
+  // Restore overlay immediately if it was open before refresh
+  if (localStorage.getItem('ski:idle-open') === '1' && getState().address) {
+    _showIdleOverlay();
+  } else {
+    _resetIdle();
+  }
 }
 
 // ─── Init ────────────────────────────────────────────────────────────
@@ -9206,6 +9500,11 @@ export function initUI() {
       window.dispatchEvent(new CustomEvent('ski:wallet-connected', {
         detail: { address: ws.address, walletName: ws.walletName },
       }));
+
+      // Restore idle overlay if it was open before refresh
+      if (!_idleOverlay && localStorage.getItem('ski:idle-open') === '1') {
+        window.dispatchEvent(new Event('ski:show-idle'));
+      }
     }
 
     if (ws.status === 'disconnected') {

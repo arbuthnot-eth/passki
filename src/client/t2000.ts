@@ -20,7 +20,7 @@ export const MISSIONS = {
   farm: { name: 'farm', description: 'Yield farmer — rotates capital to highest APY' },
   watch: { name: 'watch', description: 'Liquidation monitor — watches health factors, strikes when positions go underwater' },
   route: { name: 'route', description: 'Maker bot — places resting limit orders on DeepBook for rebates' },
-  storm: { name: 'storm', description: 'Thunder Storm agent — signals, quests, and sweeps ragtags' },
+  storm: { name: 'storm', description: 'Thunder Storm agent — signals, quests, and sweeps storms' },
 } as const;
 
 export type MissionType = keyof typeof MISSIONS;

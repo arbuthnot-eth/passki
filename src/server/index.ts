@@ -767,6 +767,52 @@ app.post('/api/suiami/verify', async (c) => {
   }
 });
 
+// ── iUSD attest collateral (keeper signs, oracle-gated) ───────────
+app.post('/api/iusd/attest', async (c) => {
+  try {
+    const body = await c.req.json() as { collateralValueMist: string };
+    if (!body.collateralValueMist) return c.json({ error: 'Missing collateralValueMist' }, 400);
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?attest-collateral', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text || 'Unknown DO error' }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── iUSD mint (routed to TreasuryAgents DO) ───────────────────────
+app.post('/api/iusd/mint', async (c) => {
+  try {
+    const body = await c.req.json() as { recipient: string; collateralValueMist: string; mintAmount: string };
+    if (!body.recipient || !body.collateralValueMist || !body.mintAmount) {
+      return c.json({ error: 'Missing params' }, 400);
+    }
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?mint-iusd', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try {
+      const result = JSON.parse(text);
+      return c.json(result, res.status as any);
+    } catch {
+      return c.json({ error: text || 'Unknown DO error' }, 500);
+    }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 export default app;
 
 // Export Durable Object classes for Wrangler binding

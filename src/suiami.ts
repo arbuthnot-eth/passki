@@ -7,6 +7,7 @@
 
 export interface SuiamiMessage {
   suiami: string;
+  balance?: string;
   datetime: string;
   /** Truncated addresses — quick glance at the top of the signing popup */
   chains: string;
@@ -29,7 +30,7 @@ export interface SuiamiProof {
 }
 
 /** Build a SuiAMI message ready for signing. Includes all cross-chain addresses. */
-export function buildSuiamiMessage(name: string, address: string, nftId: string, crossChain?: { btc?: string; sol?: string; eth?: string }): SuiamiMessage {
+export function buildSuiamiMessage(name: string, address: string, nftId: string, crossChain?: { btc?: string; sol?: string; eth?: string }, totalBalanceUsd?: number): SuiamiMessage {
   const now = Date.now();
   const d = new Date(now);
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -48,6 +49,7 @@ export function buildSuiamiMessage(name: string, address: string, nftId: string,
 
   return {
     suiami: `I am ${name}`,
+    ...(totalBalanceUsd != null && totalBalanceUsd > 0 ? { balance: `$${totalBalanceUsd.toFixed(2)}` } : {}),
     datetime: art,
     chains: chainLines.join('\n'),
     ski: `${name}.sui.ski`,
