@@ -13,6 +13,13 @@ interface Env {
 
 const app = new Hono<{ Bindings: Env }>();
 
+// Pass through hb.sui.ski to Hayabusa Worker
+app.use('*', async (c, next) => {
+  const host = new URL(c.req.url).hostname;
+  if (host === 'hb.sui.ski') return c.text('', 404);
+  return next();
+});
+
 // Agents middleware handles WebSocket upgrades and RPC to /agents/*
 app.use('/agents/*', agentsMiddleware());
 

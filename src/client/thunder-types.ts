@@ -12,6 +12,11 @@ export const THUNDER_VERSION = 1;
 export const THUNDER_PACKAGE_ID = '0xecd7cec9058d82b6c7fbae3cbc0a0c2cf58fe4be2e87679ff9667ee7a0309e0f';
 export const STORM_ID = '0xd67490b2047490e81f7467eedb25c726e573a311f9139157d746e4559282844f';
 
+// Thunder v5 — Storm v1 (ECDH storm IDs, no NFT gate, no fee)
+export const THUNDER_V5_VERSION = 2;
+export const STORM_V1_PACKAGE_ID = '0xa3ed4fdf1369313647efcef77fd577aa4b77b50c62e5c5e29d4c383390cdf942';
+export const STORM_V1_ID = '0x1b00663e83c9674ab49da1c6dd8c07e01aeff93d5c74c1785251f82cb61cb9e4';
+
 // Legacy storms — auto-strike pending signals from old deploys
 export const LEGACY_STORMS: Array<[string, string]> = [
   ['0xbe5c6df7fc1340f8e3b5fa880e5fbeee3844114778e65f442815ba8922e80bd6', '0xf32adacbdb83c7ad5d75b68e1c5d2cd3e696ac8a2b13c0cc06ecdd9c110bd383'],

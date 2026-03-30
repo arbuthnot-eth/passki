@@ -15,11 +15,15 @@ import { gqlClient } from '../rpc.js';
 import { maybeAppendRoster } from '../suins.js';
 import {
   THUNDER_VERSION,
+  THUNDER_V5_VERSION,
   THUNDER_PACKAGE_ID,
   STORM_ID,
+  STORM_V1_PACKAGE_ID,
+  STORM_V1_ID,
   LEGACY_STORMS,
   type ThunderPayload,
 } from './thunder-types.js';
+import { deriveStormIdFromAddresses } from './ika.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -118,8 +122,8 @@ export async function buildThunderSendTx(
       tx.object('0x6'),
     ],
   });
-  // TODO: re-enable Roster piggyback after contract v2 upgrade (needs sui CLI v118)
-  // maybeAppendRoster(tx, senderAddress, senderName);
+  // Piggyback: update SUIAMI Roster if chain addresses changed
+  maybeAppendRoster(tx, senderAddress, senderName);
   const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
@@ -634,4 +638,119 @@ export async function questAndSend(
     }),
   );
   return results;
+}
+
+// ─── Thunder v5 — Storm v1 (ECDH storm IDs) ───────────────────────
+
+/**
+ * Build a Thunder v5 signal PTB — AES encrypt + deposit via Storm v1.
+ * Uses ECDH-derived storm_id instead of name hash. No NFT gate, no fee.
+ */
+export async function buildThunderV5SendTx(
+  senderAddress: string,
+  senderName: string,
+  recipientName: string,
+  recipientAddr: string,
+  message: string,
+  suiamiToken?: string,
+): Promise<Uint8Array> {
+  const addr = normalizeSuiAddress(senderAddress);
+  const stormId = deriveStormIdFromAddresses(addr, normalizeSuiAddress(recipientAddr));
+
+  const payload: ThunderPayload = {
+    v: THUNDER_V5_VERSION as typeof THUNDER_VERSION,
+    sender: senderName,
+    senderAddress: addr,
+    message,
+    timestamp: new Date().toISOString(),
+    ...(suiamiToken ? { suiami: suiamiToken } : {}),
+  };
+
+  const { ciphertext, key, nonce } = await aesEncrypt(new TextEncoder().encode(JSON.stringify(payload)));
+
+  // Mask key with storm_id (both parties can derive it)
+  const maskedKey = xorBytes(key, keccak_256(stormId));
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+  tx.moveCall({
+    package: STORM_V1_PACKAGE_ID,
+    module: 'storm',
+    function: 'signal',
+    arguments: [
+      tx.object(STORM_V1_ID),
+      tx.pure.vector('u8', Array.from(stormId)),
+      tx.pure.vector('u8', Array.from(ciphertext)),
+      tx.pure.vector('u8', Array.from(maskedKey)),
+      tx.pure.vector('u8', Array.from(nonce)),
+      tx.object('0x6'),
+    ],
+  });
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
+/**
+ * Build a Thunder v5 quest PTB — read signals via Storm v1.
+ * Emits Questfi events just like v4.
+ */
+export async function buildThunderV5QuestTx(
+  address: string,
+  peerAddress: string,
+): Promise<Uint8Array> {
+  const addr = normalizeSuiAddress(address);
+  const stormId = deriveStormIdFromAddresses(addr, normalizeSuiAddress(peerAddress));
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+  tx.moveCall({
+    package: STORM_V1_PACKAGE_ID,
+    module: 'storm',
+    function: 'quest',
+    arguments: [
+      tx.object(STORM_V1_ID),
+      tx.pure.vector('u8', Array.from(stormId)),
+      tx.object('0x6'),
+    ],
+  });
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
+/**
+ * Build a Thunder v5 strike PTB — read and delete signals via Storm v1.
+ * Routes storage rebate to iUSD treasury like buildStrikeToTreasuryTx.
+ */
+export async function buildThunderV5StrikeTx(
+  address: string,
+  peerAddress: string,
+): Promise<Uint8Array> {
+  const IUSD_TREASURY = '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57';
+  const addr = normalizeSuiAddress(address);
+  const stormId = deriveStormIdFromAddresses(addr, normalizeSuiAddress(peerAddress));
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+  tx.moveCall({
+    package: STORM_V1_PACKAGE_ID,
+    module: 'storm',
+    function: 'strike',
+    arguments: [
+      tx.object(STORM_V1_ID),
+      tx.pure.vector('u8', Array.from(stormId)),
+      tx.object('0x6'),
+    ],
+  });
+
+  // Route storage rebate to iUSD treasury
+  const [rebateCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(0)]);
+  tx.transferObjects([rebateCoin], tx.pure.address(IUSD_TREASURY));
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
 }

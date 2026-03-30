@@ -16,10 +16,10 @@ import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, GQL_URL, gqlClient } from './rpc.js';
 
-/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility. */
+/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility.
+ *  Piggybacks SUIAMI Roster update if chain addresses changed (free ride). */
 async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown): Promise<Uint8Array> {
-  // TODO: re-enable Roster piggyback after contract v2 upgrade (needs sui CLI v118)
-  // maybeAppendRoster(tx);
+  maybeAppendRoster(tx);
   const bytes = await tx.build({ client: client as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
@@ -54,7 +54,7 @@ export function encodeIusdAmount(usdAmount: number, signalId: number): bigint {
 }
 
 // ─── SUIAMI Roster piggyback ──────────────────────────────────────────
-const ROSTER_PKG = '0x4a04a5701ae8420c16e51597553fc3a21a19ebb5800d5f48cd98f75ecd429906';
+const ROSTER_PKG = '0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4'; // v2: chain address reverse lookup
 const ROSTER_OBJ = '0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689';
 
 /**
