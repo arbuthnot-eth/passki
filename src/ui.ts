@@ -9046,9 +9046,9 @@ function bindEvents() {
       });
 
       _updateIdleStatus();
-      // Trigger resolution if name was restored from localStorage
-      if (nsLabel.trim().length >= 3 && isValidNsLabel(nsLabel.trim()) && !nsAvail) {
-        fetchAndShowNsPrice(nsLabel.trim()).then(_updateIdleStatus);
+      // Always fetch availability + Tradeport listing when overlay opens with a name
+      if (nsLabel.trim().length >= 3 && isValidNsLabel(nsLabel.trim())) {
+        fetchAndShowNsPrice(nsLabel.trim()).then(() => { _updateIdleStatus(); _updateIdleCard(nsLabel.trim()); });
       }
 
       // iUSD coin click → swap 95% of wallet to iUSD
