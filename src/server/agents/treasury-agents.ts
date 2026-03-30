@@ -803,10 +803,41 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private static readonly IUSD_TREASURY = '0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb';
   private static readonly IUSD_TREASURY_CAP = '0x0c7873b52c69f409f3c9772e85d927b509a133a42e9c134c826121bb6595e543';
 
-  // ─── Thunder Strike Relay ─────────────────────────────────────────
+  // ─── Thunder Admin ──────────────────────────────────────────────────
 
   private static readonly THUNDER_PKG = '0xecd7cec9058d82b6c7fbae3cbc0a0c2cf58fe4be2e87679ff9667ee7a0309e0f';
   private static readonly STORM_OBJ = '0xd67490b2047490e81f7467eedb25c726e573a311f9139157d746e4559282844f';
+
+  /** Set Thunder signal fee. Admin only (keeper is Storm admin). */
+  @callable()
+  async setThunderFee(params: { feeMist: number }): Promise<{ digest?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const tx = new Transaction();
+      tx.setSender(keeperAddr);
+      tx.moveCall({
+        package: TreasuryAgents.THUNDER_PKG,
+        module: 'thunder',
+        function: 'set_signal_fee',
+        arguments: [
+          tx.object(TreasuryAgents.STORM_OBJ),
+          tx.pure.u64(params.feeMist),
+        ],
+      });
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] Thunder fee set to ${params.feeMist}: ${digest}`);
+      return { digest };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // ─── Thunder Strike Relay ─────────────────────────────────────────
 
   /** Strike signals via relay — verify auth server-side, keeper submits on-chain. */
   @callable()

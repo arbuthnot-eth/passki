@@ -180,7 +180,7 @@ Multi-DEX racing (Aftermath aggregator vs direct DeepBook) picks the best USDC �
 |--------|-----------|
 | SuiNS registration 5% cut | PTB fee extraction on every mint |
 | Shade order 10% escrow | Fee on execute() |
-| Thunder protocol fees | 0.009 iUSD per signal |
+| Thunder volume | Free signals drive adoption → more names registered → more iUSD minted |
 | Swap spread | 0.1% on DeepBook/Cetus/Bluefin routing |
 | Treasury asset appreciation | Blended yield on diversified reserve |
 | Lending yield | NAVI + Scallop + Kamino |

@@ -99,12 +99,10 @@ export async function buildThunderSendTx(
   const mask = keccak_256(nftRawBytes);
   const maskedKey = xorBytes(key, mask);
 
-  // Build PTB — signal with fee
-  // Fee: 0.003 SUI ≈ $0.009 iUSD equivalent, split from gas coin
-  const SIGNAL_FEE_MIST = 3_000_000; // 0.003 SUI
+  // Build PTB — signal (fee set to 0 on-chain, pass zero coin for ABI compat)
   const tx = new Transaction();
   tx.setSender(normalizeSuiAddress(senderAddress));
-  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(SIGNAL_FEE_MIST)]);
+  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(0)]);
   tx.moveCall({
     package: THUNDER_PACKAGE_ID,
     module: 'thunder',
@@ -333,9 +331,8 @@ export async function buildStrikeWithReceiptTx(
     });
   }
 
-  // Phase 2: Send receipt signal to sender (no fee — uses signal with fee split from gas)
-  const SIGNAL_FEE_MIST = 3_000_000;
-  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(SIGNAL_FEE_MIST)]);
+  // Phase 2: Send receipt signal to sender (fee set to 0 on-chain)
+  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(0)]);
   tx.moveCall({
     package: THUNDER_PACKAGE_ID,
     module: 'thunder',

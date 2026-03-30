@@ -5410,7 +5410,7 @@ function _treasuryPanelHtml(): string {
       <div class="wk-treasury-section">
         <div class="wk-treasury-label">Revenue Streams</div>
         <div class="wk-treasury-row">
-          <span class="wk-treasury-key">Thunder $0.009/signal</span>
+          <span class="wk-treasury-key">Thunder free signals</span>
           <span class="wk-treasury-val wk-treasury-val--yellow">\u26a1 live</span>
         </div>
         <div class="wk-treasury-row">
