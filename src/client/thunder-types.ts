@@ -29,4 +29,6 @@ export interface ThunderPayload {
   message: string;
   timestamp: string;
   suiami?: string;
+  /** Recipient's counter-signature — proves they received and read the message. Private (local only). */
+  receipt?: string;
 }

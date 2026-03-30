@@ -64,11 +64,10 @@ body {
   gap: 8px;
   position: fixed;
   top: 0;
-  left: 0;
   right: 0;
+  width: var(--ski-header-w, auto);
+  max-width: 100vw;
   z-index: 10001;
-  transform-origin: top right;
-  scale: clamp(0.65, calc(100vw / 520), 1);
 }
 
 .ski-tools-toggle {
@@ -1487,6 +1486,10 @@ body {
   margin-top: 2px;
   padding-top: 2px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.wk-dd-ns-section--elevated {
+  position: relative;
+  z-index: 51;
 }
 
 /* Collapsible wrapper under name badge — holds address row + NS section */
@@ -3171,21 +3174,46 @@ body {
 }
 .ski-idle-addr-line--eth:hover { border-color: rgba(129, 140, 248, 0.7); }
 .ski-idle-card {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
+  max-width: calc(100% - 16px);
+  width: auto;
   padding: 4px 8px;
-  background: rgba(0, 0, 0, 0.95) !important;
+  position: absolute;
+  bottom: 36px;
+  left: 8px;
+  z-index: 2;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.7rem;
   color: rgba(255, 255, 255, 0.7);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(15, 15, 20, 0.55);
   border-radius: 6px;
-  margin-top: -6px;
 }
 .ski-idle-card:empty { display: none; }
 .ski-idle-card-name { font-weight: 700; color: #fff; }
+.ski-idle-card-bal {
+  display: inline-flex;
+  align-items: baseline;
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+}
+.ski-idle-card-bal-icon {
+  color: #22c55e;
+  font-weight: 800;
+  font-size: 0.75rem;
+  margin-right: 1px;
+}
+.ski-idle-card-bal-whole {
+  color: #22c55e;
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+.ski-idle-card-bal-dec {
+  color: rgba(34, 197, 94, 0.6);
+  font-weight: 600;
+  font-size: 0.6rem;
+}
 .ski-idle-card-badges { color: #FFB800; font-weight: 600; }
 .ski-idle-card-expiry { color: rgba(255, 255, 255, 0.4); font-size: 0.6rem; }
 .ski-idle-thunder-convo {

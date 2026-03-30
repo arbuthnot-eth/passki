@@ -285,15 +285,44 @@ export async function buildBatchStrikeTx(
   return bytes;
 }
 
-/** Parse Questfi events from tx effects and decrypt all signals. */
-export async function parseAndDecryptQuestfi(txResult: any): Promise<ThunderPayload[]> {
+/** Verify a SUIAMI token. Returns true if valid. */
+async function _verifySuiami(token: string): Promise<boolean> {
+  if (!token?.startsWith('suiami:')) return false;
+  try {
+    const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
+    const parts = token.slice(7).split('.');
+    if (parts.length !== 2) return false;
+    const msgB64 = parts[0];
+    const signature = parts[1];
+    const msgBytes = Uint8Array.from(atob(msgB64), c => c.charCodeAt(0));
+    const msg = JSON.parse(new TextDecoder().decode(msgBytes));
+    if (!msg.suiami || !msg.address) return false;
+    await verifyPersonalMessageSignature(msgBytes, signature, { address: msg.address });
+    return true;
+  } catch { return false; }
+}
+
+/** Parse Questfi events from tx effects and decrypt all signals. Rejects signals without valid SUIAMI.
+ *  If sendReceipt is provided, sends a receipt signal back to each sender with the recipient's SUIAMI. */
+export async function parseAndDecryptQuestfi(
+  txResult: any,
+  sendReceipt?: (senderName: string, recipientSuiami: string) => Promise<void>,
+): Promise<ThunderPayload[]> {
   const quested = parseQuestfiEvents(txResult);
   const results: ThunderPayload[] = [];
   await Promise.all(
     quested.map(async (s) => {
       try {
         const cleartext = await aesDecrypt(s.payload, s.aesKey, s.aesNonce);
-        results.push(JSON.parse(new TextDecoder().decode(cleartext)) as ThunderPayload);
+        const payload = JSON.parse(new TextDecoder().decode(cleartext)) as ThunderPayload;
+        if (!payload.suiami) { console.warn('[Thunder] Rejected signal without SUIAMI'); return; }
+        const valid = await _verifySuiami(payload.suiami);
+        if (!valid) { console.warn('[Thunder] Rejected signal with invalid SUIAMI'); return; }
+        results.push(payload);
+        // Send receipt back to sender with recipient's SUIAMI (async, non-blocking)
+        if (sendReceipt && payload.sender) {
+          sendReceipt(payload.sender, payload.suiami).catch(() => {});
+        }
       } catch { /* skip stale */ }
     }),
   );

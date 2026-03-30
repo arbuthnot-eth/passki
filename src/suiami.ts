@@ -29,8 +29,9 @@ export interface SuiamiProof {
   signature: string;
 }
 
-/** Build a SuiAMI message ready for signing. Includes all cross-chain addresses. */
+/** Build a SuiAMI message ready for signing. Throws if nftId is empty (ownership not proven). */
 export function buildSuiamiMessage(name: string, address: string, nftId: string, crossChain?: { btc?: string; sol?: string; eth?: string }, totalBalanceUsd?: number): SuiamiMessage {
+  if (name !== 'nobody' && !nftId) throw new Error(`Cannot sign SUIAMI — you don't own ${name}.sui`);
   const now = Date.now();
   const d = new Date(now);
   const parts = new Intl.DateTimeFormat('en-GB', {

@@ -343,10 +343,11 @@ window.addEventListener('ski:request-suiami', async (e) => {
     }
   }
 
-  // Check app state for SuiNS name (reverse-resolved), fallback to wallet state, then localStorage
+  // Use the name from the event detail (from overlay/menu NS input), fallback to app state
+  const detailName = ((e as CustomEvent).detail?.name || '').replace(/\.sui$/, '');
   const appName = getAppState().suinsName;
   const cachedName = (() => { try { return localStorage.getItem(`ski:suins:${ws.address}`); } catch { return null; } })();
-  const name = (appName || cachedName || ws.suinsName || '').replace(/\.sui$/, '') || 'nobody';
+  const name = detailName || (appName || cachedName || ws.suinsName || '').replace(/\.sui$/, '') || 'nobody';
 
   try {
     const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');

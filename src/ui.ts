@@ -3179,7 +3179,7 @@ export function mountDotButton(el: HTMLElement): () => void {
 
 let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
-let nsLabel = (() => { try { return localStorage.getItem('ski:ns-label') || ''; } catch { return ''; } })();
+let nsLabel = (() => { try { return localStorage.getItem('ski:ns-label') || 'iusd'; } catch { return 'iusd'; } })();
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -3411,6 +3411,30 @@ async function _renderConversation(counterparty: string, force = false) {
       // Quest signals on the card's domain (our owned name), not the conversation counterparty
       const cardDomain = document.getElementById('ski-nft-inline')?.dataset.domain?.toLowerCase() || '';
       if (!cardDomain) { showToast('No card domain'); return; }
+      // Receipt callback: send recipient's SUIAMI back to sender as proof of delivery
+      const _sendReceiptCb = async (senderName: string, _senderSuiami: string) => {
+        try {
+          const myName = app.suinsName?.replace(/\.sui$/, '') || '';
+          if (!myName) return;
+          const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
+          const myNft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === myName.toLowerCase() && d.kind === 'nft');
+          if (!myNft) return;
+          const raw = buildSuiamiMessage(myName, ws.address, myNft.objectId);
+          const msgBytes = new TextEncoder().encode(JSON.stringify(raw));
+          const { signature } = await signPersonalMessage(msgBytes);
+          const proof = createSuiamiProof(raw, btoa(String.fromCharCode(...msgBytes)), signature);
+          const { lookupRecipientNftId, buildThunderSendTx } = await import('./client/thunder.js');
+          const senderNftId = await lookupRecipientNftId(senderName);
+          if (!senderNftId) return;
+          const txBytes = await buildThunderSendTx(ws.address, myName, senderName, senderNftId, `\u2713 read by ${myName}.sui`, proof.token);
+          try {
+            const { sponsorAndSubmit } = await import('./sponsor.js');
+            await sponsorAndSubmit(txBytes, ws.address);
+          } catch {
+            await signAndExecuteTransaction(txBytes);
+          }
+        } catch { /* receipt is best-effort */ }
+      };
       const { decryptAndQuest, nameHash: nhFn } = await import('./client/thunder.js');
       const ws = getState();
       if (!ws.address) return;
@@ -3450,7 +3474,7 @@ async function _renderConversation(counterparty: string, force = false) {
         });
         const txJson = await txRes.json() as any;
         const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
-        payloads = await parseAndDecryptQuestfi(txJson?.result ?? {});
+        payloads = await parseAndDecryptQuestfi(txJson?.result ?? {}, _sendReceiptCb);
       } else {
         payloads = await decryptAndQuest(
           ws.address, cardDomain + '.sui', nft.objectId, count,
@@ -8602,7 +8626,7 @@ let _idleOverlay: HTMLElement | null = null;
 function bindEvents() {
   els.skiDot?.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; try { localStorage.removeItem('ski:idle-open'); } catch {} return; }
+    if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); try { localStorage.removeItem('ski:idle-open'); } catch {} return; }
     if (modalOpen) { closeModal(); return; }
     if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:lift', '0'); } catch {} render(); }
     openModal();
@@ -8621,7 +8645,7 @@ function bindEvents() {
     // Three-state cycle: menu → overlay → menu(collapsed) → overlay → ...
     if (_idleOverlay) {
       // Overlay open → close it, open SKI menu collapsed
-      _idleOverlay.remove(); _idleOverlay = null;
+      _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated');
       try { localStorage.removeItem('ski:idle-open'); } catch {}
       // Collapse all sections
       addrSectionOpen = false; _persistAddrSectionOpen();
@@ -8715,7 +8739,7 @@ function bindEvents() {
 
   const _showIdleOverlay = () => {
       if (!app.skiMenuOpen && !getState().address) return;
-      if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
+      if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
       // Ensure menu is open
       if (!app.skiMenuOpen && getState().address) {
         app.skiMenuOpen = true;
@@ -8768,35 +8792,18 @@ function bindEvents() {
             <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
           </div>
           <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
+          <div id="ski-idle-card" class="ski-idle-card"></div>
           <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
           <div class="ski-idle-thunder-row">
             <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
             <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
           </div>
         </div>
-        <div id="ski-idle-card" class="ski-idle-card"></div>
         <div class="ski-idle-bottom-row">
           <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
           <button class="ski-idle-next" id="ski-idle-next" type="button" title="t2000 Ship">\u203a</button>
         </div>
       `;
-
-      // Populate card if we have a domain
-      if (_idleCardDomain) {
-        const cardSlot = _idleOverlay.querySelector('#ski-idle-card');
-        if (cardSlot) {
-          const ownedEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === _idleCardDomain.toLowerCase());
-          let expiryText = '';
-          if (ownedEntry?.expirationMs) {
-            const daysLeft = Math.max(0, Math.ceil((ownedEntry.expirationMs - Date.now()) / 86_400_000));
-            expiryText = `${daysLeft}d`;
-          }
-          const unquestedCount = _thunderCounts[_idleCardDomain.toLowerCase()] ?? 0;
-          const totalCount = _thunderLocalCounts[_idleCardDomain.toLowerCase()] ?? 0;
-          const badgeHtml = (totalCount > 0 ? `\u26c8\ufe0f${totalCount} ` : '') + (unquestedCount > 0 ? `\u26a1${unquestedCount}` : '');
-          cardSlot.innerHTML = `<span class="ski-idle-card-name">${esc(_idleCardDomain)}<span class="ski-nft-tld">.sui</span></span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${expiryText ? ` <span class="ski-idle-card-expiry">${expiryText}</span>` : ''}`;
-        }
-      }
 
       // NS input on idle — full SKI menu behavior
       const _idleNsInput = _idleOverlay.querySelector('#ski-idle-ns') as HTMLInputElement | null;
@@ -8868,6 +8875,57 @@ function bindEvents() {
         _idleOverlay?.querySelector('#ski-idle-thunder-convo')?.classList.remove('ski-idle-thunder-convo--frozen');
       };
 
+      const _updateIdleCard = (name: string) => {
+        const card = _idleOverlay?.querySelector('#ski-idle-card') as HTMLElement | null;
+        if (!card) return;
+        if (!name || !nsAvail || nsAvail === 'available') { card.innerHTML = ''; return; }
+        // Persist as authoritative domain — drives NS input on refresh and menu open
+        _lastNftCardDomain = name;
+        try { sessionStorage.setItem('ski:nft-card-domain', name); } catch {}
+        try { localStorage.setItem('ski:ns-label', name); } catch {}
+        const thunderCount = _thunderCounts[name.toLowerCase()] ?? 0;
+        const localCount = _thunderLocalCounts[name.toLowerCase()] ?? 0;
+        const badgeHtml = (localCount > 0 ? `\u26c8\ufe0f${localCount} ` : '') + (thunderCount > 0 ? `\u26a1${thunderCount}` : '');
+        card.innerHTML = `<span class="ski-idle-card-name">${esc(name)}<span class="ski-nft-tld">.sui</span></span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span>`;
+        // Fetch resolved address balance
+        (async () => {
+          try {
+            let addr = nsTargetAddress || nsNftOwner;
+            if (!addr) {
+              const r = await fetch('https://graphql.mainnet.sui.io/graphql', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ query: `{ resolveSuinsAddress(domain: "${name}.sui") { address } }` }),
+              });
+              const gql = await r.json() as any;
+              addr = gql?.data?.resolveSuinsAddress?.address ?? null;
+            }
+            if (!addr) return;
+            const r2 = await fetch('https://graphql.mainnet.sui.io/graphql', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ query: `{ address(address: "${addr}") { balances { nodes { coinType { repr } totalBalance } } } }` }),
+            });
+            const gql2 = await r2.json() as any;
+            const balEl = _idleOverlay?.querySelector('#ski-idle-card-bal');
+            if (!balEl) return;
+            let totalUsd = 0;
+            const price = suiPriceCache?.price ?? 3;
+            for (const b of (gql2?.data?.address?.balances?.nodes ?? [])) {
+              const ct = b.coinType?.repr ?? '';
+              const raw = BigInt(b.totalBalance ?? '0');
+              if (ct.includes('::sui::SUI')) totalUsd += (Number(raw) / 1e9) * price;
+              else if (ct.includes('::usdc::USDC')) totalUsd += Number(raw) / 1e6;
+            }
+            if (totalUsd >= 0.01) {
+              const whole = Math.floor(totalUsd);
+              const dec = (totalUsd - whole).toFixed(2).slice(1);
+              balEl.innerHTML = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${whole.toLocaleString()}</span><span class="ski-idle-card-bal-dec">${dec}</span>`;
+            }
+          } catch {}
+        })();
+      };
+
       _idleNsInput?.addEventListener('click', (e) => e.stopPropagation());
       _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
       _idleNsInput?.addEventListener('focus', _freezeGif);
@@ -8890,7 +8948,7 @@ function bindEvents() {
         if (_idleDebounce) clearTimeout(_idleDebounce);
         if (val.length >= 3 && isValidNsLabel(val)) {
           _idleDebounce = setTimeout(() => {
-            fetchAndShowNsPrice(val).then(_updateIdleStatus);
+            fetchAndShowNsPrice(val).then(() => { _updateIdleStatus(); _updateIdleCard(val); });
           }, 400);
         }
       });
@@ -9403,7 +9461,7 @@ function bindEvents() {
             nsAvail = null;
             _updateIdleStatus();
             if (latest.length >= 3 && isValidNsLabel(latest)) {
-              fetchAndShowNsPrice(latest).then(_updateIdleStatus);
+              fetchAndShowNsPrice(latest).then(() => { _updateIdleStatus(); _updateIdleCard(latest); });
             }
           }
           const mainNsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -9424,12 +9482,51 @@ function bindEvents() {
       });
       _idleThunderSend?.addEventListener('click', (e) => { e.stopPropagation(); _sendIdleThunder(); });
       // Nothing in the overlay dismisses it — only successful action or header button
+      // Unfreeze GIF if click lands outside any input
       _idleOverlay.addEventListener('click', (e) => {
         e.stopPropagation();
+        const t = e.target as HTMLElement;
+        if (!t.closest('input') && !t.closest('button') && !t.closest('.ski-idle-at-dropdown')) {
+          _unfreezeGif();
+        }
       });
       const headerEl = document.querySelector('.ski-header') as HTMLElement;
       (headerEl || document.body).appendChild(_idleOverlay);
+
+      // Populate card inside the media (above thunder row)
+      const _idleCardDomain2 = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';
+      const cardDiv = _idleOverlay.querySelector('#ski-idle-card') as HTMLElement | null;
+      if (_idleCardDomain2 && cardDiv) {
+        const ownedEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === _idleCardDomain2.toLowerCase());
+        let expiryText = '';
+        if (ownedEntry?.expirationMs) {
+          const daysLeft = Math.max(0, Math.ceil((ownedEntry.expirationMs - Date.now()) / 86_400_000));
+          expiryText = `${daysLeft}d`;
+        }
+        const thunderCount = _thunderCounts[_idleCardDomain2.toLowerCase()] ?? 0;
+        const badgeHtml = thunderCount > 0 ? `\u26a1${thunderCount}` : '';
+        cardDiv.innerHTML = `<span class="ski-idle-card-name">${esc(_idleCardDomain2)}<span class="ski-nft-tld">.sui</span></span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${expiryText ? ` <span class="ski-idle-card-expiry">${expiryText}</span>` : ''}`;
+      }
+
+      // Auto-clear the SKI menu name input
+      const mainNsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+      if (mainNsInput) mainNsInput.value = '';
+
+      // Elevate the real SKI menu NS row above the overlay
+      const nsSection = document.getElementById('wk-dd-ns-section');
+      if (nsSection) nsSection.classList.add('wk-dd-ns-section--elevated');
+
       try { localStorage.setItem('ski:idle-open', '1'); } catch {}
+
+      // Match header width to overlay width
+      requestAnimationFrame(() => {
+        if (!_idleOverlay) return;
+        const overlayW = _idleOverlay.offsetWidth;
+        if (overlayW > 0) {
+          const hdr = document.querySelector('.ski-header') as HTMLElement;
+          if (hdr) hdr.style.setProperty('--ski-header-w', `${overlayW + 16}px`); // +16 for header padding
+        }
+      });
   };
 
   const _resetIdle = () => {
@@ -9440,7 +9537,7 @@ function bindEvents() {
 
   // Listen for manual trigger (Lockin button)
   window.addEventListener('ski:show-idle', () => {
-    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
+    if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
     _showIdleOverlay();
   });
 
