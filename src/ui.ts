@@ -9562,21 +9562,23 @@ function bindEvents() {
         convoEl.scrollTop = convoEl.scrollHeight;
 
         // Click-to-delete: tap a bubble to remove from local log
+        let _deleteBusy = false;
         convoEl.querySelectorAll('.ski-idle-bubble').forEach(bubble => {
           bubble.addEventListener('click', async (ev) => {
             ev.stopPropagation();
+            if (_deleteBusy) return; // prevent concurrent mutations
             const ts = parseInt((bubble as HTMLElement).dataset.ts || '0', 10);
             if (!ts) return;
-            // Confirm with visual feedback
+            // Confirm with visual feedback — first tap turns red, second tap deletes
             if (!(bubble as HTMLElement).classList.contains('ski-idle-bubble--confirm-delete')) {
               (bubble as HTMLElement).classList.add('ski-idle-bubble--confirm-delete');
               setTimeout(() => (bubble as HTMLElement).classList.remove('ski-idle-bubble--confirm-delete'), 2000);
               return;
             }
-            // Delete from local log
-            const ws = getState();
-            if (!ws.address) return;
+            _deleteBusy = true;
             try {
+              const ws = getState();
+              if (!ws.address) return;
               const key = await _deriveThunderKey(ws.address);
               const storageKey = `ski:thunder-log:${ws.address}`;
               const raw = localStorage.getItem(storageKey);
@@ -9593,10 +9595,11 @@ function bindEvents() {
                 const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
                 localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
               }
+              (bubble as HTMLElement).remove();
+              _freshQuestTs.delete(ts);
+              await _refreshThunderLocalCounts();
             } catch {}
-            (bubble as HTMLElement).remove();
-            _freshQuestTs.delete(ts);
-            await _refreshThunderLocalCounts();
+            _deleteBusy = false;
           });
         });
       };
