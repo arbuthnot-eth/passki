@@ -1,11 +1,15 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { raceJsonRpc } from './rpc.js';
+import { SolanaChronicom } from './agents/solana-chronicom.js';
+import { CrossChainBountyBoard } from './agents/cross-chain-bounty-board.js';
 // ika-provision.ts is available for server-side DKG if needed in future,
 // but DKG WASM must run client-side (browser) — Workers can't run it.
 
 interface Env {
   ShadeExecutorAgent: DurableObjectNamespace;
+  SolanaChronicom: DurableObjectNamespace;
+  CrossChainBountyBoard: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string;
@@ -821,3 +825,7 @@ export { SponsorAgent } from './agents/sponsor.js';
 export { SplashDeviceAgent } from './agents/splash.js';
 export { ShadeExecutorAgent } from './agents/shade-executor.js';
 export { TreasuryAgents } from './agents/treasury-agents.js';
+
+// Re-export agents for Cloudflare Workers DO registration
+export { SolanaChronicom } from './agents/solana-chronicom.js';
+export { CrossChainBountyBoard } from './agents/cross-chain-bounty-board.js';

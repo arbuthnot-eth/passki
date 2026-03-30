@@ -39,6 +39,14 @@
       {
         "name": "TreasuryAgents",
         "class_name": "TreasuryAgents"
+      },
+      {
+        "name": "SolanaChronicom",
+        "class_name": "SolanaChronicom"
+      },
+      {
+        "name": "CrossChainBountyBoard",
+        "class_name": "CrossChainBountyBoard"
       }
     ]
   },
