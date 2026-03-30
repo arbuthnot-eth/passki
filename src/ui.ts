@@ -3610,6 +3610,117 @@ interface ThunderLogEntry {
   addr?: string; // counterparty wallet address — groups conversations across names
 }
 
+interface ThunderComposeDraft {
+  raw: string;
+  message: string;
+  recipients: string[];
+  source: 'mention' | 'context' | 'signal' | 'local' | 'none';
+  sourceLabel: string;
+  warning?: string;
+  error?: string;
+}
+
+function _dedupeThunderRecipients(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const bare = value.trim().toLowerCase();
+    if (!bare || seen.has(bare)) continue;
+    seen.add(bare);
+    out.push(bare);
+  }
+  return out;
+}
+
+function _resolveThunderFallbackRecipient(): { name: string; source: ThunderComposeDraft['source']; sourceLabel: string } | null {
+  const currentLabel = nsLabel.trim().toLowerCase();
+  const owned = currentLabel
+    ? nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === currentLabel)
+    : false;
+  if (currentLabel && nsAvail === 'taken' && !owned) {
+    return {
+      name: currentLabel,
+      source: 'context',
+      sourceLabel: `current target @${currentLabel}.sui`,
+    };
+  }
+
+  const topChain = Object.entries(_thunderCounts)
+    .filter(([, count]) => count > 0)
+    .sort(([, a], [, b]) => b - a)[0]?.[0] || '';
+  if (topChain) {
+    return {
+      name: topChain,
+      source: 'signal',
+      sourceLabel: `top active signal @${topChain}.sui`,
+    };
+  }
+
+  const topLocal = Object.entries(_thunderLocalCounts)
+    .filter(([, count]) => count > 0)
+    .sort(([, a], [, b]) => b - a)[0]?.[0] || '';
+  if (topLocal) {
+    return {
+      name: topLocal,
+      source: 'local',
+      sourceLabel: `local conversation @${topLocal}.sui`,
+    };
+  }
+
+  return null;
+}
+
+function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const mentions: string[] = [];
+  const mentionPattern = /(^|[^a-z0-9_-])@([a-z0-9-]{3,63})(?![a-z0-9-])/gi;
+  const cleaned = trimmed
+    .replace(mentionPattern, (_match, prefix: string, name: string) => {
+      mentions.push(name.toLowerCase());
+      return prefix ?? '';
+    })
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  let recipients = _dedupeThunderRecipients(mentions);
+  let source: ThunderComposeDraft['source'] = recipients.length > 0 ? 'mention' : 'none';
+  let sourceLabel = recipients.length > 0 ? 'parsed locally from @mentions' : 'parsed locally before encryption';
+  let warning: string | undefined;
+
+  if (recipients.length === 0) {
+    const fallback = _resolveThunderFallbackRecipient();
+    if (fallback) {
+      recipients = [fallback.name];
+      source = fallback.source;
+      sourceLabel = fallback.sourceLabel;
+      warning = 'recipient inferred locally';
+    }
+  }
+
+  if (recipients.length === 0) {
+    return {
+      raw: trimmed,
+      message: cleaned || trimmed,
+      recipients,
+      source,
+      sourceLabel: 'no recipient detected',
+      error: 'Add @name or open a target name first.',
+    };
+  }
+
+  return {
+    raw: trimmed,
+    message: cleaned || trimmed,
+    recipients,
+    source,
+    sourceLabel,
+    warning,
+  };
+}
+
 async function _storeThunderLocal(_ownerName: string, recipientName: string, message: string, dir: 'in' | 'out' = 'out', fromName?: string, counterpartyAddr?: string): Promise<void> {
   const ws = getState();
   if (!ws.address) return;
@@ -8974,6 +9085,14 @@ function bindEvents() {
           <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
           <div id="ski-idle-card" class="ski-idle-card"></div>
           <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
+          <div class="ski-idle-thunder-preview" id="ski-idle-thunder-preview" hidden style="margin: 6px 0 8px; padding: 8px 10px; border: 1px solid rgba(255, 184, 0, 0.18); border-radius: 12px; background: rgba(255, 184, 0, 0.08); color: var(--text); font-size: 0.78rem; line-height: 1.35;">
+            <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; font-size:0.68rem; letter-spacing:0.08em; text-transform:uppercase; color: rgba(255, 236, 179, 0.82);">
+              <span>Thunder preview</span>
+              <span id="ski-idle-thunder-preview-note">parsed locally</span>
+            </div>
+            <div id="ski-idle-thunder-preview-meta" style="margin-top: 5px; color: var(--text); word-break: break-word;"></div>
+            <div id="ski-idle-thunder-preview-body" style="margin-top: 4px; color: rgba(230, 235, 245, 0.9); white-space: pre-wrap; word-break: break-word;"></div>
+          </div>
           <div class="ski-idle-thunder-row">
             <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
             <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
@@ -8991,7 +9110,15 @@ function bindEvents() {
       const _idleStatusEl = _idleOverlay.querySelector('#ski-idle-status');
       const _idleClearBtn = _idleOverlay.querySelector('#ski-idle-clear') as HTMLButtonElement | null;
       const _idleActionBtn = _idleOverlay.querySelector('#ski-idle-action') as HTMLButtonElement | null;
+      const _idleThunderPreviewEl = _idleOverlay.querySelector('#ski-idle-thunder-preview') as HTMLElement | null;
+      const _idleThunderPreviewNote = _idleOverlay.querySelector('#ski-idle-thunder-preview-note') as HTMLElement | null;
+      const _idleThunderPreviewMeta = _idleOverlay.querySelector('#ski-idle-thunder-preview-meta') as HTMLElement | null;
+      const _idleThunderPreviewBody = _idleOverlay.querySelector('#ski-idle-thunder-preview-body') as HTMLElement | null;
+      const _idleThunderSend = _idleOverlay.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
       let _idleDebounce: ReturnType<typeof setTimeout> | null = null;
+      let _thunderComposeDraft: ThunderComposeDraft | null = null;
+      let _thunderComposeConfirmedRaw = '';
+      let _thunderComposeStage: 'idle' | 'preview' | 'confirmed' | 'sending' = 'idle';
 
       const _updateIdleStatus = () => {
         if (!_idleStatusEl || !_idleActionBtn) return;
@@ -9043,6 +9170,57 @@ function bindEvents() {
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
           _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
           _idleActionBtn.disabled = true;
+        }
+      };
+
+      const _renderThunderComposePreview = () => {
+        const raw = _idleThunderInput?.value.trim() || '';
+        const draft = _parseThunderCompose(raw);
+        _thunderComposeDraft = draft;
+        const isQuestMode = _idleThunderSend?.dataset.questMode === '1';
+
+        if (!raw || !draft) {
+          _thunderComposeConfirmedRaw = '';
+          _thunderComposeStage = 'idle';
+          if (_idleThunderPreviewEl) _idleThunderPreviewEl.hidden = true;
+          if (_idleThunderSend && !isQuestMode) {
+            _idleThunderSend.textContent = '\u26a1';
+            _idleThunderSend.title = 'Send signal';
+            _idleThunderSend.disabled = false;
+          }
+          return;
+        }
+
+        if (draft.raw !== _thunderComposeConfirmedRaw && _thunderComposeStage !== 'sending') {
+          _thunderComposeStage = 'preview';
+        } else if (_thunderComposeStage !== 'sending') {
+          _thunderComposeStage = 'confirmed';
+        }
+
+        if (_idleThunderPreviewEl) _idleThunderPreviewEl.hidden = false;
+        if (_idleThunderPreviewNote) {
+          _idleThunderPreviewNote.textContent = draft.error
+            ? 'recipient needed'
+            : draft.warning || draft.sourceLabel;
+        }
+        if (_idleThunderPreviewMeta) {
+          const recipients = draft.recipients.length
+            ? draft.recipients.map(r => `<span style="display:inline-block; margin: 0 4px 4px 0; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--text);">@${esc(r)}</span>`).join('')
+            : '<span style="color: rgba(248, 113, 113, 0.95);">No recipient detected</span>';
+          _idleThunderPreviewMeta.innerHTML = `<div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;"><span style="color: rgba(255, 236, 179, 0.88);">To</span>${recipients}</div>`;
+        }
+        if (_idleThunderPreviewBody) {
+          _idleThunderPreviewBody.textContent = draft.message;
+        }
+        if (_idleThunderSend && !isQuestMode && _thunderComposeStage !== 'sending') {
+          if (_thunderComposeStage === 'confirmed') {
+            _idleThunderSend.textContent = 'Send';
+            _idleThunderSend.title = 'Encrypt and send locally parsed Thunder';
+          } else {
+            _idleThunderSend.textContent = 'Preview';
+            _idleThunderSend.title = draft.error ? 'Fix the preview before sending' : 'Review the parsed signal before encryption';
+          }
+          _idleThunderSend.disabled = !!draft.error;
         }
       };
 
@@ -9148,11 +9326,12 @@ function bindEvents() {
         // Reset status while fetching
         nsAvail = null;
         _updateIdleStatus();
+        _renderThunderComposePreview();
         // Debounce fetch
         if (_idleDebounce) clearTimeout(_idleDebounce);
         if (val.length >= 3 && isValidNsLabel(val)) {
           _idleDebounce = setTimeout(() => {
-            fetchAndShowNsPrice(val).then(() => { _updateIdleStatus(); _updateIdleCard(val); });
+            fetchAndShowNsPrice(val).then(() => { _updateIdleStatus(); _updateIdleCard(val); _renderThunderComposePreview(); });
           }, 400);
         }
       });
@@ -9165,6 +9344,7 @@ function bindEvents() {
         nsAvail = null;
         if (_idleClearBtn) _idleClearBtn.style.display = 'none';
         _updateIdleStatus();
+        _renderThunderComposePreview();
         _idleNsInput?.focus();
       });
 
@@ -9201,6 +9381,7 @@ function bindEvents() {
             if (thunderInput) {
               if (!thunderInput.value.includes(`@${label}`)) thunderInput.value = `@${label} `;
               thunderInput.focus();
+              _renderThunderComposePreview();
             }
           }
         }
@@ -9499,13 +9680,12 @@ function bindEvents() {
         if (!_hadFocus) return; // first click is just restoring window focus
         _triggerSuiami();
       });
-      // Thunder input — doesn't dismiss, Enter sends
+      // Thunder input — doesn't dismiss, Enter confirms then sends
       const _freshQuestTs = new Set<number>(); // timestamps of messages quested this session
       const _idleThunderInput = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
-      const _idleThunderSend = _idleOverlay.querySelector('#ski-idle-thunder-send');
       const _sendIdleThunder = async () => {
         // Quest mode: decrypt pending signals instead of sending
-        const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
+        const sendBtn = _idleThunderSend;
         if (sendBtn?.dataset.questMode === '1') {
           const questName = sendBtn.dataset.questName || '';
           if (!questName) return;
@@ -9543,6 +9723,7 @@ function bindEvents() {
             delete sendBtn.dataset.questMode;
             delete sendBtn.dataset.questName;
             sendBtn.disabled = false;
+            _renderThunderComposePreview();
             showToast(`\u26a1 ${payloads.length} signal${payloads.length > 1 ? 's' : ''} decrypted`);
           } catch (err) {
             sendBtn.innerHTML = '\u26c8\ufe0f';
@@ -9558,30 +9739,31 @@ function bindEvents() {
         const ws = getState();
         if (!ws.address) return;
         try {
-          // Extract @mentions as recipients
-          const mentions = [...raw.matchAll(/@([a-z0-9-]{3,63})/gi)].map(m => m[1].toLowerCase());
-          const msgText = raw.replace(/@[a-z0-9-]{3,63}/gi, '').trim() || raw;
-
-          // Determine recipients: @mentions if present, else default
-          let recipients: string[];
-          if (mentions.length > 0) {
-            recipients = [...new Set(mentions)];
-          } else {
-            const top = Object.entries(_thunderCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
-            const topLocal = Object.entries(_thunderLocalCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
-            const fallback = top?.[0] || topLocal?.[0] || '';
-            if (!fallback) { showToast('No recipient — use @name'); return; }
-            recipients = [fallback];
+          const draft = _parseThunderCompose(raw);
+          if (!draft || draft.error || draft.recipients.length === 0) {
+            _thunderComposeConfirmedRaw = '';
+            _thunderComposeStage = 'preview';
+            _renderThunderComposePreview();
+            showToast(draft?.error || 'No recipient — use @name');
+            return;
+          }
+          if (_thunderComposeConfirmedRaw !== draft.raw || _thunderComposeStage !== 'confirmed') {
+            _thunderComposeConfirmedRaw = draft.raw;
+            _thunderComposeStage = 'confirmed';
+            _renderThunderComposePreview();
+            return;
           }
 
           const { buildThunderSendTx, lookupRecipientNftId } = await import('./client/thunder.js');
           const senderName = app.suinsName || '';
-          const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLElement | null;
+          const recipients = draft.recipients;
+          const msgText = draft.message;
           const origBtnHtml = sendBtn?.innerHTML || '\u26a1';
 
           // Show loading spinner on send button — hover reveals cancel
           let _cancelled = false;
           if (sendBtn) {
+            _thunderComposeStage = 'sending';
             sendBtn.innerHTML = '<span class="ski-idle-thunder-spinner"></span>';
             sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--loading';
             sendBtn.title = 'Cancel';
@@ -9612,8 +9794,13 @@ function bindEvents() {
             const names = recipients.map(r => `${r}.sui`).join(', ');
             showToast(`\u26a1 Signal sent to ${names}`);
             _expandIdleConvo(recipients[0]);
+            _thunderComposeConfirmedRaw = '';
+            _thunderComposeStage = 'idle';
+            _renderThunderComposePreview();
           } catch (txErr) {
             const txMsg = txErr instanceof Error ? txErr.message : 'Signal failed';
+            _thunderComposeStage = 'confirmed';
+            _renderThunderComposePreview();
             if (!txMsg.toLowerCase().includes('reject')) {
               // Show failed bubble with retry
               const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
@@ -9626,19 +9813,23 @@ function bindEvents() {
               failBubble.addEventListener('click', () => {
                 failBubble.remove();
                 if (_idleThunderInput) _idleThunderInput.value = raw;
+                _thunderComposeConfirmedRaw = raw;
+                _thunderComposeStage = 'confirmed';
+                _renderThunderComposePreview();
                 _sendIdleThunder();
               }, { once: true });
               showToast(txMsg);
             }
           } finally {
             if (sendBtn) { sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-thunder-send'; sendBtn.title = 'Send signal'; }
+            _renderThunderComposePreview();
           }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : 'Signal failed';
           if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
         }
       };
-      const _expandIdleConvo = async (counterparty: string) => {
+      async function _expandIdleConvo(counterparty: string) {
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         if (!convoEl) return;
         const entries = await _getConversation(counterparty);
@@ -9753,7 +9944,7 @@ function bindEvents() {
             _deleteBusy = false;
           });
         });
-      };
+      }
       // @ autocomplete for thunder input
       let _atDropdown: HTMLElement | null = null;
       let _atSelectedIdx = 0;
@@ -9837,6 +10028,7 @@ function bindEvents() {
         // Freeze GIF and expand conversation history for tagged name
         _freezeGif();
         _expandIdleConvo(name);
+        _renderThunderComposePreview();
       };
 
       _idleThunderInput?.addEventListener('click', (e) => e.stopPropagation());
@@ -9870,6 +10062,7 @@ function bindEvents() {
           const mainNsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
           if (mainNsInput && mainNsInput.value !== latest) mainNsInput.value = latest;
         }
+        _renderThunderComposePreview();
       });
       _idleThunderInput?.addEventListener('blur', () => setTimeout(_dismissAtDropdown, 150));
       _idleThunderInput?.addEventListener('keydown', (e) => {
