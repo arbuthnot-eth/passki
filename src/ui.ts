@@ -9134,6 +9134,12 @@ function bindEvents() {
         // Show card immediately from cached state
         if (nsAvail) _updateIdleCard(_initLabel);
         fetchAndShowNsPrice(_initLabel).then(() => { _updateIdleStatus(); _updateIdleCard(_initLabel); });
+        // Auto-open conversation if there are pending signals or history
+        const _pendingCount = _thunderCounts[_initLabel.toLowerCase()] ?? 0;
+        const _localCount = _thunderLocalCounts[_initLabel.toLowerCase()] ?? 0;
+        if (_pendingCount > 0 || _localCount > 0) {
+          _expandIdleConvo(_initLabel);
+        }
       }
 
       // iUSD coin click → swap 95% of wallet to iUSD
