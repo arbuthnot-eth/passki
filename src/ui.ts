@@ -10162,7 +10162,7 @@ function bindEvents() {
 
                 (bubble as HTMLElement).textContent = '\u2026';
                 const { buildStrikeToTreasuryTx } = await import('./client/thunder.js');
-                const txBytes = await buildStrikeToTreasuryTx(ws.address, bare, nftEntry.nftId, strikeCount);
+                const txBytes = await buildStrikeToTreasuryTx(ws.address, bare, nftEntry.objectId, strikeCount);
                 await signAndExecuteTransaction(txBytes);
 
                 // Delete all struck bubbles from local log + DOM
