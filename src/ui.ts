@@ -9478,7 +9478,9 @@ function bindEvents() {
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
           return `<div class="ski-idle-bubble ${cls}">${esc(msgText)}</div>`;
         }).join('');
-        convoEl.innerHTML = bubbles;
+        const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
+        const title = `<div class="ski-idle-convo-title">\u26a1 ${esc(bare)}<span class="ski-nft-tld">.sui</span></div>`;
+        convoEl.innerHTML = title + bubbles;
         convoEl.removeAttribute('hidden');
         convoEl.scrollTop = convoEl.scrollHeight;
       };
