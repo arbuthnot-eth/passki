@@ -9228,10 +9228,23 @@ function bindEvents() {
             _idleActionBtn.disabled = false;
           }
         } else if (nsAvail === 'available') {
-          _idleActionBtn.textContent = 'MINT';
-          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--mint';
-          _idleActionBtn.title = `Mint ${label}.sui`;
-          _idleActionBtn.disabled = false;
+          // Check if user can actually afford it with spendable tokens (SUI + USDC + NS)
+          const _suiVal = app.sui * (suiPriceCache?.price ?? 0);
+          const _usdcVal = walletCoins.find(c => c.symbol === 'USDC')?.balance ?? 0;
+          const _nsVal = (app.nsBalance ?? 0) * (nsPriceUsd ?? 0);
+          const _spendable = _suiVal + _usdcVal + _nsVal;
+          const _mintCost = nsPriceUsd ?? 7.50;
+          if (_spendable >= _mintCost * 0.80) {
+            _idleActionBtn.textContent = 'MINT';
+            _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--mint';
+            _idleActionBtn.title = `Mint ${label}.sui`;
+            _idleActionBtn.disabled = false;
+          } else {
+            _idleActionBtn.textContent = 'Quest';
+            _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--quest-bounty';
+            _idleActionBtn.title = `Need $${_mintCost.toFixed(2)} — post a Quest for Chronicoms to fill`;
+            _idleActionBtn.disabled = false;
+          }
         } else if (nsAvail === 'taken' && !isOwned) {
           _idleActionBtn.textContent = 'Thunder';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--thunder';
