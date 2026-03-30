@@ -9395,12 +9395,21 @@ function bindEvents() {
             const balEl = _idleOverlay?.querySelector('#ski-idle-card-bal');
             if (!balEl) return;
             let totalUsd = 0;
-            const price = suiPriceCache?.price ?? 3;
+            const price = suiPriceCache?.price ?? 0.87;
             for (const b of (gql2?.data?.address?.balances?.nodes ?? [])) {
               const ct = b.coinType?.repr ?? '';
               const raw = BigInt(b.totalBalance ?? '0');
               if (ct.includes('::sui::SUI')) totalUsd += (Number(raw) / 1e9) * price;
               else if (ct.includes('::usdc::USDC')) totalUsd += Number(raw) / 1e6;
+              else if (ct.includes('::iusd::IUSD')) totalUsd += Number(raw) / 1e9;
+              else if (ct.includes('::ika::IKA')) totalUsd += (Number(raw) / 1e9) * 0.003;
+              else if (ct.includes('::deep::DEEP')) totalUsd += (Number(raw) / 1e6) * 0.03;
+            }
+            // Add SOL balance if this is the connected wallet
+            const ws = getState();
+            if (ws.address && addr?.toLowerCase() === ws.address.toLowerCase() && app.solBalance > 0) {
+              const solPrice = getTokenPrice('SOL') ?? 83;
+              totalUsd += app.solBalance * solPrice;
             }
             if (totalUsd >= 0.50) {
               balEl.innerHTML = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span>`;
