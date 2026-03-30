@@ -131,7 +131,14 @@ Thunder surfaces throughout the UI: as the default action when viewing someone e
 
 **Move contract (v4):** `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581`
 
-**Thunder v5 / Storm v1 (planned):** ECDH-derived private Storm IDs via IKA dWallets. Hides who talks to whom — knowledge of the storm_id IS authorization.
+## Storm v1
+
+Permissionless on-chain messaging primitive used by Thunder v5. No fees, no admin keys, no NFT gates.
+
+- **Package:** `0xa3ed4fdf1369313647efcef77fd577aa4b77b50c62e5c5e29d4c383390cdf942`
+- **Storm object:** `0x1b00663e83c9674ab49da1c6dd8c07e01aeff93d5c74c1785251f82cb61cb9e4`
+- **Operations:** signal, quest, strike, sweep — all permissionless
+- **ECDH-derived storm_id** — knowledge IS authorization. Hides who talks to whom; no on-chain link between sender and recipient
 
 ## SUIAMI
 
@@ -143,11 +150,13 @@ Used for sender authentication in Thunder signals and as a standalone identity p
 
 Cross-chain identity resolver on Sui. Maps SuiNS names to addresses on any chain via a shared on-chain registry.
 
-- **Contract:** `0x4a04a5701ae8420c16e51597553fc3a21a19ebb5800d5f48cd98f75ecd429906`
+- **v1 Contract:** `0x4a04a5701ae8420c16e51597553fc3a21a19ebb5800d5f48cd98f75ecd429906`
+- **v2 Package:** `0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4` — adds chain address reverse lookup
 - **Roster object:** `0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689`
 - **Dual-keyed lookup** — name hash, Sui address, and chain address strings
+- **Reverse lookup** (v2) — resolve any chain address back to its SuiNS name
 - **`VecMap<String,String>`** for chains — future-proof for post-quantum curves and arbitrary chain identifiers
-- Piggybacked onto every user transaction (pending contract v2 upgrade)
+- Piggybacked onto every user transaction
 
 ## iUSD — Yield-Bearing Stable
 
@@ -185,7 +194,11 @@ Name registration routes through iUSD to grow treasury collateral:
 
 Multi-DEX racing (Aftermath aggregator vs direct DeepBook) picks the best USDC → NS rate. Aftermath internally races across 15+ DEXes including Cetus, Bluefin, FlowX, Kriya, and Turbos.
 
-**Contract:** `0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515`
+**v1 Contract (deprecated, 6 decimal):** `0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515`
+
+**v2 Package:** `0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9`
+**v2 Treasury:** `0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb`
+**v2 TreasuryCap:** owned by ultron.sui — 9-decimal steganographic encoding
 
 ### Revenue Streams
 
@@ -250,6 +263,31 @@ WaaP provides custodial wallet creation via social login, email, phone, and biom
 | Biometrics | Active |
 
 WaaP accounts appear in the legend with their social provider icon (X, Google, Discord, or email envelope). Clicking an existing WaaP blue-square row reconnects via encrypted device proof (zero-modal). Clicking "+ new WaaP" forces a full disconnect and opens a fresh OAuth flow.
+
+---
+
+## Deployed Contracts
+
+| Contract | Package | Key Objects |
+|----------|---------|-------------|
+| iUSD v2 | `0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9` | Treasury: `0x64435d5284ba...627beb`, TreasuryCap: ultron.sui |
+| SUIAMI Roster v2 | `0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4` | Roster: `0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689` |
+| Storm v1 | `0xa3ed4fdf1369313647efcef77fd577aa4b77b50c62e5c5e29d4c383390cdf942` | Storm: `0x1b00663e83c9674ab49da1c6dd8c07e01aeff93d5c74c1785251f82cb61cb9e4` |
+| Thunder v4 | `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581` | — |
+| Shade | `0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff` | — |
+
+## ultron.sui
+
+Autonomous agent wallet for all server-side operations.
+
+- **Address:** `0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3`
+- **Roles:**
+  - iUSD minter and oracle (collateral attestation, mint, DeepBook/Aftermath routing)
+  - Storm admin
+  - Shade executor (keeper bot, auto-executes at grace expiry)
+  - Thunder relay (server-side signal relay for WaaP wallets)
+  - Dust sweep (consolidates small coin objects)
+  - Fee sweep (collects protocol revenue)
 
 ---
 
@@ -426,7 +464,7 @@ Chain registry and signing ceremony adapted from [inkwell-finance/ows-ika](https
 - `@mysten/sui` ^2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.2, `@ika.xyz/sdk` ^0.3.1
 - DEX: `aftermath-ts-sdk` (aggregation), DeepBook v3 (direct pools), Bluefin CLMM, Cetus CLMM
 - Transport: `SuiGrpcClient` primary with `SuiGraphQLClient` fallback (no JSON-RPC)
-- gRPC proxy: Hayabusa at `hb.sui.ski` — hedged requests across 4 fullnodes, two-tier caching (L1 Cache API + L2 KV)
+- gRPC proxy: Hayabusa at `hb.sui.ski` — racing proxy across Mysten, PublicNode, BlockVision, Ankr with two-tier caching (L1 Cache API + L2 KV)
 - Crypto: `@noble/hashes` (SHA-256, RIPEMD-160), `@scure/base` (bech32)
 - Build: `bun build src/ski.ts --outdir public/dist --target browser`
 - Deploy: Cloudflare Workers + Wrangler 4.78
