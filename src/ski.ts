@@ -438,6 +438,56 @@ window.addEventListener('ski:request-suiami', async (e) => {
   }
 });
 
+// ─── Rumble — all-chain DKG provisioning ─────────────────────────────
+window.addEventListener('ski:rumble', async () => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return;
+  }
+
+  showToast('Rumble starting \u2014 provisioning all chains...');
+
+  try {
+    const { rumble } = await loadIka();
+    const result = await rumble(
+      ws.address,
+      (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+      (stage: string) => {
+        showToast(`Rumble: ${stage}`);
+      },
+    );
+
+    // Update app state with all derived addresses
+    updateAppState({
+      ikaWalletId: result.dwalletCaps[0] ?? '',
+      btcAddress: result.btcAddress,
+      ethAddress: result.ethAddress,
+      solAddress: result.solAddress,
+    });
+
+    // Store chain addresses for Roster writes
+    try {
+      if (result.btcAddress) localStorage.setItem('ski:btc-address', result.btcAddress);
+      if (result.ethAddress) localStorage.setItem('ski:eth-address', result.ethAddress);
+      if (result.solAddress) localStorage.setItem('ski:sol-address', result.solAddress);
+    } catch {}
+
+    // Summary toast
+    const chains: string[] = [];
+    if (result.btcAddress) chains.push('BTC');
+    if (result.ethAddress) chains.push('ETH');
+    if (result.solAddress) chains.push('SOL');
+    showToast(`Rumble complete \u2014 ${chains.join(' + ') || 'no chains'} ready`);
+
+    // Dispatch result for UI / Roster consumers
+    window.dispatchEvent(new CustomEvent('ski:rumble-complete', { detail: result }));
+  } catch (err) {
+    console.error('[rumble] Error:', err);
+    showToast(err instanceof Error ? err.message : 'Rumble failed');
+  }
+});
+
 // ─── Sign & Execute Transaction ──────────────────────────────────────
 //
 // Any window that imports sui.ski can request a transaction be signed and

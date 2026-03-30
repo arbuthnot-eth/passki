@@ -8981,6 +8981,7 @@ function bindEvents() {
         </div>
         <div class="ski-idle-bottom-row">
           <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
+          <button class="ski-idle-rumble" id="ski-idle-rumble" type="button" title="Rumble \u2014 provision all chain wallets">\u26a1 Rumble</button>
           <button class="ski-idle-next" id="ski-idle-next" type="button" title="t2000 Ship">\u203a</button>
         </div>
       `;
@@ -9388,6 +9389,23 @@ function bindEvents() {
             navigator.clipboard.writeText(full).then(() => showToast('Copied')).catch(() => {});
           });
         });
+      });
+
+      // Rumble button → dispatch ski:rumble event
+      _idleOverlay.querySelector('#ski-idle-rumble')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.disabled = true;
+        btn.textContent = '\u26a1 ...';
+        window.dispatchEvent(new Event('ski:rumble'));
+        // Re-enable after rumble completes or times out
+        const onComplete = () => {
+          btn.disabled = false;
+          btn.textContent = '\u26a1 Rumble';
+          window.removeEventListener('ski:rumble-complete', onComplete);
+        };
+        window.addEventListener('ski:rumble-complete', onComplete);
+        setTimeout(onComplete, 300_000); // 5 min safety timeout
       });
 
       // Next page → t2000 page

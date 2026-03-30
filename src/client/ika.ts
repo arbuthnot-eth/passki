@@ -736,6 +736,110 @@ export function deriveStormIdFromAddresses(addr1: string, addr2: string): Uint8A
   return keccak_256(input);
 }
 
+// ── Rumble — all-chain DKG in one flow ──────────────────────────────
+
+export interface RumbleResult {
+  addresses: Array<{ chain: string; name: string; address: string }>;
+  btcAddress: string;
+  ethAddress: string;
+  solAddress: string;
+  dwalletCaps: string[];
+}
+
+/**
+ * Rumble — provision all cross-chain dWallets in one flow.
+ * 1. Check existing dWallets via getCrossChainStatus
+ * 2. If missing secp256k1: DKG for BTC/ETH
+ * 3. If missing ed25519: DKG for SOL
+ * 4. Derive all addresses
+ * 5. Return the full address set for Roster writing
+ */
+export async function rumble(
+  address: string,
+  executeTx: (txBytes: Uint8Array) => Promise<{ digest: string }>,
+  onProgress?: (stage: string) => void,
+): Promise<RumbleResult> {
+  const log = onProgress ?? (() => {});
+  const wallet = await import('../wallet.js');
+  const isWaap = /waap/i.test((await import('../wallet.js')).getState().walletName);
+
+  const callbacks: ProvisionCallbacks = {
+    signTransaction: (txBytes: Uint8Array) => wallet.signTransaction(txBytes),
+    signAndExecuteTransaction: executeTx,
+    isWaap,
+    onStatus: log,
+  };
+
+  // Step 1: Check what already exists
+  log('Checking existing dWallets...');
+  let status = await getCrossChainStatus(address);
+
+  // Step 2: If missing secp256k1, provision BTC/ETH
+  if (!status.btcAddress) {
+    log('Provisioning BTC/ETH (secp256k1)...');
+    try {
+      status = await provisionDWallet(address, {
+        ...callbacks,
+        requestedCurve: Curve.SECP256K1,
+        onStatus: (msg: string) => log(`secp256k1: ${msg}`),
+      });
+    } catch (err) {
+      console.error('[rumble] secp256k1 DKG failed:', err);
+      log(`secp256k1 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+      // Continue — try ed25519 even if secp256k1 failed
+    }
+  } else {
+    log('secp256k1 already active');
+  }
+
+  // Step 3: If missing ed25519, provision SOL
+  if (!status.solAddress) {
+    log('Provisioning SOL (ed25519)...');
+    try {
+      status = await provisionDWallet(address, {
+        ...callbacks,
+        requestedCurve: Curve.ED25519,
+        onStatus: (msg: string) => log(`ed25519: ${msg}`),
+      });
+    } catch (err) {
+      console.error('[rumble] ed25519 DKG failed:', err);
+      log(`ed25519 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+  } else {
+    log('ed25519 already active');
+  }
+
+  // Step 4: Final status check to get all addresses
+  log('Finalizing...');
+  const final = await getCrossChainStatus(address);
+
+  // Collect all dWalletCap IDs
+  const dwalletCaps: string[] = [];
+  try {
+    const rpc = getLocalJsonRpc();
+    const DWALLET_CAP_TYPE = '0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317::coordinator_inner::DWalletCap';
+    const owned = await rpc.getOwnedObjects({
+      owner: address,
+      filter: { StructType: DWALLET_CAP_TYPE },
+      options: { showContent: true },
+      limit: 10,
+    });
+    for (const entry of ((owned as any)?.data ?? [])) {
+      const capId = entry?.data?.objectId;
+      if (capId) dwalletCaps.push(capId);
+    }
+  } catch {}
+
+  log('Done!');
+  return {
+    addresses: final.addresses,
+    btcAddress: final.btcAddress,
+    ethAddress: final.ethAddress,
+    solAddress: final.solAddress,
+    dwalletCaps,
+  };
+}
+
 /** Compare two Uint8Arrays lexicographically. Returns <0, 0, or >0. */
 function comparePubkeys(a: Uint8Array, b: Uint8Array): number {
   const len = Math.min(a.length, b.length);

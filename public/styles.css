@@ -3502,6 +3502,32 @@ body {
   background: rgba(255, 255, 255, 0.15);
   border-color: rgba(255, 255, 255, 0.4);
 }
+.ski-idle-rumble {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 16px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(255, 165, 0, 0.15);
+  border: 1px solid rgba(255, 165, 0, 0.4);
+  border-radius: 20px;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ski-idle-rumble:hover {
+  background: rgba(255, 165, 0, 0.3);
+  border-color: rgba(255, 165, 0, 0.6);
+}
+.ski-idle-rumble:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
 /* t2000 page on idle overlay */
 .ski-idle-t2000 {
   display: flex;
