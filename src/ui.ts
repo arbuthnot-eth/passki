@@ -8332,6 +8332,8 @@ function renderSkiMenu() {
         walletCoins = []; appBalanceFetched = false;
         renderSkiMenu();
         setTimeout(() => refreshPortfolio(true), 2000);
+        // Notify idle overlay to refresh status (TRADE → SUIAMI transition)
+        window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
         showToast(`${label}.sui purchased \u2713`);
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
@@ -8418,7 +8420,9 @@ function renderSkiMenu() {
           updateSkiDot('blue-square', app.suinsName);
           nsOwnedFetchedFor = '';
           _fetchOwnedDomains();
-          showToast(`${domain} registered ✓ ${digest ? digest.slice(0, 8) + '…' : ''}`);
+          // Notify idle overlay to refresh status (MINT → SUIAMI transition)
+          window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
+          showToast(`${domain} registered \u2713 ${digest ? digest.slice(0, 8) + '\u2026' : ''}`);
           if (ws2.address) try { localStorage.removeItem(`ski:balances:${ws2.address}`); } catch {}
           refreshPortfolio(true);
         } catch (err) {
@@ -10196,6 +10200,25 @@ function bindEvents() {
         }
       };
       document.addEventListener('keydown', _idleGlobalEnter);
+
+      // Listen for name acquisition (trade/mint) → refresh overlay to SUIAMI
+      const _onNameAcquired = (e: Event) => {
+        const name = (e as CustomEvent).detail?.name;
+        if (!name) return;
+        // Update state
+        nsAvail = 'owned';
+        nsKioskListing = null;
+        nsTradeportListing = null;
+        // Refresh overlay button and card
+        _updateIdleStatus();
+        _updateIdleCard(name);
+        // Re-fetch owned domains so the roster is current
+        fetchAndShowNsPrice(name).then(() => {
+          _updateIdleStatus();
+          _updateIdleCard(name);
+        });
+      };
+      window.addEventListener('ski:name-acquired', _onNameAcquired);
 
       const headerEl = document.querySelector('.ski-header') as HTMLElement;
       (headerEl || document.body).appendChild(_idleOverlay);
