@@ -3223,6 +3223,40 @@ let _thunderConvoOpen = (() => {
 
 const _selectedThunderTs = new Set<number>();
 
+/** Aggregate signal count across ALL owned names */
+function _totalThunderCount(): number {
+  let total = 0;
+  for (const d of nsOwnedDomains) {
+    if (d.kind !== 'nft') continue;
+    const bare = d.name.replace(/\.sui$/, '').toLowerCase();
+    total += _thunderCounts[bare] ?? 0;
+  }
+  return total;
+}
+
+/** Update the idle overlay thunder send button badge */
+function _updateIdleThunderBadge(): void {
+  if (!_idleOverlay) return;
+  const sendBtn = _idleOverlay.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
+  if (!sendBtn) return;
+  const total = _totalThunderCount();
+  if (total > 0) {
+    sendBtn.innerHTML = `\u26c8\ufe0f<span class="ski-idle-thunder-count">${total}</span>`;
+    sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--quest';
+    sendBtn.title = `Quest ${total} signal${total > 1 ? 's' : ''} across all names`;
+    sendBtn.dataset.questMode = '1';
+    sendBtn.dataset.questAll = '1';
+    sendBtn.disabled = false;
+  } else if (sendBtn.dataset.questAll === '1') {
+    sendBtn.innerHTML = '\u26a1';
+    sendBtn.className = 'ski-idle-thunder-send';
+    sendBtn.title = 'Send signal';
+    delete sendBtn.dataset.questMode;
+    delete sendBtn.dataset.questAll;
+    sendBtn.disabled = false;
+  }
+}
+
 /** Recompute _thunderLocalCounts from the encrypted log.
  *  Groups by address when available so conversations persist across SuiNS name changes.
  *  Falls back to name-based grouping for entries without an addr field. */
@@ -3783,23 +3817,52 @@ async function _getConversation(counterparty: string): Promise<ThunderLogEntry[]
   const all = await _readThunderLog();
   const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
 
-  // Collect all addresses associated with this counterparty name
+  // Build set of all names owned by this wallet (our side of conversations)
+  const ownedNames = new Set<string>();
+  for (const d of nsOwnedDomains) {
+    ownedNames.add(d.name.replace(/\.sui$/, '').toLowerCase());
+  }
+  if (app.suinsName) ownedNames.add(app.suinsName.replace(/\.sui$/, '').toLowerCase());
+
+  // Step 1: Collect all addresses associated with the counterparty name
   const addrs = new Set<string>();
   for (const e of all) {
     const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
     const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
     if ((to === bare || from === bare) && e.addr) addrs.add(e.addr.toLowerCase());
   }
-  // Also check nsTargetAddress for the current input name
+  // Include the currently resolved target address
   if (nsTargetAddress) addrs.add(nsTargetAddress.toLowerCase());
+  // Also resolve from nsNftOwner if available
+  if (nsNftOwner) addrs.add(nsNftOwner.toLowerCase());
+
+  // Step 2: Expand — find ALL names in the log that share any of those addresses
+  // e.g., alice, whitney, summer all point to 0xabc → treat them as one identity
+  const aliasNames = new Set<string>([bare]);
+  if (addrs.size > 0) {
+    for (const e of all) {
+      if (e.addr && addrs.has(e.addr.toLowerCase())) {
+        const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
+        const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
+        if (to && !ownedNames.has(to)) aliasNames.add(to);
+        if (from && !ownedNames.has(from)) aliasNames.add(from);
+      }
+    }
+  }
 
   return all.filter(e => {
     const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
     const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
-    // Match by name
-    if (to === bare || from === bare) return true;
-    // Match by address — any entry whose counterparty address matches
+    // Match by any alias name (alice, whitney, summer all resolve to same address)
+    if (aliasNames.has(to) || aliasNames.has(from)) return true;
+    // Match by address directly
     if (e.addr && addrs.has(e.addr.toLowerCase())) return true;
+    // If the target IS one of our names, show all inbound to that name
+    if (ownedNames.has(bare) && to === bare) return true;
+    // Match by @tag in message body for any alias
+    for (const alias of aliasNames) {
+      if (e.msg && new RegExp(`(^|[^a-z0-9-])@${alias}(?![a-z0-9-])`, 'i').test(e.msg)) return true;
+    }
     return false;
   });
 }
@@ -8412,7 +8475,9 @@ function renderSkiMenu() {
     }
 
     try {
-      const result = await buildRegisterSplashNsTx(ws2.address, domain, suiPriceCache?.price, !app.suinsName, iusdRouteUsed ? 'NS' : (selectedCoinSymbol ?? undefined));
+      // Force fresh price — stale localStorage price causes insufficient coin splits
+      const freshPrice = await fetchSuiPrice() ?? suiPriceCache?.price;
+      const result = await buildRegisterSplashNsTx(ws2.address, domain, freshPrice, !app.suinsName, iusdRouteUsed ? 'NS' : (selectedCoinSymbol ?? undefined));
       if (btn) btn.textContent = '\u270f';
       let digest: string;
       if (result.sponsorAddress) {
@@ -8466,10 +8531,15 @@ function renderSkiMenu() {
   if (_thunderPollTimer) clearInterval(_thunderPollTimer);
   const _pollThunder = async () => {
     if (nsOwnedDomains.length === 0) return;
+    const ws2 = getState();
+    if (!ws2.address) return;
     try {
-      const { getThunderCountsBatch } = await import('./client/thunder.js');
-      const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name);
-      const counts = await getThunderCountsBatch(nftNames);
+      const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name.replace(/\.sui$/, '').toLowerCase());
+      if (nftNames.length === 0) return;
+      const params = new URLSearchParams({ addr: ws2.address, names: nftNames.join(',') });
+      const res = await fetch(`/api/thunder/chronicom?${params}`);
+      if (!res.ok) return;
+      const counts = await res.json() as Record<string, number>;
       let changed = false;
       for (const [bare, count] of Object.entries(counts)) {
         const prev = _thunderCounts[bare] ?? 0;
@@ -8479,12 +8549,13 @@ function renderSkiMenu() {
         try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
         _patchNsOwnedList();
         _syncNftCardToInput();
+        _updateIdleThunderBadge();
       }
     } catch { /* silent */ }
   };
   _pollThunder();
   _refreshThunderLocalCounts().then(() => _syncNftCardToInput());
-  _thunderPollTimer = setInterval(_pollThunder, 30_000);
+  _thunderPollTimer = setInterval(_pollThunder, 5_000);
 
   // Prune stale shade orders (consumed/cancelled) on first menu open
   // + auto-schedule any unscheduled orders with the ShadeExecutorAgent DO
@@ -9085,14 +9156,6 @@ function bindEvents() {
           <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
           <div id="ski-idle-card" class="ski-idle-card"></div>
           <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
-          <div class="ski-idle-thunder-preview" id="ski-idle-thunder-preview" hidden style="margin: 6px 0 8px; padding: 8px 10px; border: 1px solid rgba(255, 184, 0, 0.18); border-radius: 12px; background: rgba(255, 184, 0, 0.08); color: var(--text); font-size: 0.78rem; line-height: 1.35;">
-            <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; font-size:0.68rem; letter-spacing:0.08em; text-transform:uppercase; color: rgba(255, 236, 179, 0.82);">
-              <span>Thunder preview</span>
-              <span id="ski-idle-thunder-preview-note">parsed locally</span>
-            </div>
-            <div id="ski-idle-thunder-preview-meta" style="margin-top: 5px; color: var(--text); word-break: break-word;"></div>
-            <div id="ski-idle-thunder-preview-body" style="margin-top: 4px; color: rgba(230, 235, 245, 0.9); white-space: pre-wrap; word-break: break-word;"></div>
-          </div>
           <div class="ski-idle-thunder-row">
             <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
             <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
@@ -9110,10 +9173,6 @@ function bindEvents() {
       const _idleStatusEl = _idleOverlay.querySelector('#ski-idle-status');
       const _idleClearBtn = _idleOverlay.querySelector('#ski-idle-clear') as HTMLButtonElement | null;
       const _idleActionBtn = _idleOverlay.querySelector('#ski-idle-action') as HTMLButtonElement | null;
-      const _idleThunderPreviewEl = _idleOverlay.querySelector('#ski-idle-thunder-preview') as HTMLElement | null;
-      const _idleThunderPreviewNote = _idleOverlay.querySelector('#ski-idle-thunder-preview-note') as HTMLElement | null;
-      const _idleThunderPreviewMeta = _idleOverlay.querySelector('#ski-idle-thunder-preview-meta') as HTMLElement | null;
-      const _idleThunderPreviewBody = _idleOverlay.querySelector('#ski-idle-thunder-preview-body') as HTMLElement | null;
       const _idleThunderSend = _idleOverlay.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
       let _idleDebounce: ReturnType<typeof setTimeout> | null = null;
       let _thunderComposeDraft: ThunderComposeDraft | null = null;
@@ -9182,7 +9241,6 @@ function bindEvents() {
         if (!raw || !draft) {
           _thunderComposeConfirmedRaw = '';
           _thunderComposeStage = 'idle';
-          if (_idleThunderPreviewEl) _idleThunderPreviewEl.hidden = true;
           if (_idleThunderSend && !isQuestMode) {
             _idleThunderSend.textContent = '\u26a1';
             _idleThunderSend.title = 'Send signal';
@@ -9197,28 +9255,13 @@ function bindEvents() {
           _thunderComposeStage = 'confirmed';
         }
 
-        if (_idleThunderPreviewEl) _idleThunderPreviewEl.hidden = false;
-        if (_idleThunderPreviewNote) {
-          _idleThunderPreviewNote.textContent = draft.error
-            ? 'recipient needed'
-            : draft.warning || draft.sourceLabel;
-        }
-        if (_idleThunderPreviewMeta) {
-          const recipients = draft.recipients.length
-            ? draft.recipients.map(r => `<span style="display:inline-block; margin: 0 4px 4px 0; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--text);">@${esc(r)}</span>`).join('')
-            : '<span style="color: rgba(248, 113, 113, 0.95);">No recipient detected</span>';
-          _idleThunderPreviewMeta.innerHTML = `<div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;"><span style="color: rgba(255, 236, 179, 0.88);">To</span>${recipients}</div>`;
-        }
-        if (_idleThunderPreviewBody) {
-          _idleThunderPreviewBody.textContent = draft.message;
-        }
         if (_idleThunderSend && !isQuestMode && _thunderComposeStage !== 'sending') {
           if (_thunderComposeStage === 'confirmed') {
             _idleThunderSend.textContent = 'Send';
-            _idleThunderSend.title = 'Encrypt and send locally parsed Thunder';
+            _idleThunderSend.title = 'Encrypt and send Thunder';
           } else {
-            _idleThunderSend.textContent = 'Preview';
-            _idleThunderSend.title = draft.error ? 'Fix the preview before sending' : 'Review the parsed signal before encryption';
+            _idleThunderSend.textContent = '\u26a1';
+            _idleThunderSend.title = draft.error ? 'Need a recipient (@name)' : 'Send signal';
           }
           _idleThunderSend.disabled = !!draft.error;
         }
@@ -9270,7 +9313,7 @@ function bindEvents() {
           const priceStr = usdVal != null ? `$${Math.round(usdVal)}` : `${totalSui.toFixed(0)} SUI`;
           listingHtml = ` <span class="ski-idle-card-listing">${priceStr}</span>`;
         }
-        card.innerHTML = `<span class="ski-idle-card-name">${esc(name)}<span class="ski-nft-tld">.sui</span></span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${listingHtml}<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span>`;
+        card.innerHTML = `<a class="ski-idle-card-name" href="https://${esc(name)}.sui.ski" target="_blank" rel="noopener" title="${esc(name)}.sui.ski">${esc(name)}<span class="ski-nft-tld">.sui</span></a>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${listingHtml}<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span>`;
         // Fetch resolved address balance
         (async () => {
           try {
@@ -9331,7 +9374,7 @@ function bindEvents() {
         if (_idleDebounce) clearTimeout(_idleDebounce);
         if (val.length >= 3 && isValidNsLabel(val)) {
           _idleDebounce = setTimeout(() => {
-            fetchAndShowNsPrice(val).then(() => { _updateIdleStatus(); _updateIdleCard(val); _renderThunderComposePreview(); });
+            fetchAndShowNsPrice(val).then(() => { _updateIdleStatus(); _updateIdleCard(val); _renderThunderComposePreview(); _expandIdleConvo(val); });
           }, 400);
         }
       });
@@ -9397,25 +9440,29 @@ function bindEvents() {
         // Auto-open conversation if there are pending signals or local history
         const _pendingCount = _thunderCounts[_initLabel.toLowerCase()] ?? 0;
         const _localCount = _thunderLocalCounts[_initLabel.toLowerCase()] ?? 0;
-        const _isOwnedName = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === _initLabel.toLowerCase())
-          || (app.suinsName?.replace(/\.sui$/, '').toLowerCase() === _initLabel.toLowerCase());
-        // For own name: always open if pending signals exist (show quest mode)
-        // For other names: open if local conversation history exists
-        if (_pendingCount > 0 || _localCount > 0 || (_isOwnedName && _pendingCount > 0)) {
+        if (_pendingCount > 0 || _localCount > 0) {
           _expandIdleConvo(_initLabel);
-          // Transform send button to quest button if user owns this name and has pending signals
-          if (_isOwnedName && _pendingCount > 0) {
-            const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
-            if (sendBtn) {
-              sendBtn.innerHTML = '\u26c8\ufe0f';
-              sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--quest';
-              sendBtn.title = `Quest ${_pendingCount} signal${_pendingCount > 1 ? 's' : ''}`;
-              sendBtn.dataset.questMode = '1';
-              sendBtn.dataset.questName = _initLabel;
-            }
-            // Also pre-fill thunder input with @name for context
-            const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
-            if (thunderInput && !thunderInput.value) thunderInput.placeholder = `${_pendingCount} signal${_pendingCount > 1 ? 's' : ''} waiting...`;
+        }
+        // Activate quest mode based on aggregate count across ALL owned names
+        const _totalPending = _totalThunderCount();
+        if (_totalPending > 0) {
+          const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
+          if (sendBtn) {
+            sendBtn.innerHTML = `\u26c8\ufe0f<span class="ski-idle-thunder-count">${_totalPending}</span>`;
+            sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--quest';
+            sendBtn.title = `Quest ${_totalPending} signal${_totalPending > 1 ? 's' : ''} across all names`;
+            sendBtn.dataset.questMode = '1';
+            sendBtn.dataset.questAll = '1';
+          }
+          const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+          if (thunderInput && !thunderInput.value) thunderInput.placeholder = `${_totalPending} signal${_totalPending > 1 ? 's' : ''} waiting...`;
+          // Auto-expand conversation for name with most signals
+          if (!_pendingCount && !_localCount) {
+            const topName = nsOwnedDomains
+              .filter(d => d.kind === 'nft')
+              .map(d => ({ bare: d.name.replace(/\.sui$/, '').toLowerCase(), count: _thunderCounts[d.name.replace(/\.sui$/, '').toLowerCase()] ?? 0 }))
+              .sort((a, b) => b.count - a.count)[0];
+            if (topName && topName.count > 0) _expandIdleConvo(topName.bare);
           }
         }
       }
@@ -9684,47 +9731,70 @@ function bindEvents() {
       const _freshQuestTs = new Set<number>(); // timestamps of messages quested this session
       const _idleThunderInput = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
       const _sendIdleThunder = async () => {
-        // Quest mode: decrypt pending signals instead of sending
+        // Quest mode: decrypt pending signals across all owned names
         const sendBtn = _idleThunderSend;
         if (sendBtn?.dataset.questMode === '1') {
-          const questName = sendBtn.dataset.questName || '';
-          if (!questName) return;
           sendBtn.innerHTML = '\u2026';
           sendBtn.disabled = true;
           try {
             const ws = getState();
             if (!ws.address) return;
             const { decryptAndQuest, getThunderCountsBatch } = await import('./client/thunder.js');
-            // Find the NFT object ID for this name
-            const nftEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === questName.toLowerCase());
-            if (!nftEntry) { showToast('NFT not found'); return; }
-            const count = _thunderCounts[questName.toLowerCase()] ?? 1;
-            const payloads = await decryptAndQuest(ws.address, questName, nftEntry.nftId, count, async (txBytes) => {
-              const { digest, effects } = await signAndExecuteTransaction(txBytes);
-              return { digest: digest || '', effects };
-            });
-            // Store decrypted messages in local log + mark as fresh
-            const _myLog = app.suinsName?.replace(/\.sui$/, '') || questName;
-            for (const p of payloads) {
-              const _pSender = p.sender || p.senderAddress.slice(0, 8);
-              const ts = Date.now();
-              _freshQuestTs.add(ts);
-              await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
+
+            // Build list of all names with pending signals
+            const toQuest: { name: string; nftId: string; count: number }[] = [];
+            if (sendBtn.dataset.questAll === '1') {
+              for (const d of nsOwnedDomains) {
+                if (d.kind !== 'nft') continue;
+                const bare = d.name.replace(/\.sui$/, '').toLowerCase();
+                const c = _thunderCounts[bare] ?? 0;
+                if (c > 0) toQuest.push({ name: bare, nftId: d.objectId, count: c });
+              }
+            } else {
+              const questName = sendBtn.dataset.questName || '';
+              if (!questName) { sendBtn.innerHTML = '\u26a1'; sendBtn.disabled = false; return; }
+              const nftEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === questName.toLowerCase());
+              if (!nftEntry) { showToast('NFT not found'); sendBtn.disabled = false; return; }
+              toQuest.push({ name: questName, nftId: nftEntry.objectId, count: _thunderCounts[questName.toLowerCase()] ?? 1 });
             }
-            // Refresh counts and re-render
-            const freshCounts = await getThunderCountsBatch([questName]);
-            _thunderCounts[questName.toLowerCase()] = freshCounts[questName.toLowerCase()] ?? 0;
+
+            if (toQuest.length === 0) { showToast('No signals to quest'); sendBtn.innerHTML = '\u26a1'; sendBtn.disabled = false; return; }
+
+            let totalDecrypted = 0;
+
+            for (const { name, nftId, count } of toQuest) {
+              try {
+                const payloads = await decryptAndQuest(ws.address, name, nftId, count, async (txBytes) => {
+                  const { digest, effects } = await signAndExecuteTransaction(txBytes);
+                  return { digest: digest || '', effects };
+                });
+                for (const p of payloads) {
+                  const _pSender = p.sender || p.senderAddress.slice(0, 8);
+                  _freshQuestTs.add(Date.now());
+                  await _storeThunderLocal(name, _pSender, p.message, 'in', _pSender, p.senderAddress);
+                }
+                totalDecrypted += payloads.length;
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (!msg.toLowerCase().includes('reject')) showToast(`${name}: ${msg}`);
+              }
+            }
+
+            // Refresh all counts
+            const allNames = toQuest.map(q => q.name);
+            const freshCounts = await getThunderCountsBatch(allNames);
+            for (const [bare, count] of Object.entries(freshCounts)) {
+              _thunderCounts[bare] = count;
+            }
+            try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
             await _refreshThunderLocalCounts();
-            _expandIdleConvo(questName);
-            // Reset button to send mode
-            sendBtn.innerHTML = '\u26a1';
-            sendBtn.className = 'ski-idle-thunder-send';
-            sendBtn.title = 'Send signal';
-            delete sendBtn.dataset.questMode;
-            delete sendBtn.dataset.questName;
+            if (toQuest.length > 0) _expandIdleConvo(toQuest[0].name);
+
+            // Reset button via badge updater
+            _updateIdleThunderBadge();
             sendBtn.disabled = false;
             _renderThunderComposePreview();
-            showToast(`\u26a1 ${payloads.length} signal${payloads.length > 1 ? 's' : ''} decrypted`);
+            if (totalDecrypted > 0) showToast(`\u26a1 ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} decrypted`);
           } catch (err) {
             sendBtn.innerHTML = '\u26c8\ufe0f';
             sendBtn.disabled = false;
@@ -9747,7 +9817,14 @@ function bindEvents() {
             showToast(draft?.error || 'No recipient — use @name');
             return;
           }
-          if (_thunderComposeConfirmedRaw !== draft.raw || _thunderComposeStage !== 'confirmed') {
+          // Auto-send when intent is clear: has $ (payment), or explicit @mention with message body
+          // Two-tap only when ambiguous: inferred recipient, no message body, or unusual chars
+          const _hasExplicitMention = /(?:^|[^a-z0-9_-])@[a-z0-9-]{3,63}/i.test(raw);
+          const _hasClearIntent = /\$/.test(raw) || (_hasExplicitMention && draft.message.length > 0);
+          const _isAmbiguous = draft.source !== 'mention' || draft.message.length === 0;
+          const _needsConfirm = _isAmbiguous && !_hasClearIntent;
+
+          if (_needsConfirm && (_thunderComposeConfirmedRaw !== draft.raw || _thunderComposeStage !== 'confirmed')) {
             _thunderComposeConfirmedRaw = draft.raw;
             _thunderComposeStage = 'confirmed';
             _renderThunderComposePreview();
@@ -9850,7 +9927,17 @@ function bindEvents() {
           if (!isOut && !e.dir) msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
           const freshCls = _freshQuestTs.has(e.ts) ? ' ski-idle-bubble--fresh' : '';
-          return `<div class="ski-idle-bubble ${cls}${freshCls}" data-ts="${e.ts}">${esc(msgText)}</div>`;
+          // Show which SuiNS name sent/received — links to their SUIAMI
+          const suiamiName = isOut ? (e.to || '').replace(/\.sui$/, '') : (e.from || '').replace(/\.sui$/, '');
+          const suiamiUrl = suiamiName ? `https://sui.ski/?suiami=${encodeURIComponent(suiamiName)}` : '';
+          const arrow = isOut ? '\u2192' : '\u2192';
+          const nameLabel = isOut
+            ? (suiamiName ? `${arrow} ${suiamiName}` : '')
+            : (suiamiName ? `${suiamiName} ${arrow}` : '');
+          const nameBadge = nameLabel && suiamiUrl
+            ? `<a class="ski-idle-bubble-name" href="${suiamiUrl}" target="_blank" rel="noopener" title="SUIAMI? I AM ${esc(suiamiName)}">${esc(nameLabel)}</a>`
+            : nameLabel ? `<span class="ski-idle-bubble-name">${esc(nameLabel)}</span>` : '';
+          return `<div class="ski-idle-bubble ${cls}${freshCls}" data-ts="${e.ts}">${nameBadge}${esc(msgText)}</div>`;
         }).join('');
         const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
         const title = `<div class="ski-idle-convo-title">\u26a1 ${esc(bare)}<span class="ski-nft-tld">.sui</span></div>`;
@@ -10112,6 +10199,7 @@ function bindEvents() {
 
       const headerEl = document.querySelector('.ski-header') as HTMLElement;
       (headerEl || document.body).appendChild(_idleOverlay);
+      _updateIdleThunderBadge();
 
       // Close the SKI menu so it doesn't show behind the overlay
       if (app.skiMenuOpen) {
@@ -10132,7 +10220,7 @@ function bindEvents() {
         }
         const thunderCount = _thunderCounts[_idleCardDomain2.toLowerCase()] ?? 0;
         const badgeHtml = thunderCount > 0 ? `\u26a1${thunderCount}` : '';
-        cardDiv.innerHTML = `<span class="ski-idle-card-name">${esc(_idleCardDomain2)}<span class="ski-nft-tld">.sui</span></span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${expiryText ? ` <span class="ski-idle-card-expiry">${expiryText}</span>` : ''}`;
+        cardDiv.innerHTML = `<a class="ski-idle-card-name" href="https://${esc(_idleCardDomain2)}.sui.ski" target="_blank" rel="noopener" title="${esc(_idleCardDomain2)}.sui.ski">${esc(_idleCardDomain2)}<span class="ski-nft-tld">.sui</span></a>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${expiryText ? ` <span class="ski-idle-card-expiry">${expiryText}</span>` : ''}`;
       }
 
       // Auto-clear the SKI menu name input

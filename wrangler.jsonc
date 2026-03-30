@@ -39,6 +39,10 @@
       {
         "name": "TreasuryAgents",
         "class_name": "TreasuryAgents"
+      },
+      {
+        "name": "Chronicom",
+        "class_name": "Chronicom"
       }
     ]
   },
@@ -63,6 +67,10 @@
     {
       "tag": "v5",
       "new_sqlite_classes": ["TreasuryAgents"]
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": ["Chronicom"]
     }
   ]
 }

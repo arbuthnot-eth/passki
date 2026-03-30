@@ -2,6 +2,16 @@
 
 .SKI once, everywhere.
 
+### Core Principles
+
+- **Cache, not treasury.** Funds flow through caches — high-performance temporary stores. Never "treasury", "reserve", or "dao".
+- **Stables, not stablecoins.** iUSD is a stable backed by activity yield.
+- **Encrypt, not encrypted.** Use verb forms — encrypt/decrypt.
+
+### Sibyl — The Predictor
+
+Custom oracle ([separate repo](../Sibyl/)). Timestreams flow price through time. Pythia (ultron.sui) channels visions. Offerings flow to the iUSD cache. Sibyl's Court: Anthropologists (research), Hunters (iUSD yield for Questfi), Rogues (IKA squid breeding, 30-35% APY boost).
+
 [![npm](https://img.shields.io/npm/v/sui.ski)](https://www.npmjs.com/package/sui.ski)
 [![Live](https://img.shields.io/badge/live-sui.ski-blue)](https://sui.ski)
 
@@ -123,7 +133,7 @@ Encrypt signals between SuiNS identities. On-chain encrypted messaging powered b
 
 - **Signal** — encrypt and send a message to any `.sui` name; only the NFT owner can decrypt. Free signals (fee set to 0)
 - **Quest** — claim and decrypt your signals, NFT-gated via Seal policies. Quest mode accessible from the idle overlay via the storm button. Fresh quest bubbles render with white background and support click-to-delete
-- **Strike** — tap-to-delete removes the signal on-chain, routing the storage rebate to treasury. Server-side relay for WaaP wallets that can't run Seal in-browser
+- **Strike** — tap-to-delete removes the signal on-chain, routing the storage rebate to cache. Server-side relay for WaaP wallets that can't run Seal in-browser
 - **@tags** — mention other SuiNS names in signals with autocomplete from your roster
 - **Conversation persistence** — signals are grouped by address, so conversations persist across SuiNS name changes
 
@@ -185,20 +195,20 @@ Every iUSD mint is fingerprinted to the specific purchase that created it.
 
 ### Purchase Routing
 
-Name registration routes through iUSD to grow treasury collateral:
+Name registration routes through iUSD to grow cache collateral:
 
 1. User deposits SUI → keeper attests collateral → mints iUSD
 2. Keeper swaps iUSD → USDC (DeepBook 1:1 pool) → NS (multi-DEX racing)
 3. Keeper sends NS to user → user registers name with 25% NS discount
-4. Surplus stays in treasury
+4. Surplus stays in cache
 
 Multi-DEX racing (Aftermath aggregator vs direct DeepBook) picks the best USDC → NS rate. Aftermath internally races across 15+ DEXes including Cetus, Bluefin, FlowX, Kriya, and Turbos.
 
 **v1 Contract (deprecated, 6 decimal):** `0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515`
 
 **v2 Package:** `0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9`
-**v2 Treasury:** `0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb`
-**v2 TreasuryCap:** owned by ultron.sui — 9-decimal steganographic encoding
+**v2 Cache:** `0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb`
+**v2 CacheCap:** owned by ultron.sui — 9-decimal steganographic encoding
 
 ### Revenue Streams
 
@@ -208,7 +218,7 @@ Multi-DEX racing (Aftermath aggregator vs direct DeepBook) picks the best USDC �
 | Shade order 10% escrow | Fee on execute() |
 | Thunder volume | Free signals drive adoption → more names registered → more iUSD minted |
 | Swap spread | 0.1% on DeepBook/Cetus/Bluefin routing |
-| Treasury asset appreciation | Blended yield on diversified reserve |
+| Cache asset appreciation | Blended yield on diversified reserve |
 | Lending yield | NAVI + Scallop + Kamino |
 
 ## Marketplace Purchase
@@ -270,7 +280,7 @@ WaaP accounts appear in the legend with their social provider icon (X, Google, D
 
 | Contract | Package | Key Objects |
 |----------|---------|-------------|
-| iUSD v2 | `0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9` | Treasury: `0x64435d5284ba...627beb`, TreasuryCap: ultron.sui |
+| iUSD v2 | `0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9` | Cache: `0x64435d5284ba...627beb`, CacheCap: ultron.sui |
 | SUIAMI Roster v2 | `0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4` | Roster: `0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689` |
 | Storm v1 | `0xa3ed4fdf1369313647efcef77fd577aa4b77b50c62e5c5e29d4c383390cdf942` | Storm: `0x1b00663e83c9674ab49da1c6dd8c07e01aeff93d5c74c1785251f82cb61cb9e4` |
 | Thunder v4 | `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581` | — |
@@ -405,6 +415,7 @@ The worker hosts five Durable Objects:
 | `SplashDeviceAgent` | Tracks per-device Splash activation (keyed by FingerprintJS `visitorId`) |
 | `ShadeExecutorAgent` | Auto-executes Shade orders at grace-period expiry via DO Alarms |
 | `TreasuryAgents` | Signed by ultron.sui — autonomous agent for iUSD minting, collateral attestation, NS acquisition, dust sweeps, Thunder relay |
+| `Chronicom` | Per-wallet thunder signal watcher — 5s alarm polling, cached counts, serves instantly |
 
 API routes served by the worker:
 
@@ -416,6 +427,7 @@ API routes served by the worker:
 | `/api/suiami/verify` | SUIAMI identity proof verification |
 | `/api/thunder/strike-relay` | Server-side Thunder signal relay for WaaP wallets |
 | `/api/tradeport/listing/:label` | TradePort listing proxy |
+| `/api/thunder/chronicom` | Per-wallet signal count cache (5s polling) |
 
 ## IKA dWallet Integration
 

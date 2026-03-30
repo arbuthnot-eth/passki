@@ -3228,11 +3228,12 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.7rem;
   color: rgba(255, 255, 255, 0.7);
-  background: rgba(15, 15, 20, 0.55);
+  background: rgba(10, 10, 15, 0.85);
   border-radius: 6px;
 }
 .ski-idle-card:empty { display: none; }
-.ski-idle-card-name { font-weight: 700; color: #fff; white-space: nowrap; flex-shrink: 0; }
+.ski-idle-card-name { font-weight: 700; color: #fff; white-space: nowrap; flex-shrink: 0; text-decoration: none; }
+.ski-idle-card-name:hover { text-decoration: underline; opacity: 0.85; }
 .ski-idle-card-bal {
   display: inline-flex;
   align-items: baseline;
@@ -3265,7 +3266,7 @@ body {
 .ski-idle-card-expiry { color: rgba(255, 255, 255, 0.4); font-size: 0.6rem; }
 .ski-idle-thunder-convo {
   position: absolute;
-  bottom: 32px;
+  bottom: 56px;
   left: 0;
   right: 0;
   max-height: 40%;
@@ -3291,13 +3292,14 @@ body {
   z-index: 1;
 }
 .ski-idle-bubble {
-  padding: 6px 12px;
-  margin: 2px 0;
+  padding: 8px 12px;
+  margin: 1px 0;
   border-radius: 8px;
-  font-size: 0.85rem;
+  font-size: 1rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  max-width: 80%;
+  max-width: 85%;
   word-break: break-word;
+  line-height: 1.4;
 }
 .ski-idle-bubble--out {
   align-self: flex-end;
@@ -3328,6 +3330,20 @@ body {
 }
 .ski-idle-bubble--sending {
   opacity: 0.5;
+}
+.ski-idle-bubble-name {
+  display: block;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  margin-bottom: 3px;
+  text-decoration: none;
+  color: inherit;
+}
+a.ski-idle-bubble-name:hover {
+  opacity: 1;
+  text-decoration: underline;
 }
 .ski-idle-thunder-row {
   display: flex;
@@ -3379,6 +3395,27 @@ body {
   color: #93c5fd;
 }
 .ski-idle-thunder-send--quest:hover { background: rgba(77, 162, 255, 0.35); }
+.ski-idle-thunder-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin-left: 2px;
+  border-radius: 999px;
+  background: rgba(77, 162, 255, 0.4);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  line-height: 1;
+  animation: ski-thunder-pulse 2s ease-in-out infinite;
+}
+@keyframes ski-thunder-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
 .ski-idle-thunder-send--loading { pointer-events: auto !important; }
 .ski-idle-thunder-send--loading:hover {
   background: rgba(239, 68, 68, 0.3);

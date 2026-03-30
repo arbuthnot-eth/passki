@@ -7,6 +7,7 @@ import { raceJsonRpc } from './rpc.js';
 interface Env {
   ShadeExecutorAgent: DurableObjectNamespace;
   TreasuryAgents: DurableObjectNamespace;
+  Chronicom: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
@@ -933,6 +934,21 @@ app.post('/api/treasury/acquire-ns', async (c) => {
   }
 });
 
+// Chronicom — per-wallet thunder signal watcher
+app.get('/api/thunder/chronicom', async (c) => {
+  const addr = c.req.query('addr');
+  if (!addr) return c.json({ error: 'addr required' }, 400);
+  const names = c.req.query('names') || '';
+  const id = c.env.Chronicom.idFromName(addr);
+  const stub = c.env.Chronicom.get(id);
+  const res = await stub.fetch(new Request(`https://chronicom-do/?poll&names=${encodeURIComponent(names)}`, {
+    headers: { 'x-partykit-room': addr },
+  }));
+  const text = await res.text();
+  try { return c.json(JSON.parse(text), res.status as any); }
+  catch { return c.json({ error: text }, 500); }
+});
+
 export default app;
 
 // Export Durable Object classes for Wrangler binding
@@ -941,3 +957,4 @@ export { SponsorAgent } from './agents/sponsor.js';
 export { SplashDeviceAgent } from './agents/splash.js';
 export { ShadeExecutorAgent } from './agents/shade-executor.js';
 export { TreasuryAgents } from './agents/treasury-agents.js';
+export { Chronicom } from './agents/chronicom.js';

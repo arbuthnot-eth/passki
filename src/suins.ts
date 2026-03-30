@@ -936,9 +936,6 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     // Return NS remainder to wallet
     tx.transferObjects([nsCoin], tx.pure.address(walletAddress));
 
-    // 5% of full price → iUSD treasury
-    addRegistrationFee(tx, basePriceUsd, suiPrice);
-
     return buildWithTx(tx, transport);
   };
 
@@ -980,9 +977,6 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     tx.transferObjects([nsCoin], tx.pure.address('0x0'));
     tx.transferObjects([usdcSwapChange, usdcCoin, deepChange], tx.pure.address(walletAddress));
 
-    // 5% of full price → iUSD treasury
-    addRegistrationFee(tx, basePriceUsd, suiPrice);
-
     return buildWithTx(tx, transport);
   };
 
@@ -997,7 +991,8 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
       tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
     );
 
-    const suiMist = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.10 * 1e9));
+    // Split generously — Pyth on-chain price may differ from cached price
+    const suiMist = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.50 * 1e9));
     const [suiPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
 
     const suinsTx = new SuinsTransaction(suinsClient, tx);
@@ -1011,10 +1006,8 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     if (setAsDefault) suinsTx.setDefault(domain);
     tx.transferObjects([nft], tx.pure.address(walletAddress));
 
+    // Merge remainder back to gas — don't transfer (zero-balance coin transfer fails on Sui)
     tx.mergeCoins(tx.gas, [suiPayment]);
-
-    // 5% of full price → iUSD treasury
-    addRegistrationFee(tx, basePriceUsd, suiPrice);
 
     return buildWithTx(tx, transport);
   };
