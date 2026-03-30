@@ -9101,9 +9101,7 @@ function bindEvents() {
           const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
           if (convoEl && !convoEl.hasAttribute('hidden')) {
             convoEl.setAttribute('hidden', '');
-            _unfreezeGif();
           } else if (label) {
-            _freezeGif();
             _expandIdleConvo(label);
             const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
             if (thunderInput) {
