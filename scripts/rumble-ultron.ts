@@ -22,13 +22,17 @@ import {
   Curve,
 } from '@ika.xyz/sdk';
 
+// Use new keeper mnemonic or existing SHADE_KEEPER_PRIVATE_KEY
+const ULTRON_MNEMONIC = process.env.ULTRON_MNEMONIC;
 const ULTRON_KEY = process.env.SHADE_KEEPER_PRIVATE_KEY;
-if (!ULTRON_KEY) {
-  console.error('Set SHADE_KEEPER_PRIVATE_KEY env var');
+if (!ULTRON_KEY && !ULTRON_MNEMONIC) {
+  console.error('Set ULTRON_MNEMONIC or SHADE_KEEPER_PRIVATE_KEY env var');
   process.exit(1);
 }
 
-const keypair = Ed25519Keypair.fromSecretKey(ULTRON_KEY);
+const keypair = ULTRON_MNEMONIC
+  ? Ed25519Keypair.deriveKeypair(ULTRON_MNEMONIC)
+  : Ed25519Keypair.fromSecretKey(ULTRON_KEY!);
 const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 console.log('Ultron address:', ultronAddr);
 

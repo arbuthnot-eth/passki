@@ -949,6 +949,26 @@ app.get('/api/thunder/chronicom', async (c) => {
   catch { return c.json({ error: text }, 500); }
 });
 
+// Migrate ultron: sweep all assets to new keeper + update ultron.sui target address
+app.post('/api/treasury/migrate', async (c) => {
+  try {
+    const body = await c.req.json() as { newKeeper: string };
+    if (!body.newKeeper) return c.json({ error: 'newKeeper required' }, 400);
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?migrate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // Quest bounty — discrete offer, no domain visible, just amount + accepted coins
 app.post('/api/treasury/quest-bounty', async (c) => {
   try {

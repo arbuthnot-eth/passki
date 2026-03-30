@@ -159,6 +159,144 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    // Migrate: sweep ALL tokens from ultron to a new keeper address
+    if ((url.pathname.endsWith('/migrate') || url.searchParams.has('migrate')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { newKeeper: string };
+        if (!body.newKeeper) return new Response(JSON.stringify({ error: 'newKeeper required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
+
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+        const newAddr = normalizeSuiAddress(body.newKeeper);
+        const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+        // Fetch ALL coin objects owned by ultron
+        const gqlRes = await fetch(GQL_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            query: `{ address(address: "${ultronAddr}") { objects(first: 50) { nodes { address contents { type { repr } json } } } } }`,
+          }),
+        });
+        const gqlData = await gqlRes.json() as any;
+        const objects = gqlData?.data?.address?.objects?.nodes ?? [];
+
+        // Separate coin objects and other objects (NFTs, caps, etc.)
+        const coinObjects: { id: string; type: string }[] = [];
+        const otherObjects: { id: string; type: string }[] = [];
+        for (const obj of objects) {
+          const typeRepr = obj?.contents?.type?.repr ?? '';
+          if (typeRepr.startsWith('0x2::coin::Coin<')) {
+            coinObjects.push({ id: obj.address, type: typeRepr });
+          } else if (typeRepr && !typeRepr.includes('0x2::coin::CoinMetadata')) {
+            otherObjects.push({ id: obj.address, type: typeRepr });
+          }
+        }
+
+        console.log(`[TreasuryAgents] Migrate: ${coinObjects.length} coins, ${otherObjects.length} other objects → ${newAddr}`);
+
+        // Build atomic transfer PTB — all coins + all transferable objects in one tx
+        const tx = new Transaction();
+        tx.setSender(ultronAddr);
+
+        // Transfer all non-SUI coins
+        const nonGasCoins = coinObjects.filter(c => !c.type.includes('::sui::SUI'));
+        if (nonGasCoins.length > 0) {
+          tx.transferObjects(
+            nonGasCoins.map(c => tx.object(c.id)),
+            tx.pure.address(newAddr),
+          );
+        }
+
+        // Transfer other objects (NFTs, caps, iUSD TreasuryCap, etc.)
+        // Note: some objects may not be transferable (shared, immutable)
+        // We try and let the VM reject non-transferable ones
+        for (const obj of otherObjects) {
+          try {
+            tx.transferObjects([tx.object(obj.id)], tx.pure.address(newAddr));
+          } catch {
+            console.log(`[TreasuryAgents] Skipping non-transferable: ${obj.type}`);
+          }
+        }
+
+        // Transfer remaining SUI (all but gas) — use splitCoins to leave gas
+        // Actually: just transferObjects the gas coin remainder will auto-go to sender
+        // We want ALL SUI to go to new address, so merge all SUI coins and transfer
+        const suiCoins = coinObjects.filter(c => c.type.includes('::sui::SUI'));
+        if (suiCoins.length > 1) {
+          // Merge all SUI coins into the first one
+          const primary = tx.object(suiCoins[0].id);
+          tx.mergeCoins(primary, suiCoins.slice(1).map(c => tx.object(c.id)));
+          // Split almost everything (leave 0.01 SUI for gas)
+          const allSuiBal = await fetch(GQL_URL, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              query: `{ address(address: "${ultronAddr}") { balances(filter: { coinType: "0x2::sui::SUI" }) { nodes { totalBalance } } } }`,
+            }),
+          });
+          const suiData = await allSuiBal.json() as any;
+          const totalMist = BigInt(suiData?.data?.address?.balances?.nodes?.[0]?.totalBalance ?? '0');
+          const transferMist = totalMist - 10_000_000n; // leave 0.01 SUI for gas
+          if (transferMist > 0n) {
+            const [suiTransfer] = tx.splitCoins(primary, [tx.pure.u64(transferMist)]);
+            tx.transferObjects([suiTransfer], tx.pure.address(newAddr));
+          }
+        } else if (suiCoins.length === 1) {
+          // Single SUI coin — split from gas
+          const suiData2 = await fetch(GQL_URL, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              query: `{ address(address: "${ultronAddr}") { balances(filter: { coinType: "0x2::sui::SUI" }) { nodes { totalBalance } } } }`,
+            }),
+          });
+          const sd2 = await suiData2.json() as any;
+          const totalMist2 = BigInt(sd2?.data?.address?.balances?.nodes?.[0]?.totalBalance ?? '0');
+          const transferMist2 = totalMist2 - 10_000_000n;
+          if (transferMist2 > 0n) {
+            const [suiTransfer2] = tx.splitCoins(tx.gas, [tx.pure.u64(transferMist2)]);
+            tx.transferObjects([suiTransfer2], tx.pure.address(newAddr));
+          }
+        }
+
+        const txBytes = await tx.build({ client: transport as never });
+        const sig = await keypair.signTransaction(txBytes);
+        const digest = await this._submitTx(txBytes, sig.signature);
+
+        console.log(`[TreasuryAgents] Asset migration complete: ${digest}`);
+
+        // Step 2: Update ultron.sui target address to new keeper
+        // This requires the ultron.sui SuiNS NFT — find it among transferred objects
+        let suinsDigest = '';
+        try {
+          const SUINS_PKG = '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0';
+          // Find ultron.sui NFT among the objects we just transferred
+          // The NFT should now be at newAddr — build a PTB from ultron (still has 0.01 SUI for gas)
+          // to call setTargetAddress on the NFT
+          // Actually: the NFT was transferred to newAddr, so ultron can't call setTargetAddress anymore
+          // The new keeper will need to set the target address themselves
+          console.log(`[TreasuryAgents] NOTE: ultron.sui NFT transferred to ${newAddr}. New keeper must call setTargetAddress.`);
+        } catch (e) {
+          console.log('[TreasuryAgents] SuiNS target update skipped:', e);
+        }
+
+        return new Response(JSON.stringify({
+          digest,
+          from: ultronAddr,
+          to: newAddr,
+          coins: coinObjects.length,
+          objects: otherObjects.length,
+          note: 'ultron.sui NFT transferred. New keeper must call setTargetAddress to update resolution.',
+        }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        const errStr = err instanceof Error ? err.stack || err.message : String(err);
+        console.error('[TreasuryAgents] Migration error:', errStr);
+        return new Response(JSON.stringify({ error: errStr }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     if (url.pathname.endsWith('/t2000s') || url.searchParams.has('t2000s')) {
       return new Response(JSON.stringify({ agents: this.state.t2000s ?? [] }), {
         headers: { 'content-type': 'application/json' },
