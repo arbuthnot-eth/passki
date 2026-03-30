@@ -3252,14 +3252,14 @@ body {
 }
 .ski-idle-bubble--out {
   align-self: flex-end;
-  background: rgba(15, 15, 20, 0.55);
-  border: 1px solid rgba(255, 184, 0, 0.35);
+  background: rgba(10, 10, 15, 0.85);
+  border: 1px solid rgba(255, 184, 0, 0.4);
   color: #FFB800;
 }
 .ski-idle-bubble--in {
   align-self: flex-start;
-  background: rgba(77, 162, 255, 0.15);
-  border: 1px solid rgba(77, 162, 255, 0.3);
+  background: rgba(10, 15, 30, 0.85);
+  border: 1px solid rgba(77, 162, 255, 0.4);
   color: #93c5fd;
 }
 .ski-idle-bubble--failed {
