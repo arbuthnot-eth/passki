@@ -10190,8 +10190,16 @@ function bindEvents() {
               await _refreshThunderLocalCounts();
             } catch (err) {
               const msg = err instanceof Error ? err.message : '';
-              if (!msg.toLowerCase().includes('reject')) showToast(msg || 'Strike failed');
-              (bubble as HTMLElement).classList.remove('ski-idle-bubble--confirm-delete');
+              // Signal already gone on-chain (struck/expired) — just clean up locally
+              if (msg.includes('dynamic_field') || msg.includes('borrow_child_object') || msg.includes('abort code: 1')) {
+                await _deleteFromLocalLog(ts);
+                (bubble as HTMLElement).remove();
+                await _refreshThunderLocalCounts();
+                showToast('Signal already cleared — removed locally');
+              } else if (!msg.toLowerCase().includes('reject')) {
+                showToast(msg || 'Strike failed');
+                (bubble as HTMLElement).classList.remove('ski-idle-bubble--confirm-delete');
+              }
             }
             _deleteBusy = false;
           });
