@@ -429,6 +429,53 @@ window.addEventListener('ski:request-suiami', async (e) => {
     const label = name === 'nobody' ? 'nobody' : `${name}.sui`;
     showToast(`SUIAMI? I AM ${label}@${netLabel} \u2014 \u2713 copied`);
 
+    // Write chain addresses to SUIAMI Roster (only if changed)
+    if (name !== 'nobody' && ws.address) {
+      const ROSTER_PKG = '0x4a04a5701ae8420c16e51597553fc3a21a19ebb5800d5f48cd98f75ecd429906';
+      const ROSTER_OBJ = '0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689';
+      try {
+        const appSt = getAppState();
+        const chains: [string, string][] = [['sui', ws.address]];
+        if (appSt.btcAddress) chains.push(['btc', appSt.btcAddress]);
+        if (appSt.ethAddress) chains.push(['eth', appSt.ethAddress]);
+        if (appSt.solAddress) chains.push(['sol', appSt.solAddress]);
+
+        // Check if record has changed (compare with last stored)
+        const rosterKey = `ski:roster:${ws.address}`;
+        const lastRoster = (() => { try { return localStorage.getItem(rosterKey); } catch { return null; } })();
+        const currentRoster = JSON.stringify(chains);
+        if (lastRoster !== currentRoster) {
+          const { keccak_256 } = await import('@noble/hashes/sha3');
+          const bareBytes = new TextEncoder().encode(name.toLowerCase());
+          const nh = Array.from(keccak_256(bareBytes));
+
+          const rosterTx = new Transaction();
+          rosterTx.setSender(ws.address);
+          rosterTx.moveCall({
+            package: ROSTER_PKG,
+            module: 'roster',
+            function: 'set_identity',
+            arguments: [
+              rosterTx.object(ROSTER_OBJ),
+              rosterTx.pure.string(name),
+              rosterTx.pure.vector('u8', nh),
+              rosterTx.pure.vector('string', chains.map(c => c[0])),
+              rosterTx.pure.vector('string', chains.map(c => c[1])),
+              rosterTx.pure.vector('address', []), // dwallet_caps — TODO: populate from IKA state
+              rosterTx.object('0x6'),
+            ],
+          });
+          const rosterBytes = await rosterTx.build({ client: grpcClient as never });
+          await signAndExecuteTransaction(rosterBytes);
+          try { localStorage.setItem(rosterKey, currentRoster); } catch {}
+          showToast(`Roster updated \u2014 ${chains.length} chain${chains.length > 1 ? 's' : ''}`);
+        }
+      } catch (rosterErr) {
+        console.warn('[suiami] Roster write failed:', rosterErr);
+        // Non-fatal — SUIAMI proof is already copied
+      }
+    }
+
     window.dispatchEvent(new CustomEvent('suiami:signed', {
       detail: { proof: proof.token, message: proof.message, signature: proof.signature, name, address: ws.address, network },
     }));
