@@ -17,7 +17,8 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
-import { raceExecuteTransaction, GQL_URL } from '../rpc.js';
+import { raceExecuteTransaction, raceJsonRpc, GQL_URL } from '../rpc.js';
+import { deriveAddress, chainsForCurve, IkaCurve } from '../../client/chains.js';
 
 // ─── NAVI Protocol constants ──────────────────────────────────────────
 
@@ -237,6 +238,18 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       try {
         const params = await request.json() as Parameters<typeof this.swapSuiForDeep>[0];
         const result = await this.swapSuiForDeep(params);
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    if ((url.pathname.endsWith('/rumble-ultron') || url.searchParams.has('rumble-ultron')) && request.method === 'POST') {
+      try {
+        const result = await this.rumbleUltron();
         return new Response(JSON.stringify(result), {
           status: result.error ? 400 : 200,
           headers: { 'content-type': 'application/json' },
@@ -1518,6 +1531,197 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       console.error('[TreasuryAgents] createIusdUsdcPool error:', errStr);
       return { error: errStr };
     }
+  }
+
+  // ─── Rumble — server-side IKA dWallet provisioning for ultron.sui ───
+
+  /**
+   * Rumble for ultron.sui — check/provision all IKA dWallets using the keeper keypair.
+   *
+   * Queries existing DWalletCap objects owned by the keeper, extracts public outputs,
+   * and derives all cross-chain addresses (BTC, ETH, SOL, Base, Polygon, etc.).
+   *
+   * DKG LIMITATION: The DKG provisioning flow requires:
+   *   1. gRPC transport (SuiGrpcClient) — blocked in Cloudflare Workers (no HTTP/2 streaming)
+   *   2. IKA SDK WASM (prepareDKGAsync, UserShareEncryptionKeys) — not available in Workers
+   * Therefore, if dWallets are missing, this method returns a clear error.
+   * DKG must be triggered from the browser (client-side rumble) or a non-CF server.
+   *
+   * Once dWallets exist, this method works fully in Workers (JSON-RPC + pure-JS crypto).
+   */
+  @callable()
+  async rumbleUltron(): Promise<{
+    keeperAddress: string;
+    btcAddress: string;
+    ethAddress: string;
+    solAddress: string;
+    addresses: Array<{ chain: string; name: string; address: string }>;
+    dwalletCaps: string[];
+    needsDkg: { secp256k1: boolean; ed25519: boolean };
+    error?: string;
+  }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
+      return {
+        keeperAddress: '', btcAddress: '', ethAddress: '', solAddress: '',
+        addresses: [], dwalletCaps: [],
+        needsDkg: { secp256k1: true, ed25519: true },
+        error: 'SHADE_KEEPER_PRIVATE_KEY not set',
+      };
+    }
+
+    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keeperAddress = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+    console.log(`[TreasuryAgents:rumble] Keeper: ${keeperAddress}`);
+
+    // Query all DWalletCap objects owned by the keeper via JSON-RPC
+    const DWALLET_CAP_TYPE = '0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317::coordinator_inner::DWalletCap';
+
+    let caps: Array<{ objectId: string; dwalletId: string }> = [];
+    try {
+      const owned = await raceJsonRpc<any>('suix_getOwnedObjects', [
+        keeperAddress,
+        { StructType: DWALLET_CAP_TYPE },
+        null, // cursor
+        10,   // limit
+        { showContent: true },
+      ]);
+      for (const entry of (owned?.data ?? [])) {
+        const cap = entry?.data;
+        if (!cap) continue;
+        const dwalletId = cap.content?.fields?.dwallet_id ?? '';
+        if (dwalletId) {
+          caps.push({ objectId: cap.objectId, dwalletId });
+        }
+      }
+    } catch (err) {
+      console.error('[TreasuryAgents:rumble] Failed to query DWalletCaps:', err);
+      return {
+        keeperAddress, btcAddress: '', ethAddress: '', solAddress: '',
+        addresses: [], dwalletCaps: [],
+        needsDkg: { secp256k1: true, ed25519: true },
+        error: `Failed to query DWalletCaps: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    console.log(`[TreasuryAgents:rumble] Found ${caps.length} DWalletCap(s)`);
+
+    // Fetch each dWallet object to get public_output for address derivation
+    let btcAddress = '';
+    let ethAddress = '';
+    let solAddress = '';
+    const addresses: Array<{ chain: string; name: string; address: string }> = [];
+    const dwalletCaps: string[] = caps.map(c => c.objectId);
+    let hasSecp256k1 = false;
+    let hasEd25519 = false;
+
+    for (const cap of caps) {
+      try {
+        const dw = await raceJsonRpc<any>('sui_getObject', [
+          cap.dwalletId,
+          { showContent: true },
+        ]);
+        const state = dw?.data?.content?.fields?.state?.fields;
+        const publicOutput = state?.public_output;
+        if (!publicOutput || !Array.isArray(publicOutput)) {
+          console.warn(`[TreasuryAgents:rumble] No public_output for dWallet ${cap.dwalletId}`);
+          continue;
+        }
+
+        const output = new Uint8Array(publicOutput);
+
+        // Try secp256k1 derivation (33-byte compressed pubkey)
+        try {
+          const rawPubkey = this._extractSecp256k1Pubkey(output);
+          if (rawPubkey) {
+            hasSecp256k1 = true;
+            const secp256k1Chains = chainsForCurve(IkaCurve.SECP256K1);
+            for (const chain of secp256k1Chains) {
+              try {
+                const addr = chain.deriveAddress(rawPubkey);
+                addresses.push({ chain: chain.caipId, name: chain.name, address: addr });
+                if (chain.name === 'Bitcoin' && !btcAddress) btcAddress = addr;
+                if (chain.name === 'Ethereum' && !ethAddress) ethAddress = addr;
+              } catch { /* derivation not implemented for this chain */ }
+            }
+          }
+        } catch {
+          // Not secp256k1 — try ed25519
+          try {
+            const rawPubkey = this._extractEd25519Pubkey(output);
+            if (rawPubkey) {
+              hasEd25519 = true;
+              const addr = deriveAddress('solana', rawPubkey);
+              if (!solAddress) solAddress = addr;
+              addresses.push({ chain: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', name: 'Solana', address: addr });
+            }
+          } catch (e) {
+            console.warn(`[TreasuryAgents:rumble] Could not derive addresses for dWallet ${cap.dwalletId}:`, e);
+          }
+        }
+      } catch (err) {
+        console.warn(`[TreasuryAgents:rumble] Failed to fetch dWallet ${cap.dwalletId}:`, err);
+      }
+    }
+
+    const needsDkg = {
+      secp256k1: !hasSecp256k1,
+      ed25519: !hasEd25519,
+    };
+
+    if (needsDkg.secp256k1 || needsDkg.ed25519) {
+      // TODO: DKG provisioning requires gRPC (SuiGrpcClient) + IKA SDK WASM,
+      // neither of which work in Cloudflare Workers.
+      // - gRPC: CF Workers lack HTTP/2 bidirectional streaming (see https://github.com/cloudflare/workerd/issues/6455)
+      // - WASM: IKA SDK's prepareDKGAsync / UserShareEncryptionKeys are browser-only WASM modules
+      //
+      // The keeper already has 148.94 IKA tokens, so the SUI→IKA swap is not needed.
+      // DKG only requires IKA tokens as payment + SUI for gas.
+      //
+      // Workaround options:
+      //   1. Trigger DKG from the browser using the existing client-side `rumble()` function
+      //   2. Run DKG on a non-CF server (e.g., a VPS with Node.js + gRPC support)
+      //   3. Use `ika-provision.ts` from a local script with the keeper key
+      //
+      // Once dWallets are provisioned, this method will detect them and derive all addresses.
+      const missing = [
+        needsDkg.secp256k1 ? 'secp256k1 (BTC/ETH)' : '',
+        needsDkg.ed25519 ? 'ed25519 (SOL)' : '',
+      ].filter(Boolean).join(', ');
+      console.warn(`[TreasuryAgents:rumble] Missing dWallets: ${missing} — DKG blocked in Workers (no gRPC/WASM)`);
+    }
+
+    console.log(`[TreasuryAgents:rumble] Result: BTC=${btcAddress || 'none'}, ETH=${ethAddress || 'none'}, SOL=${solAddress || 'none'}, caps=${dwalletCaps.length}`);
+    return {
+      keeperAddress,
+      btcAddress,
+      ethAddress,
+      solAddress,
+      addresses,
+      dwalletCaps,
+      needsDkg,
+    };
+  }
+
+  /**
+   * Extract 33-byte compressed secp256k1 public key from dWallet public output.
+   * Format: [version, 33, 02/03, ...32 bytes]
+   */
+  private _extractSecp256k1Pubkey(publicOutput: Uint8Array): Uint8Array | null {
+    if (publicOutput.length >= 35 && (publicOutput[2] === 2 || publicOutput[2] === 3) && publicOutput[1] === 33) {
+      return publicOutput.slice(2, 35);
+    }
+    return null;
+  }
+
+  /**
+   * Extract 32-byte ed25519 public key from dWallet public output.
+   * Format: [version, 32, ...32 bytes]
+   */
+  private _extractEd25519Pubkey(publicOutput: Uint8Array): Uint8Array | null {
+    if (publicOutput.length >= 34 && publicOutput[1] === 32) {
+      return publicOutput.slice(2, 34);
+    }
+    return null;
   }
 
   // ─── Internal ───────────────────────────────────────────────────────
