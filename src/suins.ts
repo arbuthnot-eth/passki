@@ -13,10 +13,13 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, GQL_URL, gqlClient } from './rpc.js';
 
-/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility. */
+/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility.
+ *  Piggybacks SUIAMI Roster update if chain addresses changed (free ride). */
 async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown): Promise<Uint8Array> {
+  maybeAppendRoster(tx);
   const bytes = await tx.build({ client: client as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
@@ -48,6 +51,70 @@ export function encodeIusdAmount(usdAmount: number, signalId: number): bigint {
   const cents = Math.round(usdAmount * 100);
   const tag = Math.abs(signalId) % 1000;
   return BigInt(cents) * 10_000_000n + BigInt(tag) * 10_000n;
+}
+
+// ─── SUIAMI Roster piggyback ──────────────────────────────────────────
+const ROSTER_PKG = '0x4a04a5701ae8420c16e51597553fc3a21a19ebb5800d5f48cd98f75ecd429906';
+const ROSTER_OBJ = '0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689';
+
+/**
+ * Append a Roster set_identity call to an existing Transaction — only if
+ * chain addresses have changed since the last on-chain write.
+ * Call this from any PTB builder before building. Zero cost if unchanged.
+ *
+ * @param tx - Transaction to append to
+ * @param tx - Transaction to append to
+ * @param address - User's Sui address (optional — reads from localStorage)
+ * @param name - SuiNS name, bare no .sui (optional — reads from localStorage)
+ * @param crossChain - { btc?, eth?, sol? } addresses (optional — reads from localStorage)
+ * @returns true if roster call was appended
+ */
+export function maybeAppendRoster(
+  tx: InstanceType<typeof Transaction>,
+  address?: string,
+  name?: string | null,
+  crossChain?: { btc?: string; eth?: string; sol?: string },
+): boolean {
+  // Auto-detect address and name if not provided
+  const addr = address || (() => { try { const s = localStorage.getItem('ski:session'); return s ? JSON.parse(s).address : ''; } catch { return ''; } })();
+  const nm = ((name || (() => { try { return localStorage.getItem(`ski:suins:${addr}`) || ''; } catch { return ''; } })()) as string).replace(/\.sui$/, '');
+  if (!nm || !addr) return false;
+
+  const chains: [string, string][] = [['sui', addr]];
+  if (crossChain?.btc) chains.push(['btc', crossChain.btc]);
+  else { try { const b = localStorage.getItem('ski:btc-address'); if (b) chains.push(['btc', b]); } catch {} }
+  if (crossChain?.eth) chains.push(['eth', crossChain.eth]);
+  else { try { const e = localStorage.getItem('ski:eth-address'); if (e) chains.push(['eth', e]); } catch {} }
+  if (crossChain?.sol) chains.push(['sol', crossChain.sol]);
+  else { try { const s = localStorage.getItem('ski:sol-address'); if (s) chains.push(['sol', s]); } catch {} }
+
+  // Skip if unchanged since last write
+  const rosterKey = `ski:roster:${addr}`;
+  const currentRoster = JSON.stringify(chains);
+  try { if (localStorage.getItem(rosterKey) === currentRoster) return false; } catch {}
+
+  // keccak256(bare_name_bytes) — same hash as Thunder nameHash
+  const bareBytes = new TextEncoder().encode(nm.toLowerCase());
+  const nh = Array.from(keccak_256(bareBytes));
+
+  tx.moveCall({
+    package: ROSTER_PKG,
+    module: 'roster',
+    function: 'set_identity',
+    arguments: [
+      tx.object(ROSTER_OBJ),
+      tx.pure.string(nm),
+      tx.pure.vector('u8', nh),
+      tx.pure.vector('string', chains.map(c => c[0])),
+      tx.pure.vector('string', chains.map(c => c[1])),
+      tx.pure.vector('address', []), // dwallet_caps — TODO: populate from IKA state
+      tx.object('0x6'),
+    ],
+  });
+
+  // Mark as written (will be confirmed after tx succeeds)
+  try { localStorage.setItem(rosterKey, currentRoster); } catch {}
+  return true;
 }
 
 /** Split a swap fee from an output coin and send to treasury.

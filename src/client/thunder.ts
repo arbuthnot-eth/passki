@@ -12,6 +12,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { gqlClient } from '../rpc.js';
+import { maybeAppendRoster } from '../suins.js';
 import {
   THUNDER_VERSION,
   THUNDER_PACKAGE_ID,
@@ -111,12 +112,13 @@ export async function buildThunderSendTx(
       tx.object(STORM_ID),
       tx.pure.vector('u8', Array.from(ns)),
       tx.pure.vector('u8', Array.from(ciphertext)),
-      tx.pure.vector('u8', Array.from(maskedKey)),
       tx.pure.vector('u8', Array.from(nonce)),
       feeCoin,
       tx.object('0x6'),
     ],
   });
+  // Piggyback: update SUIAMI Roster if chain addresses changed (free ride on user's tx)
+  maybeAppendRoster(tx, senderAddress, senderName);
   const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
