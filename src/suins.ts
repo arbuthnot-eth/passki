@@ -1406,8 +1406,14 @@ export async function buildKioskPurchaseTx(
  * tradeport_listings::buy_listing_without_transfer_policy which transfers
  * the NFT directly to the buyer.
  */
-const TRADEPORT_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
-const TRADEPORT_STORE = '0xf96f9363ac5a64c058bf7140723226804d74c0dab2dd27516fb441a180cd763b';
+// Two Tradeport deployments — listings created under either package
+const TRADEPORT_V1_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
+const TRADEPORT_V1_STORE = '0xf96f9363ac5a64c058bf7140723226804d74c0dab2dd27516fb441a180cd763b';
+const TRADEPORT_V2_PKG = '0xb42dbb7413b79394e1a0175af6ae22b69a5c7cc5df259cd78072b6818217c027';
+const TRADEPORT_V2_STORE = '0x47cba0b6309a12ce39f9306e28b899ed4b3698bce4f4911fd0c58ff2329a2ff6';
+// Keep old aliases for existing code
+const TRADEPORT_PKG = TRADEPORT_V1_PKG;
+const TRADEPORT_STORE = TRADEPORT_V1_STORE;
 
 /**
  * Resolve the on-chain SimpleListing object ID from the NFT token ID.
@@ -1437,28 +1443,37 @@ export async function buildTradeportPurchaseTx(
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
 
-  const tx = new Transaction();
-  tx.setSender(walletAddress);
-
-  // Add 3% marketplace fee (fee_bps = 300)
   const price = BigInt(priceMist);
   const fee = price * 300n / 10000n;
-  const payment = tx.splitCoins(tx.gas, [tx.pure.u64((price + fee).toString())]);
 
-  tx.moveCall({
-    target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
-    typeArguments: [SUINS_REG_TYPE],
-    arguments: [
-      tx.object(TRADEPORT_STORE),
-      tx.pure.id(nftTokenId),
-      payment,
-    ],
-  });
+  // Try v1 first, fall back to v2
+  const versions = [
+    { pkg: TRADEPORT_V1_PKG, store: TRADEPORT_V1_STORE, fn: 'tradeport_listings::buy_listing_without_transfer_policy', typed: true },
+    { pkg: TRADEPORT_V2_PKG, store: TRADEPORT_V2_STORE, fn: 'listings::buy', typed: false },
+  ];
 
-  // Return leftover coin (function borrows &mut Coin, doesn't consume it)
-  tx.transferObjects([payment], tx.pure.address(walletAddress));
-
-  return buildWithTx(tx, transport);
+  for (const v of versions) {
+    try {
+      const tx = new Transaction();
+      tx.setSender(walletAddress);
+      const payment = tx.splitCoins(tx.gas, [tx.pure.u64((price + fee).toString())]);
+      tx.moveCall({
+        target: `${v.pkg}::${v.fn}`,
+        ...(v.typed ? { typeArguments: [SUINS_REG_TYPE] } : {}),
+        arguments: [
+          v.typed ? tx.object(v.store) : tx.sharedObjectRef({ objectId: v.store, initialSharedVersion: 3377344, mutable: true }),
+          tx.pure.id(nftTokenId),
+          payment,
+        ],
+      });
+      tx.transferObjects([payment], tx.pure.address(walletAddress));
+      return await buildWithTx(tx, transport);
+    } catch (err) {
+      console.warn(`[Tradeport] ${v.pkg.slice(0, 8)} failed:`, err instanceof Error ? err.message : err);
+      continue;
+    }
+  }
+  throw new Error('Tradeport purchase failed on both v1 and v2');
 }
 
 /**

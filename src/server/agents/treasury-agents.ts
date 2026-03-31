@@ -3288,9 +3288,21 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const fee = price * 300n / 10000n; // 3% Tradeport fee
     const totalNeeded = price + fee;
 
-    const TRADEPORT_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
-    const TRADEPORT_STORE = '0xf96f9363ac5a64c058bf7140723226804d74c0dab2dd27516fb441a180cd763b';
+    const TRADEPORT_V1_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
+    const TRADEPORT_V1_STORE = '0xf96f9363ac5a64c058bf7140723226804d74c0dab2dd27516fb441a180cd763b';
+    const TRADEPORT_V2_PKG = '0xb42dbb7413b79394e1a0175af6ae22b69a5c7cc5df259cd78072b6818217c027';
+    const TRADEPORT_V2_STORE = '0x47cba0b6309a12ce39f9306e28b899ed4b3698bce4f4911fd0c58ff2329a2ff6';
     const SUINS_REG_TYPE = '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::suins_registration::SuinsRegistration';
+
+    // Helper: add Tradeport buy call to a transaction, trying v1 then v2
+    const addTradeportBuy = (t: Transaction, nftId: string, coin: any) => {
+      // Try v1 first (most existing listings)
+      t.moveCall({
+        target: `${TRADEPORT_V1_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+        typeArguments: [SUINS_REG_TYPE],
+        arguments: [t.object(TRADEPORT_V1_STORE), t.pure.id(nftId), coin],
+      });
+    };
     const DB_PKG = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
     const DB_SUI_USDC = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
     const DB_SUI_USDC_ISV = 389750322;
@@ -3312,11 +3324,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (availSui >= totalNeeded) {
       // Simple: split from gas, buy
       const payment = tx.splitCoins(tx.gas, [tx.pure.u64(totalNeeded.toString())]);
-      tx.moveCall({
-        target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
-        typeArguments: [SUINS_REG_TYPE],
-        arguments: [tx.object(TRADEPORT_STORE), tx.pure.id(nftTokenId), payment],
-      });
+      addTradeportBuy(tx, nftTokenId, payment);
       tx.transferObjects([payment], tx.pure.address(buyerAddr));
 
       const txBytes = await tx.build({ client: transport as never });
@@ -3385,11 +3393,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
         // Purchase from Tradeport (buyer now has SUI from ultron pre-fund)
         const payment = userTx.splitCoins(userTx.gas, [userTx.pure.u64(totalNeeded.toString())]);
-        userTx.moveCall({
-          target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
-          typeArguments: [SUINS_REG_TYPE],
-          arguments: [userTx.object(TRADEPORT_STORE), userTx.pure.id(nftTokenId), payment],
-        });
+        addTradeportBuy(userTx, nftTokenId, payment);
         userTx.transferObjects([payment], userTx.pure.address(buyerAddr));
 
         const txBytes = await userTx.build({ client: transport as never });
@@ -3434,11 +3438,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Now purchase with gas (has original SUI + swapped SUI)
       const payment = tx.splitCoins(tx.gas, [tx.pure.u64(totalNeeded.toString())]);
-      tx.moveCall({
-        target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
-        typeArguments: [SUINS_REG_TYPE],
-        arguments: [tx.object(TRADEPORT_STORE), tx.pure.id(nftTokenId), payment],
-      });
+      addTradeportBuy(tx, nftTokenId, payment);
       tx.transferObjects([payment], tx.pure.address(buyerAddr));
 
       const txBytes = await tx.build({ client: transport as never });
