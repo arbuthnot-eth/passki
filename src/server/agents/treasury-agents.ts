@@ -224,6 +224,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           preSignedTx?: string; preSignedSig?: string;
         };
         const bounties = (this.state as any).quest_bounties ?? [];
+        // Deduplicate — same commitment = same Quest. Cancel existing open ones.
+        const existingOpen = bounties.filter((b: any) => b.commitment === body.commitment && b.status === 'open');
+        if (existingOpen.length > 0) {
+          return new Response(JSON.stringify({ id: existingOpen[0].id, status: 'open', deduplicated: true }), { headers: { 'content-type': 'application/json' } });
+        }
         const bounty = {
           id: crypto.randomUUID(),
           commitment: body.commitment,
@@ -1675,11 +1680,18 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const digest = await this._submitTx(txBytes, sig.signature);
       console.log(`[TreasuryAgents] Quest filled: NS sent to ${recipient.slice(0, 10)}…, digest: ${digest}`);
 
-      // Mark bounty as filled
+      // Mark bounty as filled + cancel all siblings with same commitment
       const updated = [...((this.state as any).quest_bounties ?? [])] as Array<Record<string, any>>;
       const uIdx = updated.findIndex(b => b.id === bountyId);
       if (uIdx !== -1) {
+        const commitment = updated[uIdx].commitment;
         updated[uIdx] = { ...updated[uIdx], status: 'filled', digest, filledAt: Date.now() };
+        // Cancel siblings — same commitment, different ID, still open
+        for (let i = 0; i < updated.length; i++) {
+          if (updated[i].commitment === commitment && updated[i].id !== bountyId && updated[i].status === 'open') {
+            updated[i] = { ...updated[i], status: 'cancelled', error: 'sibling filled' };
+          }
+        }
         this.setState({ ...this.state, quest_bounties: updated } as any);
       }
 
