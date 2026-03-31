@@ -2,6 +2,94 @@
 
 > **sui.ski** — once, everywhere. Private by default.
 
+## The Prism — Default Transaction Object
+
+Every action on SKI produces a Prism. Not a raw PTB. A Prism.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                        PRISM                             │
+│                                                          │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │ intent          Seal-encrypted action type       │    │
+│  │                 TRADE | MINT | Quest | Thunder   │    │
+│  │                 | Swap | Send | Shade            │    │
+│  └─────────────────────────────────────────────────┘    │
+│                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐   │
+│  │ sender       │  │ recipient    │  │ timestamp   │   │
+│  │ Seal encrypt │  │ name_hash    │  │ Seal encrypt│   │
+│  │ only owner   │  │ or address   │  │ hidden when │   │
+│  │ can reveal   │  │              │  │             │   │
+│  └──────────────┘  └──────────────┘  └─────────────┘   │
+│                                                          │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │ amount         steganographic encoding           │    │
+│  │                real value in upper digits         │    │
+│  │                intent tag in last 4 digits        │    │
+│  │                e.g. 7500000000 + 0777 = Quest    │    │
+│  └─────────────────────────────────────────────────┘    │
+│                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐   │
+│  │ payload      │  │ proof        │  │ gate        │   │
+│  │ Walrus blob  │  │ Thunderbun   │  │ Thunder     │   │
+│  │ partial enc  │  │ ZK Groth16   │  │ signal req  │   │
+│  │ public meta  │  │ location/    │  │ decrypt to  │   │
+│  │ + private    │  │ attribute    │  │ claim       │   │
+│  │ details      │  │ optional     │  │ optional    │   │
+│  └──────────────┘  └──────────────┘  └─────────────┘   │
+│                                                          │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │ digest         on-chain TX hash                  │    │
+│  │ prism_id       unique Prism object ID            │    │
+│  │ chain          sui | btc | eth | sol (via IKA)   │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### How Prisms flow
+
+```
+User intent → /api/infer scores action → builds TX
+    ↓
+TX wraps in Prism envelope (encrypt sender/timestamp/intent)
+    ↓
+Steganographic amount encodes tag in last 4 digits
+    ↓
+Payload blob stored on Walrus (partial encrypt)
+    ↓
+Prism object created on-chain (encrypted metadata)
+    ↓
+Recipient decrypts via Seal → Prism "plays" in idle overlay
+    ↓
+ZK proof attached if location/attribute verification needed
+    ↓
+Thunder gate: recipient must have signals to claim
+```
+
+### Every action is a Prism
+
+| Action | Prism fields used |
+|--------|-------------------|
+| **TRADE** | intent=TRADE, amount=listing price, recipient=seller, digest=purchase TX |
+| **MINT** | intent=MINT, amount=NS cost (steganographic tag), payload=domain on Walrus |
+| **Quest** | intent=Quest, amount=bounty (tag in last 4), gate=agents race to fill |
+| **Thunder** | intent=Thunder, payload=Seal-encrypted message on Walrus, gate=signal fee |
+| **Swap** | intent=Swap, amount=iUSD↔SUI, sender/recipient=ultron↔user |
+| **Shade** | intent=Shade, payload=Seal commitment, proof=grace period expiry |
+| **Send** | intent=Send, amount=direct transfer, recipient=resolved SuiNS address |
+| **SUIAMI** | intent=SUIAMI, proof=cross-chain identity ZK, payload=Roster entry on Walrus |
+
+### Prism in the idle overlay
+
+When a Prism is decrypted, it "plays" in the idle overlay — the GIF area becomes a canvas:
+- TRADE Prisms show the name card with purchase animation
+- Thunder Prisms reveal the encrypted message
+- Quest Prisms show the bounty being filled by agents
+- SUIAMI Prisms display the cross-chain identity proof
+
+The idle overlay is a Prism player.
+
 ## System Diagram
 
 ```
@@ -212,6 +300,8 @@
 
 ### On-Chain Components (Move Contracts)
 
+**Prism** (to be deployed) — The canonical transaction envelope. Every SKI action produces a Prism object on-chain. Fields: `intent` (Seal-encrypted action type), `sender` (encrypted), `recipient` (name_hash or address), `timestamp` (encrypted), `amount` (steganographic — real value + intent tag in last 4 digits), `payload_blob_id` (Walrus blob with partial encryption), `proof` (optional Thunderbun ZK bytes), `gate` (optional Thunder signal requirement for claiming), `chain` (sui/btc/eth/sol). Prisms are derived objects under the recipient's address — queryable via GraphQL, claimable by decrypting with Seal. The idle overlay is a Prism player.
+
 **iUSD** (`0x2c5653...` v1) — Yield-bearing stablecoin backed by diversified collateral. 9 decimals for steganographic encoding. Mint enforces 150% minimum collateral ratio. Senior tranche must cover 100% of supply (peg floor). Revenue from protocol fees (Thunder, Shade, swaps) flows to the Treasury. Oracle and minter roles gated to ultron.
 
 **Thunder** (`0x1171e0...` v2 Zapdos) — Encrypted signals between SuiNS identities. Storm is the shared infrastructure object. v1: signals as dynamic_field vectors per name_hash. v2: SignalV2 as dynamic_object_field derived objects keyed by (recipient_address, idx) — each signal is a visible on-chain object queryable via GraphQL. AES keys XOR-masked with recipient's NFT ID. SUIAMI-verified signals are free (no fee).
@@ -241,5 +331,86 @@
 **Yield Rotator** — Compares APYs across lending protocols every 15 minutes. Deploys surplus to the highest-yielding venue. Tracks positions in the DO state. Rebalancer checks drift every 24 hours and withdraws if collateral ratio drops below 110%.
 
 **iUSD/SUI Swap** — `/api/iusd/swap` endpoint. Ultron sends SUI or USDC to the user, returns TX bytes for user to send equivalent iUSD back. Two-step atomic swap: ultron pre-funds, user signs one TX that pays iUSD + executes their intent.
+
+### Prism Contract Spec (Move)
+
+```move
+/// The universal transaction envelope. Every SKI action wraps in a Prism.
+public struct Prism has key, store {
+    id: UID,
+    /// Seal-encrypted intent type (TRADE/MINT/Quest/Thunder/Swap/Send/Shade/SUIAMI)
+    intent: vector<u8>,
+    /// Seal-encrypted sender identity
+    sender: vector<u8>,
+    /// Recipient — name_hash for SuiNS names, raw address for direct
+    recipient: address,
+    /// Seal-encrypted timestamp
+    timestamp: vector<u8>,
+    /// Steganographic amount — real value in upper digits, tag in last 4
+    amount: u64,
+    /// Walrus blob ID — partially encrypted payload (public meta + private details)
+    payload_blob_id: vector<u8>,
+    /// Optional Thunderbun ZK proof bytes (location/attribute)
+    proof: vector<u8>,
+    /// Optional Thunder gate — must have signal count >= this to claim
+    gate: u64,
+    /// Chain identifier — "sui", "btc", "eth", "sol"
+    chain: vector<u8>,
+    /// On-chain TX digest that created this Prism
+    digest: vector<u8>,
+    /// Creation time (unencrypted, for TTL/sweep)
+    created_ms: u64,
+    /// Has this Prism been claimed (decrypted by recipient)?
+    claimed: bool,
+}
+
+/// Shared registry of all Prisms, indexed by recipient
+public struct PrismRegistry has key {
+    id: UID,
+    admin: address,
+    total_prisms: u64,
+}
+
+/// Create a Prism — called by ultron after /api/infer builds the TX
+entry fun create_prism(
+    registry: &mut PrismRegistry,
+    recipient: address,
+    intent: vector<u8>,      // Seal-encrypted
+    sender: vector<u8>,      // Seal-encrypted
+    timestamp: vector<u8>,   // Seal-encrypted
+    amount: u64,             // steganographic
+    payload_blob_id: vector<u8>,
+    proof: vector<u8>,
+    gate: u64,
+    chain: vector<u8>,
+    digest: vector<u8>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    // Prism created as derived object under registry, keyed by (recipient, idx)
+    // Visible to GraphQL, claimable by recipient via Seal decrypt
+}
+
+/// Claim a Prism — Seal decrypt + mark claimed. NFT-gated for SuiNS recipients.
+entry fun claim_prism(
+    registry: &mut PrismRegistry,
+    prism: &mut Prism,
+    nft: &SuinsRegistration,  // proves ownership of recipient name
+    ctx: &TxContext,
+) {
+    // Verify NFT domain hashes to prism.recipient
+    // Mark claimed = true
+    // Emit PrismClaimed event with decryption context
+}
+
+/// Sweep unclaimed Prisms older than TTL. Permissionless. Storage rebate.
+entry fun sweep_prism(
+    registry: &mut PrismRegistry,
+    prism: Prism,
+    clock: &Clock,
+) {
+    // Delete if unclaimed and older than 30 days
+}
+```
 
 **Dust Sweep** — Converts USDC/DEEP rounding dust from name acquisitions into SUI, attests as collateral, mints iUSD. The cache literally grows from swap rounding errors across thousands of transactions. Recursive flywheel.
