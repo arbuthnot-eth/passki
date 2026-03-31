@@ -720,12 +720,13 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     });
 
     try {
-      // Every tick: scan for arb + run t2000 missions + retry open Quests + watch SOL deposits + deliberate Shades
+      // Every tick: scan for arb + run t2000 missions + retry open Quests + watch SOL deposits + deliberate Shades + sweep NS
       await this._scanArb();
       await this._runT2000Missions();
       await this._retryOpenQuests();
       await this._watchSolDeposits();
       await this._deliberateShades();
+      await this._sweepNsToIusd();
 
       // Every 15 min: check yield rotation
       const FIFTEEN_MIN = 15 * 60 * 1000;
@@ -1836,6 +1837,63 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     this.setState({ ...this.state, last_sol_sig: signatures[0]?.signature } as any);
   }
 
+  /** Sweep NS → USDC → iUSD. Ultron should never hold NS — always convert back to iUSD (backed by XAUM + USDC + SUI). */
+  private async _sweepNsToIusd(): Promise<void> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return;
+    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+
+    // Check if ultron has any NS tokens
+    let nsCoins: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> = [];
+    try {
+      const data = await raceJsonRpc<{ data: typeof nsCoins }>('suix_getCoins', [ultronAddr, TreasuryAgents.NS_TYPE]);
+      nsCoins = (data?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+    } catch { return; }
+    if (nsCoins.length === 0) return;
+
+    const totalNs = nsCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+    if (totalNs < 1_000_000n) return; // ignore dust (<0.001 NS)
+
+    console.log(`[TreasuryAgents] Sweeping ${Number(totalNs) / 1e6} NS → USDC → iUSD`);
+
+    try {
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+
+      // Merge all NS coins
+      const nsCoin = tx.objectRef({ objectId: nsCoins[0].coinObjectId, version: String(nsCoins[0].version), digest: nsCoins[0].digest });
+      if (nsCoins.length > 1) {
+        tx.mergeCoins(nsCoin, nsCoins.slice(1).map(c => tx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest })));
+      }
+
+      // NS → USDC via DeepBook
+      const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [TreasuryAgents.DB_DEEP_TYPE] });
+      const [usdcOut, nsChange, deepChange] = tx.moveCall({
+        target: `${TreasuryAgents.DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+        typeArguments: [TreasuryAgents.NS_TYPE, TreasuryAgents.USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({ objectId: TreasuryAgents.DB_NS_USDC_POOL, initialSharedVersion: TreasuryAgents.DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+          nsCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+        ],
+      });
+
+      // Keep USDC, return change to ultron
+      tx.transferObjects([usdcOut, nsChange, deepChange], tx.pure.address(ultronAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] NS swept to USDC: ${digest}, ${Number(totalNs) / 1e6} NS`);
+
+      // Mint iUSD backed by the USDC received
+      // TODO: attest USDC as collateral + mint iUSD once iUSD/USDC pool exists
+      // For now, USDC stays in ultron as liquid reserves
+    } catch (err) {
+      console.error('[TreasuryAgents] NS sweep failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
   /** Deliberate on active Shades — agents debate whether to keep or liquidate underwater Shades */
   private async _deliberateShades(): Promise<void> {
     const shades = ((this.state as any).shades ?? []) as ShadeOrder[];
@@ -1916,17 +1974,24 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
-  /** Retry open Quest bounties every tick — ultron keeps hunting until filled */
+  /** Retry open Quest bounties every tick — ultron keeps hunting until filled.
+   *  Re-checks status before each fill to prevent duplicate fills. */
   private async _retryOpenQuests(): Promise<void> {
     const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
     const open = bounties.filter(b => b.status === 'open');
     if (open.length === 0) return;
-    // Only retry bounties older than 30s (avoid double-filling during initial attempt)
     const now = Date.now();
+
+    // Only fill ONE bounty per tick — prevents mass-spending
     for (const b of open) {
       if (now - b.created < 30_000) continue;
+      // Re-read status before filling (another tick may have filled it)
+      const freshBounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+      const fresh = freshBounties.find(fb => fb.id === b.id);
+      if (!fresh || fresh.status !== 'open') continue;
       try {
         await this.fillQuestBounty(b.id);
+        return; // one fill per tick — coulson says "stand down, first fill worked"
       } catch (err) {
         console.error(`[TreasuryAgents] Quest retry failed for ${b.id}:`, err);
       }
