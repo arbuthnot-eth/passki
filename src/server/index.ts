@@ -846,6 +846,34 @@ app.post('/api/iusd/mint', async (c) => {
   }
 });
 
+// ── Start treasury agents tick ───────────────────────────────────────
+app.post('/api/cache/start', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?start', {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    return c.json(await res.json() as any);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Cache state (iUSD supply, collateral, ratio, surplus) ───────────
+app.get('/api/cache/state', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?cache-state', {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    return c.json(await res.json() as any);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Refill ultron SUI cache (swap USDC→SUI) ─────────────────────────
 app.post('/api/cache/refill-sui', async (c) => {
   try {
