@@ -5550,7 +5550,7 @@ function _treasuryPanelHtml(): string {
   return `
     <div class="wk-settings-header">
       <button class="wk-settings-back" id="wk-treasury-back" type="button">\u2190</button>
-      <span class="wk-settings-title">Treasury</span>
+      <span class="wk-settings-title">Cache</span>
     </div>
     <div class="wk-treasury-body">
       <div class="wk-treasury-section">
@@ -9889,7 +9889,7 @@ function bindEvents() {
               await signAndExecuteTransaction(sendResult instanceof Uint8Array ? sendResult : sendResult);
               showToast('\u26a1 Tokens sent to cache — agents routing to iUSD');
               // Poke ultron to process immediately
-              await fetch('/api/cache/poke');
+              await fetch('/api/cache/initiate');
               refreshPortfolio(true);
               return;
             }
@@ -10836,8 +10836,8 @@ export function initUI() {
           if (result) {
             await signAndExecuteTransaction(result instanceof Uint8Array ? result : result);
             showToast('\u26a1 USDC sent — poking cache\u2026');
-            await fetch('/api/cache/poke');
-            showToast('\u2728 Cache poked — quest filling!');
+            await fetch('/api/cache/initiate');
+            showToast('\u2728 Cache initiated — quest filling!');
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Prism failed';

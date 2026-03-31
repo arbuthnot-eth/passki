@@ -290,8 +290,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
-    // Poke — instant hook. Call after sending funds to ultron. Fires all open quests + SOL watcher immediately.
-    if (url.pathname.endsWith('/poke') || url.searchParams.has('poke')) {
+    // Initiate — fires all open quests + SOL watcher + Shade deliberation immediately.
+    if (url.pathname.endsWith('/initiate') || url.searchParams.has('poke')) {
       const results: Array<{ id: string; status: string; error?: string }> = [];
       // Watch SOL deposits first (may match new deposits)
       await this._watchSolDeposits();
@@ -306,7 +306,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           results.push({ id: b.id, status: 'error', error: String(err) });
         }
       }
-      return new Response(JSON.stringify({ poked: true, results }), { headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ initiated: true, results }), { headers: { 'content-type': 'application/json' } });
     }
 
     // Deposit addresses — derive cross-chain addresses from ultron's ed25519 key

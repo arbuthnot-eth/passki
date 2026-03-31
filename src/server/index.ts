@@ -1070,11 +1070,11 @@ app.get('/api/cache/shade-list', async (c) => {
 });
 
 // Poke — instant hook after sending funds. Fires SOL watcher + fills all open quests.
-app.all('/api/cache/poke', async (c) => {
+app.all('/api/cache/initiate', async (c) => {
   try {
     const id = c.env.TreasuryAgents.idFromName('treasury');
     const stub = c.env.TreasuryAgents.get(id);
-    const res = await stub.fetch(new Request('https://treasury-do/?poke', {
+    const res = await stub.fetch(new Request('https://treasury-do/?initiate', {
       headers: { 'x-partykit-room': 'treasury' },
     }));
     const text = await res.text();
