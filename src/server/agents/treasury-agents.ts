@@ -290,6 +290,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    // Lend idle USDC to NAVI
+    if ((url.pathname.endsWith('/lend-usdc') || url.searchParams.has('lend-usdc')) && request.method === 'POST') {
+      const result = await this.lendUsdcToNavi();
+      return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
+    }
+
     // Initiate — full cycle: SOL watcher + quests + Shade deliberation + NS sweep
     if (url.pathname.endsWith('/initiate') || url.searchParams.has('initiate')) {
       const results: Array<{ id: string; status: string; error?: string }> = [];
@@ -738,11 +744,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       await this._deliberateShades();
       await this._sweepNsToIusd();
 
-      // Every 15 min: check yield rotation
+      // Every 15 min: check yield rotation + lend idle assets
       const FIFTEEN_MIN = 15 * 60 * 1000;
       if (now - this.state.last_sweep_ms > FIFTEEN_MIN) {
         await this.sweepDust(); // Convert USDC/DEEP dust → SUI → attest → mint iUSD
         await this.sweepFees(); // Sweep SUI into NAVI lending
+        await this.lendUsdcToNavi(); // Lend idle USDC to NAVI for yield
       }
 
       // Every 24h: rebalance
@@ -985,6 +992,74 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     } catch (err) {
       console.error('[TreasuryAgents] Sweep error:', err);
       return { swept: false };
+    }
+  }
+
+  /** Deposit idle USDC into NAVI lending for yield (~4-8% APY).
+   *  Keeps $5 USDC liquid for Quest fills. Rest goes to NAVI. */
+  async lendUsdcToNavi(): Promise<{ digest?: string; amount?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+
+      // Get USDC balance
+      const coinData = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+        'suix_getCoins', [ultronAddr, USDC_TYPE],
+      );
+      const usdcCoins = (coinData?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+      const totalUsdc = usdcCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+
+      // Keep $5 USDC liquid for Quest fills (5_000_000 = 5 USDC with 6 decimals)
+      const KEEP_LIQUID = 5_000_000n;
+      if (totalUsdc <= KEEP_LIQUID) return { error: 'Insufficient USDC for lending (keeping $5 liquid)' };
+
+      const lendAmount = totalUsdc - KEEP_LIQUID;
+      console.log(`[TreasuryAgents] Lending ${Number(lendAmount) / 1e6} USDC to NAVI (keeping $5 liquid)`);
+
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+
+      // Merge all USDC coins
+      const usdcCoin = tx.objectRef({ objectId: usdcCoins[0].coinObjectId, version: String(usdcCoins[0].version), digest: usdcCoins[0].digest });
+      if (usdcCoins.length > 1) {
+        tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c => tx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest })));
+      }
+
+      // Split: lend amount vs keep liquid
+      const [lendCoin] = tx.splitCoins(usdcCoin, [tx.pure.u64(lendAmount)]);
+
+      // Deposit native USDC into NAVI lending pool
+      // Pool<nUSDC> = 0xa3582097b4c57630046c0c49a88bfc6b202a3ec0a9db5597c31765f7563755a8, assetId = 10
+      const NAVI_USDC_POOL = '0xa3582097b4c57630046c0c49a88bfc6b202a3ec0a9db5597c31765f7563755a8';
+      tx.moveCall({
+        target: `${NAVI.package}::incentive_v3::entry_deposit`,
+        typeArguments: [USDC_TYPE],
+        arguments: [
+          tx.object('0x6'), // Clock
+          tx.object(NAVI.storage),
+          tx.object(NAVI_USDC_POOL), // Pool<USDC>
+          tx.pure.u8(10), // nUSDC asset ID
+          lendCoin,
+          tx.pure.u64(lendAmount), // amount
+          tx.object(NAVI.incentiveV2),
+          tx.object(NAVI.incentiveV3),
+        ],
+      });
+
+      // Return remaining USDC to ultron
+      tx.transferObjects([usdcCoin], tx.pure.address(ultronAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] USDC lent to NAVI: ${digest}, amount: ${Number(lendAmount) / 1e6}`);
+      return { digest, amount: String(lendAmount) };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents] NAVI USDC lend error:', msg);
+      return { error: msg };
     }
   }
 

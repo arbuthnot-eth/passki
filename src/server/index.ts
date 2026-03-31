@@ -1033,6 +1033,24 @@ app.post('/api/cache/quest-fill', async (c) => {
   }
 });
 
+// Lend USDC to NAVI for yield
+app.post('/api/cache/lend', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?lend-usdc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: '{}',
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // Shade — create a Shade order (lock iUSD for grace-period name sniping)
 app.post('/api/cache/shade-create', async (c) => {
   try {
