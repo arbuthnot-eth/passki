@@ -21,6 +21,7 @@ use sui::clock::Clock;
 use sui::coin::Coin;
 use sui::sui::SUI;
 use sui::ed25519;
+use sui::random::{Self, Random};
 use suins::suins_registration::SuinsRegistration;
 
 // ─── Errors ──────────────────────────────────────────────────────────
@@ -370,6 +371,21 @@ public struct SignalV2 has key, store {
     timestamp_ms: u64,
 }
 
+/// A v3 signal — v2 + on-chain VRF entropy encrypted by recipient's SuiNS identity.
+/// Breaks correlation, prevents replay, feeds steganographic encoding.
+public struct SignalV3 has key, store {
+    id: UID,
+    recipient: address,
+    name_hash: vector<u8>,
+    payload: vector<u8>,
+    aes_key: vector<u8>,
+    aes_nonce: vector<u8>,
+    /// On-chain VRF entropy, XOR-masked with keccak256(name_hash).
+    /// Only name owner can unmask.
+    entropy: vector<u8>,
+    timestamp_ms: u64,
+}
+
 /// Key for indexing signals per recipient under Storm.
 /// Storm[RecipientKey { recipient, idx }] → SignalV2
 public struct RecipientKey has copy, drop, store {
@@ -418,8 +434,6 @@ entry fun signal_v2(
     event::emit(FeePaid { amount: fee_amount, treasury: storm.fee_treasury });
 
     let timestamp_ms = clock.timestamp_ms();
-
-    // Get or create recipient counter
     let counter_key = recipient;
     let idx = if (dynamic_field::exists_<address>(&storm.id, counter_key)) {
         let counter: &mut RecipientCounter = dynamic_field::borrow_mut(&mut storm.id, counter_key);
@@ -430,23 +444,13 @@ entry fun signal_v2(
         dynamic_field::add(&mut storm.id, counter_key, RecipientCounter { count: 1 });
         0
     };
-
     let sig = SignalV2 {
-        id: object::new(ctx),
-        recipient,
-        name_hash,
-        payload,
-        aes_key: masked_aes_key,
-        aes_nonce,
-        timestamp_ms,
+        id: object::new(ctx), recipient, name_hash, payload,
+        aes_key: masked_aes_key, aes_nonce, timestamp_ms,
     };
-
     let signal_id = object::id_to_address(&object::id(&sig));
     let key = RecipientKey { recipient, idx };
-
-    // Store as derived object under Storm — visible to GraphQL, queryable by recipient
     sui::dynamic_object_field::add(&mut storm.id, key, sig);
-
     event::emit(SignaledV2 { recipient, name_hash, signal_id, idx, timestamp_ms });
 }
 
@@ -464,13 +468,8 @@ entry fun signal_v2_private(
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert!(
-        ed25519::ed25519_verify(&suiami_sig, &sender_pubkey, &suiami_msg),
-        EInvalidSuiami,
-    );
-
+    assert!(ed25519::ed25519_verify(&suiami_sig, &sender_pubkey, &suiami_msg), EInvalidSuiami);
     let timestamp_ms = clock.timestamp_ms();
-
     let counter_key = recipient;
     let idx = if (dynamic_field::exists_<address>(&storm.id, counter_key)) {
         let counter: &mut RecipientCounter = dynamic_field::borrow_mut(&mut storm.id, counter_key);
@@ -481,21 +480,13 @@ entry fun signal_v2_private(
         dynamic_field::add(&mut storm.id, counter_key, RecipientCounter { count: 1 });
         0
     };
-
     let sig = SignalV2 {
-        id: object::new(ctx),
-        recipient,
-        name_hash,
-        payload,
-        aes_key: masked_aes_key,
-        aes_nonce,
-        timestamp_ms,
+        id: object::new(ctx), recipient, name_hash, payload,
+        aes_key: masked_aes_key, aes_nonce, timestamp_ms,
     };
-
     let signal_id = object::id_to_address(&object::id(&sig));
     let key = RecipientKey { recipient, idx };
     sui::dynamic_object_field::add(&mut storm.id, key, sig);
-
     event::emit(SignaledV2 { recipient, name_hash, signal_id, idx, timestamp_ms });
 }
 
@@ -582,6 +573,131 @@ public fun count_v2(storm: &Storm, recipient: address): u64 {
     if (!dynamic_field::exists_<address>(&storm.id, recipient)) return 0;
     let counter: &RecipientCounter = dynamic_field::borrow(&storm.id, recipient);
     counter.count
+}
+
+// ─── v3: Entropy Signals (VRF + encrypted by SuiNS identity) ────────
+
+/// v3 key — separate namespace from v2 so both can coexist
+public struct RecipientKeyV3 has copy, drop, store {
+    recipient: address,
+    idx: u64,
+}
+
+/// Send v3 signal — v2 + on-chain VRF entropy encrypted by recipient's name.
+entry fun signal_v3(
+    storm: &mut Storm, recipient: address, name_hash: vector<u8>,
+    payload: vector<u8>, masked_aes_key: vector<u8>, aes_nonce: vector<u8>,
+    fee: Coin<SUI>, rng: &Random, clock: &Clock, ctx: &mut TxContext,
+) {
+    assert!(fee.value() >= storm.signal_fee_mist, EInsufficientFee);
+    transfer::public_transfer(fee, storm.fee_treasury);
+
+    let timestamp_ms = clock.timestamp_ms();
+    let mut gen = random::new_generator(rng, ctx);
+    let raw_entropy = gen.generate_bytes(32);
+    let entropy = xor_bytes(raw_entropy, keccak256(&name_hash));
+
+    let counter_key = recipient;
+    let idx = if (dynamic_field::exists_<address>(&storm.id, counter_key)) {
+        let counter: &mut RecipientCounter = dynamic_field::borrow_mut(&mut storm.id, counter_key);
+        let i = counter.count; counter.count = i + 1; i
+    } else {
+        dynamic_field::add(&mut storm.id, counter_key, RecipientCounter { count: 1 }); 0
+    };
+
+    let sig = SignalV3 {
+        id: object::new(ctx), recipient, name_hash, payload,
+        aes_key: masked_aes_key, aes_nonce, entropy, timestamp_ms,
+    };
+    let signal_id = object::id_to_address(&object::id(&sig));
+    sui::dynamic_object_field::add(&mut storm.id, RecipientKeyV3 { recipient, idx }, sig);
+    event::emit(SignaledV2 { recipient, name_hash, signal_id, idx, timestamp_ms });
+}
+
+/// Send v3 signal with SUIAMI — no fee, VRF entropy.
+entry fun signal_v3_private(
+    storm: &mut Storm, recipient: address, name_hash: vector<u8>,
+    payload: vector<u8>, masked_aes_key: vector<u8>, aes_nonce: vector<u8>,
+    suiami_msg: vector<u8>, suiami_sig: vector<u8>, sender_pubkey: vector<u8>,
+    rng: &Random, clock: &Clock, ctx: &mut TxContext,
+) {
+    assert!(ed25519::ed25519_verify(&suiami_sig, &sender_pubkey, &suiami_msg), EInvalidSuiami);
+    let timestamp_ms = clock.timestamp_ms();
+    let mut gen = random::new_generator(rng, ctx);
+    let entropy = xor_bytes(gen.generate_bytes(32), keccak256(&name_hash));
+
+    let counter_key = recipient;
+    let idx = if (dynamic_field::exists_<address>(&storm.id, counter_key)) {
+        let counter: &mut RecipientCounter = dynamic_field::borrow_mut(&mut storm.id, counter_key);
+        let i = counter.count; counter.count = i + 1; i
+    } else {
+        dynamic_field::add(&mut storm.id, counter_key, RecipientCounter { count: 1 }); 0
+    };
+
+    let sig = SignalV3 {
+        id: object::new(ctx), recipient, name_hash, payload,
+        aes_key: masked_aes_key, aes_nonce, entropy, timestamp_ms,
+    };
+    let signal_id = object::id_to_address(&object::id(&sig));
+    sui::dynamic_object_field::add(&mut storm.id, RecipientKeyV3 { recipient, idx }, sig);
+    event::emit(SignaledV2 { recipient, name_hash, signal_id, idx, timestamp_ms });
+}
+
+/// Claim v3 signal — NFT-gated, unmasks entropy, returns decryption keys + raw entropy.
+entry fun claim_v3(
+    storm: &mut Storm, recipient: address, idx: u64,
+    nft: &SuinsRegistration, clock: &Clock, _ctx: &TxContext,
+) {
+    let domain_bytes = nft.domain().to_string().into_bytes();
+    let computed_hash = keccak256(&domain_bytes);
+    let key = RecipientKeyV3 { recipient, idx };
+    let sig: SignalV3 = sui::dynamic_object_field::remove(&mut storm.id, key);
+    assert!(sig.name_hash == computed_hash, ENotOwner);
+
+    let nft_id_bytes = object::id(nft).to_bytes();
+    let mask = keccak256(&nft_id_bytes);
+    let real_key = xor_bytes(sig.aes_key, mask);
+    // Unmask entropy — only name owner has the name_hash to reverse
+    let _raw_entropy = xor_bytes(sig.entropy, keccak256(&sig.name_hash));
+
+    event::emit(Questfi {
+        name_hash: sig.name_hash, payload: sig.payload,
+        aes_key: real_key, aes_nonce: sig.aes_nonce,
+    });
+    event::emit(ClaimedV2 {
+        recipient, name_hash: sig.name_hash,
+        signal_id: object::id_to_address(&object::id(&sig)),
+        timestamp_ms: clock.timestamp_ms(),
+    });
+
+    let SignalV3 { id, recipient: _, name_hash: _, payload: _, aes_key: _, aes_nonce: _, entropy: _, timestamp_ms: _ } = sig;
+    object::delete(id);
+}
+
+/// Claim v3 via relay — admin-gated.
+entry fun claim_v3_relay(
+    storm: &mut Storm, recipient: address, idx: u64,
+    nft_id: address, clock: &Clock, ctx: &TxContext,
+) {
+    assert!(ctx.sender() == storm.admin, ENotAdmin);
+    let key = RecipientKeyV3 { recipient, idx };
+    let sig: SignalV3 = sui::dynamic_object_field::remove(&mut storm.id, key);
+
+    let mask = keccak256(&sui::address::to_bytes(nft_id));
+    let real_key = xor_bytes(sig.aes_key, mask);
+
+    event::emit(Questfi {
+        name_hash: sig.name_hash, payload: sig.payload,
+        aes_key: real_key, aes_nonce: sig.aes_nonce,
+    });
+    event::emit(ClaimedV2 {
+        recipient, name_hash: sig.name_hash,
+        signal_id: object::id_to_address(&object::id(&sig)),
+        timestamp_ms: clock.timestamp_ms(),
+    });
+
+    let SignalV3 { id, recipient: _, name_hash: _, payload: _, aes_key: _, aes_nonce: _, entropy: _, timestamp_ms: _ } = sig;
+    object::delete(id);
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
