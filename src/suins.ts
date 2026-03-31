@@ -1003,7 +1003,9 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     });
     suinsTx.setTargetAddress({ nft, address: walletAddress });
     if (setAsDefault) suinsTx.setDefault(domain);
+    // Transfer NFT + return SUI remainder to wallet
     tx.transferObjects([nft], tx.pure.address(walletAddress));
+    tx.transferObjects([regCoin], tx.pure.address(walletAddress));
 
     return buildWithTx(tx, transport);
   };
