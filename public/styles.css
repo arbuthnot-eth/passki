@@ -3006,7 +3006,7 @@ body {
   align-items: center;
   justify-content: flex-start;
   gap: 4px;
-  padding: 2px 12px 12px;
+  padding: 2px 0 12px;
   background: transparent;
   border-radius: 12px;
   cursor: pointer;
