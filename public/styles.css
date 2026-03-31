@@ -3147,7 +3147,7 @@ body {
   gap: 4px;
   position: absolute;
   top: calc(27% + 32px);
-  right: 12px;
+  right: 20px;
   z-index: 2;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.65rem;
@@ -3260,16 +3260,18 @@ body {
   gap: 6px;
   max-width: calc(100% - 16px);
   width: auto;
-  padding: 4px 8px;
+  padding: 5px 8px;
   position: absolute;
   bottom: 36px;
   left: 8px;
   z-index: 2;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.7);
-  background: rgba(10, 10, 15, 0.85);
-  border-radius: 6px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(77, 162, 255, 0.06);
+  border: 1px solid rgba(77, 162, 255, 0.2);
+  border-radius: 5px;
 }
 .ski-idle-card:empty { display: none; }
 .ski-idle-card-name { font-weight: 700; color: #fff; white-space: nowrap; flex-shrink: 0; cursor: pointer; }
@@ -3280,16 +3282,25 @@ body {
   margin-left: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
 }
+.ski-idle-card-bal {
+  display: inline-flex;
+  align-items: baseline;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: auto;
+}
 .ski-idle-card-bal-icon {
   color: #22c55e;
   font-weight: 800;
-  font-size: 0.75rem;
+  font-size: 0.55rem;
   margin-right: 1px;
 }
 .ski-idle-card-bal-whole {
   color: #22c55e;
   font-weight: 700;
-  font-size: 0.85rem;
+  font-size: 0.55rem;
 }
 .ski-idle-card-bal-dec {
   color: rgba(34, 197, 94, 0.6);
@@ -3298,11 +3309,18 @@ body {
 }
 .ski-idle-card-badges { color: #FFB800; font-weight: 600; }
 .ski-idle-card-listing {
-  color: #f0a500;
+  display: inline-block;
   font-weight: 700;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  font-size: 0.75rem;
+  font-size: 0.5rem;
+  background: rgba(240, 165, 0, 0.15);
+  border: 1px solid rgba(240, 165, 0, 0.3);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 2px;
 }
+.ski-idle-card-listing-sign { color: #f0a500; }
+.ski-idle-card-listing-val { color: #fff; }
 .ski-idle-card-expiry { color: rgba(255, 255, 255, 0.4); font-size: 0.6rem; }
 .ski-idle-thunder-convo {
   position: relative;

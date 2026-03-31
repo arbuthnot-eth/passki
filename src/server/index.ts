@@ -846,6 +846,29 @@ app.post('/api/iusd/mint', async (c) => {
   }
 });
 
+// ── iUSD swap — burn iUSD, get SUI or USDC ──────────────────────────
+// Ultron pre-sends SUI/USDC to user, returns TX for user to send iUSD back
+app.post('/api/iusd/swap', async (c) => {
+  try {
+    const { address, amount, outputToken } = await c.req.json() as {
+      address: string; amount: string; outputToken: 'SUI' | 'USDC';
+    };
+    if (!address || !amount) return c.json({ error: 'Missing address or amount' }, 400);
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?iusd-swap', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify({ address, amount, outputToken: outputToken ?? 'SUI' }),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text || 'Unknown error' }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Start treasury agents tick ───────────────────────────────────────
 app.post('/api/cache/start', async (c) => {
   try {

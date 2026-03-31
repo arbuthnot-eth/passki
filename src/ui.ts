@@ -9347,11 +9347,11 @@ function bindEvents() {
               const fee = listing.source === 'tradeport' ? suiAmt * 0.03 : 0;
               const totalSui = suiAmt + fee;
               const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
-              priceText.textContent = usdVal != null ? `Trade $${usdVal.toFixed(2)}` : `Trade ${totalSui.toFixed(2)} SUI`;
+              priceText.textContent = usdVal != null ? `$${Math.round(usdVal)}` : `${Math.round(totalSui)} SUI`;
               priceRow.hidden = false;
             }
           } else if (nsAvail === 'available' && nsPriceUsd) {
-            priceText.textContent = `Mint $${nsPriceUsd.toFixed(2)}`;
+            priceText.textContent = `$${Math.round(nsPriceUsd)}`;
             priceRow.hidden = false;
           } else if (isOwned) {
             priceText.textContent = 'Owned';
@@ -9464,8 +9464,9 @@ function bindEvents() {
           const fee = listing.source === 'tradeport' ? suiAmt * 0.03 : 0;
           const totalSui = suiAmt + fee;
           const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
-          const priceStr = usdVal != null ? `$${Math.round(usdVal)}` : `${totalSui.toFixed(0)} SUI`;
-          listingHtml = ` <span class="ski-idle-card-listing">${priceStr}</span>`;
+          listingHtml = usdVal != null
+            ? ` <span class="ski-idle-card-listing"><span class="ski-idle-card-listing-sign">$</span><span class="ski-idle-card-listing-val">${Math.round(usdVal)}</span></span>`
+            : ` <span class="ski-idle-card-listing"><span class="ski-idle-card-listing-val">${Math.round(totalSui)} SUI</span></span>`;
         }
         card.innerHTML = `<span class="ski-idle-card-name" title="Populate input">${esc(name)}</span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${listingHtml}<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span>`;
         // Fetch resolved address balance

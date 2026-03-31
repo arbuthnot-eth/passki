@@ -685,6 +685,20 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
     }
 
+    // ── iUSD→SUI/USDC swap: ultron sends output, returns TX for user to send iUSD ──
+    if ((url.pathname.endsWith('/iusd-swap') || url.searchParams.has('iusd-swap')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as { address: string; amount: string; outputToken: 'SUI' | 'USDC' };
+        const result = await this._swapIusd(params);
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     if ((url.pathname.endsWith('/attest-collateral') || url.searchParams.has('attest-collateral')) && request.method === 'POST') {
       try {
         const params = await request.json() as { collateralValueMist: string };
@@ -3294,7 +3308,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const gasBuf = 50_000_000n; // 0.05 SUI gas
     const availSui = realSuiBal > gasBuf ? realSuiBal - gasBuf : 0n;
 
-    if (route === 'sui-direct' && availSui >= totalNeeded) {
+    // Always prefer SUI direct if buyer has enough — regardless of what infer picked
+    if (availSui >= totalNeeded) {
       // Simple: split from gas, buy
       const payment = tx.splitCoins(tx.gas, [tx.pure.u64(totalNeeded.toString())]);
       tx.moveCall({
@@ -3431,6 +3446,98 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
 
     return { error: `Route "${route}" not supported. SUI: ${Number(realSuiBal) / 1e9}, needed: ${Number(totalNeeded) / 1e9}` };
+  }
+
+  /** Swap iUSD → SUI or USDC. Ultron sends output token to user, builds TX for user to send iUSD back.
+   *  Two steps: 1) ultron pre-sends SUI/USDC, 2) returns TX bytes for user to sign (sends iUSD to ultron). */
+  private async _swapIusd(params: { address: string; amount: string; outputToken: 'SUI' | 'USDC' }): Promise<{
+    txBase64?: string; prefundDigest?: string; outputSent?: string; description?: string; error?: string;
+  }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'Cache offline' };
+
+    const { address, amount, outputToken } = params;
+    const buyerAddr = normalizeSuiAddress(address);
+    const iusdAmount = BigInt(amount); // in iUSD raw (9 decimals)
+    const iusdUsd = Number(iusdAmount) / 1e9; // dollar value at $1 peg
+
+    if (iusdAmount <= 0n) return { error: 'Amount must be positive' };
+
+    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+    const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+    // Step 1: Ultron sends SUI or USDC to user
+    let prefundDigest: string;
+    let outputSent: string;
+
+    if (outputToken === 'SUI') {
+      const suiPrice = 0.88; // TODO: get real price
+      const suiAmount = BigInt(Math.ceil((iusdUsd / suiPrice) * 1e9));
+      const result = await this._ultronSendsSwapSui(buyerAddr, suiAmount, transport);
+      if (result.error) return { error: result.error };
+      prefundDigest = result.digest!;
+      outputSent = `${Number(suiAmount) / 1e9} SUI`;
+    } else {
+      // Send USDC
+      const usdcAmount = BigInt(Math.floor(iusdUsd * 1e6)); // USDC has 6 decimals
+      const usdcCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+        'suix_getCoins', [ultronAddr, USDC_TYPE],
+      );
+      const usdcCoins = (usdcCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+      const totalUsdc = usdcCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+      if (totalUsdc < usdcAmount) return { error: `Cache low on USDC (${Number(totalUsdc) / 1e6} USDC, need ${Number(usdcAmount) / 1e6})` };
+
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      const usdcCoin = tx.objectRef({ objectId: usdcCoins[0].coinObjectId, version: String(usdcCoins[0].version), digest: usdcCoins[0].digest });
+      if (usdcCoins.length > 1) {
+        tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c => tx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest })));
+      }
+      const [send] = tx.splitCoins(usdcCoin, [tx.pure.u64(usdcAmount.toString())]);
+      tx.transferObjects([send], tx.pure.address(buyerAddr));
+      tx.transferObjects([usdcCoin], tx.pure.address(ultronAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      prefundDigest = await this._submitTx(txBytes, sig.signature);
+      outputSent = `${Number(usdcAmount) / 1e6} USDC`;
+    }
+
+    console.log(`[iUSD:swap] Sent ${outputSent} to ${buyerAddr} (digest: ${prefundDigest})`);
+
+    // Wait for chain propagation
+    await new Promise(r => setTimeout(r, 1500));
+
+    // Step 2: Build user TX to send iUSD to ultron
+    const iusdCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+      'suix_getCoins', [buyerAddr, `${TreasuryAgents.IUSD_PKG}::iusd::IUSD`],
+    );
+    const iusdCoins = (iusdCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+    if (iusdCoins.length === 0) return { error: 'No iUSD coins found after prefund', prefundDigest };
+
+    const userTx = new Transaction();
+    userTx.setSender(buyerAddr);
+
+    const iusdCoin = userTx.objectRef({ objectId: iusdCoins[0].coinObjectId, version: String(iusdCoins[0].version), digest: iusdCoins[0].digest });
+    if (iusdCoins.length > 1) {
+      userTx.mergeCoins(iusdCoin, iusdCoins.slice(1).map(c =>
+        userTx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest }),
+      ));
+    }
+    const realIusdBal = iusdCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+    const iusdToSend = iusdAmount < realIusdBal ? iusdAmount : realIusdBal;
+    const [iusdPayment] = userTx.splitCoins(iusdCoin, [userTx.pure.u64(iusdToSend.toString())]);
+    userTx.transferObjects([iusdPayment], userTx.pure.address(ultronAddr));
+    userTx.transferObjects([iusdCoin], userTx.pure.address(buyerAddr)); // return change
+
+    const txBytes = await userTx.build({ client: transport as never });
+
+    return {
+      txBase64: uint8ToBase64(txBytes),
+      prefundDigest,
+      outputSent,
+      description: `Swap ${Number(iusdToSend) / 1e9} iUSD → ${outputSent}`,
+    };
   }
 
   /** Swap all USDC→SUI via DeepBook to refill ultron's SUI for cache trades. */
