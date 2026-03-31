@@ -290,12 +290,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
-    // Initiate — fires all open quests + SOL watcher + Shade deliberation immediately.
-    if (url.pathname.endsWith('/initiate') || url.searchParams.has('poke')) {
+    // Initiate — full cycle: SOL watcher + quests + Shade deliberation + NS sweep
+    if (url.pathname.endsWith('/initiate') || url.searchParams.has('initiate')) {
       const results: Array<{ id: string; status: string; error?: string }> = [];
-      // Watch SOL deposits first (may match new deposits)
       await this._watchSolDeposits();
-      // Then try filling all open quests
+      await this._deliberateShades();
+      await this._sweepNsToIusd();
       const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
       const open = bounties.filter(b => b.status === 'open');
       for (const b of open) {
@@ -306,7 +306,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           results.push({ id: b.id, status: 'error', error: String(err) });
         }
       }
-      return new Response(JSON.stringify({ initiated: true, results }), { headers: { 'content-type': 'application/json' } });
+      const shades = ((this.state as any).shades ?? []) as Array<Record<string, any>>;
+      return new Response(JSON.stringify({
+        initiated: true,
+        results,
+        shades: shades.map(s => ({ domain: s.domain, status: s.status, deliberation: s.deliberation })),
+      }), { headers: { 'content-type': 'application/json' } });
     }
 
     // Deposit addresses — derive cross-chain addresses from ultron's ed25519 key
