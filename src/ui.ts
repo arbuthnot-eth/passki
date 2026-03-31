@@ -9225,10 +9225,9 @@ function bindEvents() {
             const totalSui = suiAmt + fee;
             const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
             const priceStr = usdVal != null ? `$${usdVal.toFixed(2)}` : `${totalSui.toFixed(2)} SUI`;
-            // Check if user can afford the listing
-            const _tradeSpendable = app.sui * (suiPriceCache?.price ?? 0);
-            if (usdVal != null && _tradeSpendable < usdVal) {
-              // Can't afford — show Quest with the trade price
+            // Listing exists — always show TRADE (swap logic handles non-SUI balances)
+            const _totalSpendable = (app.usd ?? 0);
+            if (usdVal != null && _totalSpendable < usdVal) {
               _idleActionBtn.textContent = 'Quest';
               _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--quest-bounty';
               _idleActionBtn.title = `Need ${priceStr} — Quest for ${label}.sui`;
@@ -9559,12 +9558,34 @@ function bindEvents() {
           if (!name) return;
           window.dispatchEvent(new CustomEvent('ski:request-suiami', { detail: { name } }));
         } else if (btnText === 'TRADE') {
-          // Marketplace purchase — open menu and delegate to send button
-          if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
-          setTimeout(() => {
-            const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-            if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
-          }, 500);
+          // Marketplace purchase — execute directly, no menu delegation
+          e.stopPropagation();
+          const ws = getState();
+          if (!ws.address) { showToast('Connect wallet first'); return; }
+          if (!nsTradeportListing && !nsKioskListing) { showToast('No listing found'); return; }
+          _idleActionBtn!.disabled = true;
+          _idleActionBtn!.textContent = '\u2026';
+          try {
+            const purchase = nsKioskListing
+              ? { type: 'kiosk' as const, kioskId: nsKioskListing.kioskId, nftId: nsKioskListing.nftId, priceMist: nsKioskListing.priceMist }
+              : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: nsTradeportListing!.priceMist };
+            const suiP = suiPriceCache?.price ?? 0;
+            const inCoinType = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
+            const txBytes = await buildSwapAndPurchaseTx(ws.address, purchase, null, app.sui, null, suiP);
+            _idleActionBtn!.textContent = '\u270f';
+            const { digest } = await signAndExecuteTransaction(txBytes);
+            nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
+            app.suinsName = app.suinsName || `${label}.sui`;
+            showToast(`${label}.sui purchased \u2713`);
+            _updateIdleStatus();
+            setTimeout(() => refreshPortfolio(true), 2000);
+          } catch (err) {
+            const raw = err instanceof Error ? err.message : String(err);
+            if (!raw.toLowerCase().includes('reject')) showToast(raw.slice(0, 120));
+          } finally {
+            _idleActionBtn!.disabled = false;
+            _idleActionBtn!.textContent = 'TRADE';
+          }
         } else if (btnText === 'MINT') {
           // Open menu for mint flow
           if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
