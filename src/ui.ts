@@ -9883,16 +9883,47 @@ function bindEvents() {
           const ULTRON = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
 
           if (nsCoins.length > 0 || usdcCoins.length > 0) {
-            // Build a PTB that sends all NS + USDC to ultron
-            const sendResult = await buildConsolidateToUsdcTx(ws.address, ULTRON);
-            if (sendResult) {
-              await signAndExecuteTransaction(sendResult instanceof Uint8Array ? sendResult : sendResult);
-              showToast('\u26a1 Tokens sent to cache — agents routing to iUSD');
-              // Poke ultron to process immediately
-              await fetch('/api/cache/initiate');
-              refreshPortfolio(true);
-              return;
+            // Build PTB: merge + transfer all NS and USDC to ultron
+            const { Transaction } = await import('@mysten/sui/transactions');
+            const { normalizeSuiAddress: norm } = await import('@mysten/sui/utils');
+            const tx = new Transaction();
+            tx.setSender(norm(ws.address));
+
+            // Transfer NS coins to ultron
+            const NS_TYPE = '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS';
+            const nsRpc = await fetch('https://sui-rpc.publicnode.com', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [ws.address, NS_TYPE] }),
+            });
+            const nsData = await nsRpc.json() as any;
+            const nsRefs = (nsData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
+            if (nsRefs.length > 0) {
+              const nsCoin = tx.objectRef({ objectId: nsRefs[0].coinObjectId, version: String(nsRefs[0].version), digest: nsRefs[0].digest });
+              if (nsRefs.length > 1) tx.mergeCoins(nsCoin, nsRefs.slice(1).map((c: any) => tx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest })));
+              tx.transferObjects([nsCoin], tx.pure.address(ULTRON));
             }
+
+            // Transfer USDC coins to ultron
+            const USDC_T = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+            const usdcRpc = await fetch('https://sui-rpc.publicnode.com', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [ws.address, USDC_T] }),
+            });
+            const usdcData = await usdcRpc.json() as any;
+            const usdcRefs = (usdcData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
+            if (usdcRefs.length > 0) {
+              const usdcCoin = tx.objectRef({ objectId: usdcRefs[0].coinObjectId, version: String(usdcRefs[0].version), digest: usdcRefs[0].digest });
+              if (usdcRefs.length > 1) tx.mergeCoins(usdcCoin, usdcRefs.slice(1).map((c: any) => tx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest })));
+              tx.transferObjects([usdcCoin], tx.pure.address(ULTRON));
+            }
+
+            const bytes = await tx.build({ client: grpcClient as never }) as Uint8Array & { tx?: unknown };
+            bytes.tx = tx;
+            await signAndExecuteTransaction(bytes);
+            showToast('\u26a1 Tokens sent to cache — agents routing to iUSD');
+            await fetch('/api/cache/initiate');
+            refreshPortfolio(true);
+            return;
           }
 
           // Fallback: SUI-only route — attest collateral + mint iUSD (keep gas)
