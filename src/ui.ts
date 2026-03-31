@@ -9168,9 +9168,9 @@ function bindEvents() {
             </div>
             <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
           </div>
-          <div class="ski-idle-price-row" id="ski-idle-price" hidden>
-            <svg class="ski-idle-price-icon" viewBox="0 0 16 16" width="14" height="14"><rect x="1" y="1" width="14" height="14" rx="2" fill="#4da2ff" stroke="#fff" stroke-width="1.5"/></svg>
-            <span class="ski-idle-price-text" id="ski-idle-price-text"></span>
+          <div class="ski-idle-context" id="ski-idle-price" hidden>
+            <svg class="ski-idle-context-icon" viewBox="0 0 16 16" width="12" height="12"><rect x="1" y="1" width="14" height="14" rx="2" fill="#4da2ff" stroke="#fff" stroke-width="1.2"/></svg>
+            <span class="ski-idle-context-text" id="ski-idle-price-text"></span>
           </div>
           <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
           <div id="ski-idle-card" class="ski-idle-card"></div>
@@ -9570,8 +9570,48 @@ function bindEvents() {
               ? { type: 'kiosk' as const, kioskId: nsKioskListing.kioskId, nftId: nsKioskListing.nftId, priceMist: nsKioskListing.priceMist }
               : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: nsTradeportListing!.priceMist };
             const suiP = suiPriceCache?.price ?? 0;
-            const inCoinType = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
-            const txBytes = await buildSwapAndPurchaseTx(ws.address, purchase, null, app.sui, null, suiP);
+            const USDC_CT = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+            const _pMist = BigInt(purchase.priceMist);
+            const _fMist = purchase.type === 'tradeport' ? _pMist * 300n / 10000n : 0n;
+            const listingUsd = suiP > 0 ? (Number(_pMist + _fMist) / 1e9) * suiP : 999;
+            const suiUsd = app.sui * suiP;
+            const usdcBal = walletCoins.find(c => c.symbol === 'USDC')?.balance ?? app.stableUsd ?? 0;
+
+            // Determine payment strategy: SUI direct, USDC swap, or iUSD redeem first
+            let selectedCoin: string | null = null;
+            let outputCoin: string | null = null;
+            if (suiUsd >= listingUsd * 1.05) {
+              // Enough SUI — pay directly
+            } else if (usdcBal >= listingUsd * 0.95) {
+              // Enough USDC — swap USDC→SUI then purchase
+              selectedCoin = USDC_CT;
+            } else {
+              // Not enough SUI or USDC — use USDC as backup (even small amounts help)
+              outputCoin = USDC_CT;
+              // If still short, try to redeem iUSD first
+              const iusdBal = walletCoins.find(c => c.symbol === 'IUSD')?.balance ?? 0;
+              if (iusdBal > 0 && suiUsd + usdcBal < listingUsd) {
+                _idleActionBtn!.textContent = 'Redeem\u2026';
+                // Redeem iUSD → USDC via cache, then retry
+                const redeemAmt = Math.ceil((listingUsd - suiUsd - usdcBal) * 1.1 * 1e9); // 10% buffer
+                try {
+                  await fetch('/api/iusd/redeem', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ address: ws.address, amount: String(redeemAmt) }),
+                  });
+                  await new Promise(r => setTimeout(r, 2000)); // wait for chain state
+                } catch {}
+                outputCoin = USDC_CT;
+              }
+            }
+
+            const txBytes = await buildSwapAndPurchaseTx(
+              ws.address, purchase,
+              selectedCoin, selectedCoin ? usdcBal : app.sui,
+              outputCoin,
+              suiP,
+            );
             _idleActionBtn!.textContent = '\u270f';
             const { digest } = await signAndExecuteTransaction(txBytes);
             nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
