@@ -1406,8 +1406,8 @@ export async function buildKioskPurchaseTx(
  * tradeport_listings::buy_listing_without_transfer_policy which transfers
  * the NFT directly to the buyer.
  */
-const TRADEPORT_PKG = '0xb42dbb7413b79394e1a0175af6ae22b69a5c7cc5df259cd78072b6818217c027';
-const TRADEPORT_STORE = '0x47cba0b6309a12ce39f9306e28b899ed4b3698bce4f4911fd0c58ff2329a2ff6';
+const TRADEPORT_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
+const TRADEPORT_STORE = '0xf96f9363ac5a64c058bf7140723226804d74c0dab2dd27516fb441a180cd763b';
 
 /**
  * Resolve the on-chain SimpleListing object ID from the NFT token ID.
@@ -1445,11 +1445,11 @@ export async function buildTradeportPurchaseTx(
   const fee = price * 300n / 10000n;
   const payment = tx.splitCoins(tx.gas, [tx.pure.u64((price + fee).toString())]);
 
-  // Tradeport listings::buy — takes &mut Store, ID, &mut Coin<SUI>
   tx.moveCall({
-    target: `${TRADEPORT_PKG}::listings::buy`,
+    target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+    typeArguments: [SUINS_REG_TYPE],
     arguments: [
-      tx.sharedObjectRef({ objectId: TRADEPORT_STORE, initialSharedVersion: 3377344, mutable: true }),
+      tx.object(TRADEPORT_STORE),
       tx.pure.id(nftTokenId),
       payment,
     ],
@@ -1629,9 +1629,10 @@ export async function buildSwapAndPurchaseTx(
     const fee = price * 300n / 10000n;
     const payment = tx.splitCoins(tx.gas, [tx.pure.u64((price + fee).toString())]);
     tx.moveCall({
-      target: `${TRADEPORT_PKG}::listings::buy`,
+      target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+      typeArguments: [SUINS_REG_TYPE],
       arguments: [
-        tx.sharedObjectRef({ objectId: TRADEPORT_STORE, initialSharedVersion: 3377344, mutable: true }),
+        tx.object(TRADEPORT_STORE),
         tx.pure.id(purchase.nftTokenId), payment,
       ],
     });

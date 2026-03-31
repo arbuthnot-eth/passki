@@ -259,37 +259,13 @@ let toastSeq = 0;
 export function showToast(msg: string, isHtml = false) {
   const text = msg.trim();
   if (!text) return;
-
-  // Error-like messages get the copyable treatment automatically
-  const lc = text.toLowerCase();
-  const isError = !isHtml && (
-    lc.includes('error') || lc.includes('failed') || lc.includes('abort') ||
-    lc.includes('insufficient') || lc.includes('rejected') || lc.includes('exception') ||
-    lc.includes('timeout') || lc.includes('invalid') || text.length > 80
-  );
-  if (isError) {
+  // All toasts use copyable behavior: first click copies, second dismisses
+  if (isHtml) {
+    // HTML toasts (rare) — still use copyable with raw text extraction
+    showCopyableToast(text, text.replace(/<[^>]*>/g, ''));
+  } else {
     showCopyableToast(text, text);
-    return;
   }
-
-  let root = document.getElementById('app-toast-root');
-  if (!root) {
-    root = document.createElement('div');
-    root.id = 'app-toast-root';
-    root.className = 'app-toast-root';
-    document.body.appendChild(root);
-  }
-  const toast = document.createElement('div');
-  const id = 'app-toast-' + ++toastSeq;
-  toast.className = 'app-toast';
-  toast.id = id;
-  toast.setAttribute('role', 'status');
-  if (isHtml) toast.innerHTML = text; else toast.textContent = text;
-  root.appendChild(toast);
-  requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
-  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
-  setTimeout(remove, 3800);
-  toast.addEventListener('click', remove);
 }
 
 function showCopyableToast(display: string, fullText: string, durationMs = 8000) {
@@ -315,7 +291,7 @@ function showCopyableToast(display: string, fullText: string, durationMs = 8000)
 
   const hint = document.createElement('div');
   hint.className = 'app-toast-copy-hint';
-  hint.textContent = 'click to copy error';
+  hint.textContent = 'click to copy';
   toast.appendChild(hint);
 
   root.appendChild(toast);
@@ -9212,7 +9188,7 @@ function bindEvents() {
             <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
           </div>
           <div class="ski-idle-context" id="ski-idle-price" hidden>
-            <svg class="ski-idle-context-icon" viewBox="0 0 16 16" width="12" height="12"><rect x="1" y="1" width="14" height="14" rx="2" fill="#4da2ff" stroke="#fff" stroke-width="1.2"/></svg>
+            <svg class="ski-idle-context-icon" viewBox="0 0 16 16" width="14" height="14"><rect x="1" y="1" width="14" height="14" rx="2" fill="#4da2ff" stroke="#fff" stroke-width="1.2"/></svg>
             <span class="ski-idle-context-text" id="ski-idle-price-text"></span>
           </div>
           <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
@@ -11000,6 +10976,8 @@ export function initUI() {
           // We have filled quests — NS tokens are waiting. Check if user has a pending name to register.
           const pendingLabel = nsLabel.trim() || localStorage.getItem('ski:ns-label') || '';
           if (!pendingLabel) return;
+          // Skip if name has a marketplace listing — it's a TRADE, not a registration
+          if (nsKioskListing || nsTradeportListing) return;
           // Check if this name is already owned
           const owned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === pendingLabel.toLowerCase());
           if (owned) return;

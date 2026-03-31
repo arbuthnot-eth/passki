@@ -3146,13 +3146,13 @@ body {
   align-items: center;
   gap: 4px;
   position: absolute;
-  top: calc(27% + 32px);
-  right: 20px;
+  top: calc(27% + 28px);
+  right: 14px;
   z-index: 2;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  font-size: 0.65rem;
+  font-size: 0.85rem;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.8);
+  color: #fff;
   filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
 }
 .ski-idle-context[hidden] { display: none; }
@@ -3268,10 +3268,9 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.65rem;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.85);
-  background: rgba(77, 162, 255, 0.06);
-  border: 1px solid rgba(77, 162, 255, 0.2);
-  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(10, 10, 15, 0.85);
+  border-radius: 6px;
 }
 .ski-idle-card:empty { display: none; }
 .ski-idle-card-name { font-weight: 700; color: #fff; white-space: nowrap; flex-shrink: 0; cursor: pointer; }
