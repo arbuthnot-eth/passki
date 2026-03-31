@@ -74,10 +74,9 @@ Thunder gate: recipient must have signals to claim
 | **TRADE** | intent=TRADE, amount=listing price, recipient=seller, digest=purchase TX |
 | **MINT** | intent=MINT, amount=NS cost (steganographic tag), payload=domain on Walrus |
 | **Quest** | intent=Quest, amount=bounty (tag in last 4), gate=agents race to fill |
-| **Thunder** | intent=Thunder, payload=Seal-encrypted message on Walrus, gate=signal fee |
+| **Thunder** | intent=Thunder, payload=Seal-encrypted message on Walrus, gate=signal fee. If amount > 0, it's a transfer. There is no "Send" — send is just Thunder with coins attached. |
 | **Swap** | intent=Swap, amount=iUSD↔SUI, sender/recipient=ultron↔user |
 | **Shade** | intent=Shade, payload=Seal commitment, proof=grace period expiry |
-| **Send** | intent=Send, amount=direct transfer, recipient=resolved SuiNS address |
 | **SUIAMI** | intent=SUIAMI, proof=cross-chain identity ZK, payload=Roster entry on Walrus |
 
 ### Prism in the idle overlay
