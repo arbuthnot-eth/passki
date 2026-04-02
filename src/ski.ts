@@ -439,14 +439,17 @@ window.addEventListener('ski:request-suiami', async (e) => {
 });
 
 // ─── Rumble — all-chain DKG provisioning ─────────────────────────────
-window.addEventListener('ski:rumble', async () => {
+window.addEventListener('ski:rumble', async (e) => {
   const ws = getState();
   if (ws.status !== 'connected' || !ws.address) {
     showToast('Connect wallet first');
     return;
   }
 
-  showToast('Rumble starting \u2014 provisioning all chains...');
+  // targetRumble: if set, DWalletCap goes to this address instead of the connected wallet
+  const targetRumble = (e as CustomEvent).detail?.targetRumble as string | undefined;
+  const targetLabel = targetRumble ? ` → ${targetRumble.slice(0, 8)}…` : '';
+  showToast(`Rumble starting${targetLabel} \u2014 provisioning all chains...`);
 
   try {
     const { rumble } = await loadIka();
@@ -457,6 +460,7 @@ window.addEventListener('ski:rumble', async () => {
         showToast(`Rumble: ${stage}`);
         window.dispatchEvent(new CustomEvent('ski:rumble-progress', { detail: stage }));
       },
+      targetRumble,
     );
 
     // Update app state with all derived addresses

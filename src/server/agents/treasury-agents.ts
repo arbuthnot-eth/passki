@@ -147,6 +147,8 @@ export interface TreasuryAgentsState {
 
 interface Env {
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui — autonomous agent keypair
+  HELIUS_API_KEY?: string; // Solana RPC (Helius)
+  HELIUS_WEBHOOK_SECRET?: string; // Validates incoming Helius webhook requests
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -497,6 +499,126 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }), { headers: { 'content-type': 'application/json' } });
     }
 
+    // Helius webhook — instant SOL deposit detection (replaces polling)
+    if (url.pathname.endsWith('/sol-webhook') && request.method === 'POST') {
+      try {
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
+
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const ultronSolAddr = toBase58(keypair.getPublicKey().toRawBytes());
+
+        const txs = await request.json() as Array<{
+          signature: string;
+          timestamp?: number;
+          type?: string;
+          nativeTransfers?: Array<{ fromUserAccount: string; toUserAccount: string; amount: number }>;
+        }>;
+
+        const intents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+        const kaminoIntents = ((this.state as any).kamino_intents ?? []) as Array<Record<string, any>>;
+        const pending = intents.filter(i => i.status === 'pending');
+        const pendingKamino = kaminoIntents.filter(i => i.status === 'pending');
+        let matched = 0;
+
+        for (const tx of txs) {
+          if (!tx.nativeTransfers?.length) continue;
+
+          for (const transfer of tx.nativeTransfers) {
+            if (transfer.toUserAccount !== ultronSolAddr) continue;
+            const lamports = transfer.amount;
+            if (!lamports || lamports < 1000000) continue;
+
+            const tag = lamports % 1000000;
+
+            // Match deposit intents
+            const match = pending.find(p => p.tag === tag);
+            if (match) {
+              console.log(`[Helius Webhook] SOL deposit matched! ${lamports} lamports, tag: ${tag}, sig: ${tx.signature?.slice(0, 12)}…, → ${match.suiAddress.slice(0, 10)}…`);
+
+              const solPrice = await this._fetchSolPrice();
+              const solValue = (lamports / 1e9) * (solPrice || 83);
+              const collateralMist = BigInt(Math.floor(solValue * 1e9));
+
+              try {
+                const attestResult = await this.attestCollateral({ collateralValueMist: String(collateralMist) });
+                console.log(`[Helius Webhook] BAM Attest: SOL collateral $${solValue.toFixed(2)}, digest: ${attestResult.digest || 'failed'}`);
+              } catch (e) {
+                console.error(`[Helius Webhook] BAM Attest failed:`, e);
+              }
+
+              const allIntents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+              const idx = allIntents.findIndex(i => i.suiAddress === match.suiAddress);
+              if (idx >= 0) {
+                allIntents[idx] = { ...allIntents[idx], status: 'matched', matchedTx: tx.signature, matchedLamports: lamports, attestedUsd: solValue };
+                this.setState({ ...this.state, deposit_intents: allIntents } as any);
+              }
+
+              const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+              const openBounty = bounties.find(b => b.recipient === match.suiAddress && b.status === 'open');
+              if (openBounty) {
+                console.log(`[Helius Webhook] BAM Mint: filling Quest ${openBounty.id}`);
+                await this.fillQuestBounty(openBounty.id);
+              }
+              matched++;
+            }
+
+            // Match Kamino intents
+            const kaminoMatch = pendingKamino.find(p => p.tag === tag);
+            if (kaminoMatch) {
+              console.log(`[Helius Webhook] Kamino deposit matched! ${lamports} lamports, tag: ${tag}, → ${kaminoMatch.suiAddress.slice(0, 10)}…`);
+
+              const solPrice = await this._fetchSolPrice();
+              const solValue = (lamports / 1e9) * (solPrice || 130);
+              const ltv = kaminoMatch.strategy === 'multiply' ? 0.65 : 0.825;
+
+              let kaminoDigest = '';
+              try {
+                kaminoDigest = await this._depositToKamino(lamports / 1e9);
+                console.log(`[Helius Webhook] Kamino Lend deposit: ${(lamports / 1e9).toFixed(4)} SOL, tx: ${kaminoDigest}`);
+              } catch (e) {
+                console.error(`[Helius Webhook] Kamino deposit failed:`, e);
+              }
+
+              try {
+                const collateralMist = BigInt(Math.floor(solValue * 1e9));
+                await this.attestCollateral({ collateralValueMist: String(collateralMist) });
+              } catch (e) {
+                console.error(`[Helius Webhook] Kamino Attest failed:`, e);
+              }
+
+              const allKamino = ((this.state as any).kamino_intents ?? []) as Array<Record<string, any>>;
+              const kIdx = allKamino.findIndex(i => i.suiAddress === kaminoMatch.suiAddress);
+              if (kIdx >= 0) {
+                allKamino[kIdx] = { ...allKamino[kIdx], status: 'matched', matchedTx: tx.signature, kaminoDigest };
+                this.setState({ ...this.state, kamino_intents: allKamino } as any);
+              }
+              matched++;
+            }
+          }
+        }
+
+        // Update last processed signature
+        if (txs.length > 0 && txs[0].signature) {
+          this.setState({ ...this.state, last_sol_sig: txs[0].signature } as any);
+        }
+
+        return new Response(JSON.stringify({ ok: true, matched }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        console.error('[Helius Webhook] Error:', err);
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Manual rescan — recovery for missed deposits
+    if (url.pathname.endsWith('/rescan-deposits') && request.method === 'POST') {
+      try {
+        await this._watchSolDeposits();
+        return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     // Kamino deposit — SOL → Kamino Lend → attest → mint iUSD (Prism-wrapped)
     if ((url.pathname.endsWith('/kamino-deposit') || url.searchParams.has('kamino-deposit')) && request.method === 'POST') {
       try {
@@ -617,6 +739,61 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         }), { headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Transfer specific coin types from ultron to a new address (lightweight, no object enumeration)
+    if ((url.pathname.endsWith('/transfer-coins') || url.searchParams.has('transfer-coins')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { to: string; coinTypes?: string[] };
+        if (!body.to) return new Response(JSON.stringify({ error: 'to address required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
+
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+        const toAddr = normalizeSuiAddress(body.to);
+        const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+        // Default: SUI + IKA
+        const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+        const coinTypes = body.coinTypes ?? [IKA_TYPE];
+
+        const tx = new Transaction();
+        tx.setSender(ultronAddr);
+
+        // Transfer each non-SUI coin type
+        for (const ct of coinTypes) {
+          if (ct.includes('::sui::SUI')) continue;
+          const coins = await listCoinsOfType(transport, ultronAddr, ct);
+          if (coins.length === 0) continue;
+          const primary = tx.objectRef(coins[0]);
+          if (coins.length > 1) tx.mergeCoins(primary, coins.slice(1).map(c => tx.objectRef(c)));
+          tx.transferObjects([primary], tx.pure.address(toAddr));
+        }
+
+        // Transfer SUI (leave 0.05 for gas)
+        const suiBal = await fetch(GQL_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            query: `{ address(address: "${ultronAddr}") { balances(filter: { coinType: "0x2::sui::SUI" }) { nodes { totalBalance } } } }`,
+          }),
+        });
+        const sd = await suiBal.json() as any;
+        const totalMist = BigInt(sd?.data?.address?.balances?.nodes?.[0]?.totalBalance ?? '0');
+        const transferMist = totalMist - 50_000_000n; // leave 0.05 SUI for gas
+        if (transferMist > 0n) {
+          const [suiSplit] = tx.splitCoins(tx.gas, [tx.pure.u64(transferMist)]);
+          tx.transferObjects([suiSplit], tx.pure.address(toAddr));
+        }
+
+        const txBytes = await tx.build({ client: transport as never });
+        const sig = await keypair.signTransaction(txBytes);
+        const digest = await this._submitTx(txBytes, sig.signature);
+
+        return new Response(JSON.stringify({ ok: true, digest, from: ultronAddr, to: toAddr }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
       }
     }
 
@@ -1052,11 +1229,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     });
 
     try {
-      // Every tick: scan for arb + run t2000 missions + retry open Quests + watch SOL deposits + deliberate Shades + sweep NS
+      // Every tick: scan for arb + run t2000 missions + retry open Quests + deliberate Shades + sweep NS
+      // SOL deposits handled by Helius webhook (POST /api/sol-webhook), not polling
       await this._scanArb();
       await this._runT2000Missions();
       await this._retryOpenQuests();
-      await this._watchSolDeposits();
       await this._deliberateShades();
       await this._sweepNsToIusd();
 
@@ -2545,7 +2722,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     // Fetch recent Solana transactions to ultron's address
     const SOL_RPCS = [
-      'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+      ...(this.env.HELIUS_API_KEY ? [`https://mainnet.helius-rpc.com/?api-key=${this.env.HELIUS_API_KEY}`] : []),
       'https://api.mainnet-beta.solana.com',
     ];
 
@@ -2954,10 +3131,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private static readonly KAMINO_API = 'https://api.kamino.finance';
   private static readonly KAMINO_MARKET = '7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF';
   private static readonly KAMINO_SOL_RESERVE = '2gc9Dm1eB6UgVYFBUN9bWks6Kes9PbWSaPaa9DqyvEiN';
-  private static readonly SOL_RPCS = [
-    'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
-    'https://api.mainnet-beta.solana.com',
-  ];
+  private get _solRpcs(): string[] {
+    return [
+      ...(this.env.HELIUS_API_KEY ? [`https://mainnet.helius-rpc.com/?api-key=${this.env.HELIUS_API_KEY}`] : []),
+      'https://api.mainnet-beta.solana.com',
+    ];
+  }
 
   /** Deposit SOL into Kamino Lend. Returns Solana tx signature. */
   private async _depositToKamino(solAmount: number): Promise<string> {
@@ -3026,7 +3205,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // 6. Submit to Solana
     const signedB64 = btoa(String.fromCharCode(...signedTx));
 
-    for (const rpc of TreasuryAgents.SOL_RPCS) {
+    for (const rpc of this._solRpcs) {
       try {
         const r = await fetch(rpc, {
           method: 'POST',
@@ -3052,13 +3231,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   // ─── OpenCLOB: iUSD SPL on Solana (BAM native mint) ─────────────────
 
-  private static readonly SOL_RPC_CONFIG: SolanaRpcConfig = {
-    rpcs: [
-      'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
-      'https://api.mainnet-beta.solana.com',
-    ],
-    timeout: 15000,
-  };
+  private get _solRpcConfig(): SolanaRpcConfig {
+    return {
+      rpcs: this._solRpcs,
+      timeout: 15000,
+    };
+  }
 
   /** One-time: create iUSD SPL token mint on Solana. Mint authority = ultron. */
   @callable()
@@ -3078,7 +3256,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         return sig;
       };
 
-      const result = await createSplMint(signFn, pubRaw, 9, TreasuryAgents.SOL_RPC_CONFIG);
+      const result = await createSplMint(signFn, pubRaw, 9, this._solRpcConfig);
       console.log(`[OpenCLOB] iUSD SPL mint created: ${result.mintAddress}`);
 
       // Persist the mint address
@@ -3115,7 +3293,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         return await keypair.sign(msg);
       };
 
-      const result = await mintSplTokens(signFn, pubRaw, mintPub, recipPub, amount, TreasuryAgents.SOL_RPC_CONFIG);
+      const result = await mintSplTokens(signFn, pubRaw, mintPub, recipPub, amount, this._solRpcConfig);
       console.log(`[OpenCLOB] BAM minted ${params.amount} iUSD SPL to ${params.recipientSolAddress}`);
 
       // Track in squids
@@ -3606,27 +3784,54 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // ── Step 0: Withdraw funds from any existing OWNED BalanceManager ──
       if (balanceManagerId && (!iusdCoins.length || !usdcCoins.length)) {
-        console.log(`[seedIusdPool] Withdrawing from owned BM ${balanceManagerId}...`);
-        // MUST use the types package (0x2c8d) not the entry package (0x337f) — SDK bug with upgraded packages
-        const DB_TYPES_PKG = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809';
+        // Use unsafe_moveCall to build tx bytes (fullnode accepts the types),
+        // then sign and submit. Bypasses SDK entirely.
+        console.log(`[seedIusdPool] Withdrawing from owned BM ${balanceManagerId} via unsafe_moveCall...`);
+        const refGasRes2 = await transport.query({ query: '{ epoch { referenceGasPrice } }' });
+        const gasPrice2 = Number((refGasRes2.data as any)?.epoch?.referenceGasPrice ?? 750);
+
         for (const coinType of [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE]) {
           try {
-            const withdrawRes = await raceJsonRpc<any>('unsafe_moveCall', [
+            // Fresh refs every iteration
+            const bmObj = await raceJsonRpc<any>('sui_getObject', [balanceManagerId, {}]);
+            const gasCoinsW = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+              'suix_getCoins', [ultronAddr, '0x2::sui::SUI'],
+            );
+            const gasCoin = (gasCoinsW?.data ?? []).find(c => BigInt(c.balance) > 5_000_000n);
+            if (!gasCoin || !bmObj?.data) { console.warn('[seedIusdPool] Missing gas or BM ref'); continue; }
+
+            // Build via unsafe_moveCall (fullnode validates types correctly)
+            const unsafeRes = await raceJsonRpc<any>('unsafe_moveCall', [
               ultronAddr,
-              DB_TYPES_PKG,
+              '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809',
               'balance_manager', 'withdraw_all',
               [coinType],
               [balanceManagerId],
-              null, '10000000',
+              gasCoin.coinObjectId,
+              '10000000',
             ]);
-            if (withdrawRes?.txBytes) {
-              const wBytes = Uint8Array.from(atob(withdrawRes.txBytes), c => c.charCodeAt(0));
-              const wSig = await keypair.signTransaction(wBytes);
-              const wDigest = await this._submitTx(wBytes, wSig.signature);
-              console.log(`[seedIusdPool] Withdrew ${coinType.split('::').pop()} from BM: ${wDigest}`);
-              await new Promise(r => setTimeout(r, 2000));
+            if (!unsafeRes?.txBytes) {
+              return { error: `unsafe_moveCall failed for ${coinType.split('::').pop()}: ${JSON.stringify(unsafeRes)}` };
             }
-          } catch (e) { console.warn(`[seedIusdPool] Withdraw ${coinType.split('::').pop()} failed:`, e); }
+            const wBytes = Uint8Array.from(atob(unsafeRes.txBytes), c => c.charCodeAt(0));
+            const wSig = await keypair.signTransaction(wBytes);
+
+            // Submit with detailed error capture
+            let wDigest = '';
+            try {
+              wDigest = await this._submitTx(wBytes, wSig.signature);
+            } catch (submitErr) {
+              const ae = submitErr as any;
+              const reasons = ae?.errors?.map?.((e: Error) => e.message) ?? [ae?.message ?? String(submitErr)];
+              return { error: `Withdraw ${coinType.split('::').pop()} submit failed: ${reasons.join(' | ')}` };
+            }
+            console.log(`[seedIusdPool] Withdrew ${coinType.split('::').pop()} from BM: ${wDigest}`);
+            await new Promise(r => setTimeout(r, 3000));
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error(`[seedIusdPool] Withdraw ${coinType.split('::').pop()} failed:`, msg);
+            return { error: `Withdraw ${coinType.split('::').pop()} build failed: ${msg}` };
+          }
         }
         // Re-fetch coins after withdrawal
         const freshIusd = await raceJsonRpc<{ data: Array<{ coinObjectId: string; balance: string }> }>('suix_getCoins', [ultronAddr, TreasuryAgents.IUSD_TYPE]);

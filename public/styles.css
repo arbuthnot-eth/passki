@@ -412,6 +412,10 @@ body {
 .ski-wallet.ski-modal-active {
   z-index: 13001;
 }
+/* Keep header above the modal overlay so the SKI button stays visible */
+.ski-header:has(.ski-modal-active) {
+  z-index: 13002;
+}
 
 .wk-widget {
   position: relative;
@@ -4059,10 +4063,13 @@ a.ski-idle-bubble-name:hover {
     0 0 0 1px rgba(148, 163, 184, 0.14) inset;
   position: relative;
 }
+/* Hide button until it has content — prevents FOUC on hard refresh */
+.ski-btn:empty { opacity: 0; pointer-events: none; }
 
 .ski-dot {
   padding: 3px;
   min-width: 30px;
+  margin-right: 15px;
 }
 /* Dot close-modal hover: show X overlay */
 .ski-dot.ski-dot--modal-open {

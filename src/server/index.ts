@@ -46,7 +46,8 @@ app.get('/api/test-ika-wasm', async (c) => {
 const SQUIDS_BLOB = 'Cplsr0QVx14gd7bkdBW2zSyCCdz0TmXKlMfTDOm9L50';
 app.get('/squids', async (c) => {
   // Serve from CF edge cache — Walrus fetch only on cache miss
-  const cacheKey = new Request('https://sui.ski/squids');
+  // Version in cache key — bump to bust cache on content changes
+  const cacheKey = new Request('https://sui.ski/squids?v=2');
   const cache = caches.default;
   const cached = await cache.match(cacheKey);
   if (cached) return cached;

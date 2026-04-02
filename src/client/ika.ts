@@ -262,6 +262,8 @@ export interface ProvisionCallbacks {
   onStatus?: (msg: string) => void;
   /** Which curve to provision. Defaults to SECP256K1 (BTC/ETH). Use ED25519 for Solana. */
   requestedCurve?: typeof Curve.SECP256K1 | typeof Curve.ED25519;
+  /** Address that receives the DWalletCap. Defaults to sender (userAddress). */
+  targetOwner?: string;
 }
 
 /**
@@ -421,10 +423,11 @@ export async function provisionDWallet(
       suiCoin: suiCoin2,
       dwalletNetworkEncryptionKeyId: encKey.id,
     });
-    dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(userAddress));
+    const _capOwner = callbacks.targetOwner ?? userAddress;
+    dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(_capOwner));
     dkgTx.transferObjects([suiCoin2], dkgTx.pure.address(userAddress));
 
-    log('Signing...');
+    log(_capOwner !== userAddress ? `Signing (cap → ${_capOwner.slice(0, 8)}…)...` : 'Signing...');
     console.log('[ika:dkg] Step 5: WaaP — building + signAndExecuteTransaction...');
     // Match working WaaP tx pattern: gRPC first, GraphQL fallback
     let txBytes: Uint8Array;
@@ -523,11 +526,12 @@ export async function provisionDWallet(
     suiCoin: suiCoin2,
     dwalletNetworkEncryptionKeyId: encKey.id,
   });
-  dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(userAddress));
+  const _capOwner2 = callbacks.targetOwner ?? userAddress;
+  dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(_capOwner2));
   dkgTx.transferObjects([suiCoin2], dkgTx.pure.address(userAddress));
 
   // Step 5: Sign and submit (Phantom/Backpack — sponsored)
-  log('Signing...');
+  log(_capOwner2 !== userAddress ? `Signing (cap → ${_capOwner2.slice(0, 8)}…)...` : 'Signing...');
   let digest: string;
   {
     // Phantom/Backpack: sponsored tx (two signatures)
@@ -758,6 +762,7 @@ export async function rumble(
   address: string,
   executeTx: (txBytes: Uint8Array) => Promise<{ digest: string }>,
   onProgress?: (stage: string) => void,
+  targetOwner?: string,
 ): Promise<RumbleResult> {
   const log = onProgress ?? (() => {});
   const wallet = await import('../wallet.js');
@@ -768,6 +773,7 @@ export async function rumble(
     signAndExecuteTransaction: executeTx,
     isWaap,
     onStatus: log,
+    targetOwner,
   };
 
   // Step 1: Check what already exists

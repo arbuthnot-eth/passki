@@ -2248,10 +2248,11 @@ async function tryWaapProofConnect(wallet: Wallet): Promise<void> {
       deactivateCurrent();
       try {
         await connect(wallet);
+        return;
       } catch (err) {
-        showToast('Failed to connect: ' + _errMsg(err));
+        showToast('Reconnecting: ' + _errMsg(err));
+        // Silent connect failed (session expired) — fall through to OAuth modal
       }
-      return;
     }
   } catch { /* fingerprint or import failure — fall through */ }
 
@@ -2749,7 +2750,7 @@ async function _fetchSolBalance(): Promise<void> {
   if (!app.solAddress) return;
   const endpoints = [
     'https://solana-rpc.publicnode.com',
-    'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+    'https://api.mainnet-beta.solana.com',
     'https://mainnet.triton.one/rpc',
   ];
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [app.solAddress] });
@@ -3176,7 +3177,17 @@ export function mountDotButton(el: HTMLElement): () => void {
 
 let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
-let nsLabel = (() => { try { return localStorage.getItem('ski:ns-label') || 'iusd'; } catch { return 'iusd'; } })();
+let nsLabel = (() => {
+  try {
+    // Prefer user's primary SuiNS name, fall back to saved label, default to 'iusd'
+    const ws = getState();
+    if (ws.address) {
+      const cached = localStorage.getItem(`ski:suins:${ws.address}`);
+      if (cached) return cached.replace(/\.sui$/, '');
+    }
+    return localStorage.getItem('ski:ns-label') || 'iusd';
+  } catch { return 'iusd'; }
+})();
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -3666,11 +3677,23 @@ function _dedupeThunderRecipients(values: string[]): string[] {
 }
 
 function _resolveThunderFallbackRecipient(): { name: string; source: ThunderComposeDraft['source']; sourceLabel: string } | null {
+  // Priority 1: the card name in the idle overlay — this is who the user is looking at
+  const cardName = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.trim().replace(/\.sui$/, '').toLowerCase() || '';
+  const ownName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+  if (cardName && cardName !== ownName) {
+    return {
+      name: cardName,
+      source: 'context',
+      sourceLabel: `card target @${cardName}.sui`,
+    };
+  }
+
+  // Priority 2: the name input label (if it's a taken name, not owned by us)
   const currentLabel = nsLabel.trim().toLowerCase();
   const owned = currentLabel
     ? nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === currentLabel)
     : false;
-  if (currentLabel && nsAvail === 'taken' && !owned) {
+  if (currentLabel && currentLabel !== ownName && !owned) {
     return {
       name: currentLabel,
       source: 'context',
@@ -10535,8 +10558,16 @@ function bindEvents() {
 
           // Step 2: Provision if needed
           if (!status.btcAddress || !status.solAddress) {
-            const provStep = addStep('Starting DKG...', 'active');
-            window.dispatchEvent(new Event('ski:rumble'));
+            // If card shows a different name, resolve its address and send DWalletCap there
+            const _cardName = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.trim().replace(/\.sui$/, '') || '';
+            const _ownName = (app.suinsName || '').replace(/\.sui$/, '');
+            let targetRumble: string | undefined;
+            if (_cardName && _cardName !== _ownName) {
+              const _resolved = nsTargetAddress || nsNftOwner;
+              if (_resolved) targetRumble = _resolved;
+            }
+            const provStep = addStep(targetRumble ? `Starting DKG → ${_cardName}.sui...` : 'Starting DKG...', 'active');
+            window.dispatchEvent(new CustomEvent('ski:rumble', { detail: { targetRumble } }));
 
             await new Promise<void>((resolve) => {
               const onProgress = ((ev: CustomEvent) => {
@@ -10974,16 +11005,17 @@ function bindEvents() {
           });
           if (!r.ok) return;
           const d = await r.json() as { qr?: string; prismUri?: string; usdcAmount?: string; iusdAmount?: string; tag?: number; solQr?: string; solAmount?: number; solanaPayUri?: string };
-          if (!d.qr) return;
+          if (!d.qr && !d.solQr) return;
           _solQrShown = ws.address;
-          const solSvgSmall = `<svg viewBox="0 0 40 40" width="18" height="18" style="vertical-align:middle"><circle cx="20" cy="20" r="18.5" fill="#0B1022"/><g transform="translate(-1,1) scale(0.85)"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#sqr1)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sqr2)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sqr3)"/></g><defs><linearGradient id="sqr1" x1="28.4" y1="8.49" x2="14.03" y2="35.32" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sqr2" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sqr3" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs></svg>`;
+          // Prefer Solana Pay QR (scannable by Phantom/Solflare) over Prism URI QR
+          const qrUrl = d.solQr || d.qr;
+          const qrLink = d.solanaPayUri || d.prismUri || '';
           const estUsd = d.amountUsd ?? (d.solAmount && d.solPrice ? d.solAmount * d.solPrice : 7.77);
           qrEl.innerHTML = `
-            <div class="ski-idle-sol-qr-inner">
-              <a href="${esc(d.prismUri || '')}" title="Pay with Solana">
-                <img src="${esc(d.qr)}" alt="Prism" width="80" height="80" class="ski-idle-sol-qr-img">
-              </a>
-              <span class="ski-idle-sol-qr-amt">$${typeof estUsd === 'number' ? estUsd.toFixed(2) : '7.77'}</span>
+            <div class="ski-idle-sol-qr-inner" style="position:relative;opacity:0.4;pointer-events:none">
+              <img src="${esc(qrUrl)}" alt="Solana Pay" width="80" height="80" class="ski-idle-sol-qr-img">
+              <span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:48px;color:#ef4444;text-shadow:0 0 8px rgba(0,0,0,0.8)">\u2715</span>
+              <span class="ski-idle-sol-qr-amt" style="color:#ef4444">TODO</span>
             </div>
           `;
           qrEl.removeAttribute('hidden');
@@ -11696,11 +11728,8 @@ export function initUI() {
           })();
         } else if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
         else {
-          // Connect + lock-in: selectWallet triggers popup, then lockInIdentity signs
-          void (async () => {
-            await selectWallet(wallet);
-            if (getState().status === 'connected') void lockInIdentity();
-          })();
+          // Connect only — lockin deferred to first Thunder send/decrypt
+          void selectWallet(wallet);
         }
       }
       return;
