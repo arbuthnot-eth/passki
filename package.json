@@ -7,6 +7,7 @@
   "module": "public/dist/ski.js",
   "exports": {
     ".": "./public/dist/ski.js",
+    "./embed": "./public/dist/embed.js",
     "./styles": "./public/styles.css",
     "./assets/*": "./public/assets/*"
   },
@@ -35,7 +36,7 @@
     "url": "https://github.com/arbuthnot-eth/.SKI"
   },
   "scripts": {
-    "build": "rm -rf public/dist && bun build src/ski.ts --outdir public/dist --target browser --minify --format esm --loader .svg:text && cp node_modules/@ika.xyz/ika-wasm/dist/web/dwallet_mpc_wasm_bg.wasm public/dist/",
+    "build": "rm -rf public/dist && bun build src/ski.ts --outdir public/dist --target browser --minify --format esm --loader .svg:text && bun build src/embed.ts --outfile public/dist/embed.js --target browser --minify --format iife && cp node_modules/@ika.xyz/ika-wasm/dist/web/dwallet_mpc_wasm_bg.wasm public/dist/",
     "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch --splitting --format esm --loader .svg:text",
     "dev:wrangler": "wrangler dev",
     "deploy": "bun update && bun run build && npx wrangler deploy",
@@ -47,7 +48,7 @@
     "@types/qrcode": "^1.5.6",
     "potrace": "^2.1.8",
     "typescript": "^5.9.3",
-    "wrangler": "^4.78.0"
+    "wrangler": "^4.79.0"
   },
   "dependencies": {
     "@7kprotocol/sdk-ts": "^4.0.0",

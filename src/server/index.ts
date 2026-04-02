@@ -11,6 +11,8 @@ interface Env {
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
+  HELIUS_API_KEY?: string; // Solana RPC (Helius)
+  HELIUS_WEBHOOK_SECRET?: string; // Validates incoming Helius webhook requests
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -32,6 +34,44 @@ app.use('/agents/*', agentsMiddleware());
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', version: '2.0.0' }));
+
+// Test: can IKA WASM run in CF Workers?
+app.get('/api/test-ika-wasm', async (c) => {
+  const { testIkaWasm } = await import('./test-ika-wasm.js');
+  const result = await testIkaWasm();
+  return c.json(result);
+});
+
+// ── Squids spec (Walrus-hosted markdown, edge-cached) ──
+const SQUIDS_BLOB = 'Cplsr0QVx14gd7bkdBW2zSyCCdz0TmXKlMfTDOm9L50';
+app.get('/squids', async (c) => {
+  // Serve from CF edge cache — Walrus fetch only on cache miss
+  const cacheKey = new Request('https://sui.ski/squids');
+  const cache = caches.default;
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
+  const md = await fetch(`https://aggregator.walrus-testnet.walrus.space/v1/blobs/${SQUIDS_BLOB}`).then(r => r.text());
+  const html = `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rumble Your Squids — Keyless IKA-Native Agents</title>
+<meta property="og:title" content="Rumble Your Squids — Keyless IKA-Native Agents">
+<meta property="og:description" content="Zero private keys on Cloudflare Workers. Agents sign via IKA 2PC-MPC. Cross-chain DeFi from the edge.">
+<meta property="og:url" content="https://sui.ski/squids">
+<meta property="og:site_name" content="sui.ski">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.5.1/github-markdown-dark.min.css">
+<style>body{background:#0d1117;padding:2rem;display:flex;justify-content:center}.markdown-body{max-width:900px;width:100%;padding:2rem}</style>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
+</head><body>
+<article class="markdown-body" id="content"></article>
+<script>document.getElementById('content').innerHTML=marked.parse(${JSON.stringify(md)});<\/script>
+<script src="/dist/embed.js"><\/script>
+</body></html>`;
+  const res = new Response(html, { headers: { 'content-type': 'text/html;charset=utf-8', 'cache-control': 'public, max-age=3600' } });
+  c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
+  return res;
+});
 
 // ── Superteam demo video player ──
 const WALRUS_VIDEO_URL = 'https://aggregator.walrus-testnet.walrus.space/v1/blobs/w-YsMSmoAgV-RQt_SinhQuEoM107nqC52WPUEi11ofI';
@@ -1501,6 +1541,43 @@ app.get('/api/cache/deposit-status', async (c) => {
 app.get('/api/cache/rumble', async (c) => {
   try {
     const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?deposit-addresses', {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Helius webhook: instant SOL deposit detection ──
+app.post('/api/sol-webhook', async (c) => {
+  const secret = c.env.HELIUS_WEBHOOK_SECRET;
+  if (secret) {
+    const auth = c.req.header('Authorization') || '';
+    if (auth !== `Bearer ${secret}`) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+  }
+  try {
+    const body = await c.req.text();
+    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/sol-webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body,
+    }));
+    return c.json({ ok: true }, res.status as any);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Manual rescan: recovery endpoint for missed deposits ──
+app.post('/api/cache/rescan-deposits', async (c) => {
+  try {
+    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/rescan-deposits', {
+      method: 'POST',
       headers: { 'x-partykit-room': 'treasury' },
     }));
     const text = await res.text();
