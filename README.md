@@ -2,6 +2,16 @@
 
 .SKI once, everywhere.
 
+### Core Principles
+
+- **Cache, not treasury.** Funds flow through caches — high-performance temporary stores. Never "treasury", "reserve", or "dao".
+- **Stables, not stablecoins.** iUSD is a stable backed by activity yield.
+- **Encrypt, not encrypted.** Use verb forms — encrypt/decrypt.
+
+### Sibyl — The Predictor
+
+Custom oracle ([separate repo](../Sibyl/)). Timestreams flow price through time. Pythia (ultron.sui) channels visions. Offerings flow to the iUSD cache. Sibyl's Court: Anthropologists (research), Hunters (iUSD yield for Questfi), Rogues (IKA squid breeding, 30-35% APY boost).
+
 [![npm](https://img.shields.io/npm/v/sui.ski)](https://www.npmjs.com/package/sui.ski)
 [![Live](https://img.shields.io/badge/live-sui.ski-blue)](https://sui.ski)
 
@@ -89,18 +99,136 @@ Each legend row shows the key shape, SuiNS name badge, truncated hex address (ri
 A dropdown menu beneath the SKI button (mutually exclusive with the modal). Contains:
 
 - SuiNS name management — register new `.sui` names, set default, view owned names with renewal dates
+- Marketplace purchase — buy listed names from Tradeport or on-chain kiosks directly from the name input
 - Shade orders — privacy-preserving grace-period domain sniping with commitment-reveal
+- Thunder — encrypt signals to any SuiNS identity
+- Coin chips — swap between SUI, USDC, NS, and other tokens via DeepBook/Cetus
+- SUIAMI — SUI-Authenticated Message Identity proofs
 - Disconnect button
 - Manage Keys — opens the modal from the menu
+
+## Idle overlay
+
+After 15 seconds of inactivity (or by cycling the SKI button), the menu collapses into a compact overlay with pixel art, a name search input, and a Thunder messaging row. The overlay closes the SKI menu behind it for a clean presentation.
+
+The overlay name input mirrors the full menu's behavior:
+- **Available names** → MINT button
+- **Tradeport/kiosk listings** → TRADE button with price
+- **Taken names** → Thunder button to send an encrypt signal
+- **Owned names** → SUIAMI button to prove identity
 
 ## SuiNS integration
 
 Full SuiNS lifecycle from the SKI menu:
 
 - **Register** — search and register `.sui` names with instant tier pricing, pay with SUI, USDC, or NS tokens
+- **Marketplace purchase** — names listed on Tradeport or in on-chain kiosks show a TRADE button with USD price; single-PTB purchase with optional token swap
 - **Set default** — change your primary SuiNS name (updates the SKI button and profile instantly)
 - **Target address** — view and copy the address a name points to, with color-coded status (purple = self, green = available, orange = kiosk-listed)
 - **Owned names** — scrollable chip grid showing all names owned by the connected wallet, with grace-period expiry warnings and renewal cost estimates
+
+## Thunder
+
+Encrypt signals between SuiNS identities. On-chain encrypted messaging powered by [Seal](https://docs.mystenlabs.com/seal) threshold encryption (2-of-3 key servers) with ciphertext stored on [Walrus](https://walrus.xyz).
+
+- **Signal** — encrypt and send a message to any `.sui` name; only the NFT owner can decrypt. Free signals (fee set to 0)
+- **Quest** — claim and decrypt your signals, NFT-gated via Seal policies. Quest mode accessible from the idle overlay via the storm button. Fresh quest bubbles render with white background and support click-to-delete
+- **Strike** — tap-to-delete removes the signal on-chain, routing the storage rebate to cache. Server-side relay for WaaP wallets that can't run Seal in-browser
+- **@tags** — mention other SuiNS names in signals with autocomplete from your roster
+- **Conversation persistence** — signals are grouped by address, so conversations persist across SuiNS name changes
+
+Thunder surfaces throughout the UI: as the default action when viewing someone else's taken name (no amount), in the idle overlay's messaging row, and via the quick-thunder button in the menu.
+
+**Move contract (v4):** `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581`
+
+## Storm v1
+
+Permissionless on-chain messaging primitive used by Thunder v5. No fees, no admin keys, no NFT gates.
+
+- **Package:** `0xa3ed4fdf1369313647efcef77fd577aa4b77b50c62e5c5e29d4c383390cdf942`
+- **Storm object:** `0x1b00663e83c9674ab49da1c6dd8c07e01aeff93d5c74c1785251f82cb61cb9e4`
+- **Operations:** signal, quest, strike, sweep — all permissionless
+- **ECDH-derived storm_id** — knowledge IS authorization. Hides who talks to whom; no on-chain link between sender and recipient
+
+## SUIAMI
+
+SUI-Authenticated Message Identity — cryptographic proof that a SuiNS name belongs to you. Sign a structured message with your wallet to generate a verifiable identity proof, validated server-side via `/api/suiami/verify`.
+
+Used for sender authentication in Thunder signals and as a standalone identity primitive.
+
+## SUIAMI Roster
+
+Cross-chain identity resolver on Sui. Maps SuiNS names to addresses on any chain via a shared on-chain registry.
+
+- **v1 Contract:** `0x4a04a5701ae8420c16e51597553fc3a21a19ebb5800d5f48cd98f75ecd429906`
+- **v2 Package:** `0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4` — adds chain address reverse lookup
+- **Roster object:** `0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689`
+- **Dual-keyed lookup** — name hash, Sui address, and chain address strings
+- **Reverse lookup** (v2) — resolve any chain address back to its SuiNS name
+- **`VecMap<String,String>`** for chains — future-proof for post-quantum curves and arbitrary chain identifiers
+- Piggybacked onto every user transaction
+
+## iUSD — Yield-Bearing Stable
+
+A dollar-pegged stablecoin backed by a diversified reserve of gold, silver, equities, energy, and dollar instruments — custodied natively across Bitcoin, Ethereum, Solana, and Sui via IKA dWallet threshold signatures. No bridges. No algorithms. Just reserves.
+
+### Reserve Composition
+
+| Tranche | Assets | Chains | Target |
+|---------|--------|--------|--------|
+| **Senior (60%)** — peg floor | USDC, BUIDL (BlackRock T-bills), staked SUI/SOL | Sui, Solana, Ethereum | ≥100% of supply |
+| **Junior (40%)** — growth engine | XAUM (gold), XAGM (silver), TSLAx/NVDAx/SPYx (equities), BTC, crude oil | Sui, Ethereum, Solana, Bitcoin | Absorbs losses first |
+
+150% minimum collateral ratio enforced on-chain. Senior tranche alone must cover 100% of iUSD supply.
+
+### 9-Decimal Steganographic Encoding
+
+iUSD uses 9 decimals (vs USDC's 6). The last 3 digits after cents encode transaction metadata — invisible to humans, identifiable on-chain:
+
+```
+$10.000003141  ← 3141 = truncated signal ID
+     ^^^^^^    ^^^^
+     visible   hidden identifier
+```
+
+Every iUSD mint is fingerprinted to the specific purchase that created it.
+
+### Purchase Routing
+
+Name registration routes through iUSD to grow cache collateral:
+
+1. User deposits SUI → keeper attests collateral → mints iUSD
+2. Keeper swaps iUSD → USDC (DeepBook 1:1 pool) → NS (multi-DEX racing)
+3. Keeper sends NS to user → user registers name with 25% NS discount
+4. Surplus stays in cache
+
+Multi-DEX racing (Aftermath aggregator vs direct DeepBook) picks the best USDC → NS rate. Aftermath internally races across 15+ DEXes including Cetus, Bluefin, FlowX, Kriya, and Turbos.
+
+**v1 Contract (deprecated, 6 decimal):** `0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515`
+
+**v2 Package:** `0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9`
+**v2 Cache:** `0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb`
+**v2 CacheCap:** owned by ultron.sui — 9-decimal steganographic encoding
+
+### Revenue Streams
+
+| Source | Mechanism |
+|--------|-----------|
+| SuiNS registration 5% cut | PTB fee extraction on every mint |
+| Shade order 10% escrow | Fee on execute() |
+| Thunder volume | Free signals drive adoption → more names registered → more iUSD minted |
+| Swap spread | 0.1% on DeepBook/Cetus/Bluefin routing |
+| Cache asset appreciation | Blended yield on diversified reserve |
+| Lending yield | NAVI + Scallop + Kamino |
+
+## Marketplace Purchase
+
+Buy SuiNS names listed on Tradeport or in on-chain kiosks directly from the SKI menu or idle overlay:
+
+- **Detection** — name input checks Tradeport API for active listings, caches in sessionStorage
+- **TRADE button** — shows listing price in Tradeport orange, appears in both SKI menu and idle overlay
+- **Atomic purchase** — single-PTB with optional token swap (any held token → SUI → purchase)
+- **Enter key** — triggers the action button globally while overlay is open
 
 ---
 
@@ -145,6 +273,31 @@ WaaP provides custodial wallet creation via social login, email, phone, and biom
 | Biometrics | Active |
 
 WaaP accounts appear in the legend with their social provider icon (X, Google, Discord, or email envelope). Clicking an existing WaaP blue-square row reconnects via encrypted device proof (zero-modal). Clicking "+ new WaaP" forces a full disconnect and opens a fresh OAuth flow.
+
+---
+
+## Deployed Contracts
+
+| Contract | Package | Key Objects |
+|----------|---------|-------------|
+| iUSD v2 | `0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9` | Cache: `0x64435d5284ba...627beb`, CacheCap: ultron.sui |
+| SUIAMI Roster v2 | `0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4` | Roster: `0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689` |
+| Storm v1 | `0xa3ed4fdf1369313647efcef77fd577aa4b77b50c62e5c5e29d4c383390cdf942` | Storm: `0x1b00663e83c9674ab49da1c6dd8c07e01aeff93d5c74c1785251f82cb61cb9e4` |
+| Thunder v4 | `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581` | — |
+| Shade | `0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff` | — |
+
+## ultron.sui
+
+Autonomous agent wallet for all server-side operations.
+
+- **Address:** `0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3`
+- **Roles:**
+  - iUSD minter and oracle (collateral attestation, mint, DeepBook/Aftermath routing)
+  - Storm admin
+  - Shade executor (keeper bot, auto-executes at grace expiry)
+  - Thunder relay (server-side signal relay for WaaP wallets)
+  - Dust sweep (consolidates small coin objects)
+  - Fee sweep (collects protocol revenue)
 
 ---
 
@@ -253,7 +406,7 @@ npx wrangler login
 bun run build && npx wrangler deploy
 ```
 
-The worker hosts four Durable Objects:
+The worker hosts five Durable Objects:
 
 | Binding | Purpose |
 |---|---|
@@ -261,6 +414,8 @@ The worker hosts four Durable Objects:
 | `SponsorAgent` | Manages Splash sponsor state |
 | `SplashDeviceAgent` | Tracks per-device Splash activation (keyed by FingerprintJS `visitorId`) |
 | `ShadeExecutorAgent` | Auto-executes Shade orders at grace-period expiry via DO Alarms |
+| `TreasuryAgents` | Signed by ultron.sui — autonomous agent for iUSD minting, collateral attestation, NS acquisition, dust sweeps, Thunder relay |
+| `Chronicom` | Per-wallet thunder signal watcher — 5s alarm polling, cached counts, serves instantly |
 
 API routes served by the worker:
 
@@ -269,7 +424,10 @@ API routes served by the worker:
 | `/agents/*` | WebSocket upgrade for Durable Object agents |
 | `/api/health` | Health check |
 | `/api/shade/*` | Shade order management (poke, status, schedule) |
+| `/api/suiami/verify` | SUIAMI identity proof verification |
+| `/api/thunder/strike-relay` | Server-side Thunder signal relay for WaaP wallets |
 | `/api/tradeport/listing/:label` | TradePort listing proxy |
+| `/api/thunder/chronicom` | Per-wallet signal count cache (5s polling) |
 
 ## IKA dWallet Integration
 
@@ -316,10 +474,12 @@ Chain registry and signing ceremony adapted from [inkwell-finance/ows-ika](https
 ## Stack
 
 - `@mysten/sui` ^2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.2, `@ika.xyz/sdk` ^0.3.1
+- DEX: `aftermath-ts-sdk` (aggregation), DeepBook v3 (direct pools), Bluefin CLMM, Cetus CLMM
 - Transport: `SuiGrpcClient` primary with `SuiGraphQLClient` fallback (no JSON-RPC)
+- gRPC proxy: Hayabusa at `hb.sui.ski` — racing proxy across Mysten, PublicNode, BlockVision, Ankr with two-tier caching (L1 Cache API + L2 KV)
 - Crypto: `@noble/hashes` (SHA-256, RIPEMD-160), `@scure/base` (bech32)
 - Build: `bun build src/ski.ts --outdir public/dist --target browser`
-- Deploy: Cloudflare Workers + Wrangler 4.77
+- Deploy: Cloudflare Workers + Wrangler 4.78
 
 ## Local development
 

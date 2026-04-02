@@ -1,0 +1,9 @@
+[package]
+name = "balance_seal"
+edition = "2024.beta"
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }
+
+[addresses]
+balance_seal = "0x0"

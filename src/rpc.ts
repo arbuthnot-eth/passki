@@ -11,9 +11,13 @@ import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 
 // ─── Backend URLs ─────────────────────────────────────────────────────
 
-/** gRPC-Web endpoints for browser fan-out */
+/**
+ * gRPC-Web endpoints for browser fan-out.
+ * Hayabusa (hb.sui.ski) is a racing gRPC proxy with two-tier caching
+ * (L1 in-memory + L2 KV) that hedges requests across upstream fullnodes.
+ */
 export const GRPC_BACKENDS: string[] = [
-  'https://fullnode.mainnet.sui.io:443',
+  'https://hb.sui.ski',
   'https://rpc-mainnet.suiscan.xyz:443',
 ];
 

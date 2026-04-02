@@ -1,0 +1,6 @@
+[package]
+name = "storm"
+edition = "2024.beta"
+
+[addresses]
+storm = "0x0"

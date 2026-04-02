@@ -12,16 +12,22 @@ import { Transaction } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { gqlClient } from '../rpc.js';
+import { maybeAppendRoster } from '../suins.js';
 import {
   THUNDER_VERSION,
+  THUNDER_PAYLOAD_SCHEMA_VERSION,
+  THUNDER_V5_VERSION,
   THUNDER_PACKAGE_ID,
   STORM_ID,
-  LEGACY_THUNDER_PACKAGE_ID,
-  LEGACY_STORM_ID,
-  LEGACY2_THUNDER_PACKAGE_ID,
-  LEGACY2_STORM_ID,
+  STORM_V1_PACKAGE_ID,
+  STORM_V1_ID,
+  LEGACY_STORMS,
   type ThunderPayload,
+  type ThunderPayloadEntity,
+  type ThunderPayloadParseResult,
+  type ThunderPayloadStructured,
 } from './thunder-types.js';
+import { deriveStormIdFromAddresses } from './ika.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -37,19 +43,234 @@ function xorBytes(data: Uint8Array, mask: Uint8Array): Uint8Array {
   return result;
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function normalizeThunderName(name: string): string {
+  return name.replace(/\.sui$/i, '').toLowerCase().trim();
+}
+
+function sanitizeThunderText(raw: string): string {
+  return raw
+    .normalize('NFKC')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .trim();
+}
+
+function normalizeThunderWhitespace(text: string): string {
+  return text
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+function parseThunderEntities(text: string): ThunderPayloadEntity[] {
+  const entities: ThunderPayloadEntity[] = [];
+
+  const mentionRe = /@([a-z0-9-]{3,63})/gi;
+  for (let match = mentionRe.exec(text); match; match = mentionRe.exec(text)) {
+    entities.push({
+      kind: 'mention',
+      raw: match[0],
+      value: normalizeThunderName(match[1]),
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+
+  const commandRe = /^\/([a-z][a-z0-9_-]{0,31})(?=\s|$)/i;
+  const commandMatch = commandRe.exec(text);
+  if (commandMatch) {
+    entities.push({
+      kind: 'command',
+      raw: commandMatch[0],
+      value: commandMatch[1].toLowerCase(),
+      start: commandMatch.index ?? 0,
+      end: (commandMatch.index ?? 0) + commandMatch[0].length,
+    });
+  }
+
+  return entities;
+}
+
+export interface ThunderParsedMessage {
+  raw: string;
+  normalized: string;
+  intent: ThunderPayloadParseResult['intent'];
+  recipients: string[];
+  mentions: string[];
+  commands: string[];
+  entities: ThunderPayloadEntity[];
+  confidence: number;
+}
+
+export function parseThunderMessageInput(message: string, recipientName?: string): ThunderParsedMessage {
+  const raw = sanitizeThunderText(message);
+  const normalized = normalizeThunderWhitespace(raw);
+  const entities = parseThunderEntities(normalized);
+  const mentions = entities.filter((e) => e.kind === 'mention').map((e) => e.value);
+  const commands = entities.filter((e) => e.kind === 'command').map((e) => e.value);
+  const intent: ThunderParsedMessage['intent'] =
+    commands.includes('reply') ? 'reply'
+      : commands.includes('receipt') ? 'receipt'
+        : commands.length > 0 ? 'command'
+          : 'signal';
+
+  const recipients = new Set<string>();
+  const primaryRecipient = recipientName ? normalizeThunderName(recipientName) : '';
+  if (primaryRecipient) recipients.add(primaryRecipient);
+  for (const mention of mentions) recipients.add(mention);
+
+  return {
+    raw,
+    normalized: normalized || raw,
+    intent,
+    recipients: [...recipients],
+    mentions,
+    commands,
+    entities,
+    confidence: entities.length > 0 ? 0.96 : 0.99,
+  };
+}
+
+function makeThunderPayload(params: {
+  transportVersion: typeof THUNDER_VERSION | typeof THUNDER_V5_VERSION;
+  senderName: string;
+  senderAddress: string;
+  recipientName?: string;
+  message: string;
+  suiamiToken?: string;
+}): ThunderPayload {
+  const parsed = parseThunderMessageInput(params.message, params.recipientName);
+  const payload: ThunderPayloadStructured = {
+    v: params.transportVersion,
+    pv: THUNDER_PAYLOAD_SCHEMA_VERSION,
+    sender: params.senderName,
+    senderAddress: normalizeSuiAddress(params.senderAddress),
+    message: parsed.normalized,
+    rawMessage: parsed.raw,
+    timestamp: new Date().toISOString(),
+    parsed: {
+      schemaVersion: THUNDER_PAYLOAD_SCHEMA_VERSION,
+      parser: 'deterministic',
+      raw: parsed.raw,
+      normalized: parsed.normalized,
+      intent: parsed.intent,
+      recipients: parsed.recipients,
+      mentions: parsed.mentions,
+      commands: parsed.commands,
+      entities: parsed.entities,
+      confidence: parsed.confidence,
+    },
+    ...(params.suiamiToken ? { suiami: params.suiamiToken } : {}),
+  };
+  return payload;
+}
+
+function normalizeThunderParsedResult(parsed: unknown, fallbackRaw: string): ThunderPayloadParseResult | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const value = parsed as Record<string, unknown>;
+  const raw = typeof value.raw === 'string' ? value.raw : fallbackRaw;
+  const normalized = typeof value.normalized === 'string' ? value.normalized : normalizeThunderWhitespace(sanitizeThunderText(raw));
+  const recipients = Array.isArray(value.recipients)
+    ? value.recipients.filter((r): r is string => typeof r === 'string').map(normalizeThunderName)
+    : [];
+  const mentions = Array.isArray(value.mentions)
+    ? value.mentions.filter((r): r is string => typeof r === 'string').map(normalizeThunderName)
+    : [];
+  const commands = Array.isArray(value.commands)
+    ? value.commands.filter((r): r is string => typeof r === 'string').map((r) => r.toLowerCase())
+    : [];
+  const entities = Array.isArray(value.entities)
+    ? value.entities.flatMap((entry): ThunderPayloadEntity[] => {
+      if (!entry || typeof entry !== 'object') return [];
+      const e = entry as Record<string, unknown>;
+      const kind = e.kind === 'command' ? 'command' : 'mention';
+      const rawEntity = typeof e.raw === 'string' ? e.raw : '';
+      const entityValue = typeof e.value === 'string' ? e.value : '';
+      const start = typeof e.start === 'number' ? e.start : 0;
+      const end = typeof e.end === 'number' ? e.end : start + rawEntity.length;
+      return [{
+        kind,
+        raw: rawEntity,
+        value: kind === 'mention' ? normalizeThunderName(entityValue) : entityValue.toLowerCase(),
+        start,
+        end,
+      }];
+    })
+    : parseThunderEntities(normalized);
+  const intent = value.intent === 'receipt' || value.intent === 'reply' || value.intent === 'command'
+    ? value.intent
+    : 'signal';
+  const confidence = typeof value.confidence === 'number' && Number.isFinite(value.confidence)
+    ? value.confidence
+    : 0.95;
+
+  const dedupRecipients = new Set<string>();
+  for (const recipient of recipients) dedupRecipients.add(recipient);
+
+  return {
+    schemaVersion: THUNDER_PAYLOAD_SCHEMA_VERSION,
+    parser: 'deterministic',
+    raw,
+    normalized: normalized || raw,
+    intent,
+    recipients: [...dedupRecipients],
+    mentions,
+    commands,
+    entities,
+    confidence,
+  };
+}
+
+export function decodeThunderPayload(payload: unknown): ThunderPayload | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const value = payload as Record<string, unknown>;
+  const sender = typeof value.sender === 'string' ? value.sender : '';
+  const senderAddress = typeof value.senderAddress === 'string' ? normalizeSuiAddress(value.senderAddress) : '';
+  const message = typeof value.message === 'string' ? value.message : '';
+  const timestamp = typeof value.timestamp === 'string' ? value.timestamp : new Date(0).toISOString();
+  const base: ThunderPayload = {
+    v: value.v === THUNDER_V5_VERSION ? THUNDER_V5_VERSION : THUNDER_VERSION,
+    sender,
+    senderAddress,
+    message,
+    timestamp,
+    ...(typeof value.suiami === 'string' ? { suiami: value.suiami } : {}),
+    ...(typeof value.receipt === 'string' ? { receipt: value.receipt } : {}),
+  };
+
+  if (value.pv === THUNDER_PAYLOAD_SCHEMA_VERSION) {
+    const parsed = normalizeThunderParsedResult(value.parsed, typeof value.rawMessage === 'string' ? value.rawMessage : message);
+    if (parsed) {
+      return {
+        ...base,
+        pv: THUNDER_PAYLOAD_SCHEMA_VERSION,
+        rawMessage: typeof value.rawMessage === 'string' ? value.rawMessage : parsed.raw,
+        parsed,
+      };
+    }
+  }
+
+  return base;
+}
+
 // ─── AES-256-GCM ─────────────────────────────────────────────────────
 
 async function aesEncrypt(plaintext: Uint8Array): Promise<{ ciphertext: Uint8Array; key: Uint8Array; nonce: Uint8Array }> {
   const key = crypto.getRandomValues(new Uint8Array(32));
   const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const aesKey = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
-  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, aesKey, plaintext));
+  const aesKey = await crypto.subtle.importKey('raw', toArrayBuffer(key), 'AES-GCM', false, ['encrypt']);
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: toArrayBuffer(nonce) }, aesKey, toArrayBuffer(plaintext)));
   return { ciphertext, key, nonce };
 }
 
 async function aesDecrypt(ciphertext: Uint8Array, key: Uint8Array, nonce: Uint8Array): Promise<Uint8Array> {
-  const aesKey = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['decrypt']);
-  return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, aesKey, ciphertext));
+  const aesKey = await crypto.subtle.importKey('raw', toArrayBuffer(key), 'AES-GCM', false, ['decrypt']);
+  return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: toArrayBuffer(nonce) }, aesKey, toArrayBuffer(ciphertext)));
 }
 
 // ─── Recipient NFT lookup ────────────────────────────────────────────
@@ -81,16 +302,14 @@ export async function buildThunderSendTx(
 ): Promise<Uint8Array> {
   const bareName = recipientName.replace(/\.sui$/i, '').toLowerCase();
   const ns = nameHash(bareName);
-
-  // Build signal
-  const payload: ThunderPayload = {
-    v: THUNDER_VERSION,
-    sender: senderName,
-    senderAddress: normalizeSuiAddress(senderAddress),
+  const payload = makeThunderPayload({
+    transportVersion: THUNDER_VERSION,
+    senderAddress,
+    senderName,
+    recipientName,
     message,
-    timestamp: new Date().toISOString(),
-    ...(suiamiToken ? { suiami: suiamiToken } : {}),
-  };
+    suiamiToken,
+  });
 
   // AES encrypt
   const { ciphertext, key, nonce } = await aesEncrypt(new TextEncoder().encode(JSON.stringify(payload)));
@@ -102,12 +321,10 @@ export async function buildThunderSendTx(
   const mask = keccak_256(nftRawBytes);
   const maskedKey = xorBytes(key, mask);
 
-  // Build PTB — signal with fee
-  // Fee: 0.003 SUI ≈ $0.009 iUSD equivalent, split from gas coin
-  const SIGNAL_FEE_MIST = 3_000_000; // 0.003 SUI
+  // Build PTB — signal (fee set to 0 on-chain, pass zero coin for ABI compat)
   const tx = new Transaction();
   tx.setSender(normalizeSuiAddress(senderAddress));
-  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(SIGNAL_FEE_MIST)]);
+  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(0)]);
   tx.moveCall({
     package: THUNDER_PACKAGE_ID,
     module: 'thunder',
@@ -122,6 +339,8 @@ export async function buildThunderSendTx(
       tx.object('0x6'),
     ],
   });
+  // Roster piggyback disabled — v2 contract hits abort on upsert, needs debugging
+  // maybeAppendRoster(tx, senderAddress, senderName);
   const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
@@ -158,13 +377,13 @@ export async function getThunderCountsBatch(names: string[]): Promise<Record<str
   try {
     const { grpcClient } = await import('../rpc.js');
     // Check both new and legacy storms
-    const stormIds = [STORM_ID, LEGACY_STORM_ID, LEGACY2_STORM_ID];
+    const stormIds = [STORM_ID]; // Only check current storm — legacy signals are orphaned
     for (const sid of stormIds) {
       try {
         const dfResult = await grpcClient.listDynamicFields({ parentId: sid });
         const fields = dfResult.dynamicFields ?? [];
         for (const df of fields) {
-          const bcsValues = Object.values(df.name.bcs as Record<string, number>);
+          const bcsValues = Object.values(df.name.bcs as unknown as Record<string, number>);
           const nameBytes = bcsValues.slice(1);
           const hex = nameBytes.map((b: number) => b.toString(16).padStart(2, '0')).join('');
           if (hashToBare[hex]) {
@@ -180,17 +399,40 @@ export async function getThunderCountsBatch(names: string[]): Promise<Record<str
 
 // ─── Quest (batch) ──────────────────────────────────────────────────
 
-/** Check pending signals on a specific storm for a name. */
+/** Check pending signals on a specific storm for a name. Returns actual signal count via GraphQL. */
 async function _countOnStorm(stormId: string, recipientName: string): Promise<number> {
   try {
     const bare = recipientName.replace(/\.sui$/i, '').toLowerCase();
     const ns = nameHash(bare);
     const hex = Array.from(ns).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    // Try GraphQL first — can read dynamic field content
+    try {
+      const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: `{ object(address: "${stormId}") { dynamicFields { nodes { name { json } value { ... on MoveValue { json } } } } } }` }),
+      });
+      const gql = await res.json() as any;
+      const nodes = gql?.data?.object?.dynamicFields?.nodes ?? [];
+      for (const n of nodes) {
+        const val = n?.value?.json;
+        if (val?.signals) {
+          // Match by checking if this is our name's thunderstorm
+          // Name hash is base64 in the key — convert our hex to base64 to match
+          const nameB64 = btoa(String.fromCharCode(...Array.from(ns)));
+          const keyB64 = typeof n.name?.json === 'string' ? n.name.json : '';
+          if (keyB64 === nameB64) return val.signals.length;
+        }
+      }
+    } catch { /* fall back to gRPC */ }
+
+    // Fallback: gRPC field existence check
     const { grpcClient } = await import('../rpc.js');
     const dfResult = await grpcClient.listDynamicFields({ parentId: stormId });
     const fields = dfResult.dynamicFields ?? [];
     for (const df of fields) {
-      const bcsValues = Object.values(df.name.bcs as Record<string, number>);
+      const bcsValues = Object.values(df.name.bcs as unknown as Record<string, number>);
       const nameBytes = bcsValues.slice(1);
       const h = nameBytes.map((b: number) => b.toString(16).padStart(2, '0')).join('');
       if (h === hex) return 1;
@@ -216,40 +458,20 @@ export async function buildBatchQuestTx(
     tx.setGasOwner(normalizeSuiAddress(sponsorAddress));
   }
 
-  // Auto-strike legacy storm signals (destructive — old contracts only have destructive quest)
-  const legacyStorms: [string, string][] = [
-    [LEGACY_THUNDER_PACKAGE_ID, LEGACY_STORM_ID],
-    [LEGACY2_THUNDER_PACKAGE_ID, LEGACY2_STORM_ID],
-  ];
-  for (const [pkg, sid] of legacyStorms) {
-    const n = await _countOnStorm(sid, recipientName);
-    for (let i = 0; i < n; i++) {
-      tx.moveCall({
-        package: pkg,
-        module: 'thunder',
-        function: 'quest',
-        arguments: [
-          tx.object(sid),
-          tx.pure.vector('u8', Array.from(ns)),
-          tx.object(nftObjectId),
-          tx.object('0x6'),
-        ],
-      });
-    }
-  }
-
-  // Quest from current storm (non-destructive — reads by index)
+  // Strike from current storm only — legacy signals are orphaned
+  // (Legacy storms lack strike_relay and quest needs NFT object which WaaP can't pass)
   const newStormCount = await _countOnStorm(STORM_ID, recipientName);
   for (let i = 0; i < newStormCount; i++) {
     tx.moveCall({
       package: THUNDER_PACKAGE_ID,
       module: 'thunder',
-      function: 'quest',
+      function: 'strike',
       arguments: [
         tx.object(STORM_ID),
         tx.pure.vector('u8', Array.from(ns)),
         tx.pure.u64(i),
         tx.object(nftObjectId),
+        tx.object('0x6'),
       ],
     });
   }
@@ -284,6 +506,166 @@ export async function buildBatchStrikeTx(
   const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
+}
+
+/** Build a strike PTB that routes all storage rebate to iUSD treasury.
+ *  Strikes N signals (FIFO) and sends gas change to treasury. */
+export async function buildStrikeToTreasuryTx(
+  address: string,
+  recipientName: string,
+  nftObjectId: string,
+  strikeCount: number,
+): Promise<Uint8Array> {
+  const IUSD_TREASURY = '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57';
+  const ns = nameHash(recipientName.replace(/\.sui$/i, '').toLowerCase());
+  const addr = normalizeSuiAddress(address);
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+
+  // Strike all signals up to strikeCount
+  for (let i = 0; i < strikeCount; i++) {
+    tx.moveCall({
+      package: THUNDER_PACKAGE_ID,
+      module: 'thunder',
+      function: 'strike',
+      arguments: [
+        tx.object(STORM_ID),
+        tx.pure.vector('u8', Array.from(ns)),
+        tx.object(nftObjectId),
+        tx.object('0x6'),
+      ],
+    });
+  }
+
+  // Route storage rebate to iUSD treasury — split 0 from gas now,
+  // the VM adds rebate to gas coin, then transferObjects sends the change.
+  // We split a "rebate collector" coin that will hold the excess after gas.
+  const [rebateCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(0)]);
+  tx.transferObjects([rebateCoin], tx.pure.address(IUSD_TREASURY));
+
+  // Piggyback roster update
+  const { maybeAppendRoster } = await import('../suins.js');
+  maybeAppendRoster(tx, addr, recipientName);
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
+/** Build a combined PTB: strike N signals + send receipt back to sender. One signature. */
+export async function buildStrikeWithReceiptTx(
+  recipientAddress: string,
+  recipientName: string,
+  nftObjectId: string,
+  strikeCount: number,
+  senderName: string,
+  senderNftObjectId: string,
+  receiptMessage: string,
+  suiamiToken: string,
+): Promise<Uint8Array> {
+  const myNs = nameHash(recipientName.replace(/\.sui$/i, '').toLowerCase());
+  const senderNs = nameHash(senderName.replace(/\.sui$/i, '').toLowerCase());
+  const addr = normalizeSuiAddress(recipientAddress);
+
+  // Encrypt the receipt for the sender
+  const payload = makeThunderPayload({
+    transportVersion: THUNDER_VERSION,
+    senderAddress: addr,
+    senderName: recipientName,
+    recipientName: senderName,
+    message: receiptMessage,
+    suiamiToken,
+  });
+  const { ciphertext, key, nonce } = await aesEncrypt(new TextEncoder().encode(JSON.stringify(payload)));
+  const nftHex = senderNftObjectId.toLowerCase().replace(/^0x/, '');
+  const nftRawBytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) nftRawBytes[i] = parseInt(nftHex.slice(i * 2, i * 2 + 2), 16);
+  const maskedKey = xorBytes(key, keccak_256(nftRawBytes));
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+
+  // Phase 1: Strike incoming signals
+  for (let i = 0; i < strikeCount; i++) {
+    tx.moveCall({
+      package: THUNDER_PACKAGE_ID,
+      module: 'thunder',
+      function: 'strike',
+      arguments: [
+        tx.object(STORM_ID),
+        tx.pure.vector('u8', Array.from(myNs)),
+        tx.object(nftObjectId),
+        tx.object('0x6'),
+      ],
+    });
+  }
+
+  // Phase 2: Send receipt signal to sender (fee set to 0 on-chain)
+  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(0)]);
+  tx.moveCall({
+    package: THUNDER_PACKAGE_ID,
+    module: 'thunder',
+    function: 'signal',
+    arguments: [
+      tx.object(STORM_ID),
+      tx.pure.vector('u8', Array.from(senderNs)),
+      tx.pure.vector('u8', Array.from(ciphertext)),
+      tx.pure.vector('u8', Array.from(maskedKey)),
+      tx.pure.vector('u8', Array.from(nonce)),
+      feeCoin,
+      tx.object('0x6'),
+    ],
+  });
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
+/** Verify a SUIAMI token. Returns true if valid. */
+async function _verifySuiami(token: string): Promise<boolean> {
+  if (!token?.startsWith('suiami:')) return false;
+  try {
+    const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
+    const parts = token.slice(7).split('.');
+    if (parts.length !== 2) return false;
+    const msgB64 = parts[0];
+    const signature = parts[1];
+    const msgBytes = Uint8Array.from(atob(msgB64), c => c.charCodeAt(0));
+    const msg = JSON.parse(new TextDecoder().decode(msgBytes));
+    if (!msg.suiami || !msg.address) return false;
+    await verifyPersonalMessageSignature(msgBytes, signature, { address: msg.address });
+    return true;
+  } catch { return false; }
+}
+
+/** Parse Questfi events from tx effects and decrypt all signals. Rejects signals without valid SUIAMI.
+ *  If sendReceipt is provided, sends a receipt signal back to each sender with the recipient's SUIAMI. */
+export async function parseAndDecryptQuestfi(
+  txResult: any,
+  sendReceipt?: (senderName: string, recipientSuiami: string) => Promise<void>,
+): Promise<ThunderPayload[]> {
+  const quested = parseQuestfiEvents(txResult);
+  const results: ThunderPayload[] = [];
+  await Promise.all(
+    quested.map(async (s) => {
+      try {
+        const cleartext = await aesDecrypt(s.payload, s.aesKey, s.aesNonce);
+        const payload = decodeThunderPayload(JSON.parse(new TextDecoder().decode(cleartext)));
+        if (!payload) return;
+        if (!payload.suiami) { console.warn('[Thunder] Rejected signal without SUIAMI'); return; }
+        const valid = await _verifySuiami(payload.suiami);
+        if (!valid) { console.warn('[Thunder] Rejected signal with invalid SUIAMI'); return; }
+        results.push(payload);
+        // Send receipt back to sender with recipient's SUIAMI (async, non-blocking)
+        if (sendReceipt && payload.sender) {
+          sendReceipt(payload.sender, payload.suiami).catch(() => {});
+        }
+      } catch { /* skip stale */ }
+    }),
+  );
+  return results;
 }
 
 /** Parse Questfi events from tx effects. */
@@ -345,7 +727,8 @@ export async function decryptAndQuest(
     quested.map(async (s) => {
       try {
         const cleartext = await aesDecrypt(s.payload, s.aesKey, s.aesNonce);
-        results.push(JSON.parse(new TextDecoder().decode(cleartext)) as ThunderPayload);
+        const payload = decodeThunderPayload(JSON.parse(new TextDecoder().decode(cleartext)));
+        if (payload) results.push(payload);
       } catch { /* skip — likely stale signal from old deploy */ }
     }),
   );
@@ -374,14 +757,14 @@ export async function buildQuestAndSendTx(
   const recipNs = nameHash(recipBare);
   const addr = normalizeSuiAddress(address);
 
-  const payload: ThunderPayload = {
-    v: THUNDER_VERSION,
-    sender: senderName,
+  const payload = makeThunderPayload({
+    transportVersion: THUNDER_VERSION,
     senderAddress: addr,
+    senderName,
+    recipientName,
     message,
-    timestamp: new Date().toISOString(),
-    ...(suiamiToken ? { suiami: suiamiToken } : {}),
-  };
+    suiamiToken,
+  });
   const { ciphertext, key, nonce } = await aesEncrypt(new TextEncoder().encode(JSON.stringify(payload)));
   const nftHex = recipientNftObjectId.toLowerCase().replace(/^0x/, '');
   const nftRawBytes = new Uint8Array(32);
@@ -470,9 +853,124 @@ export async function questAndSend(
     quested.map(async (s) => {
       try {
         const cleartext = await aesDecrypt(s.payload, s.aesKey, s.aesNonce);
-        results.push(JSON.parse(new TextDecoder().decode(cleartext)) as ThunderPayload);
+        const payload = decodeThunderPayload(JSON.parse(new TextDecoder().decode(cleartext)));
+        if (payload) results.push(payload);
       } catch { /* skip stale */ }
     }),
   );
   return results;
+}
+
+// ─── Thunder v5 — Storm v1 (ECDH storm IDs) ───────────────────────
+
+/**
+ * Build a Thunder v5 signal PTB — AES encrypt + deposit via Storm v1.
+ * Uses ECDH-derived storm_id instead of name hash. No NFT gate, no fee.
+ */
+export async function buildThunderV5SendTx(
+  senderAddress: string,
+  senderName: string,
+  recipientName: string,
+  recipientAddr: string,
+  message: string,
+  suiamiToken?: string,
+): Promise<Uint8Array> {
+  const addr = normalizeSuiAddress(senderAddress);
+  const stormId = deriveStormIdFromAddresses(addr, normalizeSuiAddress(recipientAddr));
+  const payload = makeThunderPayload({
+    transportVersion: THUNDER_V5_VERSION,
+    senderAddress: addr,
+    senderName,
+    recipientName,
+    message,
+    suiamiToken,
+  });
+
+  const { ciphertext, key, nonce } = await aesEncrypt(new TextEncoder().encode(JSON.stringify(payload)));
+
+  // Mask key with storm_id (both parties can derive it)
+  const maskedKey = xorBytes(key, keccak_256(stormId));
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+  tx.moveCall({
+    package: STORM_V1_PACKAGE_ID,
+    module: 'storm',
+    function: 'signal',
+    arguments: [
+      tx.object(STORM_V1_ID),
+      tx.pure.vector('u8', Array.from(stormId)),
+      tx.pure.vector('u8', Array.from(ciphertext)),
+      tx.pure.vector('u8', Array.from(maskedKey)),
+      tx.pure.vector('u8', Array.from(nonce)),
+      tx.object('0x6'),
+    ],
+  });
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
+/**
+ * Build a Thunder v5 quest PTB — read signals via Storm v1.
+ * Emits Questfi events just like v4.
+ */
+export async function buildThunderV5QuestTx(
+  address: string,
+  peerAddress: string,
+): Promise<Uint8Array> {
+  const addr = normalizeSuiAddress(address);
+  const stormId = deriveStormIdFromAddresses(addr, normalizeSuiAddress(peerAddress));
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+  tx.moveCall({
+    package: STORM_V1_PACKAGE_ID,
+    module: 'storm',
+    function: 'quest',
+    arguments: [
+      tx.object(STORM_V1_ID),
+      tx.pure.vector('u8', Array.from(stormId)),
+      tx.object('0x6'),
+    ],
+  });
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
+/**
+ * Build a Thunder v5 strike PTB — read and delete signals via Storm v1.
+ * Routes storage rebate to iUSD treasury like buildStrikeToTreasuryTx.
+ */
+export async function buildThunderV5StrikeTx(
+  address: string,
+  peerAddress: string,
+): Promise<Uint8Array> {
+  const IUSD_TREASURY = '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57';
+  const addr = normalizeSuiAddress(address);
+  const stormId = deriveStormIdFromAddresses(addr, normalizeSuiAddress(peerAddress));
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+  tx.moveCall({
+    package: STORM_V1_PACKAGE_ID,
+    module: 'storm',
+    function: 'strike',
+    arguments: [
+      tx.object(STORM_V1_ID),
+      tx.pure.vector('u8', Array.from(stormId)),
+      tx.object('0x6'),
+    ],
+  });
+
+  // Route storage rebate to iUSD treasury
+  const [rebateCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(0)]);
+  tx.transferObjects([rebateCoin], tx.pure.address(IUSD_TREASURY));
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
 }

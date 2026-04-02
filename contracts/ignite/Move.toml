@@ -1,0 +1,11 @@
+[package]
+name = "ignite"
+edition = "2024.beta"
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }
+iusd = { local = "../iusd" }
+
+[addresses]
+ignite = "0x0"
+iusd = "0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9"

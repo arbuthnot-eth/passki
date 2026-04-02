@@ -11,7 +11,7 @@
 import { Transaction } from '@mysten/sui/transactions';
 import { getState, signPersonalMessage, signAndExecuteTransaction, signTransaction, getSuiWallets, connect, disconnect } from './wallet.js';
 import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState, grpcClient, enrollAllKnownAddresses, SUI_DROP_URI, getAppState } from './ui.js';
-import { restoreSponsor, isSponsorActive, isKeeperSponsorActive, executeSponsored, initSplashDO, getSponsorState, resolveNameToAddress } from './sponsor.js';
+import { restoreSponsor, isSponsorActive, isKeeperSponsorActive, initSplashDO, getSponsorState, resolveNameToAddress } from './sponsor.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
 // Ika is heavy (~150KB), lazy-load only after sign-in
@@ -343,10 +343,11 @@ window.addEventListener('ski:request-suiami', async (e) => {
     }
   }
 
-  // Check app state for SuiNS name (reverse-resolved), fallback to wallet state, then localStorage
+  // Use the name from the event detail (from overlay/menu NS input), fallback to app state
+  const detailName = ((e as CustomEvent).detail?.name || '').replace(/\.sui$/, '');
   const appName = getAppState().suinsName;
   const cachedName = (() => { try { return localStorage.getItem(`ski:suins:${ws.address}`); } catch { return null; } })();
-  const name = (appName || cachedName || ws.suinsName || '').replace(/\.sui$/, '') || 'nobody';
+  const name = detailName || (appName || cachedName || ws.suinsName || '').replace(/\.sui$/, '') || 'nobody';
 
   try {
     const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
@@ -437,6 +438,79 @@ window.addEventListener('ski:request-suiami', async (e) => {
   }
 });
 
+// ─── Rumble — all-chain DKG provisioning ─────────────────────────────
+window.addEventListener('ski:rumble', async (e) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return;
+  }
+
+  // targetRumble: if set, DWalletCap goes to this address instead of the connected wallet
+  const targetRumble = (e as CustomEvent).detail?.targetRumble as string | undefined;
+  const targetLabel = targetRumble ? ` → ${targetRumble.slice(0, 8)}…` : '';
+  showToast(`Rumble starting${targetLabel} \u2014 provisioning all chains...`);
+
+  try {
+    const { rumble } = await loadIka();
+    const result = await rumble(
+      ws.address,
+      (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+      (stage: string) => {
+        showToast(`Rumble: ${stage}`);
+        window.dispatchEvent(new CustomEvent('ski:rumble-progress', { detail: stage }));
+      },
+      targetRumble,
+    );
+
+    // Update app state with all derived addresses
+    updateAppState({
+      ikaWalletId: result.dwalletCaps[0] ?? '',
+      btcAddress: result.btcAddress,
+      ethAddress: result.ethAddress,
+      solAddress: result.solAddress,
+    });
+
+    // Store chain addresses for Roster writes
+    try {
+      if (result.btcAddress) localStorage.setItem('ski:btc-address', result.btcAddress);
+      if (result.ethAddress) localStorage.setItem('ski:eth-address', result.ethAddress);
+      if (result.solAddress) localStorage.setItem('ski:sol-address', result.solAddress);
+    } catch {}
+
+    // Summary toast
+    const chains: string[] = [];
+    if (result.btcAddress) chains.push('BTC');
+    if (result.ethAddress) chains.push('ETH');
+    if (result.solAddress) chains.push('SOL');
+    showToast(`Rumble complete \u2014 ${chains.join(' + ') || 'no chains'} ready`);
+
+    // Dispatch result for UI / Roster consumers
+    window.dispatchEvent(new CustomEvent('ski:rumble-complete', { detail: result }));
+  } catch (err) {
+    console.error('[rumble] Error:', err);
+    showToast(err instanceof Error ? err.message : 'Rumble failed');
+  }
+});
+
+// ─── Auto Pre-Rumble on name registration ──────────────────────────────
+// When a new name is registered, fire pre-rumble in the background so the
+// name immediately has chain addresses (ultron-custodial until user Rumbles).
+window.addEventListener('ski:name-acquired', (e) => {
+  const name = (e as CustomEvent).detail?.name;
+  const ws = getState();
+  if (!name || !ws.address) return;
+  // Fire and forget — don't block the UI
+  fetch('/api/cache/pre-rumble', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: name.replace(/\.sui$/, ''), userAddress: ws.address }),
+  }).then(r => r.json()).then((res: any) => {
+    if (res.digest) console.log(`[pre-rumble] ${name} chain addresses provisioned: ${res.digest}`);
+    else if (res.error) console.warn(`[pre-rumble] ${name}: ${res.error}`);
+  }).catch(() => {});
+});
+
 // ─── Sign & Execute Transaction ──────────────────────────────────────
 //
 // Any window that imports sui.ski can request a transaction be signed and
@@ -517,6 +591,19 @@ import('./waap.js').then(({ registerWaaP }) => registerWaaP()).catch(() => {});
     }
     connectToSponsor(sponsorAddr);
   } catch {}
+})();
+
+// Handle ?prism= URL param — Prism intent QR code
+// Format: prism=usdc:10.006296 → send 10.006296 USDC to ultron, triggers quest fill
+(async () => {
+  const prismParam = new URLSearchParams(location.search).get('prism');
+  if (!prismParam) return;
+  // Store prism intent — the UI will pick it up when wallet connects
+  try { sessionStorage.setItem('ski:prism-intent', prismParam); } catch {}
+  // Clean URL
+  const url = new URL(location.href);
+  url.searchParams.delete('prism');
+  history.replaceState(null, '', url.pathname + url.search);
 })();
 
 // Restore the sponsor wallet silently after extensions have had time to register.

@@ -62,7 +62,7 @@
 
     <div id="ski-sign" style="display:none"></div>
 
-    <button class="ski-demo-toggle" id="ski-demo-toggle" type="button" title="Superteam card" aria-label="Toggle Superteam card" onclick="var d=document.getElementById('ski-demo');var h=d.classList.toggle('ski-demo--hidden');this.classList.toggle('ski-demo-toggle--active',!h);try{localStorage.setItem('ski:demo-open',h?'0':'1')}catch(e){}">&#9881;</button>
+    <!-- Demo toggle removed -->
     <div class="ski-demo ski-demo--sol ski-demo--hidden" id="ski-demo">
       <div class="ski-demo-body" id="ski-demo-card">
         <div class="ski-demo-sidebar">
@@ -105,6 +105,7 @@
           </div>
         </div>
         <div class="ski-demo-player" id="ski-demo-player">
+          <button class="ski-demo-close" id="ski-demo-close" type="button" title="Close video" aria-label="Close video">&times;</button>
           <video
             src="https://aggregator.walrus-testnet.walrus.space/v1/blobs/w-YsMSmoAgV-RQt_SinhQuEoM107nqC52WPUEi11ofI"
             controls muted playsinline preload="none"
@@ -113,12 +114,12 @@
         </div>
       </div>
     </div>
-    <script>try{if(localStorage.getItem('ski:demo-open')==='1'){document.getElementById('ski-demo').classList.remove('ski-demo--hidden');document.getElementById('ski-demo-toggle').classList.add('ski-demo-toggle--active')}}catch(e){}</script>
+    <!-- Demo card always starts collapsed; user must click gear to open -->
   </main>
 
   <div id="ski-modal"></div>
 
-  <script type="module" src="./dist/ski.js?v=20260321c"></script>
+  <script type="module" src="./dist/ski.js"></script>
   <script>
     (function() {
       var addrs = {
@@ -204,14 +205,29 @@
         demo.className = demo.classList.contains('open') ? 'ski-demo open ski-demo--' + net : 'ski-demo ski-demo--' + net;
       }
 
+      // Close video helper
+      function closeVideo() {
+        var demo = document.getElementById('ski-demo');
+        var video = demo.querySelector('video');
+        demo.classList.remove('open');
+        video.pause();
+        video.muted = true;
+      }
+
       // Card click opens/closes video
       document.getElementById('ski-demo-card').addEventListener('click', function(e) {
-        if (e.target.closest('.ski-demo-net') || e.target.closest('.ski-demo-addr') || e.target.closest('.ski-demo-qr')) return;
+        if (e.target.closest('.ski-demo-net') || e.target.closest('.ski-demo-addr') || e.target.closest('.ski-demo-qr') || e.target.closest('.ski-demo-close')) return;
         var demo = document.getElementById('ski-demo');
         var video = demo.querySelector('video');
         demo.classList.toggle('open');
         if (demo.classList.contains('open')) { video.volume = 0.07; video.muted = false; video.play(); setTimeout(function(){ window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'}); }, 100); }
         else { video.pause(); video.muted = true; }
+      });
+
+      // Close button
+      document.getElementById('ski-demo-close').addEventListener('click', function(e) {
+        e.stopPropagation();
+        closeVideo();
       });
 
       // Network buttons switch address + QR

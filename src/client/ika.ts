@@ -17,6 +17,7 @@ import type { DWalletCap } from '@ika.xyz/sdk';
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { deriveAddress, chainsForCurve, IkaCurve, type ChainConfig } from './chains.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, gqlClient, jsonRpcClient } from '../rpc.js';
 
 let ikaClient: IkaClient | null = null;
@@ -261,6 +262,8 @@ export interface ProvisionCallbacks {
   onStatus?: (msg: string) => void;
   /** Which curve to provision. Defaults to SECP256K1 (BTC/ETH). Use ED25519 for Solana. */
   requestedCurve?: typeof Curve.SECP256K1 | typeof Curve.ED25519;
+  /** Address that receives the DWalletCap. Defaults to sender (userAddress). */
+  targetOwner?: string;
 }
 
 /**
@@ -420,10 +423,11 @@ export async function provisionDWallet(
       suiCoin: suiCoin2,
       dwalletNetworkEncryptionKeyId: encKey.id,
     });
-    dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(userAddress));
+    const _capOwner = callbacks.targetOwner ?? userAddress;
+    dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(_capOwner));
     dkgTx.transferObjects([suiCoin2], dkgTx.pure.address(userAddress));
 
-    log('Signing...');
+    log(_capOwner !== userAddress ? `Signing (cap → ${_capOwner.slice(0, 8)}…)...` : 'Signing...');
     console.log('[ika:dkg] Step 5: WaaP — building + signAndExecuteTransaction...');
     // Match working WaaP tx pattern: gRPC first, GraphQL fallback
     let txBytes: Uint8Array;
@@ -522,11 +526,12 @@ export async function provisionDWallet(
     suiCoin: suiCoin2,
     dwalletNetworkEncryptionKeyId: encKey.id,
   });
-  dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(userAddress));
+  const _capOwner2 = callbacks.targetOwner ?? userAddress;
+  dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(_capOwner2));
   dkgTx.transferObjects([suiCoin2], dkgTx.pure.address(userAddress));
 
   // Step 5: Sign and submit (Phantom/Backpack — sponsored)
-  log('Signing...');
+  log(_capOwner2 !== userAddress ? `Signing (cap → ${_capOwner2.slice(0, 8)}…)...` : 'Signing...');
   let digest: string;
   {
     // Phantom/Backpack: sponsored tx (two signatures)
@@ -687,4 +692,165 @@ export async function burnDWalletCaps(
   const result = await callbacks.signAndExecuteTransaction(txBytes);
   console.log('[ika:burn] Burned caps:', capIdsToRemove, 'digest:', result.digest);
   return result.digest ?? '';
+}
+
+// ── Storm ID derivation (Thunder v5) ──────────────────────────────
+
+const STORM_DOMAIN_TAG = new TextEncoder().encode('thunder-storm');
+
+/**
+ * Derive a private Storm ID from ECDH shared secret between two dWallet public keys.
+ * storm_id = keccak256(ecdh_shared_secret || "thunder-storm")
+ * Only the two dWallet holders can compute this — third parties see opaque bytes.
+ *
+ * Note: True ECDH requires the private key share (IKA 2PC-MPC ceremony).
+ * Until the SDK exposes an ECDH primitive, we use a deterministic combination
+ * of both public keys sorted lexicographically. Both parties derive the same ID.
+ * TODO: Replace with actual IKA ECDH ceremony when SDK supports it.
+ */
+export async function deriveStormId(
+  myPublicOutput: Uint8Array,
+  theirPublicOutput: Uint8Array,
+): Promise<Uint8Array> {
+  const myPubkey = await extractPubkey(myPublicOutput);
+  const theirPubkey = await extractPubkey(theirPublicOutput);
+
+  // Sort pubkeys lexicographically so both parties get the same result
+  const [first, second] = comparePubkeys(myPubkey, theirPubkey) <= 0
+    ? [myPubkey, theirPubkey]
+    : [theirPubkey, myPubkey];
+
+  const combined = new Uint8Array(first.length + second.length + STORM_DOMAIN_TAG.length);
+  combined.set(first);
+  combined.set(second, first.length);
+  combined.set(STORM_DOMAIN_TAG, first.length + second.length);
+
+  return keccak_256(combined);
+}
+
+/**
+ * Derive a Storm ID from two Sui addresses (fallback when dWallets unavailable).
+ * Deterministic: both parties compute the same ID regardless of who is "sender."
+ * Less private than ECDH (addresses are public) but works without IKA.
+ */
+export function deriveStormIdFromAddresses(addr1: string, addr2: string): Uint8Array {
+  // Sort addresses so both parties get the same ID regardless of order
+  const sorted = [addr1.toLowerCase(), addr2.toLowerCase()].sort();
+  const input = new TextEncoder().encode(sorted[0] + sorted[1] + 'thunder-storm');
+  return keccak_256(input);
+}
+
+// ── Rumble — all-chain DKG in one flow ──────────────────────────────
+
+export interface RumbleResult {
+  addresses: Array<{ chain: string; name: string; address: string }>;
+  btcAddress: string;
+  ethAddress: string;
+  solAddress: string;
+  dwalletCaps: string[];
+}
+
+/**
+ * Rumble — provision all cross-chain dWallets in one flow.
+ * 1. Check existing dWallets via getCrossChainStatus
+ * 2. If missing secp256k1: DKG for BTC/ETH
+ * 3. If missing ed25519: DKG for SOL
+ * 4. Derive all addresses
+ * 5. Return the full address set for Roster writing
+ */
+export async function rumble(
+  address: string,
+  executeTx: (txBytes: Uint8Array) => Promise<{ digest: string }>,
+  onProgress?: (stage: string) => void,
+  targetOwner?: string,
+): Promise<RumbleResult> {
+  const log = onProgress ?? (() => {});
+  const wallet = await import('../wallet.js');
+  const isWaap = /waap/i.test((await import('../wallet.js')).getState().walletName);
+
+  const callbacks: ProvisionCallbacks = {
+    signTransaction: (txBytes: Uint8Array) => wallet.signTransaction(txBytes),
+    signAndExecuteTransaction: executeTx,
+    isWaap,
+    onStatus: log,
+    targetOwner,
+  };
+
+  // Step 1: Check what already exists
+  log('Checking existing dWallets...');
+  let status = await getCrossChainStatus(address);
+
+  // Step 2: If missing secp256k1, provision BTC/ETH
+  if (!status.btcAddress) {
+    log('Provisioning BTC/ETH (secp256k1)...');
+    try {
+      status = await provisionDWallet(address, {
+        ...callbacks,
+        requestedCurve: Curve.SECP256K1,
+        onStatus: (msg: string) => log(`secp256k1: ${msg}`),
+      });
+    } catch (err) {
+      console.error('[rumble] secp256k1 DKG failed:', err);
+      log(`secp256k1 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+      // Continue — try ed25519 even if secp256k1 failed
+    }
+  } else {
+    log('secp256k1 already active');
+  }
+
+  // Step 3: If missing ed25519, provision SOL
+  if (!status.solAddress) {
+    log('Provisioning SOL (ed25519)...');
+    try {
+      status = await provisionDWallet(address, {
+        ...callbacks,
+        requestedCurve: Curve.ED25519,
+        onStatus: (msg: string) => log(`ed25519: ${msg}`),
+      });
+    } catch (err) {
+      console.error('[rumble] ed25519 DKG failed:', err);
+      log(`ed25519 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+  } else {
+    log('ed25519 already active');
+  }
+
+  // Step 4: Final status check to get all addresses
+  log('Finalizing...');
+  const final = await getCrossChainStatus(address);
+
+  // Collect all dWalletCap IDs
+  const dwalletCaps: string[] = [];
+  try {
+    const rpc = getLocalJsonRpc();
+    const DWALLET_CAP_TYPE = '0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317::coordinator_inner::DWalletCap';
+    const owned = await rpc.getOwnedObjects({
+      owner: address,
+      filter: { StructType: DWALLET_CAP_TYPE },
+      options: { showContent: true },
+      limit: 10,
+    });
+    for (const entry of ((owned as any)?.data ?? [])) {
+      const capId = entry?.data?.objectId;
+      if (capId) dwalletCaps.push(capId);
+    }
+  } catch {}
+
+  log('Done!');
+  return {
+    addresses: final.addresses,
+    btcAddress: final.btcAddress,
+    ethAddress: final.ethAddress,
+    solAddress: final.solAddress,
+    dwalletCaps,
+  };
+}
+
+/** Compare two Uint8Arrays lexicographically. Returns <0, 0, or >0. */
+function comparePubkeys(a: Uint8Array, b: Uint8Array): number {
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
 }

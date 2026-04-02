@@ -31,8 +31,8 @@ const ECollateralRatioTooLow: u64 = 5;
 
 // ─── Constants ─────────────────────────────────────────────────────
 
-/// Minimum collateral ratio in basis points (15000 = 150%)
-const MIN_COLLATERAL_RATIO_BPS: u64 = 15000;
+/// Minimum collateral ratio in basis points (11000 = 110%)
+const MIN_COLLATERAL_RATIO_BPS: u64 = 11000;
 
 /// Senior tranche must cover at least 100% of supply (10000 bps)
 const SENIOR_COVERAGE_BPS: u64 = 10000;
@@ -137,7 +137,7 @@ public struct Treasury has key {
 fun init(witness: IUSD, ctx: &mut TxContext) {
     let (treasury_cap, metadata) = coin::create_currency(
         witness,
-        6, // decimals — matches USDC
+        9, // decimals — 9 for sub-cent steganographic encoding
         b"iUSD",
         b"iUSD",
         b"Yield-bearing stable backed by gold, silver, equities, energy, and dollar instruments across Bitcoin, Ethereum, Solana, and Sui via IKA dWallet threshold signatures.",
