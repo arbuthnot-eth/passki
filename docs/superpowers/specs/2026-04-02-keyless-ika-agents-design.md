@@ -77,6 +77,43 @@ The IKA network is always required. Neither brando nor the agent can sign alone 
 3. All DWalletCaps deposited, all shares re-encrypted
 4. Every selected agent goes live on BTC + ETH + SOL
 
+## Squids Agent Standard
+
+Every agent in the squids ecosystem carries a standard identity profile:
+
+| Field | Description |
+|---|---|
+| `addr` | Sui address of the agent |
+| `name` | SuiNS name — any name the spawner chooses (e.g., `ultron.sui`, `bot.brando.sui`, `trader.alice.sui`) |
+| `suiami_proof` | SUIAMI attestation — cryptographic proof linking name, address, and chain addresses |
+| `dwallet_caps` | IKA DWalletCap IDs this agent controls |
+| `encryption_key_addr` | Agent's public encryption key (for user share re-encryption) |
+| `creator` | Address that enrolled the agent (ran DKG, signed enrollment) |
+| `funder` | Address that paid IKA/gas for DKG (may differ from creator) |
+| `enrolled_at` | Timestamp of enrollment |
+
+### SuiNS Names
+
+Agent names are flexible — any SuiNS name or subname the user chooses at spawn time:
+
+- `ultron.sui` — standalone name (already owned)
+- `ultron.squids.sui` — subname under squids.sui
+- `bot.brando.sui` — subname under brando.sui
+- `trader.alice.sui` — anyone can spawn agents under their own names
+
+The Roster maps agent addresses to their chosen name. Chain addresses (sol@name, btc@name, eth@name) are written as dynamic fields on the SuiNS name by the Rumble flow.
+
+### SUIAMI Proofs
+
+Every enrolled agent carries a SUIAMI proof — the same identity attestation used by human wallets. This enables:
+
+- **Agent-to-agent trust** — ultron sends a Thunder to aida, aida verifies via SUIAMI proof on the Roster
+- **User-to-agent trust** — users verify on-chain that an agent is legitimate, enrolled by a known admin
+- **Cross-chain identity** — the proof links the agent's Sui identity to its IKA-derived BTC/ETH/SOL addresses
+- **Composable authorization** — other contracts can check the Roster for valid SUIAMI proofs before accepting agent actions
+
+The proof is generated during enrollment: the creator signs a SUIAMI message on behalf of the agent, attesting "this agent at this address is associated with this SuiNS name, enrolled by me." The proof is stored both in the Roster (enrollment attestation) and as a dynamic field on the agent's SuiNS name (identity attestation).
+
 ## Move Contract: `squids::agent`
 
 **Package:** `contracts/squids/`
@@ -85,26 +122,31 @@ The IKA network is always required. Neither brando nor the agent can sign alone 
 ### Objects
 
 ```move
-/// Admin capability — held by brando.sui
+/// Admin capability — grants enrollment/revocation rights
 struct AdminCap has key, store { id: UID }
 
 /// Enrolled agent record
-struct Agent has key, store {
-    id: UID,
-    /// Sui address of the agent (DO-derived, not a private key)
+struct Agent has store {
+    /// Sui address of the agent
     addr: address,
-    /// Name (e.g., "ultron", "aida")
+    /// SuiNS name — chosen by spawner (e.g., "ultron.sui", "bot.brando.sui")
     name: String,
-    /// DWalletCap IDs this agent can use
+    /// SUIAMI proof — identity attestation linking name, address, chain addresses
+    suiami_proof: vector<u8>,
+    /// DWalletCap IDs this agent can use for signing
     dwallet_caps: vector<ID>,
-    /// Encryption key address (for re-encryption targeting)
+    /// Public encryption key address (for user share re-encryption targeting)
     encryption_key_addr: address,
-    /// Enrolled timestamp
+    /// Who enrolled this agent
+    creator: address,
+    /// Who paid IKA/gas for DKG
+    funder: address,
+    /// Enrollment timestamp
     enrolled_at: u64,
 }
 
-/// Shared registry of all agents
-struct Registry has key {
+/// Shared roster of all agents
+struct Roster has key {
     id: UID,
     agents: Table<address, Agent>,
     admin: address,
@@ -114,22 +156,24 @@ struct Registry has key {
 ### Entry functions
 
 ```move
-/// Create the registry (one-time, by brando)
+/// Create the roster (one-time, by admin)
 public fun create(ctx: &mut TxContext): AdminCap
 
 /// Enroll an agent — admin only
 public fun enroll(
-    registry: &mut Registry,
+    roster: &mut Roster,
     admin_cap: &AdminCap,
     agent_addr: address,
     name: String,
+    suiami_proof: vector<u8>,
     encryption_key_addr: address,
+    funder: address,
     ctx: &mut TxContext,
 )
 
 /// Deposit a DWalletCap for an agent
 public fun deposit_cap(
-    registry: &mut Registry,
+    roster: &mut Roster,
     admin_cap: &AdminCap,
     agent_addr: address,
     cap: DWalletCap,
@@ -137,24 +181,32 @@ public fun deposit_cap(
 
 /// Approve a message for signing — agent or admin
 public fun approve(
-    registry: &mut Registry,
+    roster: &mut Roster,
     agent_addr: address,
     dwallet_cap_id: ID,
     message: vector<u8>,
     ctx: &TxContext,
 ): MessageApproval
 
-/// Revoke an agent — admin only
+/// Revoke an agent — admin only, returns DWalletCaps
 public fun revoke(
-    registry: &mut Registry,
+    roster: &mut Roster,
     admin_cap: &AdminCap,
     agent_addr: address,
 ): vector<DWalletCap>
+
+/// Update an agent's SUIAMI proof (e.g., after chain address changes)
+public fun update_proof(
+    roster: &mut Roster,
+    admin_cap: &AdminCap,
+    agent_addr: address,
+    suiami_proof: vector<u8>,
+)
 ```
 
 ### Authorization logic
 
-`approve` checks: `tx_context::sender(ctx) == registry.admin || tx_context::sender(ctx) == agent_addr` where `agent_addr` is enrolled in the registry. If neither, abort.
+`approve` checks: `tx_context::sender(ctx) == roster.admin || tx_context::sender(ctx) == agent_addr` where `agent_addr` is enrolled in the Roster. If neither, abort.
 
 ## WASM in CF Workers — Proven Working
 
