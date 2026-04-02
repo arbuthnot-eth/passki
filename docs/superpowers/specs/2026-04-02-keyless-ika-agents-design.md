@@ -443,16 +443,39 @@ Tested live on `sui.ski/api/test-ika-wasm`:
 
 **Conclusion:** IKA 2PC-MPC signing is viable in CF Workers. The WASM crypto runs. The SDK's wrapper is broken but the raw functions work. We bypass the wrapper with `ika-worker.ts`.
 
-## Security Properties — Why Keyless Matters (Drift Attack Case Study)
+## Security Properties — Why Keyless Matters
 
-On April 1, 2025, Drift Protocol (Solana) was exploited via a compromised admin key. The attacker obtained the private key controlling the protocol's upgrade authority and drained funds. This class of attack — compromised privileged keys — is the #1 vector in DeFi exploits.
+### The Drift/Seal Attack Class
 
-**Squids eliminates this entire attack class.** There is no admin private key to steal because no private key exists:
+On March 31, 2026, Drift Protocol (Solana) was exploited for ~$270M. The attack: one compromised admin key changed protocol parameters AFTER users deposited funds. The protocol evaluated new parameters against existing positions. Funds drained retroactively.
 
-- An attacker who compromises a CF Worker gets... an encryption seed. This seed can only decrypt a user share, which is useless without the IKA network co-signing. The attacker would need to compromise both the Worker AND a 2/3 BFT quorum of IKA validators simultaneously.
-- Upgrade authority can be gated by the `squids::agent` Roster — upgrades require `approve` through the on-chain contract, which requires an enrolled agent or admin. No single key controls upgrades.
-- Even if an agent's encryption seed leaks, brando can revoke the agent from the Roster instantly. The DWalletCaps are extracted, the agent loses signing authority. No fund movement possible.
-- The SUIAMI proof on each agent creates an audit trail — every enrollment, every signing approval, every revocation is on-chain and attributable.
+We reported the identical vulnerability in Sui's Seal encryption layer (SUIPR-630): a single compromised UpgradeCap (one private key) lets an attacker upgrade `seal_approve` to a permissive policy AFTER users encrypted data. The key server evaluates the upgraded policy against existing encrypted data. Every secret ever sealed under that package — medical records, private messages, trade secrets — retroactively compromised. Unlike stolen funds, leaked secrets cannot be un-leaked.
+
+The common root cause: **a single private key controlling a privileged capability (admin key, UpgradeCap, keeper key) becomes the entire attack surface.** Compromise that one key and everything protected by it falls.
+
+### How Squids Eliminates This
+
+**No private key exists to compromise.**
+
+- An attacker who compromises a CF Worker gets an encryption seed. This seed can only decrypt a user share, which is useless without the IKA network co-signing. The attacker needs both the Worker AND a 2/3 BFT quorum of IKA validators simultaneously.
+- **UpgradeCap protection:** The `squids::agent` package's UpgradeCap can be held by the Roster itself, requiring on-chain `approve` from an enrolled agent or admin before any upgrade. No single key controls upgrades. A compromised agent can't unilaterally upgrade the contract — it needs IKA co-signing for the upgrade transaction, and brando can revoke the agent before it succeeds.
+- **Instant revocation:** If an agent's encryption seed leaks, brando revokes the agent from the Roster. DWalletCaps are extracted, signing authority removed. No fund movement, no policy changes, no damage.
+- **Audit trail:** Every `approve` call is a Sui transaction. Every enrollment, every signing request, every revocation is on-chain and attributable via SUIAMI proofs.
+- **No retroactive damage:** Even if an agent is compromised, it can only sign new messages going forward (and only until revoked). It cannot retroactively change policies, drain existing positions, or decrypt data sealed under a different policy — because it never held a key that could do those things.
+
+### Solving the Multi-Billion Dollar Vulnerability
+
+The Seal upgrade vulnerability (SUIPR-630) and the Drift exploit share a root cause that extends across all of DeFi and on-chain encryption: **single-key privileged capabilities.** UpgradeCaps, admin keys, treasury keys, multisig signers — any system where one compromised key grants retroactive authority over existing user assets or data.
+
+IKA + squids::agent offers a general solution:
+
+**For UpgradeCaps:** Instead of an UpgradeCap sitting in a developer's hot wallet, wrap it in a squids::agent-style Roster. Upgrades require IKA 2PC-MPC co-signing — the developer proposes, the IKA network must agree. A compromised developer key alone can't upgrade. Add a time-lock (e.g., 48h delay) and on-chain governance signal, and users have time to exit before any policy change takes effect.
+
+**For Seal specifically:** The key server's `check_policy()` evaluates the client's PTB against the current package version. If the UpgradeCap were held by an IKA dWallet instead of a raw keypair, upgrading requires 2PC-MPC consensus — the key holder AND the IKA network must agree. A compromised key alone cannot upgrade the policy. The 3-line fix we proposed (reject if `pkg_id != first_pkg_id`) is the immediate patch, but IKA-gated UpgradeCaps are the architectural fix that prevents the entire class.
+
+**For DeFi admin keys (Drift class):** Protocol admin keys that control parameter changes, emergency pauses, or fund sweeps should be IKA dWallets with squids::agent-style on-chain authorization. No single human or bot can unilaterally change parameters. The admin proposes, IKA co-signs, time-lock gives users exit windows. This pattern could have prevented Drift's $270M loss.
+
+**The general principle:** Any capability that grants retroactive authority over existing user assets or data should require distributed co-signing (IKA 2PC-MPC), on-chain authorization (squids::agent Roster), and time-delayed execution. No single key should ever control the past.
 
 - **No private key exists anywhere** — not in Workers, not in Wrangler secrets, not in durable storage
 - **Encryption key ≠ signing key** — the seed in durable storage only decrypts the user share. It cannot produce a signature alone
