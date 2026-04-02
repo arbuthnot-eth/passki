@@ -6,7 +6,7 @@
 
 ## Problem
 
-Agents (ultron, t2000s, chronicoms) currently rely on a raw Ed25519 private key (`SHADE_KEEPER_PRIVATE_KEY`) stored as a Cloudflare Wrangler secret. This is a single point of failure: if the key is lost, funds are locked; if leaked, funds are stolen. Cross-chain addresses are derived by re-encoding the Sui pubkey as base58 — not IKA. The key can't be recovered, can't be shared safely, and can't be rotated without migrating all assets.
+Agents (ultron, t2000s, chronicoms) currently rely on raw Ed25519 private keys stored as Cloudflare Wrangler secrets. This is a single point of failure: if a key is lost, funds are locked; if leaked, funds are stolen. Cross-chain addresses are derived by re-encoding the Sui pubkey as base58 — not IKA. Keys can't be recovered, can't be shared safely, and can't be rotated without migrating all assets.
 
 ## Solution
 
@@ -365,7 +365,7 @@ async signWithIka(message: Uint8Array, chain: ChainConfig): Promise<Uint8Array> 
 
 ### Removed
 
-- `SHADE_KEEPER_PRIVATE_KEY` — deleted from Env interface and Wrangler secrets
+- All agent private keys — deleted from Env interfaces and Wrangler secrets
 - `Ed25519Keypair.fromSecretKey()` — all instances replaced with `signWithIka()`
 - Raw Solana address derivation from Sui pubkey — replaced with IKA ed25519 dWallet address
 
@@ -406,9 +406,11 @@ The agent's encryption seed never leaves the DO. Only the public encryption key 
 3. Re-encrypt user shares to ultron DO
 4. Ultron DO calls `acceptEncryptedUserShare`
 5. Update `treasury-agents.ts`: replace all `Ed25519Keypair.fromSecretKey` with `signWithIka`
-6. Remove `SHADE_KEEPER_PRIVATE_KEY` from Wrangler secrets and Env interfaces
-7. Old ultron address (`0xa84c...b3c3`) becomes legacy
-8. Repeat for each t2000 agent as they spawn
+6. **Verify** all signing flows work end-to-end (Solana transfers, BTC, ETH, on-chain approvals)
+7. **Migrate funds** from old ultron address to new IKA-controlled addresses
+8. **Only then** remove agent private keys from Wrangler secrets and Env interfaces
+9. Old ultron address (`0xa84c...b3c3`) becomes legacy
+10. Repeat for each t2000 agent as they spawn
 
 ## Agent Addresses
 
@@ -441,7 +443,16 @@ Tested live on `sui.ski/api/test-ika-wasm`:
 
 **Conclusion:** IKA 2PC-MPC signing is viable in CF Workers. The WASM crypto runs. The SDK's wrapper is broken but the raw functions work. We bypass the wrapper with `ika-worker.ts`.
 
-## Security Properties
+## Security Properties — Why Keyless Matters (Drift Attack Case Study)
+
+On April 1, 2025, Drift Protocol (Solana) was exploited via a compromised admin key. The attacker obtained the private key controlling the protocol's upgrade authority and drained funds. This class of attack — compromised privileged keys — is the #1 vector in DeFi exploits.
+
+**Squids eliminates this entire attack class.** There is no admin private key to steal because no private key exists:
+
+- An attacker who compromises a CF Worker gets... an encryption seed. This seed can only decrypt a user share, which is useless without the IKA network co-signing. The attacker would need to compromise both the Worker AND a 2/3 BFT quorum of IKA validators simultaneously.
+- Upgrade authority can be gated by the `squids::agent` Roster — upgrades require `approve` through the on-chain contract, which requires an enrolled agent or admin. No single key controls upgrades.
+- Even if an agent's encryption seed leaks, brando can revoke the agent from the Roster instantly. The DWalletCaps are extracted, the agent loses signing authority. No fund movement possible.
+- The SUIAMI proof on each agent creates an audit trail — every enrollment, every signing approval, every revocation is on-chain and attributable.
 
 - **No private key exists anywhere** — not in Workers, not in Wrangler secrets, not in durable storage
 - **Encryption key ≠ signing key** — the seed in durable storage only decrypts the user share. It cannot produce a signature alone
