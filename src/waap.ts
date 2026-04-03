@@ -38,7 +38,7 @@ export async function registerWaaP(): Promise<void> {
       useStaging: false,
       config: {
         styles: { darkMode: true },
-        authenticationMethods: ['social', 'email', 'phone', 'biometrics'],
+        authenticationMethods: ['social', 'email', 'phone'],
         allowedSocials: ['twitter', 'google', 'discord', 'github'],
       },
     });

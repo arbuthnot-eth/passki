@@ -123,23 +123,28 @@ const SOCIAL_ICON_EMAIL = `<svg width="38" height="38" viewBox="0 0 38 38" xmlns
 
 /** Map a wallet name to its social provider inline SVG, or null for standard wallets. */
 function socialIconSvg(walletName: string): string | null {
-  if (/waap/i.test(walletName)) return SOCIAL_ICON_X;
+  if (/waap/i.test(walletName)) {
+    const ws = getState();
+    if (ws.address) return waapProviderIcon(ws.address);
+    return SOCIAL_ICON_X; // fallback before address is known
+  }
   if (/google/i.test(walletName)) return SOCIAL_ICON_GOOGLE;
   if (/discord/i.test(walletName)) return SOCIAL_ICON_DISCORD;
   return null;
 }
 
 /** Detect which social provider a WaaP account used from its label string. */
-function detectWaapProvider(label: string): 'google' | 'x' | 'email' | null {
+function detectWaapProvider(label: string): 'google' | 'x' | 'email' | 'phone' | null {
   if (!label) return null;
   if (/google/i.test(label) || /@gmail\./i.test(label)) return 'google';
   if (/^@/.test(label.trim()) || /x\.com/i.test(label)) return 'x';
+  if (/^\+?\d[\d\s()-]{6,}$/.test(label.trim())) return 'phone';
   if (/@/.test(label)) return 'email';
   return null;
 }
 
 /** Persist the detected WaaP social provider for a given address. */
-function storeWaapProvider(address: string, provider: 'google' | 'x' | 'email' | null): void {
+function storeWaapProvider(address: string, provider: 'google' | 'x' | 'email' | 'phone' | null): void {
   if (!provider || !address) return;
   try { localStorage.setItem(`ski:waap-provider:${address}`, provider); } catch {}
 }
@@ -150,7 +155,7 @@ function waapProviderIcon(address: string | null): string {
     try {
       const stored = localStorage.getItem(`ski:waap-provider:${address}`);
       if (stored === 'google') return SOCIAL_ICON_GOOGLE;
-      if (stored === 'email') return SOCIAL_ICON_EMAIL;
+      if (stored === 'email' || stored === 'phone') return SOCIAL_ICON_EMAIL;
     } catch {}
   }
   return SOCIAL_ICON_X;
@@ -435,7 +440,7 @@ export function showToastWithRetry(msg: string, retryLabel: string, retryFn: () 
 
 let _skiSvgText: string | null = SKI_SVG_TEXT;
 
-type SkiDotVariant = 'green-circle' | 'blue-square' | 'black-diamond' | 'red-hexagon';
+type SkiDotVariant = 'green-circle' | 'blue-square' | 'black-diamond' | 'red-hexagon' | 'orange-triangle';
 
 /**
  * Generic SVG string builder. Renames all internal IDs to `{idPrefix}-*` so
@@ -2239,19 +2244,17 @@ async function tryWaapProofConnect(wallet: Wallet): Promise<void> {
         return;
       }
 
-      // Path 2: Restore the OAuth snapshot so WaaP can find its own session,
-      // then attempt a silent connect — should succeed without showing the modal.
-      if (proof.oauthSnapshot) {
-        restoreWaapOAuth(proof.oauthSnapshot);
-      }
+      // Path 2: Don't restore old OAuth snapshot — it causes session conflation
+      // (e.g., user picks "email" but gets logged into old X account).
+      // Always show fresh auth modal so user can pick their method.
       closeModal();
       deactivateCurrent();
       try {
-        await connect(wallet);
+        await connect(wallet, { skipSilent: true });
         return;
       } catch (err) {
         showToast('Reconnecting: ' + _errMsg(err));
-        // Silent connect failed (session expired) — fall through to OAuth modal
+        // Connect failed — fall through to OAuth modal
       }
     }
   } catch { /* fingerprint or import failure — fall through */ }
@@ -5035,6 +5038,11 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
     const rx = Math.max(2, Math.round(s * 0.16));
     const tsw = Math.max(1, Math.round(s * 0.07));
     return `<svg ${base}><rect x="${pad}" y="${pad}" width="${inner}" height="${inner}" rx="${rx}" fill="#4da2ff" stroke="white" stroke-width="${tsw}"/></svg>`;
+  }
+  if (variant === 'orange-triangle') {
+    const top = pad + 1;
+    const bot = s - pad;
+    return `<svg ${base}><polygon points="${half},${top} ${s - pad},${bot} ${pad},${bot}" fill="#f97316" stroke="white" stroke-width="${sw}" stroke-linejoin="round"/></svg>`;
   }
   if (variant === 'red-hexagon') {
     const r = half - pad;
@@ -9358,15 +9366,17 @@ function bindEvents() {
 
       const _updateIdleStatus = () => {
         if (!_idleStatusEl || !_idleActionBtn) return;
-        const variant: SkiDotVariant = (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square'
+        const label = nsLabel.trim();
+        const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
+        const hasListing = !!(nsKioskListing || nsTradeportListing);
+        // Orange triangle for listings, blue square for taken/owned, green for available
+        const variant: SkiDotVariant = (hasListing && !isOwned) ? 'orange-triangle'
+          : (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square'
           : nsAvail === 'available' ? 'green-circle'
           : nsAvail === 'grace' ? 'red-hexagon'
           : 'black-diamond';
         _idleStatusEl.innerHTML = _nsStatusSvg(variant);
 
-        const label = nsLabel.trim();
-        const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
-        const hasListing = !!(nsKioskListing || nsTradeportListing);
         const _iamName = label || app.suinsName?.replace(/\.sui$/, '') || 'you';
         if (!label) {
           _idleActionBtn.textContent = 'SUIAMI';
@@ -9381,19 +9391,16 @@ function bindEvents() {
             const totalSui = suiAmt + fee;
             const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
             const priceStr = usdVal != null ? `$${usdVal.toFixed(2)}` : `${totalSui.toFixed(2)} SUI`;
-            // Listing exists — always show TRADE (swap logic handles non-SUI balances)
             const _totalSpendable = (app.usd ?? 0);
-            if (usdVal != null && _totalSpendable < usdVal) {
-              _idleActionBtn.textContent = 'Quest';
-              _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--quest-bounty';
-              _idleActionBtn.title = `Need ${priceStr} — Quest for ${label}.sui`;
-              _idleActionBtn.disabled = false;
-            } else {
-              _idleActionBtn.textContent = 'TRADE';
-              _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--trade';
-              _idleActionBtn.title = `Trade ${priceStr} for ${label}.sui`;
-              _idleActionBtn.disabled = false;
-            }
+            const canAfford = usdVal != null ? _totalSpendable >= usdVal : false;
+            _idleActionBtn.textContent = 'TRADE';
+            _idleActionBtn.className = canAfford
+              ? 'ski-idle-ns-action ski-idle-ns-action--trade'
+              : 'ski-idle-ns-action ski-idle-ns-action--trade-unaffordable';
+            _idleActionBtn.title = canAfford
+              ? `Trade ${priceStr} for ${label}.sui`
+              : `Insufficient balance — ${priceStr}`;
+            _idleActionBtn.disabled = !canAfford;
           }
         } else if (nsAvail === 'available') {
           // Check if user can actually afford it with spendable tokens (SUI + USDC + NS)
@@ -11065,7 +11072,12 @@ function bindEvents() {
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         if (!convoEl) return;
         const entries = await _getConversation(counterparty);
-        if (!entries.length) { convoEl.setAttribute('hidden', ''); return; }
+        if (!entries.length) {
+          convoEl.setAttribute('hidden', '');
+          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+          return;
+        }
+        _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
 
         // Secret read receipt: check if counterparty has 0 pending signals on-chain.
         // If we sent them signals and they're gone → they purged them → mark as read.
@@ -11370,7 +11382,39 @@ function bindEvents() {
         }
         if (e.key === 'Enter') { e.preventDefault(); _sendIdleThunder(); }
       });
-      _idleThunderSend?.addEventListener('click', (e) => { e.stopPropagation(); _sendIdleThunder(); });
+      _idleThunderSend?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        const hasText = _idleThunderInput?.value.trim();
+        // If convo is open and no text being composed, toggle it closed
+        if (convoEl && !convoEl.hasAttribute('hidden') && !hasText && !_idleThunderSend?.dataset.questMode) {
+          convoEl.setAttribute('hidden', '');
+          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+          return;
+        }
+        // If convo is closed and no text, open it — or pre-fill @tag if no history
+        if (convoEl && convoEl.hasAttribute('hidden') && !hasText) {
+          const cardName = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.trim().replace(/\.sui$/, '') || '';
+          if (cardName) {
+            _expandIdleConvo(cardName);
+            _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+            // If no history existed, expandIdleConvo hid it again — show empty convo + pre-fill @tag
+            if (convoEl.hasAttribute('hidden')) {
+              convoEl.removeAttribute('hidden');
+              convoEl.innerHTML = '';
+              _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+            }
+            // Pre-fill thunder input with @cardName if empty
+            if (_idleThunderInput && !_idleThunderInput.value.trim()) {
+              _idleThunderInput.value = `@${cardName} `;
+              _idleThunderInput.focus();
+              _idleThunderInput.setSelectionRange(_idleThunderInput.value.length, _idleThunderInput.value.length);
+            }
+          }
+          return;
+        }
+        _sendIdleThunder();
+      });
       // Nothing in the overlay dismisses it — only successful action or header button
       // Unfreeze GIF if click lands outside any input
       _idleOverlay.addEventListener('click', (e) => {
@@ -11539,8 +11583,11 @@ export function initUI() {
           }
         } catch {}
         // Detect and store WaaP social provider from account label
-        if (/waap/i.test(ws.walletName) && ws.account?.label) {
-          storeWaapProvider(ws.address, detectWaapProvider(ws.account.label));
+        if (/waap/i.test(ws.walletName)) {
+          const label = ws.account?.label || '';
+          const detected = label ? detectWaapProvider(label) : null;
+          console.log('[SKI] WaaP provider detection:', { label, detected, address: ws.address });
+          if (detected) storeWaapProvider(ws.address, detected);
         }
       }
       // Always clear first so a previously connected wallet's name never bleeds through

@@ -593,18 +593,8 @@ export async function autoReconnect(): Promise<boolean> {
     match = real;
   }
 
-  // For WaaP: restore OAuth snapshot so silent connect can find the session
-  if (/waap/i.test(match.name)) {
-    try {
-      const [{ getDeviceId }, { getWaapProof, restoreWaapOAuth }] = await Promise.all([
-        import('./fingerprint.js') as Promise<{ getDeviceId: () => Promise<{ visitorId: string }> }>,
-        import('./waap-proof.js') as Promise<{ getWaapProof: (id: string) => Promise<{ oauthSnapshot?: Record<string, string> } | null>; restoreWaapOAuth: (snap: Record<string, string>) => void }>,
-      ]);
-      const { visitorId } = await getDeviceId();
-      const proof = await getWaapProof(visitorId);
-      if (proof?.oauthSnapshot) restoreWaapOAuth(proof.oauthSnapshot);
-    } catch { /* non-fatal — proceed without snapshot */ }
-  }
+  // WaaP OAuth snapshot restoration removed — causes session conflation
+  // (user picks email but gets old X session). Let WaaP handle its own sessions.
 
   try {
     await connect(match);
