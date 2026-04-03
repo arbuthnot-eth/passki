@@ -593,19 +593,7 @@ export async function autoReconnect(): Promise<boolean> {
     match = real;
   }
 
-  // Restore WaaP OAuth snapshot for auto-reconnect (page load) —
-  // needed for signing to work. NOT used during manual connect (see ui.ts tryWaapProofConnect).
-  if (/waap/i.test(match.name)) {
-    try {
-      const [{ getDeviceId }, { getWaapProof, restoreWaapOAuth }] = await Promise.all([
-        import('./fingerprint.js') as Promise<{ getDeviceId: () => Promise<{ visitorId: string }> }>,
-        import('./waap-proof.js') as Promise<{ getWaapProof: (id: string) => Promise<{ oauthSnapshot?: Record<string, string> } | null>; restoreWaapOAuth: (snap: Record<string, string>) => void }>,
-      ]);
-      const { visitorId } = await getDeviceId();
-      const proof = await getWaapProof(visitorId);
-      if (proof?.oauthSnapshot) restoreWaapOAuth(proof.oauthSnapshot);
-    } catch { /* non-fatal */ }
-  }
+  // WaaP OAuth snapshot restoration removed — causes connection issues
 
   try {
     await connect(match);
