@@ -42,6 +42,7 @@ export async function registerWaaP(): Promise<void> {
         allowedSocials: ['twitter', 'google', 'discord', 'github'],
       },
     });
+    waapWallet = wallet;
     // Override the built-in icon with our custom branded SVG
     Object.defineProperty(wallet, 'icon', { value: WAAP_ICON, writable: false, enumerable: true, configurable: true });
     registerWallet(wallet as unknown as Parameters<typeof registerWallet>[0]);

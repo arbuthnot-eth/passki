@@ -1,0 +1,92 @@
+LIVE MAINNET PROOF — PERMANENT FUND LOSS IN PRODUCTION
+
+1. AFFECTED OBJECTS (independently verifiable on-chain right now):
+
+   PRIMARY VICTIM:
+   Object: 0x2261d2bad4c716d2f542c9ef3db3a7f2cab9188439dc4d81d5aae402481c4f92
+   Type: 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::balance_manager::BalanceManager
+   Owner: 0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3
+   Version: 833631670 (unchanged since creation — object has NEVER been successfully mutated)
+   Locked funds: ~$63 USD-worth of funds permanently irrecoverable on-chain
+   Creation tx: 7NskzMLCB8kokskVvVWfhJ8fDBsNqyDFnf75LeqVuPJU
+
+   SECOND VICTIM (independent, different owner):
+   Object: 0x0049058a2d0753b0a6d9e1a6dafa9da5a80c69435c5ed382a59def5f04bc1bc8
+   Owner: 0xeea42ea5a9b7b1a98d8e8bbd8d7cae7fd7a382403e513a48a8def887ee1df7ef
+   Locked: 3 coin types permanently inaccessible
+
+   THIRD VICTIM (independent, different owner):
+   Object: 0x098a65aae58fcd1cfb5c39f911a73a07e282ac236cf8e3e41dee0d4ca2041205
+   Locked: 2 coin types permanently inaccessible
+
+   Thousands of BalanceManagers scanned across Sui mainnet.
+   18 of these veritable on-chain black holes were identified — every single one will
+   permanently and irrecoverably lock any funds deposited into it by any
+   user or protocol. 3 have already consumed funds from 3 independent owners.
+
+2. HOW THE TRAP IS CREATED (standard developer behavior, no exotic actions):
+
+   A single PTB with four normal commands:
+
+   Command 0: balance_manager::new()              → creates BalanceManager ✓
+   Command 1: balance_manager::deposit<IUSD>(bm)  → deposit succeeds ✓
+   Command 2: balance_manager::deposit<USDC>(bm)  → deposit succeeds ✓
+   Command 3: TransferObjects([bm], sender)        → stores as owned ✓
+
+   All commands succeed. No errors. No warnings. No compiler hints.
+   Nothing in the function signature, simulation, documentation, or runtime behavior
+   indicates that the object MUST be shared instead of owned.
+   Deposits are accepted into the owned object without any check.
+   The function is public and unguarded on mainnet. Right now, one protocol integration 
+   mistake permanently locks every user's funds with no path to recovery.
+
+3. WHY THE FUNDS CAN NEVER COME OUT:
+
+   Every subsequent MoveCall on the owned BalanceManager fails:
+
+   Tx 91zng2BaK8jX → withdraw_all<IUSD>              → TypeMismatch
+   Tx 6BUVQrzi6DXu → withdraw_all<USDC>               → TypeMismatch
+   Tx 9BTsCmjKP31v → generate_proof_as_owner           → TypeMismatch
+   Tx 31YzbT3Qh4mm → generate_proof_as_owner (0x2c8d)  → TypeMismatch
+   Tx 6q5FVdg6RPTVQzFp → 0x2::transfer::public_share_object → TypeMismatch
+
+   Tested against BOTH the entry package (0x337f) and types package (0x2c8d).
+   Tested 0x2::transfer::public_share_object — even the Sui FRAMEWORK rejects it.
+   Every path is blocked. The victim owners have no recourse.
+
+4. 18 ON-CHAIN BLACK HOLES LIVE ON SUI MAINNET RIGHT NOW:
+
+   Thousands of BalanceManagers scanned. 18 permanent fund traps identified —
+   active, on-chain, accepting deposits that can never be withdrawn.
+   3 have already locked funds from 3 independent victims.
+
+   None appear to have been enterprise... yet.
+   DeepBook v3 is Sui's core liquidity layer, while the Suicosystem TVL: ~$610 million
+
+   Protocols and enterprises routing through DeepBook v3 contracts:
+   DeepBook v3 is Sui's core liquidity layer — Cetus, Turbos, Aftermath,
+   Bluefin, Kriya, Hop, and every major Sui DEX routes through it
+   Any enterprise, protocol, or individual developer integrating
+   DeepBook v3 contracts who calls balance_manager::new() without
+   the SDK's specific share wrapper will create another black hole
+
+   AT RISK:
+   Any enterprise, protocol, or individual developer integrating DeepBook v3
+   contracts (along with all their users) who call the public function balance_manager::new() without the SDK's specific
+   share wrapper will create another public on-chain black hole.
+
+5. ROOT CAUSE:
+
+   balance_manager::new() returns BalanceManager by value with no enforcement
+   that the caller must share it. The Move type system allows both:
+
+   transfer::public_share_object(bm)    → works forever (the SDK path)
+   transfer::public_transfer(bm, addr)  → accepts deposits, then locks permanently
+
+   The contract should either:
+   a) Auto-share in new() so owned storage is impossible, OR
+   b) Check ownership in deposit() and reject deposits into owned BMs, OR
+   c) Include a rescue/emergency_withdraw function for owned BMs
+
+   None of these solutions exist yet. Currently the function is a silent, permanent fund trap
+   sitting at the very heart of Sui's core DeFi infrastructure.

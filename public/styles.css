@@ -2812,9 +2812,10 @@ body {
   all: unset;
   cursor: pointer;
   flex-shrink: 0;
-  padding: 3px 4px;
+  padding: 5px 6px;
   border-radius: 6px;
   margin-left: auto;
+  box-sizing: border-box;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
   font-weight: 800;
@@ -2889,10 +2890,13 @@ body {
   color: #f0a500;
 }
 .ski-idle-ns-action--trade-unaffordable {
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.25), rgba(220, 38, 38, 0.15));
-  border: 1px solid rgba(239, 68, 68, 0.5);
-  color: #ef4444;
-  opacity: 0.7;
+  background: rgba(239, 68, 68, 0.3);
+  border: 1.5px solid rgba(239, 68, 68, 0.7);
+  color: #fca5a5;
+}
+.ski-idle-ns-action--trade-unaffordable:disabled {
+  opacity: 0.85;
+  cursor: not-allowed;
 }
 .ski-idle-addr-row {
   display: flex;

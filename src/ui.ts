@@ -126,20 +126,36 @@ function socialIconSvg(walletName: string): string | null {
   if (/waap/i.test(walletName)) {
     const ws = getState();
     if (ws.address) return waapProviderIcon(ws.address);
-    return SOCIAL_ICON_X; // fallback before address is known
+    return null;
   }
   if (/google/i.test(walletName)) return SOCIAL_ICON_GOOGLE;
   if (/discord/i.test(walletName)) return SOCIAL_ICON_DISCORD;
   return null;
 }
 
-/** Detect which social provider a WaaP account used from its label string. */
-function detectWaapProvider(label: string): 'google' | 'x' | 'email' | 'phone' | null {
-  if (!label) return null;
-  if (/google/i.test(label) || /@gmail\./i.test(label)) return 'google';
-  if (/^@/.test(label.trim()) || /x\.com/i.test(label)) return 'x';
-  if (/^\+?\d[\d\s()-]{6,}$/.test(label.trim())) return 'phone';
-  if (/@/.test(label)) return 'email';
+/** Detect which social provider a WaaP account used. Checks label first, then localStorage keys. */
+function detectWaapProvider(label: string): 'google' | 'x' | 'email' | 'phone' | 'discord' | 'github' | null {
+  // Check label first
+  if (label) {
+    if (/google/i.test(label) || /@gmail\./i.test(label)) return 'google';
+    if (/^@/.test(label.trim()) || /x\.com|twitter/i.test(label)) return 'x';
+    if (/discord/i.test(label)) return 'discord';
+    if (/github/i.test(label)) return 'github';
+    if (/^\+?\d[\d\s()-]{6,}$/.test(label.trim())) return 'phone';
+    if (/@/.test(label)) return 'email';
+  }
+  // Fallback: scan localStorage for OAuth provider clues left by WaaP
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = (localStorage.key(i) || '').toLowerCase();
+      if (key.startsWith('ski:')) continue;
+      const val = (localStorage.getItem(localStorage.key(i)!) || '').toLowerCase();
+      if (key.includes('google') || val.includes('google') || val.includes('accounts.google')) return 'google';
+      if (key.includes('twitter') || val.includes('twitter') || val.includes('api.x.com')) return 'x';
+      if (key.includes('discord') || val.includes('discord')) return 'discord';
+      if (key.includes('github') || val.includes('github')) return 'github';
+    }
+  } catch {}
   return null;
 }
 
@@ -149,16 +165,38 @@ function storeWaapProvider(address: string, provider: 'google' | 'x' | 'email' |
   try { localStorage.setItem(`ski:waap-provider:${address}`, provider); } catch {}
 }
 
-/** Return the social provider icon SVG for a WaaP address; falls back to X. */
+/** Get a small inline SVG for the WaaP provider badge (14x14) */
+function _waapProviderBadgeSvg(address: string | null): string {
+  if (!address) return '';
+  try {
+    const stored = localStorage.getItem(`ski:waap-provider:${address}`);
+    if (stored === 'google') return '<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>';
+    if (stored === 'x') return '<svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>';
+    if (stored === 'discord') return '<svg width="24" height="24" viewBox="0 0 24 24" fill="#5865F2"><path d="M20.317 4.37a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 00-.041-.106 13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03z"/></svg>';
+    if (stored === 'email' || stored === 'phone') return '<svg width="24" height="18" viewBox="0 0 24 18" fill="none" stroke="white" stroke-width="2"><rect x="1" y="1" width="22" height="16" rx="2"/><polyline points="1,1 12,10 23,1"/></svg>';
+  } catch {}
+  return '';
+}
+
+/** Return the social provider icon SVG for a WaaP address. Falls back to WaaP icon (not X). */
 function waapProviderIcon(address: string | null): string {
   if (address) {
     try {
       const stored = localStorage.getItem(`ski:waap-provider:${address}`);
       if (stored === 'google') return SOCIAL_ICON_GOOGLE;
-      if (stored === 'email' || stored === 'phone') return SOCIAL_ICON_EMAIL;
+      if (stored === 'x') return SOCIAL_ICON_X;
+      if (stored === 'discord') return SOCIAL_ICON_DISCORD;
+      if (stored === 'email' || stored === 'phone' || stored === 'github') return SOCIAL_ICON_EMAIL;
     } catch {}
+    // No stored provider — try live detection from localStorage OAuth keys
+    const detected = detectWaapProvider('');
+    if (detected === 'google') return SOCIAL_ICON_GOOGLE;
+    if (detected === 'x') return SOCIAL_ICON_X;
+    if (detected === 'discord') return SOCIAL_ICON_DISCORD;
+    if (detected) return SOCIAL_ICON_EMAIL;
   }
-  return SOCIAL_ICON_X;
+  // Unknown provider — return WaaP's own icon (don't assume X)
+  return `<svg width="30" height="30" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg"><rect width="38" height="38" rx="8" fill="#6366f1"/><text x="19" y="24" text-anchor="middle" fill="white" font-size="16" font-weight="700" font-family="system-ui">W</text></svg>`;
 }
 
 // ─── App-level state (beyond wallet connection) ──────────────────────
@@ -2948,8 +2986,12 @@ function _renderProfileEl(el: HTMLElement) {
   let iconHtml = '';
   if (ws.walletIcon) {
     const social = socialIconSvg(ws.walletName);
-    const xBadge = social ? `<span class="ski-waap-x">𝕏</span>` : '';
-    iconHtml = `<span class="wk-widget-icon-wrap"><span class="wk-widget-method-icon${social ? ' wk-widget-method-icon--social' : ''}"><img src="${esc(ws.walletIcon)}" alt="${esc(ws.walletName)}"></span>${xBadge}</span>`;
+    const isWaap = /waap/i.test(ws.walletName || '');
+    const badgeSvg = isWaap ? _waapProviderBadgeSvg(ws.address) : '';
+    const badge = isWaap
+      ? `<span class="ski-waap-x ski-waap-x--picker" data-provider-picker title="Change login method">${badgeSvg || '?'}</span>`
+      : social ? `<span class="ski-waap-x">𝕏</span>` : '';
+    iconHtml = `<span class="wk-widget-icon-wrap"><span class="wk-widget-method-icon${social || isWaap ? ' wk-widget-method-icon--social' : ''}"><img src="${esc(ws.walletIcon)}" alt="${esc(ws.walletName)}"></span>${badge}</span>`;
   }
 
   // Eagerly restore IKA cache so squid shows from the first render frame
@@ -9204,6 +9246,50 @@ function bindEvents() {
     }
   });
 
+  // WaaP provider picker — click the badge to choose Google/X/Email/Discord
+  document.addEventListener('click', (e) => {
+    const badge = (e.target as HTMLElement).closest('[data-provider-picker]') as HTMLElement | null;
+    if (!badge) {
+      // Close any open picker
+      document.querySelector('.ski-provider-picker')?.remove();
+      return;
+    }
+    e.stopPropagation();
+    // Toggle picker
+    const existing = document.querySelector('.ski-provider-picker');
+    if (existing) { existing.remove(); return; }
+    const ws = getState();
+    if (!ws.address) return;
+    const rect = badge.getBoundingClientRect();
+    const picker = document.createElement('div');
+    picker.className = 'ski-provider-picker';
+    picker.style.cssText = `position:fixed;top:${rect.bottom + 4}px;right:${window.innerWidth - rect.right}px;z-index:99999;display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:6px;background:rgba(10,14,28,0.95);border:1px solid rgba(255,255,255,0.15);border-radius:8px;backdrop-filter:blur(8px)`;
+    const providers = [
+      { id: 'google', label: 'Google', icon: SOCIAL_ICON_GOOGLE },
+      { id: 'x', label: 'X', icon: SOCIAL_ICON_X },
+      { id: 'discord', label: 'Discord', icon: SOCIAL_ICON_DISCORD },
+      { id: 'email', label: 'Email', icon: SOCIAL_ICON_EMAIL },
+    ];
+    for (const p of providers) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.title = p.label;
+      btn.style.cssText = 'all:unset;cursor:pointer;width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:6px;transition:background 0.1s';
+      btn.innerHTML = p.icon.replace(/width="\d+"/, 'width="24"').replace(/height="\d+"/, 'height="24"');
+      btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(255,255,255,0.1)'; });
+      btn.addEventListener('mouseleave', () => { btn.style.background = ''; });
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        try { localStorage.setItem(`ski:waap-provider:${ws.address}`, p.id); } catch {}
+        picker.remove();
+        renderWidget();
+        renderSkiBtn();
+      });
+      picker.appendChild(btn);
+    }
+    document.body.appendChild(picker);
+  });
+
   document.addEventListener('keydown', (e) => {
     const key = (e as KeyboardEvent).key;
     if (key === 'ArrowDown' && !modalOpen && document.activeElement !== els.skiBtn) {
@@ -9467,7 +9553,16 @@ function bindEvents() {
               const fee = listing.source === 'tradeport' ? suiAmt * 0.03 : 0;
               const totalSui = suiAmt + fee;
               const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
-              priceText.textContent = usdVal != null ? `$${Math.round(usdVal)}` : `${Math.round(totalSui)} SUI`;
+              const _canAfford = usdVal != null ? (app.usd ?? 0) >= usdVal : false;
+              if (_canAfford) {
+                priceText.textContent = usdVal != null ? `$${Math.round(usdVal)}` : `${Math.round(totalSui)} SUI`;
+                priceText.style.color = '';
+              } else {
+                priceText.innerHTML = usdVal != null
+                  ? `<span style="color:#ef4444">$</span>${Math.round(usdVal)}`
+                  : `${Math.round(totalSui)} SUI`;
+                priceText.style.color = '';
+              }
               priceRow.hidden = false;
             }
           } else if (nsAvail === 'available' && nsPriceUsd) {
@@ -9592,10 +9687,11 @@ function bindEvents() {
           expiryHtml = ` <span class="wk-ns-owned-expiry wk-ns-owned-expiry--urgent">EXPIRED</span>`;
         }
         card.innerHTML = `<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span><span class="ski-idle-card-name" title="Populate input">${esc(name)}</span>${expiryHtml}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}<button class="ski-idle-card-dismiss" type="button" title="Clear">\u2715</button>`;
-        // Fetch resolved address balance
+        // Fetch resolved address balance — for listings, use seller address
         (async () => {
           try {
-            let addr = nsTargetAddress || nsNftOwner;
+            const _listing = _nsListing();
+            let addr = _listing?.seller || nsTargetAddress || nsNftOwner;
             if (!addr) {
               const r = await fetch('https://graphql.mainnet.sui.io/graphql', {
                 method: 'POST',
@@ -9638,6 +9734,17 @@ function bindEvents() {
             }
             if (totalUsd >= 0.50) {
               balEl.innerHTML = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span>`;
+            }
+            // Patch in expiration if it wasn't available at first render
+            if (nsExpirationMs > 0 && !card.querySelector('.wk-ns-owned-expiry')) {
+              const daysLeft = Math.max(0, Math.ceil((nsExpirationMs - Date.now()) / 86_400_000));
+              if (daysLeft > 0) {
+                let cls = 'wk-ns-owned-expiry';
+                if (daysLeft <= 30) cls += ' wk-ns-owned-expiry--urgent';
+                else if (daysLeft <= 90) cls += ' wk-ns-owned-expiry--warn';
+                const nameEl = card.querySelector('.ski-idle-card-name');
+                if (nameEl) nameEl.insertAdjacentHTML('afterend', ` <span class="${cls}">${daysLeft}D</span>`);
+              }
             }
           } catch {}
         })();
@@ -9722,8 +9829,11 @@ function bindEvents() {
         nsTargetAddress = null;
         nsKioskListing = null; nsTradeportListing = null;
         nsShadeOrder = null;
+        nsExpirationMs = 0;
+        nsNftOwner = null;
         _updateIdleStatus();
-        _updateIdleCard(val);
+        // Invalid/short input → reset card to primary name
+        _updateIdleCard(validLabel ? val : '');
         _renderThunderComposePreview();
         // Debounce fetch — short delay to batch rapid keystrokes
         if (_idleDebounce) clearTimeout(_idleDebounce);
@@ -11582,12 +11692,14 @@ export function initUI() {
             localStorage.setItem(key, JSON.stringify([...existing, normalized]));
           }
         } catch {}
-        // Detect and store WaaP social provider from account label
-        if (/waap/i.test(ws.walletName)) {
+        // Detect WaaP social provider from account label — only overwrite if detected
+        // Never clear a user-set provider (from the picker) on failed auto-detection
+        if (/waap/i.test(ws.walletName) && ws.address) {
           const label = ws.account?.label || '';
           const detected = label ? detectWaapProvider(label) : null;
-          console.log('[SKI] WaaP provider detection:', { label, detected, address: ws.address });
-          if (detected) storeWaapProvider(ws.address, detected);
+          if (detected) {
+            try { localStorage.setItem(`ski:waap-provider:${ws.address}`, detected); } catch {}
+          }
         }
       }
       // Always clear first so a previously connected wallet's name never bleeds through
