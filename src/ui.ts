@@ -3000,7 +3000,7 @@ function _renderProfileEl(el: HTMLElement) {
   const innerHtml = `${iconHtml}
         <span class="wk-widget-label-wrap">
           <span class="${labelClass}">
-            <span class="wk-widget-primary-name">${esc(label)}${app.ikaWalletId ? ' \ud83e\udd91' : ''}</span>
+            <span class="wk-widget-primary-name">${esc(label)}<span style="display:inline-block;width:1.1em;text-align:center${app.ikaWalletId ? '' : ';visibility:hidden'}">\ud83e\udd91</span></span>
           </span>
         </span>`;
 
@@ -5857,6 +5857,10 @@ function renderSkiMenu() {
         changed = true;
       }
       if (changed) {
+        // Cache IKA status for instant restore on next page load
+        if (app.ikaWalletId && ws.address) {
+          try { localStorage.setItem(`ski:has-ika:${ws.address}`, app.ikaWalletId); } catch {}
+        }
         render();
       }
     }).catch(() => { _dwalletCheckInFlight = false; });
@@ -9405,11 +9409,11 @@ function bindEvents() {
             </div>
           </div>
           <div class="ski-idle-thunder-row">
-            <button class="ski-idle-thunder-at" id="ski-idle-thunder-at" type="button" title="Tag a name">\u25a0</button>
+            <button class="ski-idle-thunder-at" id="ski-idle-thunder-at" type="button" title="Tag a name"><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>
             <div class="ski-idle-thunder-input-wrap">
               <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
               <div class="ski-idle-quick-actions" id="ski-idle-quick-actions">
-                <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green">\u25cf</button>
+                <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#22c55e" stroke="white" stroke-width="1.5"/></svg></button>
                 <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Initiate rumble squids" data-action="rumble">\ud83e\udd91</button>
               </div>
               <div class="ski-idle-thunder-send-group">
@@ -10403,9 +10407,11 @@ function bindEvents() {
         e.stopPropagation();
         const panel = _idleOverlay?.querySelector('#ski-idle-iusd-panel') as HTMLElement | null;
         if (!panel) return;
+        const iusdBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--iusd');
         const wasHidden = panel.hasAttribute('hidden');
         if (wasHidden) {
           panel.removeAttribute('hidden');
+          iusdBtn?.classList.add('ski-idle-quick-btn--active');
           // Fetch treasury state
           const stats = panel.querySelector('#ski-idle-iusd-stats') as HTMLElement;
           if (stats) stats.innerHTML = '<span style="opacity:0.5">loading\u2026</span>';
@@ -10426,6 +10432,7 @@ function bindEvents() {
           } catch { if (stats) stats.innerHTML = '<span style="color:#ef4444">offline</span>'; }
         } else {
           panel.setAttribute('hidden', '');
+          iusdBtn?.classList.remove('ski-idle-quick-btn--active');
         }
       });
 
@@ -10516,11 +10523,13 @@ function bindEvents() {
         showToast('\u26a1 Ignite — coming soon. Burn iUSD, get gas on any chain.');
       });
 
-      // Squid quick-action → triggers Rumble button
+      // Squid quick-action → triggers Rumble button + toggles active state
       _idleOverlay.querySelector('#ski-idle-quick-actions')?.addEventListener('click', (e) => {
         const squid = (e.target as HTMLElement).closest('[data-action="rumble"]');
         if (!squid) return;
         e.stopPropagation();
+        const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
+        squidBtn?.classList.toggle('ski-idle-quick-btn--active');
         (_idleOverlay?.querySelector('#ski-idle-rumble') as HTMLButtonElement | null)?.click();
       });
 
@@ -11731,6 +11740,11 @@ export function initUI() {
       app.btcAddress = '';
       app.ethAddress = '';
       app.solAddress = '';
+      // Restore cached IKA squid status instantly (avoids button width jump)
+      try {
+        const hasIka = localStorage.getItem(`ski:has-ika:${ws.address}`);
+        if (hasIka) app.ikaWalletId = hasIka;
+      } catch {}
       // Restore this address's cached SuiNS name instantly (will refresh from network)
       try {
         const cached = localStorage.getItem(`ski:suins:${ws.address}`);

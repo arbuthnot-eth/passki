@@ -3270,23 +3270,32 @@ a.ski-idle-bubble-name:hover {
   line-height: 1;
 }
 .ski-idle-quick-btn--iusd {
-  background: rgba(34, 197, 94, 0.3);
-  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(0, 0, 0, 0.8);
+  border: 1px solid rgba(34, 197, 94, 0.4);
   color: #22c55e;
+  transition: background 0.15s, border-color 0.15s;
 }
-.ski-idle-quick-btn--iusd:hover { background: rgba(34, 197, 94, 0.5); }
+.ski-idle-quick-btn--iusd:hover { background: rgba(34, 197, 94, 0.2); }
+.ski-idle-quick-btn--iusd.ski-idle-quick-btn--active {
+  background: rgba(34, 197, 94, 0.3);
+  border-color: rgba(34, 197, 94, 0.6);
+}
 .ski-idle-quick-btn--green {
-  background: rgba(34, 197, 94, 0.3);
-  border-color: rgba(34, 197, 94, 0.4);
-  color: #22c55e;
+  background: none;
+  border-color: transparent;
 }
-.ski-idle-quick-btn--green:hover { background: rgba(34, 197, 94, 0.5); }
+.ski-idle-quick-btn--green:hover { background: rgba(34, 197, 94, 0.15); }
 .ski-idle-quick-btn--squid {
-  background: rgba(236, 72, 153, 0.3);
-  border-color: rgba(236, 72, 153, 0.4);
+  background: rgba(0, 0, 0, 0.8);
+  border: 1px solid rgba(236, 72, 153, 0.4);
   color: #ec4899;
+  transition: background 0.15s, border-color 0.15s;
 }
-.ski-idle-quick-btn--squid:hover { background: rgba(236, 72, 153, 0.5); }
+.ski-idle-quick-btn--squid:hover { background: rgba(236, 72, 153, 0.2); }
+.ski-idle-quick-btn--squid.ski-idle-quick-btn--active {
+  background: rgba(236, 72, 153, 0.3);
+  border-color: rgba(236, 72, 153, 0.6);
+}
 .ski-idle-thunder-send-group {
   position: absolute;
   right: 4px;

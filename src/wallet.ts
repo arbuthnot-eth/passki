@@ -404,7 +404,7 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
         const execFeat = wallet.features['sui:signAndExecuteTransaction'] as {
           signAndExecuteTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string; options?: { showEffects?: boolean } }) => Promise<{ digest: string; effects?: unknown }>;
         };
-        // Prefer unbuilt Transaction (.tx property) over pre-built bytes
+        // Pass unbuilt Transaction so WaaP builds server-side with its own v1 SDK.
         const tx = (transaction as { tx?: unknown }).tx ?? transaction;
         const r = await execFeat.signAndExecuteTransaction({
           transaction: tx instanceof Uint8Array ? augmentBytes(tx) : tx, account, chain, options: { showEffects: true },
@@ -593,8 +593,19 @@ export async function autoReconnect(): Promise<boolean> {
     match = real;
   }
 
-  // WaaP OAuth snapshot restoration removed — causes session conflation
-  // (user picks email but gets old X session). Let WaaP handle its own sessions.
+  // Restore WaaP OAuth snapshot for auto-reconnect (page load) —
+  // needed for signing to work. NOT used during manual connect (see ui.ts tryWaapProofConnect).
+  if (/waap/i.test(match.name)) {
+    try {
+      const [{ getDeviceId }, { getWaapProof, restoreWaapOAuth }] = await Promise.all([
+        import('./fingerprint.js') as Promise<{ getDeviceId: () => Promise<{ visitorId: string }> }>,
+        import('./waap-proof.js') as Promise<{ getWaapProof: (id: string) => Promise<{ oauthSnapshot?: Record<string, string> } | null>; restoreWaapOAuth: (snap: Record<string, string>) => void }>,
+      ]);
+      const { visitorId } = await getDeviceId();
+      const proof = await getWaapProof(visitorId);
+      if (proof?.oauthSnapshot) restoreWaapOAuth(proof.oauthSnapshot);
+    } catch { /* non-fatal */ }
+  }
 
   try {
     await connect(match);
