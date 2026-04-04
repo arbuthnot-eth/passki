@@ -10591,6 +10591,7 @@ function bindEvents() {
         if (panel && convo && !convo.hasAttribute('hidden')) {
           convo.setAttribute('hidden', ''); convo.innerHTML = '';
           squidBtn?.classList.remove('ski-idle-quick-btn--active');
+          _unfreezeGif();
           return;
         }
         // If squids rows are open, close them
@@ -10598,6 +10599,7 @@ function bindEvents() {
         if (addrRow && !addrRow.hasAttribute('hidden')) {
           addrRow.setAttribute('hidden', '');
           squidBtn?.classList.remove('ski-idle-quick-btn--active');
+          _unfreezeGif();
           return;
         }
         squidBtn?.classList.toggle('ski-idle-quick-btn--active');
