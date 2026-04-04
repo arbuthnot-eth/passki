@@ -9213,6 +9213,7 @@ function render() {
 // ─── Global event bindings ───────────────────────────────────────────
 
 let _idleOverlay: HTMLElement | null = null;
+let _idleVideoBlobUrl: string | null = null;
 
 function bindEvents() {
   els.skiDot?.addEventListener('click', (e) => {
@@ -11739,14 +11740,15 @@ function bindEvents() {
           if (cached) {
             // Serve from cache — instant
             const blob = await cached.blob();
-            const url = URL.createObjectURL(blob);
-            _idleVideo.src = url;
+            if (_idleVideoBlobUrl) URL.revokeObjectURL(_idleVideoBlobUrl);
+            _idleVideoBlobUrl = URL.createObjectURL(blob);
+            _idleVideo.src = _idleVideoBlobUrl;
             _idleVideo.load();
           } else {
             // First visit — fetch, cache, and let the video load normally
             try {
               const resp = await fetch(vSrc);
-              if (resp.ok) cache.put(vSrc, resp);
+              if (resp.ok) cache.put(vSrc, resp.clone());
             } catch {}
           }
         }).catch(() => {});
