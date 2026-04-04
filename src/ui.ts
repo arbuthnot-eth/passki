@@ -10579,12 +10579,27 @@ function bindEvents() {
         showToast('\u26a1 Ignite — coming soon. Burn iUSD, get gas on any chain.');
       });
 
-      // Squid quick-action → triggers Rumble button + toggles active state
+      // Squid quick-action → toggle rumble panel or show cached squids rows
       _idleOverlay.querySelector('#ski-idle-quick-actions')?.addEventListener('click', (e) => {
         const squid = (e.target as HTMLElement).closest('[data-action="rumble"]');
         if (!squid) return;
         e.stopPropagation();
         const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
+        // If rumble panel is open, close it
+        const convo = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        const panel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
+        if (panel && convo && !convo.hasAttribute('hidden')) {
+          convo.setAttribute('hidden', ''); convo.innerHTML = '';
+          squidBtn?.classList.remove('ski-idle-quick-btn--active');
+          return;
+        }
+        // If squids rows are open, close them
+        const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+        if (addrRow && !addrRow.hasAttribute('hidden')) {
+          addrRow.setAttribute('hidden', '');
+          squidBtn?.classList.remove('ski-idle-quick-btn--active');
+          return;
+        }
         squidBtn?.classList.toggle('ski-idle-quick-btn--active');
         (_idleOverlay?.querySelector('#ski-idle-rumble') as HTMLButtonElement | null)?.click();
       });
