@@ -2832,9 +2832,15 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.55rem;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.3);
+  color: white;
   letter-spacing: 0.05em;
-  pointer-events: none;
+  pointer-events: auto;
+  text-decoration: none;
+  transition: text-shadow 0.2s;
+  cursor: pointer;
+}
+.ski-idle-version:hover {
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.8), 0 0 16px rgba(77, 162, 255, 0.5);
 }
 /* Ski Context — price/status right under the action button */
 .ski-idle-context {

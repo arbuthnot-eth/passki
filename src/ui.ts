@@ -9,6 +9,9 @@
  * Profile button is blue when SuiNS name exists, black otherwise.
  */
 
+// @ts-ignore — bun resolves JSON imports at build time
+import { version as SKI_VERSION } from '../package.json';
+
 import {
   subscribe,
   getState,
@@ -9431,7 +9434,7 @@ function bindEvents() {
 
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
-          <span class="ski-idle-version">v3.1</span>
+          <a class="ski-idle-version" href="https://www.npmjs.com/package/sui.ski" target="_blank" rel="noopener noreferrer">v${SKI_VERSION}</a>
           <video class="ski-idle-img" autoplay loop muted playsinline poster="/assets/ski-idle.gif"><source src="/assets/ski-idle.webm" type="video/webm"><source src="/assets/ski-idle.mp4" type="video/mp4"></video>
           <div class="ski-idle-iusd-btn" id="ski-idle-iusd" title="Swap 95% of wallet to iUSD"></div>
           <div class="ski-idle-ns-row">
