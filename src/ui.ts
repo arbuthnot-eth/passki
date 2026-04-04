@@ -5881,10 +5881,13 @@ function renderSkiMenu() {
   // Auto-detect dWallet on menu render (non-blocking, updates cache)
   if ((!app.btcAddress || !app.solAddress) && ws.address && !_dwalletCheckInFlight) {
     _dwalletCheckInFlight = true;
+    const _ikaQueryAddr = ws.address;
     import('./client/ika.js').then(({ getCrossChainStatus }) =>
       getCrossChainStatus(ws.address)
     ).then((status) => {
       _dwalletCheckInFlight = false;
+      // Wallet switched during query — discard stale result
+      if (getState().address !== _ikaQueryAddr) return;
       let changed = false;
       if (status.btcAddress && status.btcAddress !== app.btcAddress) {
         app.btcAddress = status.btcAddress;
