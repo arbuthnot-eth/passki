@@ -322,6 +322,8 @@ export function showToast(msg: string, isHtml = false) {
   }
 }
 
+let _addrRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+
 /** Toggle-select an address row: highlight with chain color, deselect others, copy + flash "Copied ✓". */
 function toggleAddrRow(el: HTMLElement, fullAddr: string, color: string) {
   const isSelected = el.getAttribute('data-addr-selected') === '1';
@@ -341,7 +343,10 @@ function toggleAddrRow(el: HTMLElement, fullAddr: string, color: string) {
   el.style.setProperty('--addr-sel-color', color);
   navigator.clipboard.writeText(fullAddr).catch(() => {});
   // Flash "Copied ✓" then restore
-  const origHtml = el.innerHTML;
+  if (_addrRestoreTimer) clearTimeout(_addrRestoreTimer);
+  // Only save origHtml if not already showing "Copied ✓"
+  const origHtml = el.getAttribute('data-orig-html') || el.innerHTML;
+  el.setAttribute('data-orig-html', origHtml);
   const iconEl = el.querySelector('img, .ski-idle-addr-icon, .ski-idle-addr-icon--inline');
   if (iconEl) {
     el.innerHTML = `${(iconEl as HTMLElement).outerHTML} Copied <span style="color:${color}">\u2713</span>`;
@@ -349,7 +354,11 @@ function toggleAddrRow(el: HTMLElement, fullAddr: string, color: string) {
     const label = (el.textContent || '').split(' ')[0] || '';
     el.innerHTML = `${label} Copied <span style="color:${color}">\u2713</span>`;
   }
-  setTimeout(() => { el.innerHTML = origHtml; }, 1200);
+  _addrRestoreTimer = setTimeout(() => {
+    el.innerHTML = origHtml;
+    el.removeAttribute('data-orig-html');
+    _addrRestoreTimer = null;
+  }, 1200);
 }
 
 function showCopyableToast(display: string, fullText: string, durationMs = 8000) {
