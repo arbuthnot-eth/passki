@@ -224,9 +224,9 @@ const app: AppState = {
   nsBalance: 0,
   suinsName: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; return a ? (localStorage.getItem(`ski:suins:${a}`) || '') : ''; } catch { return ''; } })(),
   ikaWalletId: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; return a ? (localStorage.getItem(`ski:has-ika:${a}`) || '') : ''; } catch { return ''; } })(),
-  btcAddress: '',
-  ethAddress: '',
-  solAddress: '',
+  btcAddress: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; if (!a) return ''; const c = localStorage.getItem(`ski:ika-addrs:${a}`); return c ? (JSON.parse(c).btc || '') : ''; } catch { return ''; } })(),
+  ethAddress: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; if (!a) return ''; const c = localStorage.getItem(`ski:ika-addrs:${a}`); return c ? (JSON.parse(c).eth || '') : ''; } catch { return ''; } })(),
+  solAddress: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; if (!a) return ''; const c = localStorage.getItem(`ski:ika-addrs:${a}`); return c ? (JSON.parse(c).sol || '') : ''; } catch { return ''; } })(),
   solBalance: 0,
   skiMenuOpen: (() => { try { return localStorage.getItem('ski:lift') === '1'; } catch { return false; } })(),
   copied: false,
@@ -5909,6 +5909,7 @@ function renderSkiMenu() {
         // Cache IKA status for instant restore on next page load
         if (app.ikaWalletId && ws.address) {
           try { localStorage.setItem(`ski:has-ika:${ws.address}`, app.ikaWalletId); } catch {}
+          try { localStorage.setItem(`ski:ika-addrs:${ws.address}`, JSON.stringify({ btc: app.btcAddress, eth: app.ethAddress, sol: app.solAddress })); } catch {}
         }
         render();
       }
@@ -11884,7 +11885,16 @@ export function initUI() {
         const cached = localStorage.getItem(`ski:suins:${ws.address}`);
         if (cached) app.suinsName = cached;
       } catch {}
-      // IKA dWallet addresses queried from on-chain — no localStorage cache
+      // Restore cached IKA dWallet addresses instantly
+      try {
+        const ikaAddrs = localStorage.getItem(`ski:ika-addrs:${ws.address}`);
+        if (ikaAddrs) {
+          const parsed = JSON.parse(ikaAddrs);
+          if (parsed.btc) app.btcAddress = parsed.btc;
+          if (parsed.eth) app.ethAddress = parsed.eth;
+          if (parsed.sol) app.solAddress = parsed.sol;
+        }
+      } catch {}
 
       startPolling();
       refreshPortfolio(true);
