@@ -222,8 +222,8 @@ const app: AppState = {
   usd: null,
   stableUsd: 0,
   nsBalance: 0,
-  suinsName: '',
-  ikaWalletId: '',
+  suinsName: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; return a ? (localStorage.getItem(`ski:suins:${a}`) || '') : ''; } catch { return ''; } })(),
+  ikaWalletId: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; return a ? (localStorage.getItem(`ski:has-ika:${a}`) || '') : ''; } catch { return ''; } })(),
   btcAddress: '',
   ethAddress: '',
   solAddress: '',
@@ -5887,6 +5887,12 @@ function renderSkiMenu() {
         app.solAddress = status.solAddress;
         changed = true;
       }
+      // Explicit confirmation of no IKA → clear cached squid
+      if (!status.ika && app.ikaWalletId) {
+        app.ikaWalletId = '';
+        try { localStorage.removeItem(`ski:has-ika:${ws.address}`); } catch {}
+        changed = true;
+      }
       if (changed) {
         // Cache IKA status for instant restore on next page load
         if (app.ikaWalletId && ws.address) {
@@ -9359,7 +9365,7 @@ function bindEvents() {
   const IDLE_MS = 15_000; // 15 seconds
 
   const _showIdleOverlay = () => {
-      if (!app.skiMenuOpen && !getState().address) return;
+      if (!app.skiMenuOpen && !getState().address && !localStorage.getItem('ski:last-address')) return;
       if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
       // Ensure menu is open
       if (!app.skiMenuOpen && getState().address) {
@@ -9445,7 +9451,7 @@ function bindEvents() {
               <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
               <div class="ski-idle-quick-actions" id="ski-idle-quick-actions">
                 <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#22c55e" stroke="white" stroke-width="1.5"/></svg></button>
-                <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Initiate rumble squids" data-action="rumble">\ud83e\udd91</button>
+                <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Squids" data-action="rumble">\ud83e\udd91</button>
               </div>
               <div class="ski-idle-thunder-send-group">
                 <button class="ski-idle-quick-btn ski-idle-quick-btn--iusd" type="button" title="iUSD" data-action="iusd">$</button>
@@ -9456,7 +9462,7 @@ function bindEvents() {
         </div>
         <div class="ski-idle-bottom-row">
           <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
-          <button class="ski-idle-rumble" id="ski-idle-rumble" type="button" title="Initiate rumble squids \u2014 provision all chain wallets">\ud83e\udd91 Rumble</button>
+          <button class="ski-idle-rumble" id="ski-idle-rumble" type="button" title="Rumble Your Squids">\ud83e\udd91 Rumble</button>
           <button class="ski-idle-next" id="ski-idle-next" type="button" title="t2000 Ship">\u203a</button>
         </div>
       `;
@@ -10569,9 +10575,11 @@ function bindEvents() {
         e.stopPropagation();
         const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
         if (!addrRow) return;
+        const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
         if (!addrRow.hasAttribute('hidden')) {
           addrRow.setAttribute('hidden', '');
           _unfreezeGif();
+          squidBtn?.classList.remove('ski-idle-quick-btn--active');
           return;
         }
         const ws = getState();
@@ -10615,18 +10623,19 @@ function bindEvents() {
           } catch {}
         }
 
-        const short = `${addr.slice(0, 10)}\u2026${addr.slice(-6)}`;
+        const short = `${addr.slice(0, 6)}\u2026${addr.slice(-6)}`;
         const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
         const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
         const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
         const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#627eea" stroke="white" stroke-width="2.5"/><g transform="translate(10,3.5) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
 
         const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
-        const btcLine = btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${btc}">${btcIcon} ${btc.slice(0, 8)}\u2026${btc.slice(-4)}</span>` : '';
-        const solLine = sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${sol}">${solIcon} ${sol.slice(0, 6)}\u2026${sol.slice(-4)}</span>` : '';
-        const ethLine = eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${eth}">${ethIcon} ${eth.slice(0, 6)}\u2026${eth.slice(-4)}</span>` : '';
+        const btcLine = btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${btc}">${btcIcon} ${btc.slice(0, 6)}\u2026${btc.slice(-6)}</span>` : '';
+        const solLine = sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${sol}">${solIcon} ${sol.slice(0, 6)}\u2026${sol.slice(-6)}</span>` : '';
+        const ethLine = eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${eth}">${ethIcon} ${eth.slice(0, 6)}\u2026${eth.slice(-6)}</span>` : '';
         addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}`;
         addrRow.removeAttribute('hidden');
+        squidBtn?.classList.add('ski-idle-quick-btn--active');
         _freezeGif();
         addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
           el.addEventListener('click', (ev) => {
@@ -10637,19 +10646,33 @@ function bindEvents() {
             toggleAddrRow(h, full, c);
           });
         });
-        // Click outside closes the address row
+        // Click outside closes the squids rows (both inside overlay and document-level)
         const _closeAddr = (ev: Event) => {
           if (addrRow.contains(ev.target as Node)) return;
           addrRow.setAttribute('hidden', '');
           _unfreezeGif();
+          squidBtn?.classList.remove('ski-idle-quick-btn--active');
+          _idleOverlay?.removeEventListener('click', _closeAddr);
+          document.removeEventListener('click', _closeAddrDoc);
+        };
+        const _closeAddrDoc = (ev: Event) => {
+          if (_idleOverlay?.contains(ev.target as Node)) return;
+          addrRow.setAttribute('hidden', '');
+          _unfreezeGif();
+          squidBtn?.classList.remove('ski-idle-quick-btn--active');
+          document.removeEventListener('click', _closeAddrDoc);
           _idleOverlay?.removeEventListener('click', _closeAddr);
         };
-        setTimeout(() => _idleOverlay?.addEventListener('click', _closeAddr), 50);
+        setTimeout(() => {
+          _idleOverlay?.addEventListener('click', _closeAddr);
+          document.addEventListener('click', _closeAddrDoc);
+        }, 50);
       });
 
       // Rumble button → dispatch ski:rumble event
       _idleOverlay.querySelector('#ski-idle-rumble')?.addEventListener('click', async (e) => {
         e.stopPropagation();
+        _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.add('ski-idle-quick-btn--active');
         const ws = getState();
         if (!ws.address) { showToast('Connect wallet first'); return; }
         const btn = e.currentTarget as HTMLButtonElement;
@@ -10709,17 +10732,18 @@ function bindEvents() {
                 _unfreezeGif();
               } else {
                 const addr = nsTargetAddress || nsNftOwner || ws.address || '';
-                const short = `${addr.slice(0, 10)}\u2026${addr.slice(-6)}`;
+                const short = `${addr.slice(0, 6)}\u2026${addr.slice(-6)}`;
                 const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
                 const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
                 const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
                 const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#627eea" stroke="white" stroke-width="2.5"/><g transform="translate(10,3.5) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
                 const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
-                const btcLine = `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${status.btcAddress}">${btcIcon} ${status.btcAddress.slice(0, 8)}\u2026${status.btcAddress.slice(-4)}</span>`;
-                const solLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${status.solAddress}">${solIcon} ${status.solAddress.slice(0, 6)}\u2026${status.solAddress.slice(-4)}</span>`;
-                const ethLine = status.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${status.ethAddress}">${ethIcon} ${status.ethAddress.slice(0, 6)}\u2026${status.ethAddress.slice(-4)}</span>` : '';
+                const btcLine = `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${status.btcAddress}">${btcIcon} ${status.btcAddress.slice(0, 6)}\u2026${status.btcAddress.slice(-6)}</span>`;
+                const solLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${status.solAddress}">${solIcon} ${status.solAddress.slice(0, 6)}\u2026${status.solAddress.slice(-6)}</span>`;
+                const ethLine = status.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${status.ethAddress}">${ethIcon} ${status.ethAddress.slice(0, 6)}\u2026${status.ethAddress.slice(-6)}</span>` : '';
                 addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}`;
                 addrRow.removeAttribute('hidden');
+                _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.add('ski-idle-quick-btn--active');
                 _freezeGif();
                 addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
                   el.addEventListener('click', (ev) => {
@@ -10734,9 +10758,22 @@ function bindEvents() {
                   if (addrRow.contains(ev.target as Node)) return;
                   addrRow.setAttribute('hidden', '');
                   _unfreezeGif();
+                  _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+                  _idleOverlay?.removeEventListener('click', _closeAddr);
+                  document.removeEventListener('click', _closeAddrDoc);
+                };
+                const _closeAddrDoc = (ev: Event) => {
+                  if (_idleOverlay?.contains(ev.target as Node)) return;
+                  addrRow.setAttribute('hidden', '');
+                  _unfreezeGif();
+                  _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+                  document.removeEventListener('click', _closeAddrDoc);
                   _idleOverlay?.removeEventListener('click', _closeAddr);
                 };
-                setTimeout(() => _idleOverlay?.addEventListener('click', _closeAddr), 50);
+                setTimeout(() => {
+                  _idleOverlay?.addEventListener('click', _closeAddr);
+                  document.addEventListener('click', _closeAddrDoc);
+                }, 50);
               }
             }
             btn.disabled = false;
@@ -10847,7 +10884,7 @@ function bindEvents() {
                 if (!a.addr) continue;
                 const row = document.createElement('div');
                 row.style.cssText = `font-family:ui-monospace,monospace;font-size:0.6rem;font-weight:600;color:${a.color};cursor:pointer;padding:2px 4px;border-radius:3px;border:1px solid ${a.color}33;background:${a.color}15`;
-                row.textContent = `${a.label} ${a.addr.slice(0, 8)}...${a.addr.slice(-6)}`;
+                row.textContent = `${a.label} ${a.addr.slice(0, 6)}\u2026${a.addr.slice(-6)}`;
                 row.title = a.addr;
                 row.addEventListener('click', (ev) => { ev.stopPropagation(); toggleAddrRow(row, a.addr, a.color); });
                 addrDiv!.appendChild(row);
@@ -10874,7 +10911,7 @@ function bindEvents() {
                     // Add the row inline
                     const newRow = document.createElement('div');
                     newRow.style.cssText = 'font-family:ui-monospace,monospace;font-size:0.6rem;font-weight:600;color:#14f195;cursor:pointer;padding:2px 4px;border-radius:3px;border:1px solid rgba(20,241,149,0.2);background:rgba(20,241,149,0.08)';
-                    newRow.textContent = `sol@ native ${pubkey.slice(0, 8)}...${pubkey.slice(-6)}`;
+                    newRow.textContent = `sol@ native ${pubkey.slice(0, 6)}\u2026${pubkey.slice(-6)}`;
                     newRow.title = pubkey;
                     newRow.addEventListener('click', (e2) => { e2.stopPropagation(); toggleAddrRow(newRow, pubkey, '#14f195'); });
                     linkBtn.replaceWith(newRow);
@@ -11600,6 +11637,26 @@ function bindEvents() {
         if (!t.closest('input') && !t.closest('button') && !t.closest('.ski-idle-at-dropdown')) {
           _unfreezeGif();
         }
+        // Click outside rumble panel → collapse it + deactivate squid button
+        if (!t.closest('#ski-idle-rumble-panel') && !t.closest('#ski-idle-rumble') && !t.closest('.ski-idle-rumble-addrs') && !t.closest('[data-action="rumble"]')) {
+          const convo = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+          const panel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
+          if (panel && convo) {
+            convo.setAttribute('hidden', ''); convo.innerHTML = '';
+            _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+          }
+        }
+      });
+      // Click outside the idle overlay entirely → collapse rumble section
+      document.addEventListener('click', (e) => {
+        if (!_idleOverlay) return;
+        if (_idleOverlay.contains(e.target as Node)) return;
+        const convo = _idleOverlay.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        const panel = _idleOverlay.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
+        if (panel && convo) {
+          convo.setAttribute('hidden', ''); convo.innerHTML = '';
+          _idleOverlay.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+        }
       });
       // Global Enter key → trigger action button from anywhere while overlay is open
       const _idleGlobalEnter = (e: Event) => {
@@ -11664,6 +11721,33 @@ function bindEvents() {
 
       try { localStorage.setItem('ski:idle-open', '1'); } catch {}
 
+      // Cache idle video via Cache API for instant playback on subsequent loads
+      const _idleVideo = _idleOverlay.querySelector('video.ski-idle-img') as HTMLVideoElement | null;
+      if (_idleVideo && 'caches' in self) {
+        const vSrc = '/assets/ski-idle.webm';
+        caches.open('ski-media-v1').then(async (cache) => {
+          const cached = await cache.match(vSrc);
+          if (cached) {
+            // Serve from cache — instant
+            const blob = await cached.blob();
+            const url = URL.createObjectURL(blob);
+            _idleVideo.src = url;
+            _idleVideo.load();
+          } else {
+            // First visit — fetch, cache, and let the video load normally
+            try {
+              const resp = await fetch(vSrc);
+              if (resp.ok) cache.put(vSrc, resp);
+            } catch {}
+          }
+        }).catch(() => {});
+      }
+
+      // Auto-resolve pre-filled name on overlay open (e.g. restored from localStorage on refresh)
+      if (_idleNsInput?.value && _idleNsInput.value.length >= 3 && isValidNsLabel(_idleNsInput.value)) {
+        fetchAndShowNsPrice(_idleNsInput.value).catch(() => {});
+      }
+
       // Match header width to overlay width
       requestAnimationFrame(() => {
         if (!_idleOverlay) return;
@@ -11692,8 +11776,9 @@ function bindEvents() {
   });
   // Restore overlay immediately if it was open before refresh — don't wait for wallet reconnect
   if (localStorage.getItem('ski:idle-open') === '1') {
-    // If wallet is already connected, show immediately; otherwise wait for connect event
-    if (getState().address) {
+    // Check both live state and cached address (preloadStoredWallet may not have run yet)
+    const _hasAddr = getState().address || localStorage.getItem('ski:last-address');
+    if (_hasAddr) {
       _showIdleOverlay();
     } else {
       const _restoreOnConnect = () => {
