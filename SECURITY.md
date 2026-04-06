@@ -9,41 +9,43 @@
 | 1 | CSP + security response headers on all Worker routes | #53 | P1 |
 | 2 | Auth guards on SessionAgent mutating callables + sanitized state broadcast | #56 | P0 |
 | 3 | Auth guards on SponsorAgent mutating callables + sanitized state broadcast | #56 | P0 |
-| 4 | Shell restore XSS sanitization in index.html | #55 | P1 |
-| 5 | Session nonce validation — server checks message expiry | #57 | P1 |
-| 6 | localStorage cleanup on disconnect (session tokens, IKA addrs, balances) | #54 | P2 |
-| 7 | Pass real signed message to `authenticate()` (was empty string) | #57 | P1 |
+| 4 | Auth guards on **all 13 TreasuryAgents** mutating callables (`requireUltronCaller`) | #56 | P0 |
+| 5 | Internal auth token (`x-treasury-auth`) on all Worker→DO HTTP requests | #56 | P0 |
+| 6 | ShadeExecutorAgent: owner validation on `schedule()`, salt stripped from state | #56 | P0 |
+| 7 | Shell restore XSS sanitization in index.html | #55 | P1 |
+| 8 | Session nonce validation — server checks message expiry | #57 | P1 |
+| 9 | Pass real signed message to `authenticate()` (was empty string) | #57 | P1 |
+| 10 | localStorage cleanup on disconnect (session tokens, IKA addrs, balances) | #54 | P2 |
+| 11 | Per-IP rate limiting on all `/api/*` routes (60/min read, 20/min write) | #58 | P2 |
+| 12 | Admin route auth gate — ultron-only routes require `x-treasury-auth` | #58 | P2 |
 
-## Open issues (tracked, not yet fixed)
+## Remaining open items
 
-| Issue | Title | Severity |
-|-------|-------|----------|
-| #53 | CSP headers (nonce-based `script-src` upgrade) | P1 |
-| #54 | localStorage TTL expiry + encrypted sponsor auth | P2 |
-| #55 | QR SVG innerHTML + showToast footgun | P1 |
-| #56 | TreasuryAgents + ShadeExecutor DO auth (attestCollateral, mintIusd) | P0 |
-| #57 | HttpOnly cookie via server-set `Set-Cookie` | P1 |
-| #58 | Rate limiting + slippage protection | P2 |
+| Issue | Title | Severity | Notes |
+|-------|-------|----------|-------|
+| #53 | Nonce-based CSP (replace `unsafe-inline`) | P1 | Requires Worker to serve index.html (currently static assets) |
+| #54 | localStorage TTL expiry + encrypted sponsor auth | P2 | Encrypt `ski:gas-sponsor` like waap-proof |
+| #55 | QR SVG innerHTML + showToast footgun | P1 | Sanitize SVGs, remove `isHtml` param |
+| #57 | HttpOnly cookie via server `Set-Cookie` | P1 | Requires new Worker endpoint |
+| #58 | DeepBook slippage protection | P2 | Pass `expected * 0.95` as min output |
 
-## Architecture notes
+## Architecture
+
+### DO authentication (complete)
+- **SessionAgent**: `authenticate()` verifies signature + `.SKI` format + expiry. `getSession()` strips signature/message. `forgetDevice`, `updateSuinsName`, `updateIkaWalletId` require `walletAddress` match.
+- **SponsorAgent**: `register()` verifies signature + `.SKI Splash`. All mutating methods require `callerAddress === sponsorAddress`. `getSponsorState()` strips `authSignature`, `authMessage`, redacts `txBytes`.
+- **TreasuryAgents**: `requireUltronCaller()` on all 13 mutating callables. `verifyInternalAuth()` on all HTTP requests (checks `x-treasury-auth` header). Read-only params exempt.
+- **ShadeExecutorAgent**: `schedule()` validates `ownerAddress === this.name`. `getOrders()`/`getStatus()` strip `salt` (commitment-reveal secret).
+- **SplashDeviceAgent**: Low-risk (boolean state only). No auth change needed.
+
+### Worker security layers
+1. **Security headers** — CSP, X-Content-Type-Options, X-Frame-Options, Referrer-Policy on all responses
+2. **Rate limiting** — per-IP sliding window, 60/min GET, 20/min POST
+3. **Admin route gate** — `/api/cache/*`, `/api/iusd/attest`, `/api/iusd/mint`, pool/lending/migration routes require `x-treasury-auth`
+4. **Internal DO auth** — `authedTreasuryStub()` injects `x-treasury-auth` on all 35 Worker→TreasuryAgents fetch calls
 
 ### Client-side storage
-- `ski:session:{address}` — session tokens. Cleared on disconnect (this branch).
-- `ski:waap-proof` — AES-256-GCM encrypted, device-fingerprint-bound. Sound.
-- `ski:gas-sponsor` — plaintext sponsor auth. TODO: encrypt like waap-proof (#54).
-- `ski:shell` — cached HTML for FOUC prevention. Sanitized on restore (this branch).
-
-### Cross-domain cookie
-- `ski_xdomain` — `Secure; SameSite=Lax; domain=sui.ski`. Not HttpOnly (set via JS). TODO: migrate to server `Set-Cookie` (#57).
-
-### DO authentication pattern
-- `SessionAgent.authenticate()` — verifies personal message signature + `.SKI` format + expiry.
-- `SponsorAgent.register()` — verifies personal message signature + `.SKI Splash` format.
-- All other mutating callables now require `callerAddress` matching the authenticated owner.
-- `getSponsorState()` strips `authSignature`, `authMessage`, and redacts `txBytes` on non-ready requests.
-- `getSession()` strips `signature` and `message` fields.
-
-### What still needs auth (P0, #56)
-- `TreasuryAgents.attestCollateral()` — any caller can report false collateral
-- `TreasuryAgents.mintIusd()` — any caller can mint to arbitrary recipient
-- `ShadeExecutorAgent` — schedule/cancel methods
+- `ski:session:{address}` — cleared on disconnect
+- `ski:waap-proof` — AES-256-GCM encrypted, device-fingerprint-bound
+- `ski:gas-sponsor` — plaintext (TODO: encrypt like waap-proof)
+- `ski:shell` — sanitized on restore (strips script tags, event handlers, javascript: URIs)
