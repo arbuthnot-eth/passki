@@ -9559,6 +9559,16 @@ function bindEvents() {
         </div>
       `;
 
+      // Append immediately so video starts loading and overlay is visible
+      // while we bind the ~2000 lines of event handlers below.
+      const headerEl = document.querySelector('.ski-header') as HTMLElement;
+      (headerEl || document.body).appendChild(_idleOverlay);
+
+      // Fire name lookup async — runs in parallel with event binding below
+      if (_idleInputVal && _idleInputVal.length >= 3 && isValidNsLabel(_idleInputVal)) {
+        fetchAndShowNsPrice(_idleInputVal).catch(() => {});
+      }
+
       // NS input on idle — full SKI menu behavior
       const _idleNsInput = _idleOverlay.querySelector('#ski-idle-ns') as HTMLInputElement | null;
       const _idleStatusEl = _idleOverlay.querySelector('#ski-idle-status');
@@ -11823,8 +11833,6 @@ function bindEvents() {
       };
       window.addEventListener('ski:name-acquired', _onNameAcquired);
 
-      const headerEl = document.querySelector('.ski-header') as HTMLElement;
-      (headerEl || document.body).appendChild(_idleOverlay);
       _updateIdleThunderBadge();
 
       // Close the SKI menu so it doesn't show behind the overlay
