@@ -3373,7 +3373,8 @@ let nsShowTargetInput = false; // target-address inline editor open
 let nsNewTargetAddr = ''; // value in the target-address input
 let nsTransferInputOpen = false; // transfer-recipient inline editor open
 let nsTransferRecipient = ''; // value in the transfer-recipient input
-let _thunderCounts: Record<string, number> = (() => { try { const v = localStorage.getItem('ski:thunder-counts'); return v ? JSON.parse(v) : {}; } catch { return {}; } })();
+// Thunder counts disabled — pending v4 migration (#63). Always empty.
+let _thunderCounts: Record<string, number> = {};
 let _thunderLocalCounts: Record<string, number> = {}; // total signals per counterparty from local log
 let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
 let _thunderDecryptBusy = false;
@@ -8791,35 +8792,10 @@ function renderSkiMenu() {
   _discoverRealOwner();
   _fetchOwnedDomains();
 
-  // Thunder inbox polling
-  if (_thunderPollTimer) clearInterval(_thunderPollTimer);
-  const _pollThunder = async () => {
-    if (nsOwnedDomains.length === 0) return;
-    const ws2 = getState();
-    if (!ws2.address) return;
-    try {
-      const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name.replace(/\.sui$/, '').toLowerCase());
-      if (nftNames.length === 0) return;
-      const params = new URLSearchParams({ addr: ws2.address, names: nftNames.join(',') });
-      const res = await fetch(`/api/thunder/chronicom?${params}`);
-      if (!res.ok) return;
-      const counts = await res.json() as Record<string, number>;
-      let changed = false;
-      for (const [bare, count] of Object.entries(counts)) {
-        const prev = _thunderCounts[bare] ?? 0;
-        if (prev !== count) { _thunderCounts[bare] = count; changed = true; }
-      }
-      if (changed) {
-        try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
-        _patchNsOwnedList();
-        _syncNftCardToInput();
-        _updateIdleThunderBadge();
-      }
-    } catch { /* silent */ }
-  };
-  _pollThunder();
-  _refreshThunderLocalCounts().then(() => _syncNftCardToInput());
-  _thunderPollTimer = setInterval(_pollThunder, 5_000);
+  // Thunder polling disabled — pending v4 migration to Sui Stack Messaging SDK (#63)
+  if (_thunderPollTimer) { clearInterval(_thunderPollTimer); _thunderPollTimer = null; }
+  _thunderCounts = {};
+  try { localStorage.removeItem('ski:thunder-counts'); } catch {}
 
   // Prune stale shade orders (consumed/cancelled) on first menu open
   // + auto-schedule any unscheduled orders with the ShadeExecutorAgent DO
@@ -11928,6 +11904,7 @@ export function initUI() {
   try {
     localStorage.removeItem('ski:shell');           // v1 shell cache — superseded by ski:shell:v2
     localStorage.removeItem('ski:thunder-card-open');
+    localStorage.removeItem('ski:thunder-counts');  // thunder polling disabled (#63)
   } catch {}
 
   bindEvents();
