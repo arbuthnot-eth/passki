@@ -3047,6 +3047,10 @@ function _renderProfileEl(el: HTMLElement) {
     return;
   }
 
+  // During hydration the shell cache already shows the correct profile —
+  // skip re-render to avoid a flash (icon reload, layout shift).
+  if (_hydrating && el.innerHTML.length > 0) return;
+
   // Connected: [icon(s)] [name/addr] [balance]
   const hasSuins = !!app.suinsName;
   const label = hasSuins ? app.suinsName.replace(/\.sui$/, '') : truncAddr(ws.address);
@@ -3131,6 +3135,9 @@ function _renderSkiBtnEl(el: HTMLElement) {
     return;
   }
 
+  // During hydration the shell cache is already correct — skip re-render
+  if (_hydrating && el.innerHTML.length > 0) return;
+
   const hasPrimary = !!app.suinsName;
   el.classList.toggle('ski-menu-open', app.skiMenuOpen);
   el.classList.toggle('ski-bal-usd', balView === 'usd');
@@ -3184,6 +3191,7 @@ function _renderDotBtn() {
 function _renderDotBtnEl(el: HTMLElement) {
   const ws = getState();
   if (!ws.address) { el.style.display = 'none'; return; }
+  if (_hydrating && el.innerHTML.length > 0) return;
   el.style.display = '';
   const variant: SkiDotVariant = app.suinsName ? 'blue-square' : 'black-diamond';
   el.innerHTML = modalOpen ? _shapeWithDropSvg(variant, 31) : _shapeOnlySvg(variant, 31);
