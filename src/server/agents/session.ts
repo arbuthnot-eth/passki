@@ -57,6 +57,15 @@ export class SessionAgent extends Agent<Env, SessionState> {
       return { success: false, error: 'Invalid session message format' };
     }
 
+    // Validate expiry from signed message (prevents replay with expired tokens)
+    const expiryMatch = message.match(/Expires At:\s*(\S+)/);
+    if (expiryMatch) {
+      const expiresAt = new Date(expiryMatch[1]).getTime();
+      if (isNaN(expiresAt) || expiresAt < Date.now()) {
+        return { success: false, error: 'Session message expired' };
+      }
+    }
+
     const now = Date.now();
     this.setState({
       ...this.state,
@@ -74,26 +83,33 @@ export class SessionAgent extends Agent<Env, SessionState> {
   }
 
   @callable()
-  async getSession(): Promise<SessionState> {
+  async getSession(): Promise<Omit<SessionState, 'signature' | 'message'> & { signature?: undefined; message?: undefined }> {
     if (this.state.authenticated) {
       this.setState({ ...this.state, lastSeenAt: Date.now() });
     }
-    return this.state;
+    // Never broadcast raw signature or signed message to callers
+    const { signature: _s, message: _m, ...safe } = this.state;
+    return safe as any;
   }
 
   @callable()
-  async forgetDevice(): Promise<{ success: boolean }> {
+  async forgetDevice(params: { walletAddress: string }): Promise<{ success: boolean }> {
+    if (!this.state.authenticated || params.walletAddress !== this.state.walletAddress) {
+      return { success: false };
+    }
     this.setState(this.initialState);
     return { success: true };
   }
 
   @callable()
-  async updateSuinsName(name: string): Promise<void> {
-    this.setState({ ...this.state, suinsName: name });
+  async updateSuinsName(params: { name: string; walletAddress: string }): Promise<void> {
+    if (!this.state.authenticated || params.walletAddress !== this.state.walletAddress) return;
+    this.setState({ ...this.state, suinsName: params.name });
   }
 
   @callable()
-  async updateIkaWalletId(walletId: string): Promise<void> {
-    this.setState({ ...this.state, ikaWalletId: walletId });
+  async updateIkaWalletId(params: { walletId: string; walletAddress: string }): Promise<void> {
+    if (!this.state.authenticated || params.walletAddress !== this.state.walletAddress) return;
+    this.setState({ ...this.state, ikaWalletId: params.walletId });
   }
 }

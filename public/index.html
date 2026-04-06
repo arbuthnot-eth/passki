@@ -43,7 +43,9 @@
     <script>
       // Restore cached shell instantly to prevent FOUC on hard refresh.
       // Runs synchronously before the main bundle loads.
-      try{var w=localStorage.getItem('ski:last-wallet');if(w){var s=JSON.parse(localStorage.getItem('ski:shell')||'{}');var btn=document.getElementById('ski-btn');var dot=document.getElementById('ski-dot');var pro=document.getElementById('ski-profile');var menu=document.getElementById('ski-menu');if(btn&&s.btn){btn.innerHTML=s.btn;btn.style.display=''}if(dot&&s.dot!=null){dot.innerHTML=s.dot;dot.style.display=s.dotD||''}if(pro&&s.pro)pro.innerHTML=s.pro;if(menu&&s.menu)menu.innerHTML=s.menu}}catch(e){}
+      // Security: sanitize cached HTML — strip <script>, onerror=, javascript:, and event handlers
+      // to prevent XSS via localStorage poisoning on shared devices.
+      try{var w=localStorage.getItem('ski:last-wallet');if(w){var s=JSON.parse(localStorage.getItem('ski:shell')||'{}');function san(h){if(!h||typeof h!=='string')return'';return h.replace(/<script[\s>][\s\S]*?<\/script>/gi,'').replace(/\bon\w+\s*=/gi,'').replace(/javascript\s*:/gi,'').replace(/data\s*:[^,]*base64[^"']*/gi,'')}var btn=document.getElementById('ski-btn');var dot=document.getElementById('ski-dot');var pro=document.getElementById('ski-profile');var menu=document.getElementById('ski-menu');if(btn&&s.btn){btn.innerHTML=san(s.btn);btn.style.display=''}if(dot&&s.dot!=null){dot.innerHTML=san(s.dot);dot.style.display=s.dotD||''}if(pro&&s.pro)pro.innerHTML=san(s.pro);if(menu&&s.menu)menu.innerHTML=san(s.menu)}}catch(e){}
     </script>
 
     <div id="ski-sign" style="display:none"></div>

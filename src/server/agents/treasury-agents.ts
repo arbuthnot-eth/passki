@@ -194,6 +194,41 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     squids: { total: 0, by_chain: { sui: 0, btc: 0, eth: 0, sol: 0 }, iusd_minted: 0, geo: [] },
   };
 
+  /** Derive ultron's address from the keeper key — used for auth checks. */
+  private _ultronAddress: string | null = null;
+  private getUltronAddress(): string {
+    if (this._ultronAddress) return this._ultronAddress;
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return '';
+    this._ultronAddress = normalizeSuiAddress(
+      Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY).getPublicKey().toSuiAddress(),
+    );
+    return this._ultronAddress;
+  }
+
+  /**
+   * Verify internal auth token on HTTP requests from the Worker.
+   * Token = first 34 chars of ultron's Sui address (0x + 32 hex).
+   * Only the Worker has access to SHADE_KEEPER_PRIVATE_KEY to derive this.
+   */
+  private verifyInternalAuth(request: Request): boolean {
+    const token = request.headers.get('x-treasury-auth');
+    const ultron = this.getUltronAddress();
+    if (!ultron || !token) return false;
+    return token === ultron.slice(0, 34);
+  }
+
+  /**
+   * Guard for @callable() methods: verify caller provides ultron address.
+   * Since only the keeper key holder can derive this address, it proves authorization.
+   * All mutating callables that use the keeper key must call this.
+   */
+  private requireUltronCaller(callerAddress?: string): string | null {
+    const ultron = this.getUltronAddress();
+    if (!ultron) return 'No ultron key configured';
+    if (callerAddress !== ultron) return 'Unauthorized';
+    return null; // authorized
+  }
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const agentAlarm = this.alarm.bind(this);
@@ -205,6 +240,17 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    // ── Internal auth gate ──────────────────────────────────────────
+    // All mutating requests from the Worker must include x-treasury-auth.
+    // Read-only endpoints (status, squid-stats, shade-list, deposit-status,
+    // deposit-addresses, quest-bounties) are exempt.
+    const readOnlyParams = ['cache-state', 'squid-stats', 'shade-list', 'deposit-status', 'deposit-addresses', 'quest-bounties'];
+    const isReadOnly = readOnlyParams.some(p => url.searchParams.has(p));
+    const isWebSocket = request.headers.get('upgrade') === 'websocket';
+    if (!isReadOnly && !isWebSocket && !this.verifyInternalAuth(request)) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 403, headers: { 'content-type': 'application/json' } });
+    }
 
     if ((url.pathname.endsWith('/register-t2000') || url.searchParams.has('register-t2000')) && request.method === 'POST') {
       try {
@@ -1426,7 +1472,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   // ─── Fee Sweeper ────────────────────────────────────────────────────
 
   @callable()
-  async sweepFees(): Promise<{ swept: boolean; amount?: string }> {
+  async sweepFees(params?: { callerAddress?: string }): Promise<{ swept: boolean; amount?: string }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress);
+    if (authErr) return { swept: false };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
       return { swept: false };
     }
@@ -2019,7 +2067,10 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     objectId: string;
     dwalletId: string;
     operator: string;
+    callerAddress?: string;
   }): Promise<{ success: boolean }> {
+    const authErr = this.requireUltronCaller(params.callerAddress);
+    if (authErr) return { success: false };
     const existing = (this.state.t2000s ?? []).find(a => a.objectId === params.objectId);
     if (existing) return { success: false };
 
@@ -2043,7 +2094,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   /** Deactivate a t2000 agent. */
   @callable()
-  async deactivateT2000(params: { objectId: string }): Promise<{ success: boolean }> {
+  async deactivateT2000(params: { objectId: string; callerAddress?: string }): Promise<{ success: boolean }> {
+    const authErr = this.requireUltronCaller(params.callerAddress);
+    if (authErr) return { success: false };
     this.setState({
       ...this.state,
       t2000s: (this.state.t2000s ?? []).map(a =>
@@ -2256,7 +2309,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   async requestDKG(params: {
     curve: 'secp256k1' | 'ed25519';
     userAddress: string;
+    callerAddress?: string;
   }): Promise<{ txBytes?: string; digest?: string; error?: string }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
       return { error: 'No ultron key — DKG requires browser-side WASM for user contribution' };
     }
@@ -2298,8 +2353,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   /** Set Thunder signal fee. Admin only (ultron is Storm admin). */
   @callable()
-  async setThunderFee(params: { feeMist: number }): Promise<{ digest?: string; error?: string }> {
-    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+  async setThunderFee(params: { feeMist: number; callerAddress?: string }): Promise<{ digest?: string; error?: string }> {
+    const authErr = this.requireUltronCaller(params.callerAddress);
+    if (authErr) return { error: authErr };
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
@@ -2414,8 +2470,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   /** Attest collateral only — ultron signs as oracle. Mint is done by the wallet that owns the TreasuryCap. */
   @callable()
-  async attestCollateral(params: { collateralValueMist: string }): Promise<{ digest?: string; error?: string }> {
-    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+  async attestCollateral(params: { collateralValueMist: string; callerAddress?: string }): Promise<{ digest?: string; error?: string }> {
+    const authErr = this.requireUltronCaller(params.callerAddress);
+    if (authErr) return { error: authErr };
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
@@ -2455,10 +2512,10 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     recipient: string;
     collateralValueMist: string;
     mintAmount: string;
+    callerAddress?: string;
   }): Promise<{ digest1?: string; digest2?: string; minted?: string; error?: string }> {
-    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
-      return { error: 'No ultron key configured' };
-    }
+    const authErr = this.requireUltronCaller(params.callerAddress);
+    if (authErr) return { error: authErr };
 
     const { recipient, collateralValueMist, mintAmount } = params;
     if (!recipient || !collateralValueMist || !mintAmount) {
@@ -3240,7 +3297,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   /** One-time: create iUSD SPL token mint on Solana. Mint authority = ultron. */
   @callable()
-  async createIusdSolMint(): Promise<{ mintAddress?: string; signature?: string; error?: string }> {
+  async createIusdSolMint(params?: { callerAddress?: string }): Promise<{ mintAddress?: string; signature?: string; error?: string }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
 
     // Check if we already have a mint
@@ -3276,7 +3334,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   async bamMintIusdSol(params: {
     recipientSolAddress: string;
     amount: string; // raw units (9 decimals)
+    callerAddress?: string;
   }): Promise<{ ata?: string; signature?: string; error?: string }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
 
     const mintAddress = (this.state as any).iusd_sol_mint as string | undefined;
@@ -3336,7 +3396,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     collateralValueMist: string;
     domainPriceUsd: number;
     signalId: number;
+    callerAddress?: string;
   }): Promise<{ digest?: string; nsDigest?: string; error?: string }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
 
     const { recipient, collateralValueMist, domainPriceUsd, signalId } = params;
@@ -3478,7 +3540,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    * Builds and executes a DeepBook or Cetus swap PTB server-side.
    */
   @callable()
-  async swapSuiForDeep(params?: { amountMist?: string }): Promise<{ digest?: string; deepAcquired?: string; error?: string }> {
+  async swapSuiForDeep(params?: { amountMist?: string; callerAddress?: string }): Promise<{ digest?: string; deepAcquired?: string; error?: string }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
@@ -3659,7 +3722,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    *   - clock
    */
   @callable()
-  async createIusdUsdcPool(): Promise<{ digest?: string; poolId?: string; poolIsv?: number; error?: string }> {
+  async createIusdUsdcPool(params?: { callerAddress?: string }): Promise<{ digest?: string; poolId?: string; poolIsv?: number; error?: string }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
@@ -3765,7 +3829,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    * Seeds the iUSD/USDC pool with ultron's existing balances.
    */
   @callable()
-  async seedIusdPool(): Promise<{ digest?: string; digest2?: string; balanceManagerId?: string; error?: string }> {
+  async seedIusdPool(params?: { callerAddress?: string }): Promise<{ digest?: string; digest2?: string; balanceManagerId?: string; error?: string }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
@@ -3989,7 +4054,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     chain: string;
     encryptedRecipient: string;
     iusdBurned: number;
+    callerAddress?: string;
   }): Promise<{ digest?: string; targetTxHash?: string; quiltBlobId?: string; error?: string }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     const { requestId, chain, iusdBurned } = params;
 
     // Validate chain
@@ -4074,7 +4141,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    * Once dWallets exist, this method works fully in Workers (JSON-RPC + pure-JS crypto).
    */
   @callable()
-  async rumbleUltron(): Promise<{
+  async rumbleUltron(params?: { callerAddress?: string }): Promise<{
     ultronAddress: string;
     btcAddress: string;
     ethAddress: string;
@@ -4084,6 +4151,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     needsDkg: { secp256k1: boolean; ed25519: boolean };
     error?: string;
   }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return {
+      ultronAddress: '', btcAddress: '', ethAddress: '', solAddress: '',
+      addresses: [], dwalletCaps: [],
+      needsDkg: { secp256k1: true, ed25519: true },
+      error: authErr,
+    };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
       return {
         ultronAddress: '', btcAddress: '', ethAddress: '', solAddress: '',
@@ -4232,7 +4305,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    * Custodial until the user Rumbles themselves (then their own addresses overwrite).
    */
   @callable()
-  async preRumbleForName(params: { name: string; userAddress?: string; source?: string; geo?: { lat?: number; lon?: number; city?: string; country?: string } }): Promise<{ digest?: string; error?: string }> {
+  async preRumbleForName(params: { name: string; userAddress?: string; source?: string; geo?: { lat?: number; lon?: number; city?: string; country?: string }; callerAddress?: string }): Promise<{ digest?: string; error?: string }> {
+    const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     const { name, source } = params;
     if (!name) return { error: 'Missing name' };

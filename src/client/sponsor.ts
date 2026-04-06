@@ -249,14 +249,14 @@ export async function processPendingRequests(params: {
 
 // ─── Target list sync ─────────────────────────────────────────────────
 
-export async function addSplashTarget(address: string): Promise<void> {
+export async function addSplashTarget(address: string, callerAddress: string): Promise<void> {
   if (!client) throw new Error('Not connected to sponsor agent');
-  await client.call('addEntry', [{ address }]);
+  await client.call('addEntry', [{ address, callerAddress }]);
 }
 
-export async function removeSplashTarget(address: string): Promise<void> {
+export async function removeSplashTarget(address: string, callerAddress: string): Promise<void> {
   if (!client) throw new Error('Not connected to sponsor agent');
-  await client.call('removeEntry', [{ address }]);
+  await client.call('removeEntry', [{ address, callerAddress }]);
 }
 
 /**
@@ -337,14 +337,14 @@ export async function requestUltronSponsoredTransaction(params: {
   return { digest };
 }
 
-export async function enableUltronMode(): Promise<{ success: boolean; ultronAddress?: string; error?: string }> {
+export async function enableUltronMode(callerAddress: string): Promise<{ success: boolean; ultronAddress?: string; error?: string }> {
   if (!client) throw new Error('Not connected to sponsor agent');
-  return client.call<{ success: boolean; ultronAddress?: string; error?: string }>('enableUltronMode', []);
+  return client.call<{ success: boolean; ultronAddress?: string; error?: string }>('enableUltronMode', [{ callerAddress }]);
 }
 
-export async function disableUltronMode(): Promise<{ success: boolean }> {
+export async function disableUltronMode(callerAddress: string): Promise<{ success: boolean }> {
   if (!client) throw new Error('Not connected to sponsor agent');
-  return client.call<{ success: boolean }>('disableUltronMode', []);
+  return client.call<{ success: boolean }>('disableUltronMode', [{ callerAddress }]);
 }
 
 let _autoSignInterval: ReturnType<typeof setInterval> | null = null;

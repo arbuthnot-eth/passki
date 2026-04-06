@@ -47,9 +47,9 @@ export async function authenticate(params: {
 /**
  * Tell the agent to forget this device-wallet binding.
  */
-export async function forgetDevice(): Promise<void> {
+export async function forgetDevice(walletAddress: string): Promise<void> {
   if (!client) return;
-  await client.call('forgetDevice', []);
+  await client.call('forgetDevice', [{ walletAddress }]);
 }
 
 /**

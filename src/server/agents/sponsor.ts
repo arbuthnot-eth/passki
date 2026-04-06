@@ -114,13 +114,21 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     return { success: true, expiresAt };
   }
 
-  @callable()
-  async deactivate(): Promise<void> {
-    this.setState({ ...this.state, active: false });
+  /** Guard: only the registered sponsor can mutate state. */
+  private requireSponsor(callerAddress: string): boolean {
+    return this.state.active && callerAddress === this.state.sponsorAddress;
   }
 
   @callable()
-  async addEntry(params: { address: string }): Promise<{ success: boolean }> {
+  async deactivate(params: { callerAddress: string }): Promise<{ success: boolean }> {
+    if (!this.requireSponsor(params.callerAddress)) return { success: false };
+    this.setState({ ...this.state, active: false });
+    return { success: true };
+  }
+
+  @callable()
+  async addEntry(params: { address: string; callerAddress: string }): Promise<{ success: boolean }> {
+    if (!this.requireSponsor(params.callerAddress)) return { success: false };
     const list = this.state.approvedList ?? [];
     if (list.includes(params.address)) return { success: true };
     this.setState({ ...this.state, approvedList: [...list, params.address] });
@@ -128,7 +136,8 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
   }
 
   @callable()
-  async removeEntry(params: { address: string }): Promise<{ success: boolean }> {
+  async removeEntry(params: { address: string; callerAddress: string }): Promise<{ success: boolean }> {
+    if (!this.requireSponsor(params.callerAddress)) return { success: false };
     this.setState({
       ...this.state,
       approvedList: (this.state.approvedList ?? []).filter((a) => a !== params.address),
@@ -139,7 +148,8 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
   // ─── Ultron Mode ────────────────────────────────────────────────────
 
   @callable()
-  async enableUltronMode(): Promise<{ success: boolean; ultronAddress?: string; error?: string }> {
+  async enableUltronMode(params: { callerAddress: string }): Promise<{ success: boolean; ultronAddress?: string; error?: string }> {
+    if (!this.requireSponsor(params.callerAddress)) return { success: false, error: 'Unauthorized' };
     if (!this.state.active) return { success: false, error: 'Sponsor not active' };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
       return { success: false, error: 'No ultron private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)' };
@@ -163,7 +173,8 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
   }
 
   @callable()
-  async disableUltronMode(): Promise<{ success: boolean }> {
+  async disableUltronMode(params: { callerAddress: string }): Promise<{ success: boolean }> {
+    if (!this.requireSponsor(params.callerAddress)) return { success: false };
     this.setState({
       ...this.state,
       ultronMode: false,
@@ -372,7 +383,14 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
   }
 
   @callable()
-  async getSponsorState(): Promise<SponsorState> {
-    return this.state;
+  async getSponsorState(): Promise<Omit<SponsorState, 'authSignature' | 'authMessage'>> {
+    // Never broadcast auth credentials — strip signature and raw message
+    const { authSignature: _s, authMessage: _m, ...safe } = this.state;
+    // Sanitize pending requests: strip raw txBytes from non-ready requests
+    const sanitizedRequests = safe.pendingRequests.map(r => ({
+      ...r,
+      txBytes: r.status === 'ready' ? r.txBytes : '[redacted]',
+    }));
+    return { ...safe, pendingRequests: sanitizedRequests };
   }
 }

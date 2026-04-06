@@ -503,7 +503,8 @@ export async function addSponsoredEntry(
   setState({ auth: newAuth });
 
   // Best-effort DO sync
-  void import('./client/sponsor.js').then(({ addSplashTarget }) => addSplashTarget(address)).catch(() => {});
+  const sponsorAddr = _state.auth.address;
+  void import('./client/sponsor.js').then(({ addSplashTarget }) => addSplashTarget(address, sponsorAddr)).catch(() => {});
 
   return entry;
 }
@@ -521,7 +522,8 @@ export function removeSponsoredEntry(address: string): void {
   setState({ auth: newAuth });
 
   // Best-effort DO sync
-  void import('./client/sponsor.js').then(({ removeSplashTarget }) => removeSplashTarget(address)).catch(() => {});
+  const sponsorAddr = _state.auth?.address ?? '';
+  void import('./client/sponsor.js').then(({ removeSplashTarget }) => removeSplashTarget(address, sponsorAddr)).catch(() => {});
 }
 
 // ─── Gas coin discovery (GraphQL) ────────────────────────────────────

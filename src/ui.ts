@@ -2563,6 +2563,9 @@ function _updateSwapEstimates() {
 function _usdToTokenAmount(usdVal: number): number {
   const sym = selectedCoinSymbol ?? 'SUI';
   if (sym === 'USD' || sym === 'USDC') return usdVal;
+  // Any stable coin (iUSD, AUSD, etc.) is 1:1 with USD
+  const coin = walletCoins.find(c => c.symbol === sym);
+  if (coin?.isStable) return usdVal;
   if (sym === 'SUI') {
     const p = suiPriceCache?.price ?? 0;
     return p > 0 ? usdVal / p : 0;
@@ -7269,7 +7272,8 @@ function renderSkiMenu() {
     sendBtn.disabled = true;
     sendBtn.textContent = '\u2026';
     try {
-      if (isSwap) {
+      if (selfSend && isSwap) {
+        // Self-swap: convert between tokens in your own wallet
         const swap = await buildSwapTx(ws2.address, coinType, outOpt.coinType, amountMist);
         await signAndExecuteTransaction(swap.txBytes);
         showToast(`Swapped ${swap.fromSymbol} \u2192 $${amountStr} ${swap.toSymbol} \u2713`);
@@ -7277,7 +7281,7 @@ function renderSkiMenu() {
         showToast('Input and output are the same token');
         return;
       } else {
-        // Same token send to recipient
+        // Send selected token directly to recipient — no swap
         const txBytes = await buildSendTx(ws2.address, recipientAddr, coinType, amountMist);
         await signAndExecuteTransaction(txBytes);
         const short = recipientAddr.slice(0, 6) + '\u2026' + recipientAddr.slice(-4);

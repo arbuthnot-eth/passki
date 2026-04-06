@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
 // ika-provision.ts is available for server-side DKG if needed in future,
 // but DKG WASM must run client-side (browser) — Workers can't run it.
@@ -17,10 +19,130 @@ interface Env {
 
 const app = new Hono<{ Bindings: Env }>();
 
+// ── Rate limiting middleware ────────────────────────────────────────────
+// Simple per-IP sliding window. Uses in-memory Map (resets on cold start).
+// Sufficient for edge abuse prevention; not a substitute for CF Rate Limiting rules.
+const _rateCounters = new Map<string, { count: number; resetAt: number }>();
+const RATE_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_DEFAULT = 60; // 60 req/min per IP
+const RATE_LIMIT_WRITE = 20;   // 20 req/min for mutating endpoints
+
+app.use('/api/*', async (c, next) => {
+  const ip = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown';
+  const isWrite = c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'DELETE';
+  const limit = isWrite ? RATE_LIMIT_WRITE : RATE_LIMIT_DEFAULT;
+  const key = `${ip}:${isWrite ? 'w' : 'r'}`;
+
+  const now = Date.now();
+  let entry = _rateCounters.get(key);
+  if (!entry || now > entry.resetAt) {
+    entry = { count: 0, resetAt: now + RATE_WINDOW_MS };
+    _rateCounters.set(key, entry);
+  }
+
+  entry.count++;
+  if (entry.count > limit) {
+    return c.json({ error: 'Rate limit exceeded' }, 429);
+  }
+
+  // Prune stale entries periodically (every 100 requests)
+  if (entry.count === 1 && _rateCounters.size > 10000) {
+    for (const [k, v] of _rateCounters) {
+      if (now > v.resetAt) _rateCounters.delete(k);
+    }
+  }
+
+  return next();
+});
+
+// ── Admin route auth gate ──────────────────────────────────────────────
+// Ultron-only routes require x-treasury-auth header matching the keeper-derived token.
+// This prevents external callers from triggering treasury operations directly.
+// Admin-only: treasury management, minting, pool creation, ultron operations.
+// User-facing routes (/api/sponsor-gas, /api/iusd/swap, /api/infer, etc.) are NOT gated.
+const ADMIN_ROUTES = [
+  '/api/cache/start', '/api/cache/yield-rotate', '/api/cache/sweep-fees', '/api/cache/refill-sui',
+  '/api/iusd/attest', '/api/iusd/mint',
+  '/api/thunder/set-fee', '/api/swap-sui-for-deep', '/api/rumble-ultron',
+  '/api/create-iusd-pool', '/api/seed-iusd-pool',
+  '/api/create-iusd-sol-mint', '/api/bam-mint-iusd-sol',
+  '/api/lend-usdc', '/api/kamino-deposit', '/api/migrate',
+];
+app.use('/api/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname;
+  if (ADMIN_ROUTES.includes(path)) {
+    const auth = c.req.header('x-treasury-auth') || c.req.header('authorization')?.replace('Bearer ', '');
+    const expected = getTreasuryAuth(c.env);
+    if (!expected || auth !== expected) {
+      return c.json({ error: 'Unauthorized — admin route requires x-treasury-auth' }, 403);
+    }
+  }
+  return next();
+});
+
+// ── Security headers middleware ─────────────────────────────────────────
+app.use('*', async (c, next) => {
+  await next();
+  // Skip WebSocket upgrades and agent routes (handled by agents middleware)
+  if (c.req.header('upgrade') === 'websocket') return;
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  c.header('X-Frame-Options', 'SAMEORIGIN');
+  // CSP: allow self + Sui RPCs + Walrus + CDN for /squids marked page
+  c.header('Content-Security-Policy', [
+    "default-src 'self'",
+    // Inline script in index.html for shell restore — nonce would be ideal but
+    // requires templating; unsafe-inline scoped to script-src is the pragmatic
+    // first step (still blocks eval, data: URIs, and remote script injection).
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
+    "img-src 'self' data: https:",
+    "connect-src 'self' https://*.sui.io https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://aggregator.walrus-testnet.walrus.space https://fpcdn.io https://api.fpjs.io",
+    "frame-ancestors 'self' https://*.sui.ski",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; '));
+});
+
 /** Get the singleton TreasuryAgents DO stub. */
 const treasuryStub = (c: { env: Env }) => {
   return c.env.TreasuryAgents.get(c.env.TreasuryAgents.idFromName('treasury'));
 };
+
+/**
+ * Derive the internal auth token for TreasuryAgents requests.
+ * Token = first 34 chars (0x + 32 hex) of ultron's derived Sui address.
+ * Returns empty string if no keeper key configured.
+ */
+let _treasuryAuthCache: string | null = null;
+function getTreasuryAuth(env: Env): string {
+  if (_treasuryAuthCache !== null) return _treasuryAuthCache;
+  if (!env.SHADE_KEEPER_PRIVATE_KEY) { _treasuryAuthCache = ''; return ''; }
+  const kp = Ed25519Keypair.fromSecretKey(env.SHADE_KEEPER_PRIVATE_KEY);
+  _treasuryAuthCache = normalizeSuiAddress(kp.getPublicKey().toSuiAddress()).slice(0, 34);
+  return _treasuryAuthCache;
+}
+
+/**
+ * Auth-wrapping proxy for the treasury DO stub.
+ * Returns an object with a .fetch() that auto-injects x-treasury-auth.
+ */
+function authedTreasuryStub(c: { env: Env }) {
+  const stub = treasuryStub(c);
+  const auth = getTreasuryAuth(c.env);
+  return {
+    fetch(req: Request) {
+      const headers = new Headers(req.headers);
+      headers.set('x-treasury-auth', auth);
+      if (!headers.has('x-partykit-room')) headers.set('x-partykit-room', 'treasury');
+      return stub.fetch(new Request(req.url, {
+        method: req.method,
+        headers,
+        body: req.body,
+      }));
+    },
+  };
+}
 
 // Pass through hb.sui.ski to Hayabusa Worker
 app.use('*', async (c, next) => {
@@ -637,7 +759,7 @@ app.get('/api/tradeport/listing/:label', async (c) => {
     // QuestFi: pre-rumble listed names so chain addresses are ready before purchase
     // Fire and forget — don't block the listing response
     try {
-      treasuryStub(c).fetch(new Request('https://treasury-do/?pre-rumble', {
+      authedTreasuryStub(c).fetch(new Request('https://treasury-do/?pre-rumble', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury', ...cfGeoHeaders(c) },
         body: JSON.stringify({ name: label, source: 'questfi-snipe' }),
@@ -744,7 +866,7 @@ app.post('/api/thunder/strike-relay', async (c) => {
     if (!body.nameHash || !body.nftId || !body.authMsg || !body.authSig || !body.senderAddress) {
       return c.json({ error: 'Missing params' }, 400);
     }
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?strike-relay', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?strike-relay', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -762,7 +884,7 @@ app.post('/api/iusd/attest', async (c) => {
   try {
     const body = await c.req.json() as { collateralValueMist: string };
     if (!body.collateralValueMist) return c.json({ error: 'Missing collateralValueMist' }, 400);
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?attest-collateral', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?attest-collateral', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -782,7 +904,7 @@ app.post('/api/iusd/mint', async (c) => {
     if (!body.recipient || !body.collateralValueMist || !body.mintAmount) {
       return c.json({ error: 'Missing params' }, 400);
     }
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?mint-iusd', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?mint-iusd', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -807,7 +929,7 @@ app.post('/api/iusd/swap', async (c) => {
       address: string; amount: string; outputToken: 'SUI' | 'USDC';
     };
     if (!address || !amount) return c.json({ error: 'Missing address or amount' }, 400);
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?iusd-swap', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?iusd-swap', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify({ address, amount, outputToken: outputToken ?? 'SUI' }),
@@ -823,7 +945,7 @@ app.post('/api/iusd/swap', async (c) => {
 // ── Start treasury agents tick ───────────────────────────────────────
 app.post('/api/cache/start', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?start', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?start', {
       headers: { 'x-partykit-room': 'treasury' },
     }));
     return c.json(await res.json() as any);
@@ -835,7 +957,7 @@ app.post('/api/cache/start', async (c) => {
 // ── Cache state (iUSD supply, collateral, ratio, surplus) ───────────
 app.get('/api/cache/state', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?cache-state', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?cache-state', {
       headers: { 'x-partykit-room': 'treasury' },
     }));
     return c.json(await res.json() as any);
@@ -847,7 +969,7 @@ app.get('/api/cache/state', async (c) => {
 // ── Manual yield rotate ──────────────────────────────────────────────
 app.post('/api/cache/yield-rotate', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?yield-rotate', { headers: { 'x-partykit-room': 'treasury' } }));
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?yield-rotate', { headers: { 'x-partykit-room': 'treasury' } }));
     return c.json(await res.json() as any, res.status as any);
   } catch (err) { return c.json({ error: String(err) }, 500); }
 });
@@ -855,7 +977,7 @@ app.post('/api/cache/yield-rotate', async (c) => {
 // ── Manual sweep fees ────────────────────────────────────────────────
 app.post('/api/cache/sweep-fees', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?sweep-fees', { headers: { 'x-partykit-room': 'treasury' } }));
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?sweep-fees', { headers: { 'x-partykit-room': 'treasury' } }));
     return c.json(await res.json() as any, res.status as any);
   } catch (err) { return c.json({ error: String(err) }, 500); }
 });
@@ -863,7 +985,7 @@ app.post('/api/cache/sweep-fees', async (c) => {
 // ── Refill ultron SUI cache (swap USDC→SUI) ─────────────────────────
 app.post('/api/cache/refill-sui', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?refill-sui', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?refill-sui', {
       method: 'GET',
       headers: { 'x-partykit-room': 'treasury' },
     }));
@@ -999,11 +1121,9 @@ app.post('/api/infer', async (c) => {
     if (best?.action === 'TRADE' && listing && best.route !== 'blocked') {
       // Delegate to TreasuryAgents DO for server-side TX building
       // (it has the keypair and can handle iUSD redemption atomically)
-      const doId = c.env.TreasuryAgents.idFromName('treasury');
-      const doStub = c.env.TreasuryAgents.get(doId);
-      const doRes = await doStub.fetch(new Request('https://treasury-do/?build-trade', {
+      const doRes = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?build-trade', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           buyer: address,
           nftTokenId: listing.nftTokenId,
@@ -1048,7 +1168,7 @@ app.post('/api/infer', async (c) => {
 app.post('/api/thunder/set-fee', async (c) => {
   try {
     const body = await c.req.json() as { feeMist: number };
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?set-thunder-fee', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?set-thunder-fee', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1064,7 +1184,7 @@ app.post('/api/thunder/set-fee', async (c) => {
 app.post('/api/cache/swap-sui-for-deep', async (c) => {
   try {
     const body = await c.req.json() as { amountMist?: string };
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?swap-sui-for-deep', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?swap-sui-for-deep', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1079,7 +1199,7 @@ app.post('/api/cache/swap-sui-for-deep', async (c) => {
 // ── Rumble — server-side IKA dWallet check/provision for ultron.sui ──
 app.post('/api/cache/rumble', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?rumble-ultron', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?rumble-ultron', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify({}),
@@ -1094,7 +1214,7 @@ app.post('/api/cache/rumble', async (c) => {
 // ── Create iUSD/USDC DeepBook pool ──────────────────────────────
 app.post('/api/cache/create-iusd-pool', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?create-iusd-pool', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?create-iusd-pool', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify({}),
@@ -1121,7 +1241,7 @@ function cfGeoHeaders(c: any): Record<string, string> {
 app.post('/api/cache/pre-rumble', async (c) => {
   try {
     const body = await c.req.json() as { name: string; userAddress: string };
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?pre-rumble', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?pre-rumble', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury', ...cfGeoHeaders(c) },
       body: JSON.stringify(body),
@@ -1154,7 +1274,7 @@ app.get('/api/cache/squid-stats', async (c) => {
     return c.json({ error: 'Auth failed' }, 403);
   }
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?squid-stats', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?squid-stats', {
       headers: { 'x-partykit-room': 'treasury' },
     }));
     const text = await res.text();
@@ -1167,7 +1287,7 @@ app.get('/api/cache/squid-stats', async (c) => {
 // ── Seed iUSD/USDC DeepBook pool ────────────────────────────────────
 app.post('/api/cache/seed-iusd-pool', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?seed-iusd-pool', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?seed-iusd-pool', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify({}),
@@ -1183,7 +1303,7 @@ app.post('/api/cache/seed-iusd-pool', async (c) => {
 app.post('/api/ignite', async (c) => {
   try {
     const body = await c.req.json() as { requestId: string; chain: string; encryptedRecipient: string; iusdBurned: number };
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?ignite', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?ignite', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1199,7 +1319,7 @@ app.post('/api/ignite', async (c) => {
 app.post('/api/cache/acquire-ns', async (c) => {
   try {
     const body = await c.req.json() as any;
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?acquire-ns', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?acquire-ns', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1230,7 +1350,7 @@ app.post('/api/cache/migrate', async (c) => {
   try {
     const body = await c.req.json() as { newKeeper: string };
     if (!body.newKeeper) return c.json({ error: 'newKeeper required' }, 400);
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?migrate', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?migrate', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1255,7 +1375,7 @@ app.post('/api/cache/quest-bounty', async (c) => {
     if (!body.commitment || !body.amount || !body.recipient) {
       return c.json({ error: 'Missing params' }, 400);
     }
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?quest-bounty', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?quest-bounty', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1271,7 +1391,7 @@ app.post('/api/cache/quest-bounty', async (c) => {
 // ── OpenCLOB: iUSD SPL on Solana ────────────────────────────────────
 app.post('/api/cache/create-iusd-sol-mint', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?create-iusd-sol-mint', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?create-iusd-sol-mint', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: '{}',
@@ -1286,7 +1406,7 @@ app.post('/api/cache/create-iusd-sol-mint', async (c) => {
 app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
   try {
     const body = await c.req.json() as { recipientSolAddress: string; amount: string };
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1302,7 +1422,7 @@ app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
 app.post('/api/cache/kamino-deposit', async (c) => {
   try {
     const body = await c.req.json() as { suiAddress: string; amountUsd: number; strategy?: string };
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?kamino-deposit', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?kamino-deposit', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1318,7 +1438,7 @@ app.post('/api/cache/kamino-deposit', async (c) => {
 app.get('/api/cache/quest-bounties', async (c) => {
   try {
     const recipient = c.req.query('recipient') || '';
-    const res = await treasuryStub(c).fetch(new Request(`https://treasury-do/?quest-bounties&recipient=${encodeURIComponent(recipient)}`, {
+    const res = await authedTreasuryStub(c).fetch(new Request(`https://treasury-do/?quest-bounties&recipient=${encodeURIComponent(recipient)}`, {
       headers: { 'x-partykit-room': 'treasury' },
     }));
     const text = await res.text();
@@ -1334,7 +1454,7 @@ app.post('/api/cache/quest-fill', async (c) => {
   try {
     const body = await c.req.json() as { bountyId: string };
     if (!body.bountyId) return c.json({ error: 'bountyId required' }, 400);
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?quest-fill', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?quest-fill', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1350,7 +1470,7 @@ app.post('/api/cache/quest-fill', async (c) => {
 // Lend USDC to NAVI for yield
 app.post('/api/cache/lend', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?lend-usdc', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?lend-usdc', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: '{}',
@@ -1367,7 +1487,7 @@ app.post('/api/cache/lend', async (c) => {
 app.post('/api/cache/shade-create', async (c) => {
   try {
     const body = await c.req.json() as any;
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?shade-create', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-create', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1384,7 +1504,7 @@ app.post('/api/cache/shade-create', async (c) => {
 app.get('/api/cache/shade-list', async (c) => {
   try {
     const holder = c.req.query('holder') || '';
-    const res = await treasuryStub(c).fetch(new Request(`https://treasury-do/?shade-list&holder=${encodeURIComponent(holder)}`, {
+    const res = await authedTreasuryStub(c).fetch(new Request(`https://treasury-do/?shade-list&holder=${encodeURIComponent(holder)}`, {
       headers: { 'x-partykit-room': 'treasury' },
     }));
     const text = await res.text();
@@ -1398,7 +1518,7 @@ app.get('/api/cache/shade-list', async (c) => {
 // Poke — instant hook after sending funds. Fires SOL watcher + fills all open quests.
 app.all('/api/cache/initiate', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?initiate', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?initiate', {
       headers: { 'x-partykit-room': 'treasury' },
     }));
     const text = await res.text();
@@ -1414,7 +1534,7 @@ app.post('/api/cache/deposit-intent', async (c) => {
   try {
     const body = await c.req.json() as { suiAddress: string; amountUsd: number };
     if (!body.suiAddress || !body.amountUsd) return c.json({ error: 'Missing params' }, 400);
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?deposit-intent', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?deposit-intent', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -1432,7 +1552,7 @@ app.get('/api/cache/deposit-status', async (c) => {
   try {
     const suiAddress = c.req.query('suiAddress') || '';
     if (!suiAddress) return c.json({ error: 'suiAddress required' }, 400);
-    const res = await treasuryStub(c).fetch(new Request(`https://treasury-do/?deposit-status&suiAddress=${encodeURIComponent(suiAddress)}`, {
+    const res = await authedTreasuryStub(c).fetch(new Request(`https://treasury-do/?deposit-status&suiAddress=${encodeURIComponent(suiAddress)}`, {
       headers: { 'x-partykit-room': 'treasury' },
     }));
     const text = await res.text();
@@ -1446,7 +1566,7 @@ app.get('/api/cache/deposit-status', async (c) => {
 // Deposit addresses — where to send SUI/SOL/USDC to fund the cache
 app.get('/api/cache/rumble', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?deposit-addresses', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?deposit-addresses', {
       headers: { 'x-partykit-room': 'treasury' },
     }));
     const text = await res.text();
@@ -1468,7 +1588,7 @@ app.post('/api/sol-webhook', async (c) => {
   }
   try {
     const body = await c.req.text();
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/sol-webhook', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/sol-webhook', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body,
@@ -1482,7 +1602,7 @@ app.post('/api/sol-webhook', async (c) => {
 // ── Manual rescan: recovery endpoint for missed deposits ──
 app.post('/api/cache/rescan-deposits', async (c) => {
   try {
-    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/rescan-deposits', {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/rescan-deposits', {
       method: 'POST',
       headers: { 'x-partykit-room': 'treasury' },
     }));

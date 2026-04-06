@@ -34,6 +34,13 @@ When a bug is reported, don't start by trying to fix it. Instead:
 - "Purge" = delete-on-read (not decrypt)
 - "Quest" = the act of reading/opening
 
+## DeepBook v3 — BalanceManager Black Hole
+- **NEVER create an owned BalanceManager.** Owned BMs become deposit black holes — funds go in, can't come out.
+- BMs MUST be shared objects. Deposit AND place orders in the SAME transaction.
+- If an owned BM already exists with funds: `withdraw_all` first (Step 0).
+- Never leave a deposit in a BM without immediately using it in the same PTB.
+- `swap_exact_quantity` abort code 12 = insufficient pool liquidity, NOT a BM issue.
+
 ## Build & Deploy
 ```bash
 bun run build && npx wrangler deploy

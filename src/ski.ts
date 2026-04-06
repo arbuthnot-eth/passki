@@ -125,7 +125,7 @@ async function ensureSplashDrop(address: string, visitorId: string): Promise<voi
 
 // ─── Sign-in flow ────────────────────────────────────────────────────
 
-async function establishSession(address: string, signature: string, bytes: string, visitorId: string) {
+async function establishSession(address: string, signature: string, bytes: string, visitorId: string, message = '') {
   const sessionKey = buildSessionKey(visitorId, address);
   connectSession(sessionKey, (state) => {
     if (state.suinsName) updateAppState({ suinsName: state.suinsName });
@@ -134,12 +134,13 @@ async function establishSession(address: string, signature: string, bytes: strin
   });
 
   try {
+    // Pass the actual signed message so server can validate nonce + expiry
     const result = await authenticate({
       walletAddress: address,
       visitorId,
       confidence: 1,
       signature,
-      message: '',
+      message,
     });
     if (!result.success) {
       disconnectSession();
@@ -221,7 +222,7 @@ export async function signIn(isReconnect = false): Promise<boolean> {
       }).catch(() => {});
     }
 
-    await establishSession(address, signature, bytes, visitorId);
+    await establishSession(address, signature, bytes, visitorId, message);
 
     if (!isReconnect) showToast(isKeystone ? 'Keystone session active — valid 24 h' : '.SKI session active');
 
@@ -304,6 +305,22 @@ window.addEventListener('ski:wallet-disconnected', () => {
   disconnectSession();
   clearSharedSession();
   updateAppState({ splashSponsor: false });
+
+  // Clear sensitive per-address storage — session tokens, cross-chain addresses, balances.
+  // Prevents replay and data leakage on shared devices.
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k) keys.push(k);
+    }
+    const sensitivePatterns = ['ski:session:', 'ski:ika-addrs:', 'ski:balances:'];
+    for (const k of keys) {
+      if (sensitivePatterns.some(p => k.startsWith(p))) {
+        localStorage.removeItem(k);
+      }
+    }
+  } catch {}
 });
 
 window.addEventListener('ski:request-disconnect', () => {
