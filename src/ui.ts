@@ -3312,6 +3312,10 @@ let nsLabel = (() => {
     return 'iusd';
   } catch { return 'iusd'; }
 })();
+// ─── SuiNS lookup timing config ─────────────────────────────────────
+const NS_LOOKUP_DEBOUNCE_MS = 450;   // delay after last keystroke before querying
+const NS_LOOKUP_POLL_MS     = 15_000; // periodic recheck interval for active label
+
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -7649,6 +7653,21 @@ function renderSkiMenu() {
     }
   };
   document.getElementById('wk-thunder-msg')?.addEventListener('keydown', (e) => {
+    // Backspace on @name tag — delete the whole name at once, leave just @
+    if (e.key === 'Backspace') {
+      const inp = e.target as HTMLInputElement;
+      const val = inp.value;
+      const pos = inp.selectionStart ?? val.length;
+      const before = val.slice(0, pos);
+      const tagMatch = before.match(/@([a-z0-9-]{1,63})(\s?)$/i);
+      if (tagMatch) {
+        e.preventDefault();
+        const tagStart = pos - tagMatch[0].length;
+        inp.value = val.slice(0, tagStart + 1) + val.slice(pos);
+        inp.setSelectionRange(tagStart + 1, tagStart + 1);
+        return;
+      }
+    }
     if (e.key === 'Enter') { e.preventDefault(); _thunderSendFromConvo(); }
   });
   document.getElementById('wk-thunder-send')?.addEventListener('click', (e) => {
@@ -7741,17 +7760,17 @@ function renderSkiMenu() {
     const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
     if (btn) btn.title = !validLabel && val ? 'Invalid SuiNS name' : val ? `Mint ${val}.sui` : 'Mint .sui';
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
-    if (validLabel) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), 400);
+    if (validLabel) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), NS_LOOKUP_DEBOUNCE_MS);
   });
 
-  // Periodic validity recheck — refresh price/availability every 7 seconds for the active label
+  // Periodic validity recheck for the active label
   if (_nsValidityInterval) clearInterval(_nsValidityInterval);
   _nsValidityInterval = setInterval(() => {
     const label = nsLabel.trim().toLowerCase();
     if (label && isValidNsLabel(label) && !nsSubnameParent) {
       fetchAndShowNsPrice(label);
     }
-  }, 7000);
+  }, NS_LOOKUP_POLL_MS);
 
   // Toggle roster visibility when clicking domain-row outside the input/buttons
   document.querySelector('.wk-dd-ns-domain-row')?.addEventListener('click', (e) => {
@@ -9908,12 +9927,12 @@ function bindEvents() {
         // Invalid/short input → reset card to primary name
         _updateIdleCard(validLabel ? val : '');
         _renderThunderComposePreview();
-        // Debounce fetch — short delay to batch rapid keystrokes
+        // Debounce fetch to avoid SuiNS rate limits
         if (_idleDebounce) clearTimeout(_idleDebounce);
         if (val.length >= 3 && validLabel) {
           _idleDebounce = setTimeout(() => {
             fetchAndShowNsPrice(val).then(() => { _updateIdleStatus(); _updateIdleCard(val); _renderThunderComposePreview(); _expandIdleConvo(val); });
-          }, 150);
+          }, NS_LOOKUP_DEBOUNCE_MS);
         }
       });
 
@@ -11633,7 +11652,11 @@ function bindEvents() {
             nsAvail = null;
             _updateIdleStatus();
             if (latest.length >= 3 && isValidNsLabel(latest)) {
-              fetchAndShowNsPrice(latest).then(() => { _updateIdleStatus(); _updateIdleCard(latest); });
+              // Debounce to avoid SuiNS rate limits during @tag typing
+              if (_idleDebounce) clearTimeout(_idleDebounce);
+              _idleDebounce = setTimeout(() => {
+                fetchAndShowNsPrice(latest).then(() => { _updateIdleStatus(); _updateIdleCard(latest); });
+              }, NS_LOOKUP_DEBOUNCE_MS);
             }
           }
           const mainNsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -11650,6 +11673,22 @@ function bindEvents() {
           else if (e.key === 'ArrowUp') { e.preventDefault(); _atSelectedIdx = Math.max(_atSelectedIdx - 1, 0); opts.forEach((o, i) => o.classList.toggle('ski-idle-at-option--active', i === _atSelectedIdx)); }
           else if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); const sel = opts[_atSelectedIdx] as HTMLElement; if (sel) _insertAtName(sel.dataset.name || ''); else if (e.key === 'Enter') _sendIdleThunder(); return; }
           else if (e.key === 'Escape') { _dismissAtDropdown(); return; }
+        }
+        // Backspace on @name tag — delete the whole name at once, leave just @
+        if (e.key === 'Backspace' && _idleThunderInput) {
+          const val = _idleThunderInput.value;
+          const pos = _idleThunderInput.selectionStart ?? val.length;
+          // Find the @tag the cursor is inside or at the end of
+          const before = val.slice(0, pos);
+          const tagMatch = before.match(/@([a-z0-9-]{1,63})(\s?)$/i);
+          if (tagMatch) {
+            e.preventDefault();
+            const tagStart = pos - tagMatch[0].length;
+            // Delete the name part, keep the @
+            _idleThunderInput.value = val.slice(0, tagStart + 1) + val.slice(pos);
+            _idleThunderInput.setSelectionRange(tagStart + 1, tagStart + 1);
+            return;
+          }
         }
         if (e.key === 'Enter') { e.preventDefault(); _sendIdleThunder(); }
       });
