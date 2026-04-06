@@ -365,6 +365,9 @@ export function startAutoSigning(
   }, 5_000);
 }
 
+// ─── Timing constants ────────────────────────────────────────────────
+const SPONSOR_POLL_RETRY_MS = 600;
+
 // ─── Helpers ──────────────────────────────────────────────────────────
 
 async function pollForReady(requestId: string, timeoutMs: number): Promise<SponsorRequest> {
@@ -376,7 +379,7 @@ async function pollForReady(requestId: string, timeoutMs: number): Promise<Spons
     if (!req) throw new Error('Request disappeared from sponsor queue');
     if (req.status === 'ready' || (req.userSig && req.sponsorSig)) return req;
     if (req.status === 'failed') throw new Error(req.error ?? 'Sponsorship failed');
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, SPONSOR_POLL_RETRY_MS));
   }
 
   throw new Error('Sponsorship request timed out waiting for sponsor signature');

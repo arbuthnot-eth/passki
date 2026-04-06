@@ -51,6 +51,13 @@ const SCALLOP = {
   sSuiType: '0xaafc4f740de0dd0dde642a31148fb94517087052f19afb0f7bed1dc41a50c77b::scallop_sui::SCALLOP_SUI',
 };
 
+// ─── Timing constants ────────────────────────────────────────────────
+const TX_INDEX_WAIT_MS = 3_000;
+const CHAIN_PROPAGATION_MS = 1_500;
+const FETCH_TIMEOUT_MS = 8_000;
+const PRICE_FEED_TIMEOUT_MS = 5_000;
+const LONG_FETCH_TIMEOUT_MS = 15_000;
+
 // ─── Cache state: 110% overcollateralization ─────────────────────────
 const OVERCOLLATERAL_BPS = 11000; // 110% — everything above this is surplus for agents
 
@@ -451,14 +458,14 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         let solPrice: number | null = null;
         try {
           // Pyth SOL/USD feed
-          const r = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d', { signal: AbortSignal.timeout(5000) });
+          const r = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d', { signal: AbortSignal.timeout(PRICE_FEED_TIMEOUT_MS) });
           const d = await r.json() as { parsed?: Array<{ price?: { price?: string; expo?: number } }> };
           const p = d.parsed?.[0]?.price;
           if (p?.price) solPrice = Number(p.price) * Math.pow(10, Number(p.expo ?? 0));
         } catch {}
         if (!solPrice) {
           try {
-            const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT', { signal: AbortSignal.timeout(5000) });
+            const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT', { signal: AbortSignal.timeout(PRICE_FEED_TIMEOUT_MS) });
             const d = await r.json() as { price?: string };
             if (d.price) solPrice = parseFloat(d.price);
           } catch {}
@@ -2794,7 +2801,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
             method: 'getSignaturesForAddress',
             params: [solAddr, { limit: 20 }],
           }),
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         });
         const d = await r.json() as any;
         if (d.result?.length) { signatures = d.result; break; }
@@ -2825,7 +2832,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
                 method: 'getTransaction',
                 params: [sig.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }],
               }),
-              signal: AbortSignal.timeout(8000),
+              signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
             });
             const d = await r.json() as any;
             if (d.result) { txData = d.result; break; }
@@ -3153,14 +3160,14 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private async _fetchSuiPrice(): Promise<number | null> {
     // Primary: Pyth Hermes (Sibyl's data source) — SUI/USD feed
     try {
-      const r = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744', { signal: AbortSignal.timeout(5000) });
+      const r = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744', { signal: AbortSignal.timeout(PRICE_FEED_TIMEOUT_MS) });
       const d = await r.json() as { parsed?: Array<{ price?: { price?: string; expo?: number } }> };
       const p = d.parsed?.[0]?.price;
       if (p?.price) return Number(p.price) * Math.pow(10, Number(p.expo ?? 0));
     } catch { /* fallback */ }
     // Fallback: Binance spot
     try {
-      const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(5000) });
+      const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(PRICE_FEED_TIMEOUT_MS) });
       const d = await r.json() as { price?: string };
       if (d.price) return parseFloat(d.price);
     } catch { /* exhausted */ }
@@ -3170,13 +3177,13 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   /** Sibyl SOL/USD oracle — Pyth Hermes → Binance fallback */
   private async _fetchSolPrice(): Promise<number | null> {
     try {
-      const r = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d', { signal: AbortSignal.timeout(5000) });
+      const r = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d', { signal: AbortSignal.timeout(PRICE_FEED_TIMEOUT_MS) });
       const d = await r.json() as { parsed?: Array<{ price?: { price?: string; expo?: number } }> };
       const p = d.parsed?.[0]?.price;
       if (p?.price) return Number(p.price) * Math.pow(10, Number(p.expo ?? 0));
     } catch {}
     try {
-      const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT', { signal: AbortSignal.timeout(5000) });
+      const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT', { signal: AbortSignal.timeout(PRICE_FEED_TIMEOUT_MS) });
       const d = await r.json() as { price?: string };
       if (d.price) return parseFloat(d.price);
     } catch {}
@@ -3211,7 +3218,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         reserve: TreasuryAgents.KAMINO_SOL_RESERVE,
         amount: solAmount.toFixed(9),
       }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(LONG_FETCH_TIMEOUT_MS),
     });
 
     if (!resp.ok) {
@@ -3272,7 +3279,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
             method: 'sendTransaction',
             params: [signedB64, { encoding: 'base64', skipPreflight: false }],
           }),
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(LONG_FETCH_TIMEOUT_MS),
         });
         const d = await r.json() as { result?: string; error?: { message?: string } };
         if (d.result) {
@@ -3463,7 +3470,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // Step 3: Acquire NS for user
       // Route: iUSD → USDC (DeepBook iUSD/USDC pool) → NS (DeepBook NS/USDC pool) → transfer to user
       // Wait for mint tx to be indexed so we can fetch iUSD coins
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
 
       const iusdCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; balance: string }> }>(
         'suix_getCoins', [ultronAddr, TreasuryAgents.IUSD_TYPE],
@@ -3797,7 +3804,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       let poolId = '';
       let poolIsv = 0;
       try {
-        await new Promise(r => setTimeout(r, 3000)); // wait for indexing
+        await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS)); // wait for indexing
         const txRes = await raceJsonRpc<any>('sui_getTransactionBlock', [digest, { showObjectChanges: true }]);
         const changes = txRes?.objectChanges ?? [];
         for (const c of changes) {
@@ -3891,7 +3898,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
               return { error: `Withdraw ${coinType.split('::').pop()} submit failed: ${reasons.join(' | ')}` };
             }
             console.log(`[seedIusdPool] Withdrew ${coinType.split('::').pop()} from BM: ${wDigest}`);
-            await new Promise(r => setTimeout(r, 3000));
+            await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             console.error(`[seedIusdPool] Withdraw ${coinType.split('::').pop()} failed:`, msg);
@@ -3937,7 +3944,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const sig1 = await keypair.signTransaction(txBytes1);
         digest = await this._submitTx(txBytes1, sig1.signature);
         console.log(`[seedIusdPool] TX1: BalanceManager created: ${digest}`);
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
         const txRes = await raceJsonRpc<any>('sui_getTransactionBlock', [digest, { showObjectChanges: true }]);
         for (const ch of (txRes?.objectChanges ?? [])) {
           if (ch.type === 'created' && ch.objectType?.includes('BalanceManager')) { balanceManagerId = ch.objectId; break; }
@@ -4556,7 +4563,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (prefund.error) return { error: prefund.error };
 
         // Wait briefly for chain propagation
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, CHAIN_PROPAGATION_MS));
 
         // Step 2: Build user TX — send iUSD to ultron + purchase from Tradeport
         // iUSD amount = listing price in USD * 1e9 (iUSD has 9 decimals, pegged $1)
@@ -4698,7 +4705,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     console.log(`[iUSD:swap] Sent ${outputSent} to ${buyerAddr} (digest: ${prefundDigest})`);
 
     // Wait for chain propagation
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, CHAIN_PROPAGATION_MS));
 
     // Step 2: Build user TX to send iUSD to ultron
     const iusdCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
