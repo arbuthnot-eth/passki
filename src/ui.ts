@@ -9243,9 +9243,9 @@ function render() {
       if (els.skiDot) shell.dotD = els.skiDot.style.display;
       if (els.profile) shell.pro = els.profile.innerHTML;
       if (els.skiMenu) shell.menu = els.skiMenu.innerHTML;
-      localStorage.setItem('ski:shell', JSON.stringify(shell));
+      localStorage.setItem('ski:shell:v2', JSON.stringify(shell));
     } else {
-      localStorage.removeItem('ski:shell');
+      localStorage.removeItem('ski:shell:v2');
     }
   } catch {}
 
@@ -11924,6 +11924,12 @@ function bindEvents() {
 // ─── Init ────────────────────────────────────────────────────────────
 
 export function initUI() {
+  // Purge stale keys from previous versions — prevents ghost UI (old cards, thunder badges)
+  try {
+    localStorage.removeItem('ski:shell');           // v1 shell cache — superseded by ski:shell:v2
+    localStorage.removeItem('ski:thunder-card-open');
+  } catch {}
+
   bindEvents();
 
   // Tools panel toggle (Splash + Sign Message)
