@@ -9908,12 +9908,12 @@ function bindEvents() {
         // Invalid/short input → reset card to primary name
         _updateIdleCard(validLabel ? val : '');
         _renderThunderComposePreview();
-        // Debounce fetch — short delay to batch rapid keystrokes
+        // Debounce fetch — 800ms to avoid SuiNS rate limits
         if (_idleDebounce) clearTimeout(_idleDebounce);
         if (val.length >= 3 && validLabel) {
           _idleDebounce = setTimeout(() => {
             fetchAndShowNsPrice(val).then(() => { _updateIdleStatus(); _updateIdleCard(val); _renderThunderComposePreview(); _expandIdleConvo(val); });
-          }, 150);
+          }, 800);
         }
       });
 
