@@ -211,6 +211,10 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     depositMist: string;
     preferredRoute?: ShadeRoute;
   }): Promise<{ success: boolean; error?: string }> {
+    // Verify the ownerAddress matches the DO instance name (keyed by user address)
+    if (params.ownerAddress !== this.name) {
+      return { success: false, error: 'Owner address does not match DO instance' };
+    }
     // Idempotent — skip if this exact objectId is already tracked
     if (this.state.orders.some(o => o.objectId === params.objectId)) {
       return { success: true };
@@ -248,7 +252,11 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   // ─── Cancel a scheduled order ───────────────────────────────────────
 
   @callable()
-  async cancel(params: { objectId: string }): Promise<{ success: boolean }> {
+  async cancel(params: { objectId: string; ownerAddress?: string }): Promise<{ success: boolean }> {
+    // Verify caller owns this DO instance
+    if (params.ownerAddress && params.ownerAddress !== this.name) {
+      return { success: false };
+    }
     // Special: "all" purges every order
     if (params.objectId === 'all') {
       this.setState({ orders: [] });
@@ -300,13 +308,17 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   // ─── Query orders ───────────────────────────────────────────────────
 
   @callable()
-  async getOrders(): Promise<{ orders: ShadeExecutorOrder[] }> {
-    return { orders: this.state.orders };
+  async getOrders(): Promise<{ orders: Array<Omit<ShadeExecutorOrder, 'salt'>> }> {
+    // Sanitize: strip salt from order data (commitment-reveal secret)
+    return { orders: this.state.orders.map(({ salt: _, ...o }) => o) };
   }
 
   @callable()
-  async getStatus(params: { objectId: string }): Promise<ShadeExecutorOrder | null> {
-    return this.state.orders.find(o => o.objectId === params.objectId) ?? null;
+  async getStatus(params: { objectId: string }): Promise<Omit<ShadeExecutorOrder, 'salt'> | null> {
+    const order = this.state.orders.find(o => o.objectId === params.objectId);
+    if (!order) return null;
+    const { salt: _, ...safe } = order;
+    return safe;
   }
 
   // ─── Reset failed orders so they can retry ────────────────────────
