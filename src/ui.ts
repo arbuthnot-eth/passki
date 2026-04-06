@@ -6224,7 +6224,6 @@ function renderSkiMenu() {
         </div>
         <div id="wk-ns-route" class="wk-ns-route-wrap${nsRouteOpen ? '' : ' wk-ns-route-wrap--hidden'}">${_nsRouteInitHtml}</div>
         <div id="ski-nft-inline" class="ski-nft-inline" hidden></div>
-        <div id="wk-thunder-convo" class="wk-thunder-convo" hidden><div id="wk-thunder-received" class="wk-thunder-received"></div><div id="wk-thunder-unquested" class="wk-thunder-unquested" hidden></div><div id="wk-thunder-reply-wrap" class="wk-thunder-reply-row"><input id="wk-thunder-msg" class="wk-thunder-msg" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off"><button id="wk-thunder-send" class="wk-thunder-send" type="button" title="Send signal">\u26a1</button></div></div>
         <div id="wk-ns-owned-list" class="wk-ns-owned-list${nsRosterOpen ? '' : ' wk-ns-owned-list--hidden'}">${_nsOwnedListHtml()}</div>
       </div>`;
 
@@ -6289,7 +6288,7 @@ function renderSkiMenu() {
               </div>
             </div>
             ${nsRowHtml}
-            <button class="wk-dd-thunder-bar" id="wk-dd-thunder" type="button">\u26a1 Thunder</button>
+            <!-- Thunder bar hidden pending v4 migration (#63) -->
           </div>
           <div class="wk-dd-panel wk-dd-panel--settings">
             ${settingsHtml}
