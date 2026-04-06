@@ -10722,29 +10722,26 @@ function bindEvents() {
         addrRow.removeAttribute('hidden');
         squidBtn?.classList.add('ski-idle-quick-btn--active');
         _freezeGif();
-        // Show QR for SUI address by default
+        // QR code for selected address — strip fixed dimensions so CSS controls size
         const qrSlot = addrRow.querySelector('#ski-idle-addr-qr') as HTMLElement | null;
         let _qrCurrentSvg = '';
-        const _makeTransparentQr = (svg: string) =>
-          svg.replace(/fill="#ffffff"/g, 'fill="transparent"')
-             .replace(/fill="white"/g, 'fill="transparent"')
-             .replace(/width="[^"]*"/, '')
-             .replace(/height="[^"]*"/, '');
+        const _stripQrDims = (svg: string) =>
+          svg.replace(/width="[^"]*"/, '').replace(/height="[^"]*"/, '');
+        const _showQrExpanded = () => {
+          if (!_qrCurrentSvg) return;
+          document.querySelector('.ski-idle-addr-qr-expanded')?.remove();
+          const overlay = document.createElement('div');
+          overlay.className = 'ski-idle-addr-qr-expanded';
+          overlay.innerHTML = _qrCurrentSvg;
+          overlay.addEventListener('click', () => overlay.remove());
+          document.body.appendChild(overlay);
+        };
         if (qrSlot) {
           _getAddrQrSvg(addr, 'sui').then(svg => {
-            _qrCurrentSvg = _makeTransparentQr(svg);
+            _qrCurrentSvg = _stripQrDims(svg);
             qrSlot.innerHTML = _qrCurrentSvg;
           }).catch(() => {});
-          // Click to expand QR fullscreen
-          qrSlot.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            if (!_qrCurrentSvg) return;
-            const overlay = document.createElement('div');
-            overlay.className = 'ski-idle-addr-qr-expanded';
-            overlay.innerHTML = _qrCurrentSvg;
-            overlay.addEventListener('click', () => overlay.remove());
-            document.body.appendChild(overlay);
-          });
+          qrSlot.addEventListener('click', (ev) => { ev.stopPropagation(); _showQrExpanded(); });
         }
         addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
           el.addEventListener('click', (ev) => {
@@ -10753,15 +10750,16 @@ function bindEvents() {
             const full = h.title || addr;
             const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a' : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc' : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8' : '#4da2ff';
             toggleAddrRow(h, full, c);
-            // Update QR to show the selected address in its chain color
+            // Update QR and expand fullscreen for the copied address
+            const mode = h.classList.contains('ski-idle-addr-line--btc') ? 'btc' as const
+              : h.classList.contains('ski-idle-addr-line--sol') ? 'sol' as const
+              : h.classList.contains('ski-idle-addr-line--eth') ? 'bw' as const
+              : 'sui' as const;
             if (qrSlot) {
-              const mode = h.classList.contains('ski-idle-addr-line--btc') ? 'btc' as const
-                : h.classList.contains('ski-idle-addr-line--sol') ? 'sol' as const
-                : h.classList.contains('ski-idle-addr-line--eth') ? 'bw' as const
-                : 'sui' as const;
               _getAddrQrSvg(full, mode).then(svg => {
-                _qrCurrentSvg = _makeTransparentQr(svg);
+                _qrCurrentSvg = _stripQrDims(svg);
                 qrSlot.innerHTML = _qrCurrentSvg;
+                _showQrExpanded();
               }).catch(() => {});
             }
           });
