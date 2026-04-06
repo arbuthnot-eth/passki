@@ -205,7 +205,7 @@ export async function connect(wallet: Wallet, opts?: { skipSilent?: boolean }): 
     try {
       localStorage.setItem('ski:last-wallet', wallet.name);
       localStorage.setItem('ski:last-address', account.address);
-      if (wallet.icon) localStorage.setItem(`ski:wallet-icon:${wallet.name}`, wallet.icon);
+      if (wallet.icon) cacheWalletIcon(wallet.name, wallet.icon);
     } catch { /* storage unavailable */ }
 
     return account;
@@ -260,6 +260,38 @@ export async function disconnect(): Promise<void> {
     walletName: '',
     walletIcon: '',
   });
+}
+
+// ─── Icon caching ────────────────────────────────────────────────────
+
+/**
+ * Cache a wallet icon as a data URI in localStorage.
+ * Remote URLs are fetched and converted to data URIs so the icon
+ * renders instantly on hard refresh without waiting for a network request.
+ */
+function cacheWalletIcon(walletName: string, icon: string): void {
+  if (!icon) return;
+  try {
+    // Already a data URI — store directly
+    if (icon.startsWith('data:')) {
+      localStorage.setItem(`ski:wallet-icon:${walletName}`, icon);
+      return;
+    }
+    // Remote URL — fetch and convert to data URI in the background
+    localStorage.setItem(`ski:wallet-icon:${walletName}`, icon); // store URL as fallback immediately
+    fetch(icon)
+      .then(r => r.blob())
+      .then(blob => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          if (typeof reader.result === 'string' && reader.result.startsWith('data:')) {
+            try { localStorage.setItem(`ski:wallet-icon:${walletName}`, reader.result); } catch {}
+          }
+        };
+        reader.readAsDataURL(blob);
+      })
+      .catch(() => {}); // keep the URL fallback
+  } catch {}
 }
 
 // ─── Backpack + Uint8Array helpers ────────────────────────────────────
@@ -521,7 +553,7 @@ export function activateAccount(wallet: Wallet, account: WalletAccount): void {
   try {
     localStorage.setItem('ski:last-wallet', wallet.name);
     localStorage.setItem('ski:last-address', account.address);
-    if (wallet.icon) localStorage.setItem(`ski:wallet-icon:${wallet.name}`, wallet.icon);
+    if (wallet.icon) cacheWalletIcon(wallet.name, wallet.icon);
   } catch {}
 }
 
