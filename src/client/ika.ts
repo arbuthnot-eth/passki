@@ -13,6 +13,10 @@ import {
   UserShareEncryptionKeys, createRandomSessionIdentifier, prepareDKG, prepareDKGAsync,
 } from '@ika.xyz/sdk';
 export { Curve } from '@ika.xyz/sdk';
+
+// ─── Timing constants ────────────────────────────────────────────────
+const TX_INDEX_WAIT_MS = 2_000;
+const ACTIVATION_POLL_MS = 5_000;
 import type { DWalletCap } from '@ika.xyz/sdk';
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
@@ -382,7 +386,7 @@ export async function provisionDWallet(
       const err = await fundRes.json().catch(() => ({ error: 'Fund failed' })) as { error?: string };
       throw new Error(err.error ?? 'IKA funding failed');
     }
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
     const recheck = await getLocalJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
     userIkaCoinId = (recheck as any)?.data?.find((c: any) => BigInt(c.balance || '0') > 0n)?.coinObjectId;
     if (!userIkaCoinId) throw new Error('IKA funding succeeded but coin not found yet — try again');
@@ -448,7 +452,7 @@ export async function provisionDWallet(
     log('Activating...');
     const checkField = curve === Curve.ED25519 ? 'solAddress' : 'btcAddress';
     for (let i = 0; i < 24; i++) {
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise(r => setTimeout(r, ACTIVATION_POLL_MS));
       const status = await getCrossChainStatus(userAddress);
       if (status.ika && status[checkField]) {
         log('Active!');
@@ -489,7 +493,7 @@ export async function provisionDWallet(
       } catch (regErr) {
         console.warn('[ika:dkg] Step 4a: registration tx failed (may already exist):', regErr);
       }
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
     }
   }
 
@@ -578,7 +582,7 @@ export async function provisionDWallet(
   // Step 6: Poll for dWallet to become active
   const checkField2 = curve === Curve.ED25519 ? 'solAddress' : 'btcAddress';
   for (let i = 0; i < 24; i++) { // 2 minutes max
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise(r => setTimeout(r, ACTIVATION_POLL_MS));
     const status = await getCrossChainStatus(userAddress);
     if (status.ika && status[checkField2]) {
       log('Active!');

@@ -13,6 +13,9 @@ import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { gqlClient } from '../rpc.js';
 import { maybeAppendRoster } from '../suins.js';
+
+// ─── Timing constants ────────────────────────────────────────────────
+const TX_INDEX_WAIT_MS = 2_000;
 import {
   THUNDER_VERSION,
   THUNDER_PAYLOAD_SCHEMA_VERSION,
@@ -705,7 +708,7 @@ export async function decryptAndQuest(
   // If no events found, fetch tx details from RPC (wallet may not return events)
   if (quested.length === 0 && result.digest) {
     // Wait briefly for tx to be indexed
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
     const txRes = await fetch('/api/sui-rpc', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -834,7 +837,7 @@ export async function questAndSend(
 
   let quested = parseQuestfiEvents(result.effects ?? result);
   if (quested.length === 0 && result.digest) {
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
     const txRes = await fetch('/api/sui-rpc', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

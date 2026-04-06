@@ -62,6 +62,30 @@ function ssRemove(key: string): void { try { sessionStorage.removeItem(key); } c
 /** iUSD has 9 decimals. */
 const IUSD_MIST_PER_USD = 1_000_000_000;
 
+// ─── Timing config ──────────────────────────────────────────────────
+// All debounce/polling/timeout durations in one place.
+const TOAST_ANIMATION_MS        = 180;      // toast slide-out before DOM removal
+const TOAST_DISMISS_MS          = 12_000;   // auto-dismiss after this long
+const ACTION_TOAST_DISMISS_MS   = 10_000;   // retry-action toast dismiss
+const COPY_FEEDBACK_MS          = 2_200;    // "Copied" label reset
+const COPY_ADDR_FEEDBACK_MS     = 1_800;    // address copy toast
+const SWAP_QUOTE_DEBOUNCE_MS    = 500;      // delay before fetching swap quote
+const TX_INDEX_WAIT_MS          = 2_000;    // wait for on-chain tx indexing
+const PORTFOLIO_REFRESH_SHORT_MS = 1_200;   // quick balance refresh after tx
+const PORTFOLIO_REFRESH_MED_MS  = 2_000;    // medium balance refresh after tx
+const PORTFOLIO_REFRESH_LONG_MS = 5_000;    // delayed balance refresh after tx
+const TOKEN_PRICE_CACHE_TTL_MS  = 3_600_000; // 1 hour — token price localStorage cache
+const TOKEN_PRICE_STALE_MS      = 5 * 60 * 1000; // 5 min — refetch threshold
+const OWNED_DOMAINS_CACHE_MS    = 10 * 60 * 1000; // 10 min — nsOwnedDomains refresh
+const THUNDER_POLL_MS           = 5_000;    // thunder signal count polling
+const NFT_POPOVER_HIDE_MS       = 300;      // delay before hiding NFT popover
+const SHADE_COUNTDOWN_MS        = 1_000;    // shade chip countdown tick
+const DROPDOWN_DISMISS_MS       = 150;      // @ autocomplete dropdown blur dismiss
+const HYDRATING_SAFETY_MS       = 1_500;    // max wait for hydration before proceeding
+const LONG_PRESS_MS             = 2_200;    // long-press to open suiscan
+const ADDR_RESTORE_MS           = 1_200;    // address restore after DOM update
+const MODAL_REOPEN_MS           = 180;      // modal reopen after disconnect
+
 /** Sign a sponsored transaction: user signs, then fetch sponsor sig, submit both.
  *  Falls back to signAndExecuteTransaction for WaaP (signTransaction is broken). */
 async function signAndExecuteSponsoredTx(txBytes: Uint8Array): Promise<{ digest: string }> {
@@ -361,7 +385,7 @@ function toggleAddrRow(el: HTMLElement, fullAddr: string, color: string) {
     el.innerHTML = origHtml;
     el.removeAttribute('data-orig-html');
     _addrRestoreTimer = null;
-  }, 1200);
+  }, ADDR_RESTORE_MS);
 }
 
 function showCopyableToast(display: string, fullText: string, durationMs = 8000) {
@@ -394,7 +418,7 @@ function showCopyableToast(display: string, fullText: string, durationMs = 8000)
   requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
 
   let copied = false;
-  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
+  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), TOAST_ANIMATION_MS); };
   // Error toasts stay until dismissed — no auto-timeout
   toast.addEventListener('click', () => {
     if (copied) { remove(); return; }
@@ -481,8 +505,8 @@ export function showBackpackLockedToast() {
 
   root.appendChild(toast);
   requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
-  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
-  setTimeout(remove, 12000);
+  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), TOAST_ANIMATION_MS); };
+  setTimeout(remove, TOAST_DISMISS_MS);
   toast.addEventListener('click', remove);
 }
 
@@ -510,9 +534,9 @@ export function showToastWithRetry(msg: string, retryLabel: string, retryFn: () 
   toast.appendChild(btn);
   root.appendChild(toast);
   requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
-  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
+  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), TOAST_ANIMATION_MS); };
   btn.addEventListener('click', (e) => { e.stopPropagation(); remove(); retryFn(); });
-  setTimeout(remove, 10000); // longer window for action toasts
+  setTimeout(remove, ACTION_TOAST_DISMISS_MS); // longer window for action toasts
   toast.addEventListener('click', remove);
 }
 
@@ -2594,7 +2618,7 @@ function _debounceSwapQuote() {
     });
     await Promise.all(fetches);
     _updateSwapEstimates();
-  }, 500);
+  }, SWAP_QUOTE_DEBOUNCE_MS);
 }
 
 function _isStableCoin(coinType: string): boolean {
@@ -2718,7 +2742,7 @@ let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() 
       // Filter out stale entries (> 1 hour)
       const now = Date.now();
       for (const k of Object.keys(parsed)) {
-        if (!parsed[k]?.price || now - parsed[k].fetchedAt > 3600_000) delete parsed[k];
+        if (!parsed[k]?.price || now - parsed[k].fetchedAt > TOKEN_PRICE_CACHE_TTL_MS) delete parsed[k];
       }
       return parsed;
     }
@@ -2733,7 +2757,7 @@ function getNsTokenPrice(): number | null { return getTokenPrice('NS'); }
 async function fetchTokenPrices(): Promise<void> {
   const now = Date.now();
   // Skip if all known tokens are fresh
-  const stale = Object.keys(_COINGECKO_IDS).filter(s => !tokenPriceCache[s] || now - tokenPriceCache[s].fetchedAt > 5 * 60 * 1000);
+  const stale = Object.keys(_COINGECKO_IDS).filter(s => !tokenPriceCache[s] || now - tokenPriceCache[s].fetchedAt > TOKEN_PRICE_STALE_MS);
   if (!stale.length) return;
 
   const cacheToken = (symbol: string, p: number) => {
@@ -2769,7 +2793,7 @@ async function fetchTokenPrices(): Promise<void> {
     ['WAL', WAL_TYPE],
   ];
   for (const [symbol, coinType] of dexTargets) {
-    if (tokenPriceCache[symbol] && now - tokenPriceCache[symbol].fetchedAt < 5 * 60 * 1000) continue;
+    if (tokenPriceCache[symbol] && now - tokenPriceCache[symbol].fetchedAt < TOKEN_PRICE_STALE_MS) continue;
     try {
       const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${coinType}`);
       if (r.ok) {
@@ -2785,7 +2809,7 @@ async function fetchTokenPrices(): Promise<void> {
 
 async function fetchSuiPrice(): Promise<number | null> {
   const now = Date.now();
-  if (suiPriceCache && now - suiPriceCache.fetchedAt < 5 * 60 * 1000) return suiPriceCache.price;
+  if (suiPriceCache && now - suiPriceCache.fetchedAt < TOKEN_PRICE_STALE_MS) return suiPriceCache.price;
 
   const persist = (p: number) => {
     suiPriceCache = { price: p, fetchedAt: now };
@@ -2995,7 +3019,7 @@ function copyAddress() {
     if (copiedTimer) clearTimeout(copiedTimer);
     app.copied = true;
     render();
-    copiedTimer = setTimeout(() => { app.copied = false; copiedTimer = null; render(); }, 2200);
+    copiedTimer = setTimeout(() => { app.copied = false; copiedTimer = null; render(); }, COPY_FEEDBACK_MS);
   }).catch(() => {});
 }
 
@@ -3312,6 +3336,9 @@ let nsLabel = (() => {
     return 'iusd';
   } catch { return 'iusd'; }
 })();
+const NS_LOOKUP_DEBOUNCE_MS = 450;   // delay after last keystroke before querying
+const NS_LOOKUP_POLL_MS     = 15_000; // periodic recheck interval for active label
+
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -3658,7 +3685,7 @@ async function _renderConversation(counterparty: string, force = false) {
         const result = await res.json() as { digest?: string; effects?: any; error?: string };
         if (!res.ok || result.error) throw new Error(result.error || 'Strike relay failed');
         // Fetch events from the tx to decrypt
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
         const txRes = await fetch('/api/sui-rpc', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -4201,7 +4228,7 @@ function _loadCachedOwnedDomains(addr: string): OwnedDomain[] | null {
     if (!raw) return null;
     const data = JSON.parse(raw) as { ts: number; domains: OwnedDomain[] };
     // Cache valid for 10 minutes
-    if (Date.now() - data.ts > 10 * 60 * 1000) return null;
+    if (Date.now() - data.ts > OWNED_DOMAINS_CACHE_MS) return null;
     return data.domains;
   } catch { return null; }
 }
@@ -4715,7 +4742,7 @@ function _syncShadeChipTimer() {
         const s = Math.floor((ms % 60_000) / 1000);
         el.textContent = `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
       });
-    }, 1000);
+    }, SHADE_COUNTDOWN_MS);
   } else if (!hasChips && _shadeChipTimer) {
     clearInterval(_shadeChipTimer); _shadeChipTimer = null;
   }
@@ -4761,7 +4788,7 @@ function _hideNftPopover(immediate = false) {
   if (immediate) { _nftPopoverPinned = false; _nftPopover?.setAttribute('hidden', ''); return; }
   _nftPopoverHideTimer = setTimeout(() => {
     _nftPopover?.setAttribute('hidden', '');
-  }, 300);
+  }, NFT_POPOVER_HIDE_MS);
 }
 
 function _showNftPopover(chip: HTMLElement, domainBare: string) {
@@ -5475,7 +5502,7 @@ function _startShadeCountdown() {
       _patchNsStatus();
       _patchNsPrice();
     }
-  }, 1000);
+  }, SHADE_COUNTDOWN_MS);
 }
 
 function _stopShadeCountdown() {
@@ -6554,8 +6581,8 @@ function renderSkiMenu() {
       app.nsBalance = 0;
       appBalanceFetched = false;
       renderSkiMenu();
-      setTimeout(() => refreshPortfolio(true), 2000);
-      setTimeout(() => refreshPortfolio(true), 5000);
+      setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
+      setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_LONG_MS);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.toLowerCase().includes('reject')) showToast(msg);
@@ -6883,7 +6910,7 @@ function renderSkiMenu() {
       nsOwnedFetchedFor = ''; _fetchOwnedDomains();
       walletCoins = []; appBalanceFetched = false;
       renderSkiMenu();
-      setTimeout(() => refreshPortfolio(true), 2000);
+      setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
       showToast(`${label}.sui purchased \u2713`);
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
@@ -6986,7 +7013,7 @@ function renderSkiMenu() {
           app.suinsName = app.suinsName || `${label}.sui`;
           showToast(`\u26a1 ${label}.sui acquired via cache`);
           _patchNsStatus(); renderSkiMenu();
-          setTimeout(() => refreshPortfolio(true), 2000);
+          setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
           return;
         }
 
@@ -6999,7 +7026,7 @@ function renderSkiMenu() {
           app.suinsName = app.suinsName || `${label}.sui`;
           showToast(`${label}.sui purchased \u2713`);
           _patchNsStatus(); renderSkiMenu();
-          setTimeout(() => refreshPortfolio(true), 2000);
+          setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
         } else {
           // Try local marketplace handler as fallback
           if (nsKioskListing || nsTradeportListing) {
@@ -7296,8 +7323,8 @@ function renderSkiMenu() {
       walletCoins = [];
       appBalanceFetched = false;
       renderSkiMenu();
-      setTimeout(() => refreshPortfolio(true), 2000);
-      setTimeout(() => refreshPortfolio(true), 5000);
+      setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
+      setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_LONG_MS);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.toLowerCase().includes('reject')) showToast(msg);
@@ -7649,6 +7676,21 @@ function renderSkiMenu() {
     }
   };
   document.getElementById('wk-thunder-msg')?.addEventListener('keydown', (e) => {
+    // Backspace on @name tag — delete the whole name at once, leave just @
+    if (e.key === 'Backspace') {
+      const inp = e.target as HTMLInputElement;
+      const val = inp.value;
+      const pos = inp.selectionStart ?? val.length;
+      const before = val.slice(0, pos);
+      const tagMatch = before.match(/@([a-z0-9-]{1,63})(\s?)$/i);
+      if (tagMatch) {
+        e.preventDefault();
+        const tagStart = pos - tagMatch[0].length;
+        inp.value = val.slice(0, tagStart + 1) + val.slice(pos);
+        inp.setSelectionRange(tagStart + 1, tagStart + 1);
+        return;
+      }
+    }
     if (e.key === 'Enter') { e.preventDefault(); _thunderSendFromConvo(); }
   });
   document.getElementById('wk-thunder-send')?.addEventListener('click', (e) => {
@@ -7741,17 +7783,17 @@ function renderSkiMenu() {
     const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
     if (btn) btn.title = !validLabel && val ? 'Invalid SuiNS name' : val ? `Mint ${val}.sui` : 'Mint .sui';
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
-    if (validLabel) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), 400);
+    if (validLabel) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), NS_LOOKUP_DEBOUNCE_MS);
   });
 
-  // Periodic validity recheck — refresh price/availability every 7 seconds for the active label
+  // Periodic validity recheck for the active label
   if (_nsValidityInterval) clearInterval(_nsValidityInterval);
   _nsValidityInterval = setInterval(() => {
     const label = nsLabel.trim().toLowerCase();
     if (label && isValidNsLabel(label) && !nsSubnameParent) {
       fetchAndShowNsPrice(label);
     }
-  }, 7000);
+  }, NS_LOOKUP_POLL_MS);
 
   // Toggle roster visibility when clicking domain-row outside the input/buttons
   document.querySelector('.wk-dd-ns-domain-row')?.addEventListener('click', (e) => {
@@ -8343,7 +8385,7 @@ function renderSkiMenu() {
       _patchNsRoute();
       _patchNsOwnedList();
       showToast(`${label}.sui shaded \u2713`);
-      setTimeout(() => refreshPortfolio(true), 1200);
+      setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_SHORT_MS);
       const resolveAndSchedule = async () => {
         if (!orderId && digest) {
           orderId = await findCreatedShadeOrderId(digest);
@@ -8474,7 +8516,7 @@ function renderSkiMenu() {
         _patchNsPrice();
         _patchNsRoute();
         showToast(`${cancelled} shade order${cancelled > 1 ? 's' : ''} cancelled \u2014 ${totalRefund.toFixed(2)} SUI refunded ${lastDigest ? lastDigest.slice(0, 8) + '\u2026' : ''}`);
-        setTimeout(() => refreshPortfolio(true), 1200);
+        setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_SHORT_MS);
       } else if (firstErr) {
         showToast(firstErr);
       }
@@ -8585,7 +8627,7 @@ function renderSkiMenu() {
         nsOwnedFetchedFor = ''; _fetchOwnedDomains();
         walletCoins = []; appBalanceFetched = false;
         renderSkiMenu();
-        setTimeout(() => refreshPortfolio(true), 2000);
+        setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
         // Notify idle overlay to refresh status (TRADE → SUIAMI transition)
         _preRumbledNames.add(label.toLowerCase());
         try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
@@ -9908,12 +9950,12 @@ function bindEvents() {
         // Invalid/short input → reset card to primary name
         _updateIdleCard(validLabel ? val : '');
         _renderThunderComposePreview();
-        // Debounce fetch — short delay to batch rapid keystrokes
+        // Debounce fetch to avoid SuiNS rate limits
         if (_idleDebounce) clearTimeout(_idleDebounce);
         if (val.length >= 3 && validLabel) {
           _idleDebounce = setTimeout(() => {
             fetchAndShowNsPrice(val).then(() => { _updateIdleStatus(); _updateIdleCard(val); _renderThunderComposePreview(); _expandIdleConvo(val); });
-          }, 150);
+          }, NS_LOOKUP_DEBOUNCE_MS);
         }
       });
 
@@ -9969,7 +10011,7 @@ function bindEvents() {
               app.suinsName = app.suinsName || `${label}.sui`;
               showToast(`\u26a1 ${label}.sui acquired via cache`);
               _updateIdleStatus();
-              setTimeout(() => refreshPortfolio(true), 2000);
+              setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
               return;
             }
 
@@ -9983,7 +10025,7 @@ function bindEvents() {
               app.suinsName = app.suinsName || `${label}.sui`;
               showToast(`${label}.sui purchased \u2713`);
               _updateIdleStatus();
-              setTimeout(() => refreshPortfolio(true), 2000);
+              setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
             } else {
               const reason = infer.recommended?.reason ?? 'Could not build transaction';
               const bals = infer.balances;
@@ -10101,7 +10143,7 @@ function bindEvents() {
               const _pollFill = async () => {
                 const statusEl = document.getElementById('ski-quest-qr-status');
                 for (let i = 0; i < 90; i++) { // poll up to ~180s
-                  await new Promise(r => setTimeout(r, 2000));
+                  await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
                   try {
                     // Check deposit status (SOL side)
                     if (statusEl) {
@@ -11633,7 +11675,11 @@ function bindEvents() {
             nsAvail = null;
             _updateIdleStatus();
             if (latest.length >= 3 && isValidNsLabel(latest)) {
-              fetchAndShowNsPrice(latest).then(() => { _updateIdleStatus(); _updateIdleCard(latest); });
+              // Debounce to avoid SuiNS rate limits during @tag typing
+              if (_idleDebounce) clearTimeout(_idleDebounce);
+              _idleDebounce = setTimeout(() => {
+                fetchAndShowNsPrice(latest).then(() => { _updateIdleStatus(); _updateIdleCard(latest); });
+              }, NS_LOOKUP_DEBOUNCE_MS);
             }
           }
           const mainNsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -11650,6 +11696,22 @@ function bindEvents() {
           else if (e.key === 'ArrowUp') { e.preventDefault(); _atSelectedIdx = Math.max(_atSelectedIdx - 1, 0); opts.forEach((o, i) => o.classList.toggle('ski-idle-at-option--active', i === _atSelectedIdx)); }
           else if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); const sel = opts[_atSelectedIdx] as HTMLElement; if (sel) _insertAtName(sel.dataset.name || ''); else if (e.key === 'Enter') _sendIdleThunder(); return; }
           else if (e.key === 'Escape') { _dismissAtDropdown(); return; }
+        }
+        // Backspace on @name tag — delete the whole name at once, leave just @
+        if (e.key === 'Backspace' && _idleThunderInput) {
+          const val = _idleThunderInput.value;
+          const pos = _idleThunderInput.selectionStart ?? val.length;
+          // Find the @tag the cursor is inside or at the end of
+          const before = val.slice(0, pos);
+          const tagMatch = before.match(/@([a-z0-9-]{1,63})(\s?)$/i);
+          if (tagMatch) {
+            e.preventDefault();
+            const tagStart = pos - tagMatch[0].length;
+            // Delete the name part, keep the @
+            _idleThunderInput.value = val.slice(0, tagStart + 1) + val.slice(pos);
+            _idleThunderInput.setSelectionRange(tagStart + 1, tagStart + 1);
+            return;
+          }
         }
         if (e.key === 'Enter') { e.preventDefault(); _sendIdleThunder(); }
       });
@@ -12065,7 +12127,7 @@ export function initUI() {
         longPressTimer = null;
         longPressFired = true;
         window.open(`https://suiscan.xyz/mainnet/account/${addr}`, '_blank', 'noopener');
-      }, 2200);
+      }, LONG_PRESS_MS);
       return;
     }
 
@@ -12092,7 +12154,7 @@ export function initUI() {
           if (detailEl) showKeyDetail(wallet, detailEl, getState().address);
         }
       }
-    }, 2200);
+    }, LONG_PRESS_MS);
   });
 
   const cancelLongPress = (e: PointerEvent) => {

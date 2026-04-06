@@ -38,6 +38,7 @@ const SUI_TYPE = '0x000000000000000000000000000000000000000000000000000000000000
 const NS_PYTH_PRICE_INFO = '0xc6352e1ea55d7b5acc3ed690cc3cdf8007978071d7bfd6a189445018cfb366e0';
 const NS_PYTH_PRICE_INFO_ISV = 417086474;
 
+const SWEEP_DELAY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const MAX_RETRIES = 3;
 const RETRY_DELAYS_MS = [5_000, 15_000, 60_000]; // aggressive first retry, then back off
 
@@ -348,7 +349,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     sweeps.push({
       nameHash: params.nameHash,
       domain: params.domain,
-      sweepAfterMs: Date.now() + 604_800_000, // 7 days
+      sweepAfterMs: Date.now() + SWEEP_DELAY_MS,
       status: 'pending',
     });
     this.setState({ ...this.state, sweeps });
