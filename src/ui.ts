@@ -7164,13 +7164,10 @@ function renderSkiMenu() {
             routeEl.innerHTML = _suiamiVerifyHtml;
           }
           const _skiNet = (() => { try { return localStorage.getItem('ski:network-pref') || 'sui'; } catch { return 'sui'; } })();
-          const _netNames: Record<string, string> = { btc: 'bitcoin', sol: 'solana', sui: 'sui', eth: 'ethereum' };
-          const _netLabel = _netNames[_skiNet] || _skiNet;
-          showToast(`SUIAMI? I AM ${bare}.sui@${_netLabel} \u2014 \u2713 copied`);
+          showToast(`${_skiNet}@${bare} \u2014 SUIAMI proof copied \u2713`);
         } catch {
           const _skiNet2 = (() => { try { return localStorage.getItem('ski:network-pref') || 'sui'; } catch { return 'sui'; } })();
-          const _netNames2: Record<string, string> = { btc: 'bitcoin', sol: 'solana', sui: 'sui', eth: 'ethereum' };
-          showToast(`SUIAMI? I AM ${bare}.sui@${_netNames2[_skiNet2] || _skiNet2} \u2014 \u2713 copied`);
+          showToast(`${_skiNet2}@${bare} \u2014 SUIAMI proof copied \u2713`);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -9881,9 +9878,10 @@ function bindEvents() {
       });
       _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
       _idleNsInput?.addEventListener('focus', () => {
-        if (_idleNsInput?.value.trim()) {
-          const _vid = _idleOverlay?.querySelector('.ski-idle-img') as HTMLVideoElement | null;
-          if (_vid) try { _vid.pause(); } catch {}
+        if (_idleNsInput) {
+          _idleNsInput.value = '';
+          const clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+          if (clearBtn) clearBtn.style.display = 'none';
         }
       });
       _idleNsInput?.addEventListener('blur', _unfreezeGif);
