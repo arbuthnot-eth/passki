@@ -9,20 +9,48 @@
 
 ---
 
+## For Hackathon Devs (Frontier Colosseum)
+
+SKI is the best IKA-based Web2 social login experience you can build with today. Here's what you get out of the box:
+
+### WaaP — Wallet as a Protocol
+Sign in with **X.com, Google, phone, or email**. No API keys. No seed phrases. No wallet extensions. It just works. If you're a dev, you know how amazing "no API keys" is.
+
+### Rumble Your Squids
+One button runs IKA DKG and provisions **native Bitcoin, Solana, and EVM dWallet addresses** — all from a single Sui account. Not wrapped. Not bridged. Real cross-chain keys. This is built and live on mainnet today.
+
+### Anti-Spam — Stables Only
+SKI is inherently anti-spam. Everything is measured in **stables**. You have 8 billion MONKE PENIS coins? SKI checks all exchanges, sees it's worth less than a cent, and filters it out — or auto-swaps it to USD (or Argentine Peso). No more `0.000256 CHODE` in your portfolio.
+
+### Subcent Intents
+The 6-7 digits after `$0.01` aren't noise — they're **steganographic intent tags**:
+- Which chain are you swapping to?
+- What is the receiving address?
+- Other privately encoded data only legible to the participants
+
+One number carries the instruction. No metadata leaks.
+
+### What You Can Build With
+- **Tradeport** — SuiNS marketplace listing proxy (`/api/tradeport/listing/:label`)
+- **Walrus** — Seal-encrypted blob storage for Thunder ciphertext, Shade payloads, quilted batch writes
+- **Solana/Helius** — Webhook-driven deposit watchers, SPL token resolution, Jupiter routing
+- **Seal** — 2-of-3 threshold encryption (Overclock, NodeInfra, Studio Mirai key servers)
+- **IKA dWallets** — Native cross-chain signing, batch DKG, DWalletCap wrappers
+
+---
+
 ## Native Cross-Chain Wallets via IKA dWallets
 
 Real Bitcoin, Ethereum, and Solana addresses controlled by your Sui account — no bridges, no wrapping, no custodians. Powered by [IKA](https://docs.ika.xyz)'s 2PC-MPC threshold signatures.
-
-<!-- TODO: replace with new demo video -->
 
 ### What One Sui Account Controls
 
 | Curve | Chains | Address Format |
 |-------|--------|----------------|
-| **secp256k1** (1 DKG) | Bitcoin, Ethereum, Base, Polygon, Arbitrum, Optimism | `bc1q...`, `0x...` |
+| **secp256k1** (1 DKG) | Bitcoin, Ethereum, Base, Polygon, Arbitrum, Optimism, Tron (USDT only) | `bc1q...`, `0x...`, `T...` |
 | **ed25519** (1 DKG) | Solana | base58 |
 
-Two DKG ceremonies. Two dWallets. Seven chains. One Sui account.
+Two DKG ceremonies. Two dWallets. Eight chains. One Sui account.
 
 ### Why This Matters
 
@@ -66,7 +94,7 @@ The `.SKI` header bar renders four elements:
 After 15s of inactivity (or via SKI button cycle), the menu collapses into a compact overlay with:
 - Pixel art video (cached via Cache API for instant replay)
 - Name search input with full SuiNS resolution
-- Squids rows — styled BTC/ETH/SOL/SUI address rows with chain-colored icons, toggle-select to copy
+- Squids rows — styled SUI/BTC/SOL/ETH/Base/Tron address rows with chain-colored icons, per-row USD balances, toggle-select to copy
 - Rumble button — runs IKA DKG to provision all chain wallets
 - Thunder messaging row
 - Version badge linking to npm
@@ -164,6 +192,73 @@ Keeper wallet for all server-side signing: iUSD minting, Shade execution, Thunde
 | Storm v1 | `0xa3ed4fdf1369313647efcef77fd577aa4b77b50c62e5c5e29d4c383390cdf942` |
 | Thunder v4 | `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581` |
 | Shade | `0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff` |
+| Ignite | `0x66a44a869fe8ea7354620f7c356514efc30490679aa5cb24b453480e97790677` |
+
+---
+
+## TODO — What's Next
+
+### Subcent Intent Engine
+- [ ] Parse steganographic digits from iUSD amounts into structured intents
+- [ ] Route intents to correct chain + receiving address
+- [ ] Private encoding scheme legible only to sender/receiver participants
+
+### Anti-Spam Token Filtering
+- [ ] Aggregate token value across all exchanges (Sui, Solana, EVM)
+- [ ] Filter sub-cent holdings from display
+- [ ] Auto-swap dust to stables (USD, ARS, etc.) via DEX aggregation
+- [ ] User-configurable threshold for what counts as "spam"
+
+### Solana Deep Integration
+- [ ] Helius webhook-driven deposit watchers for all SPL tokens
+- [ ] Jupiter aggregator routing for auto-swap to USDC
+- [ ] Kamino lending integration (TSLAx/NVDAx collateral)
+- [ ] CCTPv2 bridging: Phantom → Helius → Jupiter → USDC → iUSD
+
+### Cross-Chain Balance Chips
+- [ ] Real-time balance display per chain (SUI + SOL + ETH + BTC)
+- [ ] Stables aggregation: USDC, USDT, USD1, iUSD across all chains
+- [ ] RWA token display: XAUM, XAGM, TSLAx, NVDAx
+- [ ] Helius for Solana balances, Alchemy/Infura for EVM, Esplora for BTC
+
+### Rumble — Batch DKG UX
+- [ ] One-button DKG for all curve types (secp256k1 + ed25519)
+- [ ] Derive all chain addresses + write to SUIAMI Roster in single PTB
+- [ ] "Rumble your squids" button in idle overlay
+
+### Chronicom — Signal Caching
+- [ ] Per-wallet Durable Object caching thunder counts
+- [ ] 5s alarm polling (replaces 30s client gRPC polling)
+- [ ] `/api/thunder/chronicom` serves cached counts instantly
+
+### Storm v2 — Cross-Chain Messaging
+- [ ] Thunder signals addressable to BTC/ETH/SOL addresses via IKA dWallet-gated Seal decryption
+- [ ] StormIdentity linking DWalletCap public key to chain addresses
+
+### Hunters — Offer Stalkers
+- [ ] Chronicom agents monitor SuiNS name offers across Tradeport
+- [ ] Auto-execute trades when prices match Sibyl attestation
+- [ ] Storage rebates (~0.95 SUI per kiosk trade) → iUSD cache
+
+### OpenCLOB — Cross-Chain Order Book
+- [ ] Unified CLOB across DeepBook, Kamino, Cetus, Bluefin
+- [ ] Sub-cent steganographic tags as order matching
+- [ ] BAM (Burn/Attest/Mint) via IKA 2PC-MPC signing
+- [ ] iUSD settlement, agents as market makers
+
+### Prisms — Rich Encrypted Transactions
+- [ ] Thunder gate + encrypted sender/timestamp + Walrus blob
+- [ ] Partial encryption with ZK proofs (Thunderbun/Groth16)
+
+### QuestFi — Agent Economics
+- [ ] Parent keeps 1%, redistributes by performance
+- [ ] Lazy agents die, bold RWA agents spawn
+- [ ] 110% overcollateralization surplus deployed
+
+### Satellites — Sibyl's Flash Liquidity
+- [ ] Hot-potato flash loans from Sibyl
+- [ ] Borrow NS, register name, repay in any token
+- [ ] Discount spread → iUSD cache
 
 ---
 
@@ -275,7 +370,11 @@ bun run build && npx wrangler deploy
 ## Stack
 
 - `@mysten/sui` ^2.13.0, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` 1.2.4, `@ika.xyz/sdk` 0.3.1
+- Encryption: `@mysten/seal` ^1.1.1 (2-of-3 threshold key servers)
+- Storage: `@mysten/walrus` ^1.1.0 (blobs + quilted batch writes)
+- Solana: Helius (RPC + webhook deposit watchers), Jupiter (routing), Kamino (lending)
 - DEX: `aftermath-ts-sdk` (aggregation), DeepBook v3, Bluefin CLMM, Cetus CLMM
+- Marketplace: Tradeport (SuiNS listing proxy)
 - Transport: `SuiGrpcClient` primary, `SuiGraphQLClient` fallback — **no JSON-RPC** (sunsets April 2026)
 - Build: `bun build` with JSON import for version injection
 - Deploy: Cloudflare Workers + Durable Objects

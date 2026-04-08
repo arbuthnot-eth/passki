@@ -1078,11 +1078,15 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
       // Existing NS covers the full cost — no USDC needed, skip to step 3
       usdcForSwap = null;
     } else if (usdcCoins.length > 0 && totalUsdc >= usdcNeeded) {
-      // Have enough USDC already
-      usdcForSwap = tx.objectRef(usdcCoins[0]);
+      // Have enough USDC already — merge then split only the needed amount
+      const usdcMerged = tx.objectRef(usdcCoins[0]);
       if (usdcCoins.length > 1) {
-        tx.mergeCoins(usdcForSwap, usdcCoins.slice(1).map(c => tx.objectRef(c)));
+        tx.mergeCoins(usdcMerged, usdcCoins.slice(1).map(c => tx.objectRef(c)));
       }
+      const gapMicro = BigInt(Math.ceil(gapUsd * 1.05 * 1e6)); // gap + 5% buffer in USDC decimals
+      const splitAmount = gapMicro < usdcNeeded ? usdcNeeded : gapMicro;
+      [usdcForSwap] = tx.splitCoins(usdcMerged, [tx.pure.u64(splitAmount)]);
+      tx.transferObjects([usdcMerged], tx.pure.address(walletAddress)); // return remainder
     } else {
       // Swap only the gap worth of SUI → USDC (not the full amount)
       const gapWithBuffer = gapUsd * 1.05; // 5% slippage buffer on the gap
@@ -1454,34 +1458,40 @@ export async function buildTradeportPurchaseTx(
   const price = BigInt(priceMist);
   const fee = price * 300n / 10000n;
 
-  // Try v1 first, fall back to v2
+  // Resolve the on-chain Listing object ID (Store keys by Listing ID, not NFT ID)
+  const listingId = await resolveTradeportListingId(nftTokenId);
+  const buyId = listingId ?? nftTokenId; // fallback to nftTokenId for v1 legacy
+
+  // Race v1 and v2 — first successful build wins (avoids slow dry-run timeout)
   const versions = [
-    { pkg: TRADEPORT_V1_PKG, store: TRADEPORT_V1_STORE, fn: 'tradeport_listings::buy_listing_without_transfer_policy', typed: true },
-    { pkg: TRADEPORT_V2_PKG, store: TRADEPORT_V2_STORE, fn: 'listings::buy', typed: false },
+    { pkg: TRADEPORT_V1_PKG, store: TRADEPORT_V1_STORE, fn: 'tradeport_listings::buy_listing_without_transfer_policy' },
+    { pkg: TRADEPORT_V2_PKG, store: TRADEPORT_V2_STORE, fn: 'listings::buy' },
   ];
 
-  for (const v of versions) {
-    try {
-      const tx = new Transaction();
-      tx.setSender(walletAddress);
-      const payment = tx.splitCoins(tx.gas, [tx.pure.u64((price + fee).toString())]);
-      tx.moveCall({
-        target: `${v.pkg}::${v.fn}`,
-        ...(v.typed ? { typeArguments: [SUINS_REG_TYPE] } : {}),
-        arguments: [
-          v.typed ? tx.object(v.store) : tx.sharedObjectRef({ objectId: v.store, initialSharedVersion: 3377344, mutable: true }),
-          tx.pure.id(nftTokenId),
-          payment,
-        ],
-      });
-      tx.transferObjects([payment], tx.pure.address(walletAddress));
-      return await buildWithTx(tx, transport);
-    } catch (err) {
-      console.warn(`[Tradeport] ${v.pkg.slice(0, 8)} failed:`, err instanceof Error ? err.message : err);
-      continue;
-    }
+  const attempts = versions.map(async (v) => {
+    const tx = new Transaction();
+    tx.setSender(walletAddress);
+    // Tradeport buy expects EXACTLY the listing price — commission is deducted from seller's portion
+    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(price.toString())]);
+    tx.moveCall({
+      target: `${v.pkg}::${v.fn}`,
+      typeArguments: [SUINS_REG_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: v.store, initialSharedVersion: 3377344, mutable: true }),
+        tx.pure.id(buyId),
+        payment,
+      ],
+    });
+    // buy consumes the entire coin — destroy the zero remainder
+    tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [payment] });
+    return buildWithTx(tx, transport);
+  });
+
+  try {
+    return await Promise.any(attempts);
+  } catch (agg) {
+    throw new Error(`Tradeport purchase failed on both v1 and v2: ${agg}`);
   }
-  throw new Error('Tradeport purchase failed on both v1 and v2');
 }
 
 /**
@@ -1498,6 +1508,7 @@ export async function buildSwapAndPurchaseTx(
   outputCoinType: string | null,    // coin type of output selector (null = SUI)
   suiPrice: number,                 // current SUI price in USD
   selectedTokenPrice?: number,      // price per token of selected coin (e.g. XAUM price)
+  _tradeportV2?: boolean,           // internal: retry with Tradeport v2 on v1 MoveAbort
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
@@ -1506,8 +1517,8 @@ export async function buildSwapAndPurchaseTx(
 
   const SLIPPAGE_BPS = 200n; // 2% slippage tolerance
   const priceMist = BigInt(purchase.priceMist);
-  const feeMist = purchase.type === 'tradeport' ? priceMist * 300n / 10000n : 0n;
-  const totalSuiNeeded = priceMist + feeMist;
+  // Tradeport commission is deducted from seller — buyer pays just the price
+  const totalSuiNeeded = priceMist;
 
   // Helper: calculate min output with slippage protection
   // expectedOut in MIST, returns min acceptable output (98% of expected)
@@ -1648,21 +1659,38 @@ export async function buildSwapAndPurchaseTx(
     });
     tx.transferObjects([nft], tx.pure.address(walletAddress));
   } else {
+    // Resolve on-chain Listing ID (Store keys by Listing ID, not NFT ID)
+    const listingId = await resolveTradeportListingId(purchase.nftTokenId);
+    const buyId = listingId ?? purchase.nftTokenId;
     const price = BigInt(purchase.priceMist);
-    const fee = price * 300n / 10000n;
-    const payment = tx.splitCoins(tx.gas, [tx.pure.u64((price + fee).toString())]);
+    // Tradeport buy expects EXACTLY the listing price — commission deducted from seller
+    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(price.toString())]);
+    const tpPkg = _tradeportV2 ? TRADEPORT_V2_PKG : TRADEPORT_V1_PKG;
+    const tpStore = _tradeportV2 ? TRADEPORT_V2_STORE : TRADEPORT_V1_STORE;
+    const tpFn = _tradeportV2 ? 'listings::buy' : 'tradeport_listings::buy_listing_without_transfer_policy';
     tx.moveCall({
-      target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+      target: `${tpPkg}::${tpFn}`,
       typeArguments: [SUINS_REG_TYPE],
       arguments: [
-        tx.object(TRADEPORT_STORE),
-        tx.pure.id(purchase.nftTokenId), payment,
+        tx.sharedObjectRef({ objectId: tpStore, initialSharedVersion: 3377344, mutable: true }),
+        tx.pure.id(buyId),
+        payment,
       ],
     });
-    tx.transferObjects([payment], tx.pure.address(walletAddress));
+    // buy consumes entire coin — destroy zero remainder
+    tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [payment] });
   }
 
-  return buildWithTx(tx, transport);
+  try {
+    return await buildWithTx(tx, transport);
+  } catch (err) {
+    // Tradeport v1 listing not found — retry with v2
+    if (!_tradeportV2 && purchase.type === 'tradeport' && String(err).includes('MoveAbort')) {
+      console.warn('[Tradeport] v1 failed, retrying with v2:', err instanceof Error ? err.message : err);
+      return buildSwapAndPurchaseTx(rawAddress, purchase, selectedCoinType, selectedBalance, outputCoinType, suiPrice, selectedTokenPrice, true);
+    }
+    throw err;
+  }
 }
 
 // ─── Shade — privacy-preserving grace-period escrow ──────────────────

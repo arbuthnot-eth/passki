@@ -3016,6 +3016,23 @@ body {
   border-color: rgba(129, 140, 248, 0.35);
 }
 .ski-idle-addr-line--eth:hover { border-color: rgba(129, 140, 248, 0.7); }
+.ski-idle-addr-line--base {
+  color: #0052FF;
+  border-color: rgba(0, 82, 255, 0.35);
+}
+.ski-idle-addr-line--base:hover { border-color: rgba(0, 82, 255, 0.7); }
+.ski-idle-addr-line--tron {
+  color: #FF0013;
+  border-color: rgba(255, 0, 19, 0.35);
+}
+.ski-idle-addr-line--tron:hover { border-color: rgba(255, 0, 19, 0.7); }
+.ski-idle-addr-bal {
+  margin-left: auto;
+  font-size: 0.82rem;
+  font-weight: 500;
+  opacity: 0.7;
+  white-space: nowrap;
+}
 .ski-idle-card {
   display: inline-flex;
   align-items: center;
