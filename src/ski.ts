@@ -442,10 +442,7 @@ window.addEventListener('ski:request-suiami', async (e) => {
       document.body.removeChild(ta);
     }
 
-    const netNames: Record<string, string> = { btc: 'bitcoin', sol: 'solana', sui: 'sui', eth: 'ethereum' };
-    const netLabel = netNames[network] || network || 'sui';
-    const label = name === 'nobody' ? 'nobody' : `${name}.sui`;
-    showToast(`SUIAMI? I AM ${label}@${netLabel} \u2014 \u2713 copied`);
+    showToast(`${network}@${name} \u2014 SUIAMI proof copied \u2713`);
 
     window.dispatchEvent(new CustomEvent('suiami:signed', {
       detail: { proof: proof.token, message: proof.message, signature: proof.signature, name, address: ws.address, network },

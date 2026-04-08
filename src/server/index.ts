@@ -88,6 +88,7 @@ app.use('*', async (c, next) => {
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   c.header('X-Frame-Options', 'SAMEORIGIN');
+  c.header('Permissions-Policy', 'clipboard-read=()'); // block clipboard read prompts (WalletConnect w3m-input-address)
   // CSP: allow self + Sui RPCs + Walrus + CDN for /squids marked page
   c.header('Content-Security-Policy', [
     "default-src 'self'",
@@ -144,10 +145,15 @@ function authedTreasuryStub(c: { env: Env }) {
   };
 }
 
-// Pass through hb.sui.ski to Hayabusa Worker
+// hb.sui.ski should be handled by Hayabusa Worker — return 404 with CORS if it reaches here
 app.use('*', async (c, next) => {
   const host = new URL(c.req.url).hostname;
-  if (host === 'hb.sui.ski') return c.text('', 404);
+  if (host === 'hb.sui.ski') {
+    return new Response('', {
+      status: 404,
+      headers: { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'content-type' },
+    });
+  }
   return next();
 });
 

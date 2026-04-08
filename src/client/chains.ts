@@ -127,6 +127,46 @@ function solanaAddress(pubkey: Uint8Array): string {
 }
 
 /**
+ * Tron address — base58check encoding with 0x41 network prefix.
+ * Same 20-byte address as EVM (keccak256 of uncompressed pubkey), different encoding.
+ */
+function tronAddress(compressedPubkey: Uint8Array): string {
+  const hex = Array.from(compressedPubkey, (b) => b.toString(16).padStart(2, '0')).join('');
+  const point = secp256k1.Point.fromHex(hex);
+  const uncompressed = point.toBytes(false);
+  const hash = keccak_256(uncompressed.slice(1));
+  const addrBytes = hash.slice(12); // last 20 bytes
+
+  // Tron: 0x41 prefix + address bytes → base58check
+  const payload = new Uint8Array(21);
+  payload[0] = 0x41;
+  payload.set(addrBytes, 1);
+  const checksum = sha256(sha256(payload)).slice(0, 4);
+  const full = new Uint8Array(25);
+  full.set(payload);
+  full.set(checksum, 21);
+  return base58.encode(full);
+}
+
+/**
+ * Convert an EVM 0x address to a Tron T... address.
+ * No pubkey needed — just re-encodes the same 20 bytes.
+ */
+export function ethToTron(ethAddr: string): string {
+  const hex = ethAddr.replace(/^0x/i, '').toLowerCase();
+  const addrBytes = new Uint8Array(20);
+  for (let i = 0; i < 20; i++) addrBytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  const payload = new Uint8Array(21);
+  payload[0] = 0x41;
+  payload.set(addrBytes, 1);
+  const checksum = sha256(sha256(payload)).slice(0, 4);
+  const full = new Uint8Array(25);
+  full.set(payload);
+  full.set(checksum, 21);
+  return base58.encode(full);
+}
+
+/**
  * Sui address — BLAKE2b-256([flag_byte=0x01] || compressed_secp256k1_pubkey).
  * Flag 0x01 = secp256k1 scheme in Sui's multi-scheme addressing.
  */
@@ -197,6 +237,17 @@ export const CHAIN_REGISTRY: Record<string, ChainConfig> = {
     deriveAddress: evmAddress,
   },
 
+  // ── Tron (USDT only) ────────────────────────────────────────────
+  'tron:mainnet': {
+    caipId: 'tron:mainnet',
+    name: 'Tron',
+    curve: IkaCurve.SECP256K1,
+    signatureAlgorithm: SignatureAlgorithm.ECDSASecp256k1,
+    hashScheme: HashScheme.KECCAK256,
+    coinType: 195,
+    deriveAddress: tronAddress,
+  },
+
   // ── Solana ──────────────────────────────────────────────────────
   'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': {
     caipId: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
@@ -231,6 +282,8 @@ const CHAIN_ALIASES: Record<string, string> = {
   polygon: 'eip155:137',
   arbitrum: 'eip155:42161',
   optimism: 'eip155:10',
+  tron: 'tron:mainnet',
+  trx: 'tron:mainnet',
   solana: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
   sol: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
   sui: 'sui:mainnet',

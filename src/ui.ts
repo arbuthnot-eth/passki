@@ -46,6 +46,7 @@ import {
 import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
 import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
+import { ethToTron } from './client/chains.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
@@ -2866,7 +2867,6 @@ async function _fetchSolBalance(): Promise<void> {
   const endpoints = [
     'https://solana-rpc.publicnode.com',
     'https://api.mainnet-beta.solana.com',
-    'https://mainnet.triton.one/rpc',
   ];
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [app.solAddress] });
   try {
@@ -3845,7 +3845,7 @@ function _resolveThunderFallbackRecipient(): { name: string; source: ThunderComp
   // Priority 2: the name input label (if it's a taken name, not owned by us)
   const currentLabel = nsLabel.trim().toLowerCase();
   const owned = currentLabel
-    ? nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === currentLabel)
+    ? (nsAvail === 'owned' || nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === currentLabel))
     : false;
   if (currentLabel && currentLabel !== ownName && !owned) {
     return {
@@ -4443,7 +4443,7 @@ function _nsRouteHtml(): string {
 
   // Check early if the current label is an owned NFT (used for display fallback + click logic)
   const bareLabel = nsLabel.toLowerCase();
-  const isOwnedName = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel && d.kind === 'nft');
+  const isOwnedName = nsAvail === 'owned' || nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel && d.kind === 'nft');
 
   // Resolve the display address: target → nft owner → wallet (for available/idle/owned)
   let displayAddr = nsTargetAddress ?? nsNftOwner;
@@ -4873,7 +4873,7 @@ function _syncNftCardToInput(forceShow = false) {
   if (inputBare) {
     // Show card for any resolved name (owned or taken) — not just owned
     const isResolved = nsAvail === 'owned' || nsAvail === 'taken' || nsAvail === 'grace';
-    const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === inputBare);
+    const isOwned = nsAvail === 'owned' || nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === inputBare);
     if (isResolved || isOwned) domain = inputBare;
   }
   // Don't auto-show card on background syncs — only on explicit user interaction
@@ -7164,13 +7164,10 @@ function renderSkiMenu() {
             routeEl.innerHTML = _suiamiVerifyHtml;
           }
           const _skiNet = (() => { try { return localStorage.getItem('ski:network-pref') || 'sui'; } catch { return 'sui'; } })();
-          const _netNames: Record<string, string> = { btc: 'bitcoin', sol: 'solana', sui: 'sui', eth: 'ethereum' };
-          const _netLabel = _netNames[_skiNet] || _skiNet;
-          showToast(`SUIAMI? I AM ${bare}.sui@${_netLabel} \u2014 \u2713 copied`);
+          showToast(`${_skiNet}@${bare} \u2014 SUIAMI proof copied \u2713`);
         } catch {
           const _skiNet2 = (() => { try { return localStorage.getItem('ski:network-pref') || 'sui'; } catch { return 'sui'; } })();
-          const _netNames2: Record<string, string> = { btc: 'bitcoin', sol: 'solana', sui: 'sui', eth: 'ethereum' };
-          showToast(`SUIAMI? I AM ${bare}.sui@${_netNames2[_skiNet2] || _skiNet2} \u2014 \u2713 copied`);
+          showToast(`${_skiNet2}@${bare} \u2014 SUIAMI proof copied \u2713`);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -9475,7 +9472,7 @@ function bindEvents() {
           <video class="ski-idle-img" autoplay loop muted playsinline poster="/assets/ski-idle.gif"><source src="/assets/ski-idle.webm" type="video/webm"><source src="/assets/ski-idle.mp4" type="video/mp4"></video>
           <div class="ski-idle-iusd-btn" id="ski-idle-iusd" title="Swap 95% of wallet to iUSD"></div>
           <div class="ski-idle-ns-row">
-            <span class="wk-ns-status" id="ski-idle-status" title="Identity status — click to show address" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
+            <span class="wk-ns-status" id="ski-idle-status" title="Set as default / show addresses" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
             <div class="ski-idle-ns-input-wrap">
               <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63" title="Search SuiNS names">
               <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}" title="Clear">\u2715</button>
@@ -9881,9 +9878,10 @@ function bindEvents() {
       });
       _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
       _idleNsInput?.addEventListener('focus', () => {
-        if (_idleNsInput?.value.trim()) {
-          const _vid = _idleOverlay?.querySelector('.ski-idle-img') as HTMLVideoElement | null;
-          if (_vid) try { _vid.pause(); } catch {}
+        if (_idleNsInput) {
+          _idleNsInput.value = '';
+          const clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+          if (clearBtn) clearBtn.style.display = 'none';
         }
       });
       _idleNsInput?.addEventListener('blur', _unfreezeGif);
@@ -10658,135 +10656,42 @@ function bindEvents() {
       // Diamond click → toggle target address row (own addresses or Roster lookup for others)
       _idleOverlay.querySelector('#ski-idle-status')?.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
-        if (!addrRow) return;
-        const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
-        if (!addrRow.hasAttribute('hidden')) {
-          addrRow.setAttribute('hidden', '');
-          _unfreezeGif();
-          squidBtn?.classList.remove('ski-idle-quick-btn--active');
-          return;
-        }
         const ws = getState();
-        const addr = nsTargetAddress || nsNftOwner || ws.address || '';
-        if (!addr) return;
-
-        // Determine if viewing own name or someone else's
+        if (!ws.address) return;
         const viewingName = _idleNsInput?.value?.trim().toLowerCase() || '';
+        if (!viewingName) return;
         const ownName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
-        const isOwnName = !viewingName || viewingName === ownName || nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === viewingName);
+        const isOwnName = nsAvail === 'owned' || nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === viewingName);
+        if (!isOwnName) { showToast('You don\u2019t own this name'); return; }
+        if (viewingName === ownName) { showToast(`${viewingName}.sui is already your default`); return; }
 
-        let btc = '', eth = '', sol = '';
-        if (isOwnName) {
-          // Use app state first (populated from per-address cache on connect)
-          btc = app.btcAddress || '';
-          eth = app.ethAddress || '';
-          sol = app.solAddress || '';
-          // If empty, try fetching from on-chain dWallet caps
-          if (!btc && !sol && ws.address) {
-            try {
-              const { getCrossChainStatus } = await import('./client/ika.js');
-              const status = await getCrossChainStatus(ws.address);
-              if (status.btcAddress) { btc = status.btcAddress; app.btcAddress = btc; }
-              if (status.ethAddress) { eth = status.ethAddress; app.ethAddress = eth; }
-              if (status.solAddress) { sol = status.solAddress; app.solAddress = sol; }
-              // Cache for next time
-              if (btc || sol) {
-              }
-            } catch {}
-          }
-        } else if (viewingName) {
-          // Read from SUIAMI Roster for other people's names
-          try {
-            const { readRoster } = await import('./suins.js');
-            const roster = await readRoster(viewingName);
-            if (roster) {
-              btc = roster.btc || '';
-              eth = roster.eth || '';
-              sol = roster.sol || '';
-            }
-          } catch {}
+        // Set as default SuiNS name — same as SKI menu
+        const domain = viewingName.endsWith('.sui') ? viewingName : `${viewingName}.sui`;
+        const statusEl = _idleOverlay?.querySelector('#ski-idle-status') as HTMLElement | null;
+        if (statusEl) statusEl.style.opacity = '0.3';
+        try {
+          const txBytes = await buildSetDefaultNsTx(ws.address, domain);
+          const result = await signAndExecuteTransaction(txBytes);
+          if (!result.digest) throw new Error('Transaction returned no digest');
+          const eff = result.effects as Record<string, unknown> | undefined;
+          const st = eff?.status as { status?: string; error?: string } | undefined;
+          if (st?.status === 'failure') throw new Error(st.error || 'Transaction failed on-chain');
+          app.suinsName = domain;
+          suinsCache[ws.address] = domain;
+          try { localStorage.setItem(`ski:suins:${ws.address}`, domain); } catch {}
+          updateSkiDot('blue-square', domain);
+          renderWidget();
+          renderSkiBtn();
+          showToast(`${domain} set as primary \u2713`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Failed';
+          if (!msg.toLowerCase().includes('reject')) showToast(msg);
+        } finally {
+          if (statusEl) statusEl.style.opacity = '';
         }
-
-        const short = `${addr.slice(0, 6)}\u2026${addr.slice(-6)}`;
-        const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
-        const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
-        const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
-        const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#627eea" stroke="white" stroke-width="2.5"/><g transform="translate(10,3.5) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
-
-        const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
-        const btcLine = btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${btc}">${btcIcon} ${btc.slice(0, 6)}\u2026${btc.slice(-6)}</span>` : '';
-        const solLine = sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${sol}">${solIcon} ${sol.slice(0, 6)}\u2026${sol.slice(-6)}</span>` : '';
-        const ethLine = eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${eth}">${ethIcon} ${eth.slice(0, 6)}\u2026${eth.slice(-6)}</span>` : '';
-        addrRow.innerHTML = `<div class="ski-idle-addr-qr" id="ski-idle-addr-qr"></div>${suiLine}${btcLine}${solLine}${ethLine}`;
-        addrRow.removeAttribute('hidden');
-        squidBtn?.classList.add('ski-idle-quick-btn--active');
-        _freezeGif();
-        // QR code for selected address — strip fixed dimensions so CSS controls size
-        const qrSlot = addrRow.querySelector('#ski-idle-addr-qr') as HTMLElement | null;
-        let _qrCurrentSvg = '';
-        const _stripQrDims = (svg: string) =>
-          svg.replace(/width="[^"]*"/, '').replace(/height="[^"]*"/, '');
-        const _showQrExpanded = () => {
-          if (!_qrCurrentSvg) return;
-          document.querySelector('.ski-idle-addr-qr-expanded')?.remove();
-          const overlay = document.createElement('div');
-          overlay.className = 'ski-idle-addr-qr-expanded';
-          overlay.innerHTML = _qrCurrentSvg;
-          overlay.addEventListener('click', () => overlay.remove());
-          document.body.appendChild(overlay);
-        };
-        if (qrSlot) {
-          getQrSvg(addr, '#4da2ff').then(svg => {
-            _qrCurrentSvg = _stripQrDims(svg);
-            qrSlot.innerHTML = _qrCurrentSvg;
-          }).catch((err) => { qrSlot.textContent = 'QR failed'; console.error('[idle-qr]', err); });
-          qrSlot.addEventListener('click', (ev) => { ev.stopPropagation(); _showQrExpanded(); });
-        }
-        addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
-          el.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            const h = el as HTMLElement;
-            const full = h.title || addr;
-            const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a' : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc' : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8' : '#4da2ff';
-            toggleAddrRow(h, full, c);
-            // Update QR and expand fullscreen for the copied address
-            const mode = h.classList.contains('ski-idle-addr-line--btc') ? 'btc' as const
-              : h.classList.contains('ski-idle-addr-line--sol') ? 'sol' as const
-              : h.classList.contains('ski-idle-addr-line--eth') ? 'bw' as const
-              : 'sui' as const;
-            if (qrSlot) {
-              const qrColor = c;
-              getQrSvg(full, qrColor).then(svg => {
-                _qrCurrentSvg = _stripQrDims(svg);
-                qrSlot.innerHTML = _qrCurrentSvg;
-                _showQrExpanded();
-              }).catch(() => {});
-            }
-          });
-        });
-        // Click outside closes the squids rows (both inside overlay and document-level)
-        const _closeAddr = (ev: Event) => {
-          if (addrRow.contains(ev.target as Node)) return;
-          addrRow.setAttribute('hidden', '');
-          _unfreezeGif();
-          squidBtn?.classList.remove('ski-idle-quick-btn--active');
-          _idleOverlay?.removeEventListener('click', _closeAddr);
-          document.removeEventListener('click', _closeAddrDoc);
-        };
-        const _closeAddrDoc = (ev: Event) => {
-          if (_idleOverlay?.contains(ev.target as Node)) return;
-          addrRow.setAttribute('hidden', '');
-          _unfreezeGif();
-          squidBtn?.classList.remove('ski-idle-quick-btn--active');
-          document.removeEventListener('click', _closeAddrDoc);
-          _idleOverlay?.removeEventListener('click', _closeAddr);
-        };
-        setTimeout(() => {
-          _idleOverlay?.addEventListener('click', _closeAddr);
-          document.addEventListener('click', _closeAddrDoc);
-        }, 50);
       });
+
+      // Address rows + QR are handled exclusively by the Rumble/squids button below
 
       // Rumble button → dispatch ski:rumble event
       _idleOverlay.querySelector('#ski-idle-rumble')?.addEventListener('click', async (e) => {
@@ -10852,15 +10757,27 @@ function bindEvents() {
               } else {
                 const addr = nsTargetAddress || nsNftOwner || ws.address || '';
                 const short = `${addr.slice(0, 6)}\u2026${addr.slice(-6)}`;
+                const cachedBaseAddr = status.ethAddress; // same EVM address
+                const cachedTronAddr = status.ethAddress ? ethToTron(status.ethAddress) : '';
                 const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
                 const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
                 const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
                 const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#627eea" stroke="white" stroke-width="2.5"/><g transform="translate(10,3.5) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
-                const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
+                const baseIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#0052FF" stroke="white" stroke-width="2.5"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="20" font-weight="700" fill="white">B</text></svg></span>`;
+                const tronIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#FF0013" stroke="white" stroke-width="2.5"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="16" font-weight="700" fill="white">T</text></svg></span>`;
+
+                // Per-row USD balances
+                const _suiUsd2 = app.sui * (suiPriceCache?.price ?? 0) + app.stableUsd;
+                const _solUsd2 = app.solBalance > 0 ? app.solBalance * (getTokenPrice('SOL') ?? 0) : 0;
+                const _fmtBal2 = (v: number) => v >= 0.50 ? `<span class="ski-idle-addr-bal">$${Math.round(v).toLocaleString()}</span>` : '';
+
+                const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}${_fmtBal2(_suiUsd2)}</span>`;
                 const btcLine = `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${status.btcAddress}">${btcIcon} ${status.btcAddress.slice(0, 6)}\u2026${status.btcAddress.slice(-6)}</span>`;
-                const solLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${status.solAddress}">${solIcon} ${status.solAddress.slice(0, 6)}\u2026${status.solAddress.slice(-6)}</span>`;
+                const solLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${status.solAddress}">${solIcon} ${status.solAddress.slice(0, 6)}\u2026${status.solAddress.slice(-6)}${_fmtBal2(_solUsd2)}</span>`;
                 const ethLine = status.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${status.ethAddress}">${ethIcon} ${status.ethAddress.slice(0, 6)}\u2026${status.ethAddress.slice(-6)}</span>` : '';
-                addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}`;
+                const baseLine = cachedBaseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" title="${cachedBaseAddr}">${baseIcon} ${cachedBaseAddr.slice(0, 6)}\u2026${cachedBaseAddr.slice(-6)}</span>` : '';
+                const tronLine = cachedTronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${cachedTronAddr}">${tronIcon} ${cachedTronAddr.slice(0, 5)}\u2026${cachedTronAddr.slice(-5)} <span style="opacity:0.5;font-size:0.75rem">USDT</span></span>` : '';
+                addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}`;
                 addrRow.removeAttribute('hidden');
                 _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.add('ski-idle-quick-btn--active');
                 _freezeGif();
@@ -10869,7 +10786,7 @@ function bindEvents() {
                     ev.stopPropagation();
                     const h = el as HTMLElement;
                     const full = h.title || '';
-                    const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a' : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc' : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8' : '#4da2ff';
+                    const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a' : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc' : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8' : h.classList.contains('ski-idle-addr-line--base') ? '#0052FF' : h.classList.contains('ski-idle-addr-line--tron') ? '#FF0013' : '#4da2ff';
                     toggleAddrRow(h, full, c);
                   });
                 });
@@ -11914,6 +11831,11 @@ function bindEvents() {
     _showIdleOverlay();
   });
 
+  // On disconnect, kill the idle timer so overlay doesn't reappear
+  window.addEventListener('ski:wallet-disconnected', () => {
+    if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+  });
+
   ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
     document.addEventListener(evt, _resetIdle, { passive: true });
   });
@@ -12082,6 +12004,9 @@ export function initUI() {
 
     if (ws.status === 'disconnected') {
       stopPolling();
+      // Remove idle overlay so it doesn't float over the closed menu
+      if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
+      try { localStorage.setItem('ski:idle-open', '0'); } catch {}
       app.sui = 0;
       app.usd = null;
       app.stableUsd = 0;

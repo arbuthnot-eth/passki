@@ -1,0 +1,2 @@
+SKI — .Sui Key-In
+IKA dWallets give one Sui account native Bitcoin, Solana, EVM (Ethereum, Base, Tron) addresses — real keys, no bridges. WaaP social login (X, Google, phone, email) — no API keys. SuiNS names replace hex: sol@brando, btc@brando. Buy/sell via Tradeport. Stables-only display filters spam to USD. Subcent steganographic intents after $0.01. Thunder: Seal-encrypted messaging on Walrus. Shade: private domain sniping. iUSD: yield stable. 9 Move contracts live on mainnet. sui.ski
