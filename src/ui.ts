@@ -11944,11 +11944,6 @@ export function initUI() {
               signPersonalMessage: async (msg: Uint8Array) => signPersonalMessage(msg),
               toSuiAddress: () => ws.address,
             },
-            sealServerConfigs: [
-              { objectId: '0x22135e12ab6ca0249b4572c0d32e0e155c31b27e5e69aa10760b15e033789a32', weight: 1 },
-              { objectId: '0xdd823bf2ecd8c84ca777ad26aa99c05e1ed66dde1f0b89b181cd5b9468751a13', weight: 1 },
-              { objectId: '0x51f67a7a7c3eb8f54792e62ea8a45e55c9718e70ca8d9a7b1f5f7e8a25092bd0', weight: 1 },
-            ],
             transport: new TimestreamTransport(),
           });
         }).catch(() => {});

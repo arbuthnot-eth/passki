@@ -1,24 +1,20 @@
 /**
  * Thunder Timestream — re-export barrel.
  *
- * New SDK: import from './thunder-stack.js'
- * Legacy compat: this file re-exports both for gradual migration.
- * All consumers import from this file — it routes to the right implementation.
+ * All consumers import from this file.
  */
 
-// ─── New SDK (primary) ──────────────────────────────────────────────
 export {
   initThunderClient,
-  getThunderClient,
+  getThunderTransport,
+  getThunderSigner,
   resetThunderClient,
   sendThunder,
   getThunders,
   subscribeThunders,
   createTimestream,
   lookupRecipientAddress,
-  type DecryptedMessage,
-  type GroupRef,
-  type RelayerTransport,
+  type ThunderMessage,
   type ThunderClientOptions,
+  type TimestreamTransport,
 } from './thunder-stack.js';
-
