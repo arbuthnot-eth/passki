@@ -20,10 +20,12 @@ import { DappKitSigner, type SignPersonalMessageFn } from './dapp-kit-signer.js'
 const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
+// Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
+// NodeInfra excluded — broken CORS (sends duplicate Access-Control-Allow-Origin: *, *)
 const SEAL_SERVERS = [
   { objectId: '0x145540d931f182fef76467dd8074c9839aea126852d90d18e1556fcbbd1208b6', weight: 1 }, // Overclock
-  { objectId: '0x1afb3a57211ceff8f6781757821847e3ddae73f64e78ec8cd9349914ad985475', weight: 1 }, // NodeInfra
   { objectId: '0xe0eb52eba9261b96e895bbb4deca10dcd64fbc626a1133017adcd5131353fd10', weight: 1 }, // Studio Mirai
+  { objectId: '0x4a65b4ff7ba8f4b538895ee35959f982a95f0db7e2a202ec989d261ea927286a', weight: 1 }, // H2O Nodes
 ];
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -69,7 +71,7 @@ export function initThunderClient(opts: ThunderClientOptions) {
   const gqlClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
   _client = createSuiStackMessagingClient(gqlClient as any, {
-    seal: { serverConfigs: SEAL_SERVERS },
+    seal: { serverConfigs: SEAL_SERVERS, verifyKeyServers: false },
     encryption: {
       sessionKey: {
         address: opts.address,
