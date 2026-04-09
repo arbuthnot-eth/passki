@@ -9619,17 +9619,10 @@ function bindEvents() {
         let targetNames: Array<{ name: string; expirationMs: number }> = [];
         if (targetAddr) {
           try {
-            const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ query: `{ address(address: "${targetAddr}") { suinsRegistrations { nodes { domain expirationTimestampMs } } } }` }),
-            });
-            const gql = await res.json() as any;
-            const nodes = gql?.data?.address?.suinsRegistrations?.nodes ?? [];
-            for (const n of nodes) {
-              const bare = (n.domain || '').replace(/\.sui$/, '').toLowerCase();
-              const expMs = parseInt(n.expirationTimestampMs || '0', 10);
-              if (bare) targetNames.push({ name: bare, expirationMs: expMs });
+            const domains = await fetchOwnedDomains(targetAddr);
+            for (const d of domains) {
+              const bare = d.name.replace(/\.sui$/, '').toLowerCase();
+              if (bare) targetNames.push({ name: bare, expirationMs: d.expirationMs ?? 0 });
             }
             targetNames.sort((a, b) => a.name.localeCompare(b.name));
           } catch {}
