@@ -2904,6 +2904,11 @@ body {
   border: 1px solid rgba(255, 184, 0, 0.4);
   color: #FFB800;
 }
+.ski-idle-ns-action--storm {
+  background: rgba(129, 140, 248, 0.15);
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  color: #818cf8;
+}
 .ski-idle-ns-action--trade {
   background: linear-gradient(135deg, rgba(240, 165, 0, 0.35), rgba(245, 166, 35, 0.25));
   border: 1px solid rgba(240, 165, 0, 0.6);

@@ -9476,6 +9476,20 @@ function bindEvents() {
       let _thunderComposeConfirmedRaw = '';
       let _thunderComposeStage: 'idle' | 'preview' | 'confirmed' | 'sending' = 'idle';
 
+      // Track Storm existence per groupId (shared between action button + compose preview)
+      const _stormExistsCache: Record<string, boolean | 'checking'> = {};
+      const _checkStormExists = (groupId: string) => {
+        if (_stormExistsCache[groupId] !== undefined) return;
+        _stormExistsCache[groupId] = 'checking';
+        import('./client/thunder.js').then(({ stormExists }) => {
+          stormExists(groupId).then(exists => {
+            _stormExistsCache[groupId] = exists;
+            _renderThunderComposePreview();
+            _updateIdleStatus();
+          }).catch(() => { _stormExistsCache[groupId] = false; _renderThunderComposePreview(); _updateIdleStatus(); });
+        }).catch(() => {});
+      };
+
       const _updateIdleStatus = () => {
         if (!_idleStatusEl || !_idleActionBtn) return;
         const label = nsLabel.trim();
@@ -9547,9 +9561,17 @@ function bindEvents() {
           _idleActionBtn.title = `Shade ${label}.sui \u2014 lock funds for grace expiry`;
           _idleActionBtn.disabled = false;
         } else if (nsAvail === 'taken' && !isOwned) {
-          _idleActionBtn.textContent = 'Thunder';
-          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--thunder';
-          _idleActionBtn.title = `Thunder \u2014 encrypt a signal to ${label}.sui`;
+          // Check if Storm exists for this conversation
+          const myName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+          const targetBare = label.toLowerCase();
+          const _gid = `thunder-${[myName, targetBare].sort().join('-')}`;
+          const _hasStorm = _stormExistsCache[_gid] === true;
+          if (_gid && !_stormExistsCache[_gid]) _checkStormExists(_gid);
+          _idleActionBtn.textContent = _hasStorm ? 'Thunder' : 'Storm';
+          _idleActionBtn.className = _hasStorm ? 'ski-idle-ns-action ski-idle-ns-action--thunder' : 'ski-idle-ns-action ski-idle-ns-action--storm';
+          _idleActionBtn.title = _hasStorm
+            ? `Thunder \u2014 encrypt a signal to ${label}.sui`
+            : `Storm \u2014 create an encrypt channel with ${label}.sui`;
           _idleActionBtn.disabled = false;
         } else if (isOwned) {
           _idleActionBtn.textContent = 'SUIAMI';
@@ -9607,19 +9629,6 @@ function bindEvents() {
             priceRow.hidden = true;
           }
         }
-      };
-
-      // Track Storm existence per groupId
-      const _stormExistsCache: Record<string, boolean | 'checking'> = {};
-      const _checkStormExists = (groupId: string) => {
-        if (_stormExistsCache[groupId] !== undefined) return;
-        _stormExistsCache[groupId] = 'checking';
-        import('./client/thunder.js').then(({ stormExists }) => {
-          stormExists(groupId).then(exists => {
-            _stormExistsCache[groupId] = exists;
-            _renderThunderComposePreview();
-          }).catch(() => { _stormExistsCache[groupId] = false; _renderThunderComposePreview(); });
-        }).catch(() => {});
       };
 
       const _renderThunderComposePreview = () => {
