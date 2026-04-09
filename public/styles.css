@@ -3157,6 +3157,9 @@ body {
   background: linear-gradient(135deg, rgba(126, 34, 206, 0.65), rgba(168, 85, 247, 0.55));
   border-color: rgba(168, 85, 247, 0.8);
 }
+.ski-idle-addr-suiami--dwallet {
+  box-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
+}
 .ski-idle-addr-suiami--join {
   background: rgba(90, 115, 145, 0.45);
   border: 1px solid rgba(110, 140, 170, 0.5);

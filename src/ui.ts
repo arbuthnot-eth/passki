@@ -10851,7 +10851,7 @@ function bindEvents() {
                           }
                         } catch {}
                       }
-                      if (!rBtc && !rEth && !rSol) return;
+                      if (!rBtc && !rEth && !rSol && !roster.verified) return;
                       // Cache for future use
                       try { localStorage.setItem(`ski:ika-addrs:${addr}`, JSON.stringify({ btc: rBtc, eth: rEth, sol: rSol })); } catch {}
                       // Re-render cross-chain rows with roster data
@@ -10863,7 +10863,12 @@ function bindEvents() {
                       const rEthLine = rEth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${rEth}">${ethIcon} ${rEth.slice(0, 6)}\u2026${rEth.slice(-6)}${rBaseChip}</span>` : '';
                       const rBaseLine = rBase ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${rBase}">${baseIcon} ${rBase.slice(0, 6)}\u2026${rBase.slice(-6)}</span>` : '';
                       const rTronLine = rTron ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${rTron}">${tronIcon} ${rTron.slice(0, 5)}\u2026${rTron.slice(-5)} <span style="opacity:0.5;font-size:0.75rem">USDT</span></span>` : '';
-                      addrRow.innerHTML = `${suiLine}${rBtcLine}${rSolLine}${rEthLine}${rBaseLine}${rTronLine}${suiamiLine}`;
+                      // Update SUIAMI button with dWallet badge if roster is verified
+                      let rSuiamiLine = suiamiLine;
+                      if (roster.verified) {
+                        rSuiamiLine = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--verified ski-idle-addr-suiami--dwallet" type="button" title="dWallet-attested identity">\u2713 SUIAMI \u2b21</button>`;
+                      }
+                      addrRow.innerHTML = `${suiLine}${rBtcLine}${rSolLine}${rEthLine}${rBaseLine}${rTronLine}${rSuiamiLine}`;
                     } catch {}
                   })();
                 } else {
@@ -11854,7 +11859,7 @@ function bindEvents() {
         }
       });
 
-      // SUIAMI proof signed (from any path) — update squids button
+      // SUIAMI proof signed (from any path) — update squids button + refresh panel
       window.addEventListener('suiami:signed', (e) => {
         const detail = (e as CustomEvent).detail;
         if (detail?.proof) {
@@ -11866,6 +11871,18 @@ function bindEvents() {
             btn.innerHTML = '\u2713 SUIAMI';
             btn.setAttribute('title', 'Click to copy SUIAMI proof');
           });
+          // If the squids panel (#ski-idle-addr) is currently open, close and reopen to refresh with new SUIAMI state
+          const _addrPanel = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+          if (_addrPanel && !_addrPanel.hasAttribute('hidden')) {
+            // Close: hide the panel
+            _addrPanel.setAttribute('hidden', '');
+            _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+            // Reopen after a brief tick so the squid button click re-renders with updated proof state
+            setTimeout(() => {
+              const _squidBtn = _idleOverlay?.querySelector('[data-action="rumble"]') as HTMLElement | null;
+              _squidBtn?.click();
+            }, 100);
+          }
         }
       });
 

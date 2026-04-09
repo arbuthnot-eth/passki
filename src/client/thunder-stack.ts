@@ -21,6 +21,9 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 const IOU_PACKAGE = '0x05b21b79f0fe052f685e4eee049ded3394f71d8384278c23d60532be3f04535f';
 
+/** Global SUIAMI Storm — public identity directory. Anyone with a SuiNS name can join. */
+export const GLOBAL_SUIAMI_STORM = ''; // TODO: deploy and fill with object ID
+
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
 // NodeInfra excluded — broken CORS (sends duplicate Access-Control-Allow-Origin: *, *)
