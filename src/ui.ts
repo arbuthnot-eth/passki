@@ -11199,21 +11199,17 @@ function bindEvents() {
               _renderThunderComposePreview();
               return;
             }
-            // Success: show bubble, clear input, resume GIF
+            // Success: clear input, fetch and render convo from Timestream DO
             if (_idleThunderInput) _idleThunderInput.value = '';
-            _unfreezeGif();
-            const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
-            const bubble = document.createElement('div');
-            bubble.className = 'ski-idle-bubble ski-idle-bubble--out';
-            bubble.textContent = msgText;
-            if (convoEl) { convoEl.appendChild(bubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
             const names = recipients.map(r => `${r}.sui`).join(', ');
             const amtToast = transferAmtUsd ? ` \u00b7 $${transferAmtUsd} sent` : '';
             showToast(`\u26a1 Signal sent to ${names}${amtToast}`);
-            _expandIdleConvo(recipients[0]);
             _thunderComposeConfirmedRaw = '';
             _thunderComposeStage = 'idle';
             _renderThunderComposePreview();
+            // Fetch conversation from DO — includes the message we just sent
+            _freezeGif();
+            await _expandIdleConvo(recipients[0]);
           } catch (txErr) {
             const txMsg = txErr instanceof Error ? txErr.message : 'Signal failed';
             _thunderComposeStage = 'confirmed';
