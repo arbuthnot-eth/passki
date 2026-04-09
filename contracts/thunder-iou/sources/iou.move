@@ -38,7 +38,7 @@ const EIouNotFound: u64 = 5;
 /// A private IOU stored as a dynamic field on the StormID.
 /// `store` only — no UID, no object overhead, max gas efficiency.
 /// Balance is on-chain (visible), but context is Seal-encrypted.
-public struct Iou has store, drop {
+public struct Iou has store {
     /// Sender address (for expiry return)
     sender: address,
     /// Recipient's SuiNS name hash — keccak256("name.sui")
@@ -155,15 +155,15 @@ entry fun activate(
     ctx: &mut TxContext,
 ) {
     assert!(dynamic_field::exists_<vector<u8>>(storm, key), EIouNotFound);
-    let iou: Iou = dynamic_field::remove(storm, key);
+    let Iou { sender: _, recipient_name_hash: rnh, balance: bal, expires_ms, nonce: _, sealed_memo: _ } = dynamic_field::remove(storm, key);
 
     // Verify recipient matches
-    assert!(iou.recipient_name_hash == recipient_name_hash, ENotRecipient);
+    assert!(rnh == recipient_name_hash, ENotRecipient);
     // Verify not expired
-    assert!(clock.timestamp_ms() < iou.expires_ms, EAlreadyExpired);
+    assert!(clock.timestamp_ms() < expires_ms, EAlreadyExpired);
 
-    let amount = balance::value(&iou.balance);
-    let coin = coin::from_balance(iou.balance, ctx);
+    let amount = balance::value(&bal);
+    let coin = coin::from_balance(bal, ctx);
     transfer::public_transfer(coin, ctx.sender());
 
     event::emit(IouActivated {
@@ -185,19 +185,19 @@ entry fun expire(
     ctx: &mut TxContext,
 ) {
     assert!(dynamic_field::exists_<vector<u8>>(storm, key), EIouNotFound);
-    let iou: Iou = dynamic_field::remove(storm, key);
+    let Iou { sender, recipient_name_hash: _, balance: bal, expires_ms, nonce: _, sealed_memo: _ } = dynamic_field::remove(storm, key);
 
     // Verify expired
-    assert!(clock.timestamp_ms() >= iou.expires_ms, ENotExpired);
+    assert!(clock.timestamp_ms() >= expires_ms, ENotExpired);
 
-    let amount = balance::value(&iou.balance);
-    let coin = coin::from_balance(iou.balance, ctx);
-    transfer::public_transfer(coin, iou.sender);
+    let amount = balance::value(&bal);
+    let coin = coin::from_balance(bal, ctx);
+    transfer::public_transfer(coin, sender);
 
     event::emit(IouExpired {
         storm_id: storm.to_address(),
         iou_key: key,
-        returned_to: iou.sender,
+        returned_to: sender,
         amount_mist: amount,
     });
 }
