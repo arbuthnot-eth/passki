@@ -11441,15 +11441,34 @@ function bindEvents() {
 
         _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
 
-        // Render Timestream messages as bubbles
+        // Render Timestream messages as bubbles with reverse lookup
         const ws = getState();
         const myAddr = ws.address?.toLowerCase() || '';
+
+        // Resolve sender names via reverse lookup (batch, cached)
+        const _rlCache: Record<string, string> = {};
+        if (myAddr) _rlCache[myAddr] = myName || myAddr.slice(0, 8);
+        const uniqueAddrs = [...new Set(entries.map(m => m.senderAddress.toLowerCase()).filter(a => !_rlCache[a]))];
+        if (uniqueAddrs.length > 0) {
+          try {
+            const { reverseLookupName } = await import('./client/thunder.js');
+            await Promise.all(uniqueAddrs.map(async addr => {
+              const name = await reverseLookupName(addr);
+              _rlCache[addr] = name || addr.slice(0, 8);
+            }));
+          } catch {}
+        }
+
+        const hasStorm = _stormExistsCache[groupId] === true;
+        const stormLabel = hasStorm ? '\u26a1' : '\u26c8\ufe0f';
         const bubbles = entries.slice(-20).map(m => {
           const isOut = m.senderAddress.toLowerCase() === myAddr;
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
-          return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${esc(m.text)}</div>`;
+          const senderName = _rlCache[m.senderAddress.toLowerCase()] || m.senderAddress.slice(0, 8);
+          const nameTag = !isOut ? `<span class="ski-idle-bubble-sender">${esc(senderName)}</span> ` : '';
+          return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
         }).join('');
-        const title = `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">\u26a1 <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></a></div>`;
+        const title = `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">${stormLabel} <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></a></div>`;
         convoEl.innerHTML = title + bubbles;
         convoEl.removeAttribute('hidden');
         convoEl.scrollTop = convoEl.scrollHeight;

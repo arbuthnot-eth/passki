@@ -3192,6 +3192,13 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.6);
   color: #0a0a0f;
 }
+.ski-idle-bubble-sender {
+  font-size: 0.7rem;
+  font-weight: 600;
+  opacity: 0.6;
+  display: block;
+  margin-bottom: 2px;
+}
 .ski-idle-bubble--read {
   background: rgba(255, 255, 255, 0.95) !important;
   border-color: rgba(255, 255, 255, 0.6) !important;

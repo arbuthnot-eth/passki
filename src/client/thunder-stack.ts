@@ -413,6 +413,7 @@ export async function stormExists(uuid: string): Promise<boolean> {
 
 // ─── SuiNS resolution ───────────────────────────────────────────────
 
+/** Resolve a SuiNS name to its address. Tries target address first, falls back to NFT owner. */
 export async function lookupRecipientAddress(name: string): Promise<string | null> {
   const fullName = name.replace(/\.sui$/i, '').toLowerCase() + '.sui';
   try {
@@ -420,7 +421,36 @@ export async function lookupRecipientAddress(name: string): Promise<string | nul
     const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
     const suinsClient = new SuinsClient({ client: gql as never, network: 'mainnet' });
     const record = await suinsClient.getNameRecord(fullName);
-    return record?.targetAddress ?? null;
+    // Target address is the preferred resolution
+    if (record?.targetAddress) return record.targetAddress;
+    // Fallback: NFT owner address (if target not set but name is owned)
+    if (record?.nftId) {
+      try {
+        const res = await fetch(GQL_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: `{ object(address: "${record.nftId}") { owner { ... on AddressOwner { owner { address } } } } }` }),
+        });
+        const data = await res.json() as any;
+        const ownerAddr = data?.data?.object?.owner?.owner?.address;
+        if (ownerAddr) return ownerAddr;
+      } catch {}
+    }
+    return null;
+  } catch { return null; }
+}
+
+/** Reverse lookup: address → primary SuiNS name. */
+export async function reverseLookupName(address: string): Promise<string | null> {
+  try {
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: `{ address(address: "${address}") { defaultSuinsName } }` }),
+    });
+    const data = await res.json() as any;
+    const name = data?.data?.address?.defaultSuinsName;
+    return name ? name.replace(/\.sui$/, '') : null;
   } catch { return null; }
 }
 

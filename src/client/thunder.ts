@@ -11,6 +11,7 @@ export {
   createStorm,
   stormExists,
   lookupRecipientAddress,
+  reverseLookupName,
   type ThunderMessage,
   type ThunderClientOptions,
   type DecryptedMessage,
