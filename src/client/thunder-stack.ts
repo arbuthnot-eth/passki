@@ -77,17 +77,32 @@ export function resetThunderClient() {
 
 /**
  * Send an encrypted Thunder signal to a Timestream (group).
- * Optionally compose a SUI transfer in the same PTB via the transfer param.
+ * If a transfer is specified, executes the SUI transfer as a separate
+ * on-chain transaction (the SDK handles message encryption + transport).
  */
 export async function sendThunder(opts: {
   signer: any;
   groupRef: GroupRef;
   text: string;
-  /** Optional: attach SUI transfer to the same transaction */
+  /** Optional: SUI transfer executed as a separate on-chain tx */
   transfer?: { recipientAddress: string; amountMist: bigint };
+  /** signAndExecuteTransaction callback for the transfer PTB */
+  executeTransfer?: (txBytes: Uint8Array) => Promise<any>;
 }): Promise<{ messageId: string }> {
   const client = getThunderClient();
-  // TODO: compose transfer into the same PTB when SDK supports transaction param on sendMessage
+
+  // Execute token transfer as separate on-chain transaction
+  if (opts.transfer && opts.transfer.amountMist > 0n && opts.executeTransfer) {
+    const tx = new Transaction();
+    tx.setSender(normalizeSuiAddress(opts.signer.toSuiAddress()));
+    const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer.amountMist)]);
+    tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer.recipientAddress)));
+    const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    const bytes = await tx.build({ client: gql as never });
+    await opts.executeTransfer(bytes as Uint8Array);
+  }
+
+  // Send encrypted message via SDK transport
   return client.messaging.sendMessage({
     signer: opts.signer,
     groupRef: opts.groupRef,

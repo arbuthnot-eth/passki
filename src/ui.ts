@@ -11183,6 +11183,7 @@ function bindEvents() {
                 groupRef: { uuid: groupUuid },
                 text: msgText,
                 transfer,
+                executeTransfer: transfer ? (bytes: Uint8Array) => signAndExecuteTransaction(bytes) : undefined,
               });
               const amtLabel = transferAmtUsd ? ` ($${transferAmtUsd})` : '';
               await _storeThunderLocal(senderName || ws.address, recip, msgText + amtLabel, 'out', undefined, nsTargetAddress ?? undefined);

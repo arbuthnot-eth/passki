@@ -2947,11 +2947,22 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
                 // ── Prism: Thunder notification to recipient ──────────────
                 if (kaminoMatch.suinsName) {
                   try {
-                    // TODO: migrate to sendThunder when server-side transport is ready
-                    const { sendThunder } = await import('../../client/thunder.js');
                     const recipName = kaminoMatch.suinsName.replace(/\.sui$/i, '');
                     const msg = `⚡ OpenCLOB fill: ${(lamports / 1e9).toFixed(2)} SOL → Kamino ${kaminoMatch.strategy} → $${iusdValue.toFixed(2)} iUSD minted to your wallet.${kaminoDigest ? ` Kamino tx: ${kaminoDigest.slice(0, 12)}…` : ''}`;
-                    console.log(`[OpenCLOB] Prism Thunder queued for ${recipName}.sui: ${msg}`);
+                    // Send via Timestream DO directly (server-side, no SDK — just store encrypted signal)
+                    const groupId = `thunder-ultron-${recipName}`;
+                    await fetch(`https://sui.ski/api/timestream/${encodeURIComponent(groupId)}/send`, {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({
+                        groupId,
+                        encryptedText: btoa(msg), // plaintext for now — ultron notifications are public
+                        nonce: btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(12)))),
+                        keyVersion: '0',
+                        senderAddress: normalizeSuiAddress(keypair.getPublicKey().toSuiAddress()),
+                      }),
+                    });
+                    console.log(`[OpenCLOB] Prism Thunder sent to ${recipName}.sui via Timestream`);
                   } catch (e) { console.warn('[OpenCLOB] Prism Thunder failed:', e); }
                 }
 
@@ -4414,9 +4425,20 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Send welcome Thunder to the new name — announces their chain addresses
       try {
-        // TODO: migrate to sendThunder when server-side transport is ready
         const welcomeMsg = `\ud83e\udd91 Rumble squids provisioned! btc@${bare} eth@${bare} sol@${bare} — your chain addresses are live. Rumble yourself to take full custody.`;
-        console.log(`[TreasuryAgents] Welcome Thunder queued for ${bare}.sui: ${welcomeMsg}`);
+        const groupId = `thunder-ultron-${bare}`;
+        await fetch(`https://sui.ski/api/timestream/${encodeURIComponent(groupId)}/send`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            groupId,
+            encryptedText: btoa(welcomeMsg),
+            nonce: btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(12)))),
+            keyVersion: '0',
+            senderAddress: ultronAddr,
+          }),
+        });
+        console.log(`[TreasuryAgents] Welcome Thunder sent to ${bare}.sui via Timestream`);
       } catch (e) { console.warn('[TreasuryAgents] Welcome Thunder failed:', e); }
 
       return { digest, blobId };
