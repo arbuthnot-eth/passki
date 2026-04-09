@@ -141,6 +141,62 @@ export async function readRoster(name: string): Promise<Record<string, string> |
   } catch { return null; }
 }
 
+/** Full identity record returned by address-based roster lookup. */
+export interface RosterRecord {
+  name: string;
+  sui_address: string;
+  chains: Record<string, string>;
+  walrus_blob_id: string;
+  seal_nonce: number[];
+  verified: boolean;
+  dwallet_caps: string[];
+  updated_ms: string;
+}
+
+/**
+ * Read the full identity record from the SUIAMI Roster by Sui address.
+ * Uses the address-keyed dynamic field (second index).
+ * Returns null if no record exists for this address.
+ */
+export async function readRosterByAddress(address: string): Promise<RosterRecord | null> {
+  // Normalize to 0x-prefixed 64-hex-char address, then convert to 32 raw bytes
+  const norm = normalizeSuiAddress(address);
+  const hex = norm.replace(/^0x/, '');
+  const raw = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    raw[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  const addrB64 = btoa(String.fromCharCode(...raw));
+  try {
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address: "${ROSTER_OBJ}") { dynamicField(name: { type: "address", bcs: "${addrB64}" }) { value { ... on MoveValue { json } } } } }`,
+      }),
+    });
+    const gql = await res.json() as any;
+    const record = gql?.data?.object?.dynamicField?.value?.json;
+    if (!record) return null;
+    const chains: Record<string, string> = {};
+    if (record.chains?.contents) {
+      for (const { key, value } of record.chains.contents) {
+        chains[key] = value;
+      }
+    }
+    return {
+      name: record.name ?? '',
+      sui_address: record.sui_address ?? '',
+      chains,
+      walrus_blob_id: record.walrus_blob_id ?? '',
+      seal_nonce: record.seal_nonce ?? [],
+      verified: record.verified ?? false,
+      dwallet_caps: record.dwallet_caps ?? [],
+      updated_ms: record.updated_ms ?? '0',
+    };
+  } catch { return null; }
+}
+
 /** Split a swap fee from an output coin and send to treasury.
  *  @param tx - the Transaction
  *  @param outputCoin - the coin result to skim from

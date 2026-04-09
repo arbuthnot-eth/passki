@@ -57,6 +57,12 @@ public struct IdentityRecord has store, drop, copy {
     dwallet_caps: vector<address>,
     /// Last update timestamp
     updated_ms: u64,
+    /// Walrus blob containing Seal-encrypted cross-chain addresses
+    walrus_blob_id: String,
+    /// Seal encryption nonce
+    seal_nonce: vector<u8>,
+    /// true if dwallet_caps is non-empty
+    verified: bool,
 }
 
 // ─── Init ───────────────────────────────────────────────────────────
@@ -86,6 +92,8 @@ entry fun set_identity(
     chain_keys: vector<String>,
     chain_values: vector<String>,
     dwallet_caps: vector<address>,
+    walrus_blob_id: String,
+    seal_nonce: vector<u8>,
     clock: &Clock,
     ctx: &TxContext,
 ) {
@@ -101,12 +109,16 @@ entry fun set_identity(
         i = i + 1;
     };
 
+    let verified = !dwallet_caps.is_empty();
     let record = IdentityRecord {
         name,
         sui_address: sender,
         chains,
         dwallet_caps,
         updated_ms: clock.timestamp_ms(),
+        walrus_blob_id,
+        seal_nonce,
+        verified,
     };
 
     // Upsert by name_hash
@@ -189,3 +201,6 @@ public fun record_sui_address(record: &IdentityRecord): address { record.sui_add
 public fun record_chains(record: &IdentityRecord): &VecMap<String, String> { &record.chains }
 public fun record_dwallet_caps(record: &IdentityRecord): &vector<address> { &record.dwallet_caps }
 public fun record_updated_ms(record: &IdentityRecord): u64 { record.updated_ms }
+public fun record_walrus_blob_id(record: &IdentityRecord): &String { &record.walrus_blob_id }
+public fun record_seal_nonce(record: &IdentityRecord): &vector<u8> { &record.seal_nonce }
+public fun record_verified(record: &IdentityRecord): bool { record.verified }
