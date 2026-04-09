@@ -268,7 +268,7 @@ export async function sendThunder(opts: {
         const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
         tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
       } else {
-        // iUSD object — private on-chain IOU escrow on existing Storm (7-day TTL)
+        // iOUSD object — private on-chain escrow on existing Storm (7-day TTL)
         const [iouCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
         const senderBare = (opts.senderName || '') + '.sui';
         const recipBare = (opts.recipientName || '') + '.sui';
