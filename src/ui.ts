@@ -3649,7 +3649,7 @@ async function _renderConversation(counterparty: string, force = false) {
           const { sendThunder } = await import('./client/thunder.js');
           try {
             await sendThunder({
-              signer: ws as any,
+
               groupRef: { uuid: `${myName}-${senderName}` },
               text: `\u2713 read by ${myName}.sui`,
             });
@@ -3665,7 +3665,7 @@ async function _renderConversation(counterparty: string, force = false) {
 
       const groupUuid = `thunder-${cardDomain}`;
       const { messages } = await getThunders({
-        signer: ws as any,
+
         groupRef: { uuid: groupUuid },
       });
       const _myLog = app.suinsName || ws.address;
@@ -4889,7 +4889,7 @@ function _attachNftPopoverListeners() {
 
         const groupUuid = `thunder-${badgeDomain}`;
         const { messages } = await getThunders({
-          signer: ws as any,
+  
           groupRef: { uuid: groupUuid },
         });
 
@@ -7581,7 +7581,7 @@ function renderSkiMenu() {
       try {
         const groupUuid = `thunder-${senderName}-${recipientName}`;
         await sendThunder({
-          signer: ws as any,
+  
           groupRef: { uuid: groupUuid },
           text: msg,
         });
@@ -8968,7 +8968,7 @@ function renderSkiMenu() {
         for (const [name] of namesWithThunder) {
           const groupUuid = `thunder-${name}`;
           const { messages } = await getThunders({
-            signer: ws as any,
+    
             groupRef: { uuid: groupUuid },
           });
           for (const m of messages) {
@@ -11081,7 +11081,7 @@ function bindEvents() {
               try {
                 const groupUuid = `thunder-${name}`;
                 const { messages } = await getThunders({
-                  signer: ws as any,
+    
                   groupRef: { uuid: groupUuid },
                 });
                 for (const m of messages) {
@@ -11179,7 +11179,7 @@ function bindEvents() {
               if (_cancelled) break;
               const groupUuid = `thunder-${senderName}-${recip}`;
               await sendThunder({
-                signer: ws as any,
+  
                 groupRef: { uuid: groupUuid },
                 text: msgText,
                 transfer,
@@ -11938,15 +11938,10 @@ export function initUI() {
 
       // Initialize Thunder Timestream client
       import('./client/thunder.js').then(({ initThunderClient }) => {
-        import('./client/timestream-transport.js').then(({ TimestreamTransport }) => {
-          initThunderClient({
-            signer: {
-              signPersonalMessage: async (msg: Uint8Array) => signPersonalMessage(msg),
-              toSuiAddress: () => ws.address,
-            },
-            transport: new TimestreamTransport(),
-          });
-        }).catch(() => {});
+        initThunderClient({
+          address: ws.address,
+          signPersonalMessage: (msg: Uint8Array) => signPersonalMessage(msg),
+        });
       }).catch(() => {});
 
       // Execute Prism intent if one was stored from ?prism= URL

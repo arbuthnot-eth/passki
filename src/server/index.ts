@@ -1361,7 +1361,7 @@ app.post('/api/timestream/:groupId/:action', async (c) => {
   const body = await c.req.text();
   const res = await stub.fetch(new Request(`https://timestream-do/${action}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-partykit-room': groupId },
     body,
   }));
   const text = await res.text();
