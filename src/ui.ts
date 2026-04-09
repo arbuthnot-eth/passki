@@ -11287,76 +11287,51 @@ function bindEvents() {
       async function _expandIdleConvo(counterparty: string) {
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         if (!convoEl) return;
-        const entries = await _getConversation(counterparty);
+
+        // Fetch messages from Timestream DO
+        const myName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+        const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
+        const groupId = `thunder-${[myName, bare].sort().join('-')}`;
+
+        let entries: Array<{ text: string; senderAddress: string; createdAt: number; messageId: string }> = [];
+        try {
+          const { getThunders } = await import('./client/thunder.js');
+          const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 20 });
+          entries = messages;
+        } catch { /* fallback to empty */ }
+
         if (!entries.length) {
-          convoEl.setAttribute('hidden', '');
-          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+          // Also check local log as fallback for old messages
+          const localEntries = await _getConversation(counterparty);
+          if (!localEntries.length) {
+            convoEl.setAttribute('hidden', '');
+            _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+            return;
+          }
+          // Render from local log (legacy)
+          _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+          const bubbles = localEntries.slice(-20).map(e => {
+            const isOut = e.dir === 'out' || (!e.dir && !e.from);
+            const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
+            return `<div class="ski-idle-bubble ${cls}">${esc(e.msg)}</div>`;
+          }).join('');
+          const title = `<div class="ski-idle-convo-title">\u26a1 <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></div>`;
+          convoEl.innerHTML = title + bubbles;
+          convoEl.removeAttribute('hidden');
+          convoEl.scrollTop = convoEl.scrollHeight;
           return;
         }
+
         _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
 
-        // Secret read receipt: check if counterparty has 0 pending signals on-chain.
-        // If we sent them signals and they're gone → they purged them → mark as read.
-        const cBare = counterparty.replace(/\.sui$/, '').toLowerCase();
-        const cPending = _thunderCounts[cBare] ?? 0;
-        const hasUnread = entries.some(e => (e.dir === 'out' || (!e.dir && !e.from)) && !e.read);
-        if (hasUnread && cPending === 0) {
-          // All signals were purged — mark outgoing as read
-          let changed = false;
-          for (const e of entries) {
-            if ((e.dir === 'out' || (!e.dir && !e.from)) && !e.read) {
-              e.read = true;
-              changed = true;
-            }
-          }
-          if (changed) {
-            // Persist the read flags back to encrypted log
-            try {
-              const ws = getState();
-              if (ws.address) {
-                const key = await _deriveThunderKey(ws.address);
-                const all = await _readThunderLog();
-                const cAddr = entries[0]?.addr;
-                for (const entry of all) {
-                  if ((entry.dir === 'out' || (!entry.dir && !entry.from))) {
-                    const toBare = (entry.to || '').replace(/\.sui$/i, '').toLowerCase();
-                    if (toBare === cBare || (cAddr && entry.addr === cAddr)) {
-                      entry.read = true;
-                    }
-                  }
-                }
-                const plaintext = new TextEncoder().encode(JSON.stringify(all));
-                const iv = crypto.getRandomValues(new Uint8Array(12));
-                const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
-                localStorage.setItem(`ski:thunder-log:${ws.address}`, JSON.stringify({
-                  ct: btoa(String.fromCharCode(...ct)),
-                  iv: btoa(String.fromCharCode(...iv)),
-                }));
-              }
-            } catch { /* best effort */ }
-          }
-        }
-
-        const bubbles = entries.slice(-20).map(e => {
-          const isOut = e.dir === 'out' || (!e.dir && !e.from);
-          let msgText = e.msg;
-          if (!isOut && !e.dir) msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
+        // Render Timestream messages as bubbles
+        const ws = getState();
+        const myAddr = ws.address?.toLowerCase() || '';
+        const bubbles = entries.slice(-20).map(m => {
+          const isOut = m.senderAddress.toLowerCase() === myAddr;
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
-          const readCls = isOut && e.read ? ' ski-idle-bubble--read' : '';
-          const freshCls = _freshQuestTs.has(e.ts) ? ' ski-idle-bubble--fresh' : '';
-          // Show which SuiNS name sent/received — links to their SUIAMI
-          const suiamiName = isOut ? (e.to || '').replace(/\.sui$/, '') : (e.from || '').replace(/\.sui$/, '');
-          const suiamiUrl = suiamiName ? `https://sui.ski/?suiami=${encodeURIComponent(suiamiName)}` : '';
-          const arrow = isOut ? '\u2192' : '\u2192';
-          const nameLabel = isOut
-            ? (suiamiName ? `${arrow} ${suiamiName}` : '')
-            : (suiamiName ? `${suiamiName} ${arrow}` : '');
-          const nameBadge = nameLabel && suiamiUrl
-            ? `<a class="ski-idle-bubble-name" href="${suiamiUrl}" target="_blank" rel="noopener" title="SUIAMI? I AM ${esc(suiamiName)}">${esc(nameLabel)}</a>`
-            : nameLabel ? `<span class="ski-idle-bubble-name">${esc(nameLabel)}</span>` : '';
-          return `<div class="ski-idle-bubble ${cls}${readCls}${freshCls}" data-ts="${e.ts}">${nameBadge}${esc(msgText)}</div>`;
+          return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${esc(m.text)}</div>`;
         }).join('');
-        const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
         const title = `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">\u26a1 <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></a></div>`;
         convoEl.innerHTML = title + bubbles;
         convoEl.removeAttribute('hidden');
