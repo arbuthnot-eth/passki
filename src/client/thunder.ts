@@ -289,6 +289,17 @@ export async function lookupRecipientNftId(name: string): Promise<string | null>
   } catch { return null; }
 }
 
+/** Resolve a SuiNS name to its target address. */
+export async function lookupRecipientAddress(name: string): Promise<string | null> {
+  const fullName = name.replace(/\.sui$/i, '').toLowerCase() + '.sui';
+  try {
+    const { SuinsClient } = await import('@mysten/suins');
+    const suinsClient = new SuinsClient({ client: gqlClient as never, network: 'mainnet' });
+    const record = await suinsClient.getNameRecord(fullName);
+    return record?.targetAddress ?? null;
+  } catch { return null; }
+}
+
 // ─── Signal (send) ──────────────────────────────────────────────────
 
 /**
@@ -302,6 +313,8 @@ export async function buildThunderSendTx(
   recipientNftObjectId: string,
   message: string,
   suiamiToken?: string,
+  /** Optional: attach a SUI transfer to the same PTB */
+  transfer?: { recipientAddress: string; amountMist: bigint },
 ): Promise<Uint8Array> {
   const bareName = recipientName.replace(/\.sui$/i, '').toLowerCase();
   const ns = nameHash(bareName);
@@ -344,6 +357,13 @@ export async function buildThunderSendTx(
   });
   // Roster piggyback disabled — v2 contract hits abort on upsert, needs debugging
   // maybeAppendRoster(tx, senderAddress, senderName);
+
+  // Compose optional SUI transfer into the same PTB
+  if (transfer && transfer.amountMist > 0n) {
+    const [transferCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(transfer.amountMist)]);
+    tx.transferObjects([transferCoin], tx.pure.address(normalizeSuiAddress(transfer.recipientAddress)));
+  }
+
   const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;

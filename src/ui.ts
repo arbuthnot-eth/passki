@@ -11266,10 +11266,11 @@ function bindEvents() {
             return;
           }
 
-          const { buildThunderSendTx, lookupRecipientNftId } = await import('./client/thunder.js');
+          const { buildThunderSendTx, lookupRecipientNftId, lookupRecipientAddress } = await import('./client/thunder.js');
           const senderName = app.suinsName || '';
           const recipients = draft.recipients;
           const msgText = draft.message;
+          const transferAmtUsd = (draft.amount && !draft.amountError) ? draft.amount : undefined;
           const origBtnHtml = sendBtn?.innerHTML || '\u26a1';
 
           // Show loading spinner on send button — hover reveals cancel
@@ -11289,10 +11290,23 @@ function bindEvents() {
               const nftId = await lookupRecipientNftId(recip);
               if (!nftId) { showToast(`Cannot find ${recip}.sui`); continue; }
               if (_cancelled) break;
-              const txBytes = await buildThunderSendTx(ws.address, senderName, recip, nftId, msgText);
+              // Resolve transfer if amount is set
+              let transfer: { recipientAddress: string; amountMist: bigint } | undefined;
+              if (transferAmtUsd) {
+                const recipAddr = await lookupRecipientAddress(recip);
+                if (!recipAddr) { showToast(`Cannot resolve address for ${recip}.sui`); continue; }
+                const suiPrice = suiPriceCache?.price ?? 0;
+                if (suiPrice <= 0) { showToast('Cannot determine SUI price'); continue; }
+                const suiAmount = transferAmtUsd / suiPrice;
+                const amountMist = BigInt(Math.floor(suiAmount * 1e9));
+                transfer = { recipientAddress: recipAddr, amountMist };
+              }
+              if (_cancelled) break;
+              const txBytes = await buildThunderSendTx(ws.address, senderName, recip, nftId, msgText, undefined, transfer);
               if (_cancelled) break;
               await signAndExecuteTransaction(txBytes);
-              await _storeThunderLocal(senderName || ws.address, recip, msgText, 'out', undefined, nsTargetAddress ?? undefined);
+              const amtLabel = transferAmtUsd ? ` ($${transferAmtUsd})` : '';
+              await _storeThunderLocal(senderName || ws.address, recip, msgText + amtLabel, 'out', undefined, nsTargetAddress ?? undefined);
               _addThunderContact(recip);
             }
             if (_cancelled) {
