@@ -3411,15 +3411,15 @@ function _updateIdleThunderBadge(): void {
   const total = _totalThunderCount();
   if (total > 0) {
     sendBtn.innerHTML = `\u26c8\ufe0f<span class="ski-idle-thunder-count">${total}</span>`;
-    sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--quest';
+    sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send ski-idle-thunder-send--quest';
     sendBtn.title = `Quest ${total} signal${total > 1 ? 's' : ''} across all names`;
     sendBtn.dataset.questMode = '1';
     sendBtn.dataset.questAll = '1';
     sendBtn.disabled = false;
   } else if (sendBtn.dataset.questAll === '1') {
     sendBtn.innerHTML = '\u26a1';
-    sendBtn.className = 'ski-idle-thunder-send';
-    sendBtn.title = 'Send signal';
+    sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send';
+    sendBtn.title = 'Open Storm';
     delete sendBtn.dataset.questMode;
     delete sendBtn.dataset.questAll;
     sendBtn.disabled = false;
@@ -3816,6 +3816,10 @@ interface ThunderComposeDraft {
   sourceLabel: string;
   warning?: string;
   error?: string;
+  /** Parsed dollar amount from @name$amount syntax (e.g. @storm$5 → 5) */
+  amount?: number;
+  /** Validation error for the amount (insufficient balance, invalid format) */
+  amountError?: string;
 }
 
 function _dedupeThunderRecipients(values: string[]): string[] {
@@ -3885,9 +3889,15 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
   if (!trimmed) return null;
 
   const mentions: string[] = [];
-  const mentionPattern = /(^|[^a-z0-9_-])@([a-z0-9-]{3,63})(?![a-z0-9-])/gi;
-  let cleaned = trimmed.replace(mentionPattern, (_match, prefix: string, name: string) => {
+  let parsedAmount: number | undefined;
+  // Match @name with optional $amount attached (e.g. @storm$5, @brando$10.50)
+  const mentionPattern = /(^|[^a-z0-9_-])@([a-z0-9-]{3,63})(?:\$(\d+(?:\.\d{0,2})?))?(?![a-z0-9-])/gi;
+  let cleaned = trimmed.replace(mentionPattern, (_match, prefix: string, name: string, amt: string | undefined) => {
     mentions.push(name.toLowerCase());
+    if (amt !== undefined && amt !== '') {
+      const val = parseFloat(amt);
+      if (!isNaN(val) && val > 0) parsedAmount = val;
+    }
     return prefix ?? ' ';
   });
   cleaned = cleaned
@@ -3918,7 +3928,21 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
       source,
       sourceLabel: 'no recipient detected',
       error: 'Add @name or open a target name first.',
+      amount: parsedAmount,
     };
+  }
+
+  // Validate amount against available balance
+  let amountError: string | undefined;
+  if (parsedAmount !== undefined) {
+    const suiPrice = suiPriceCache?.price ?? 0;
+    const suiBalUsd = app.sui * suiPrice;
+    const totalUsd = suiBalUsd + app.stableUsd;
+    if (parsedAmount > totalUsd) {
+      amountError = `Insufficient balance ($${Math.floor(totalUsd)} available)`;
+    } else if (parsedAmount <= 0) {
+      amountError = 'Amount must be positive';
+    }
   }
 
   return {
@@ -3928,6 +3952,8 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
     source,
     sourceLabel,
     warning,
+    amount: parsedAmount,
+    amountError,
   };
 }
 
@@ -9498,15 +9524,16 @@ function bindEvents() {
           </div>
           <div class="ski-idle-thunder-row">
             <button class="ski-idle-thunder-at" id="ski-idle-thunder-at" type="button" title="Tag a name"><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>
+            <button class="ski-idle-thunder-at-iusd ski-idle-quick-btn ski-idle-quick-btn--iusd" id="ski-idle-thunder-at-iusd" type="button" title="Attach amount">$</button>
             <div class="ski-idle-thunder-input-wrap">
               <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
               <div class="ski-idle-quick-actions" id="ski-idle-quick-actions">
                 <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#22c55e" stroke="white" stroke-width="1.5"/></svg></button>
                 <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Squids" data-action="rumble">\ud83e\udd91</button>
+                <button class="ski-idle-quick-btn ski-idle-quick-btn--iusd" type="button" title="iUSD" data-action="iusd">$</button>
               </div>
               <div class="ski-idle-thunder-send-group">
-                <button class="ski-idle-quick-btn ski-idle-quick-btn--iusd" type="button" title="iUSD" data-action="iusd">$</button>
-                <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
+                <button class="ski-idle-quick-btn ski-idle-quick-btn--storm" id="ski-idle-thunder-send" type="button" title="Open Storm">\u26a1</button>
               </div>
             </div>
           </div>
@@ -9679,8 +9706,8 @@ function bindEvents() {
           _thunderComposeConfirmedRaw = '';
           _thunderComposeStage = 'idle';
           if (_idleThunderSend && !isQuestMode) {
-            _idleThunderSend.textContent = '\u26a1';
-            _idleThunderSend.title = 'Send signal';
+            _idleThunderSend.innerHTML = '\u26a1';
+            _idleThunderSend.title = 'Open Storm';
             _idleThunderSend.disabled = false;
           }
           return;
@@ -9693,14 +9720,21 @@ function bindEvents() {
         }
 
         if (_idleThunderSend && !isQuestMode && _thunderComposeStage !== 'sending') {
+          const amtLabel = draft.amount !== undefined ? ` $${draft.amount}` : '';
           if (_thunderComposeStage === 'confirmed') {
-            _idleThunderSend.textContent = 'Send';
-            _idleThunderSend.title = 'Encrypt and send Thunder';
+            _idleThunderSend.innerHTML = draft.amount !== undefined
+              ? `\u26a1 Send $${draft.amount}`
+              : '\u26a1 Send';
+            _idleThunderSend.title = draft.amountError || 'Encrypt and send Thunder';
           } else {
-            _idleThunderSend.textContent = '\u26a1';
-            _idleThunderSend.title = draft.error ? 'Need a recipient (@name)' : 'Send signal';
+            _idleThunderSend.innerHTML = draft.amount !== undefined
+              ? `\u26a1${amtLabel}`
+              : '\u26a1';
+            _idleThunderSend.title = draft.error ? 'Need a recipient (@name)' : draft.amountError || 'Open Storm';
           }
-          _idleThunderSend.disabled = !!draft.error;
+          _idleThunderSend.disabled = !!draft.error || !!draft.amountError;
+          // Visual feedback: red border on amount error
+          _idleThunderSend.classList.toggle('ski-idle-thunder-send--amt-error', !!draft.amountError);
         }
       };
 
@@ -9887,8 +9921,14 @@ function bindEvents() {
       _idleNsInput?.addEventListener('blur', _unfreezeGif);
 
       const _idleThunderInputEl = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
-      _idleThunderInputEl?.addEventListener('focus', _freezeGif);
-      _idleThunderInputEl?.addEventListener('blur', _unfreezeGif);
+      const _thunderRow = _idleOverlay.querySelector('.ski-idle-thunder-row') as HTMLElement | null;
+      const _updateThunderRowActive = () => {
+        const active = _idleThunderInputEl === document.activeElement || !!_idleThunderInputEl?.value;
+        _thunderRow?.classList.toggle('ski-idle-thunder-row--active', active);
+      };
+      _idleThunderInputEl?.addEventListener('focus', () => { _freezeGif(); _updateThunderRowActive(); });
+      _idleThunderInputEl?.addEventListener('blur', () => { _unfreezeGif(); setTimeout(_updateThunderRowActive, 250); });
+      _idleThunderInputEl?.addEventListener('input', _updateThunderRowActive);
 
       // @ button — insert @tag and focus thunder input for autocomplete
       // Reads from card name first (authoritative), then falls back to input
@@ -10283,7 +10323,7 @@ function bindEvents() {
           const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
           if (sendBtn) {
             sendBtn.innerHTML = `\u26c8\ufe0f<span class="ski-idle-thunder-count">${_totalPending}</span>`;
-            sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--quest';
+            sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send ski-idle-thunder-send--quest';
             sendBtn.title = `Quest ${_totalPending} signal${_totalPending > 1 ? 's' : ''} across all names`;
             sendBtn.dataset.questMode = '1';
             sendBtn.dataset.questAll = '1';
@@ -10651,6 +10691,25 @@ function bindEvents() {
         }
         squidBtn?.classList.toggle('ski-idle-quick-btn--active');
         (_idleOverlay?.querySelector('#ski-idle-rumble') as HTMLButtonElement | null)?.click();
+      });
+
+      // Storm-actions + send-group delegate same iusd/rumble handlers
+      // $ button in storm mode — insert $ after last @name tag
+      _idleOverlay.querySelector('#ski-idle-thunder-at-iusd')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!_idleThunderInputEl) return;
+        const val = _idleThunderInputEl.value;
+        // Find last @name tag and insert $ right after it
+        const match = val.match(/^(.*@\S+)\s*/);
+        if (match) {
+          _idleThunderInputEl.value = match[1] + '$';
+          _idleThunderInputEl.selectionStart = _idleThunderInputEl.selectionEnd = _idleThunderInputEl.value.length;
+        } else {
+          _idleThunderInputEl.value = val.trimEnd() + '$';
+          _idleThunderInputEl.selectionStart = _idleThunderInputEl.selectionEnd = _idleThunderInputEl.value.length;
+        }
+        _idleThunderInputEl.focus();
+        _idleThunderInputEl.dispatchEvent(new Event('input'));
       });
 
       // Diamond click → toggle target address row (own addresses or Roster lookup for others)
@@ -11218,9 +11277,9 @@ function bindEvents() {
           if (sendBtn) {
             _thunderComposeStage = 'sending';
             sendBtn.innerHTML = '<span class="ski-idle-thunder-spinner"></span>';
-            sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--loading';
+            sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send ski-idle-thunder-send--loading';
             sendBtn.title = 'Cancel';
-            const _onCancel = (ev: Event) => { ev.stopPropagation(); _cancelled = true; sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-thunder-send'; sendBtn.title = 'Send signal'; sendBtn.removeEventListener('click', _onCancel); };
+            const _onCancel = (ev: Event) => { ev.stopPropagation(); _cancelled = true; sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send'; sendBtn.title = 'Open Storm'; sendBtn.removeEventListener('click', _onCancel); };
             sendBtn.addEventListener('click', _onCancel);
           }
 
@@ -11239,8 +11298,8 @@ function bindEvents() {
             if (_cancelled) {
               if (sendBtn) {
                 sendBtn.innerHTML = origBtnHtml;
-                sendBtn.className = 'ski-idle-thunder-send';
-                sendBtn.title = 'Send signal';
+                sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send';
+                sendBtn.title = 'Open Storm';
               }
               _thunderComposeStage = 'confirmed';
               _renderThunderComposePreview();
@@ -11284,7 +11343,7 @@ function bindEvents() {
               showToast(txMsg);
             }
           } finally {
-            if (sendBtn) { sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-thunder-send'; sendBtn.title = 'Send signal'; }
+            if (sendBtn) { sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send'; sendBtn.title = 'Open Storm'; }
             _renderThunderComposePreview();
           }
         } catch (err) {

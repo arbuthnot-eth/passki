@@ -3307,6 +3307,9 @@ a.ski-idle-bubble-name:hover {
   transition: opacity 0.15s;
 }
 .ski-idle-thunder-at:hover { opacity: 1; }
+.ski-idle-thunder-at-iusd { display: none; flex-shrink: 0; }
+.ski-idle-thunder-row.ski-idle-thunder-row--active .ski-idle-thunder-at { display: none; }
+.ski-idle-thunder-row.ski-idle-thunder-row--active .ski-idle-thunder-at-iusd { display: inline-flex; }
 .ski-idle-thunder-input-wrap {
   flex: 1;
   min-width: 0;
@@ -3378,12 +3381,25 @@ a.ski-idle-bubble-name:hover {
   background: rgba(0, 0, 0, 0.8);
   border: 1px solid rgba(236, 72, 153, 0.4);
   color: #ec4899;
+  font-size: 1.1rem;
   transition: background 0.15s, border-color 0.15s;
 }
 .ski-idle-quick-btn--squid:hover { background: rgba(236, 72, 153, 0.2); }
 .ski-idle-quick-btn--squid.ski-idle-quick-btn--active {
   background: rgba(236, 72, 153, 0.3);
   border-color: rgba(236, 72, 153, 0.6);
+}
+.ski-idle-quick-btn--storm {
+  background: rgba(0, 0, 0, 0.8);
+  border: 1px solid rgba(255, 184, 0, 0.4);
+  color: #FFB800;
+  font-size: 1.1rem;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ski-idle-quick-btn--storm:hover { background: rgba(255, 184, 0, 0.2); }
+.ski-idle-quick-btn--storm.ski-idle-quick-btn--active {
+  background: rgba(255, 184, 0, 0.3);
+  border-color: rgba(255, 184, 0, 0.6);
 }
 .ski-idle-thunder-send-group {
   position: absolute;
@@ -3395,16 +3411,13 @@ a.ski-idle-bubble-name:hover {
   align-items: center;
 }
 .ski-idle-thunder-send {
-  background: rgba(0, 0, 0, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 6px;
-  color: #FFB800;
-  font-size: 0.85rem;
-  padding: 4px 7px;
-  cursor: pointer;
-  line-height: 1;
   position: static;
   transform: none;
+  width: auto;
+  min-width: 32px;
+  padding: 0 8px;
+  gap: 4px;
+  white-space: nowrap;
   transition: background 0.15s, border-color 0.15s;
 }
 .ski-idle-thunder-send:hover { background: rgba(255, 184, 0, 0.2); }
@@ -3438,6 +3451,11 @@ a.ski-idle-bubble-name:hover {
 @keyframes ski-thunder-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
+}
+.ski-idle-thunder-send--amt-error {
+  border-color: rgba(239, 68, 68, 0.6) !important;
+  color: #f87171 !important;
+  opacity: 0.7;
 }
 .ski-idle-thunder-send--loading { pointer-events: auto !important; }
 .ski-idle-thunder-send--loading:hover {
