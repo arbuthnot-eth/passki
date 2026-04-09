@@ -11006,9 +11006,13 @@ function bindEvents() {
                 signAndExecute: async (txOrBytes: any) => {
                   const suiPrice = suiPriceCache?.price ?? 0;
                   const suiAmt = transferAmtUsd && suiPrice > 0 ? (transferAmtUsd / suiPrice).toFixed(4) : '';
-                  const _amtNote = transferAmtUsd ? `$${transferAmtUsd} (${suiAmt} SUI) to ${recip}.sui` : `Storm with ${recip}.sui`;
-                  if (sendBtn) sendBtn.innerHTML = `\u26a1 ${transferAmtUsd ? `$${transferAmtUsd}` : 'Storm'}\u2026`;
-                  showToast(`\u26a1 ${_amtNote}${needsStorm ? ' + creating Storm' : ''} \u2014 sign to confirm`);
+                  if (transferAmtUsd) {
+                    if (sendBtn) sendBtn.innerHTML = `\u26a1 $${transferAmtUsd}\u2026`;
+                    showToast(`\u26c8\ufe0f Initiating Storm \u00b7 $${transferAmtUsd} (${suiAmt} SUI) to ${recip}.sui \u2014 sign to confirm`);
+                  } else {
+                    if (sendBtn) sendBtn.innerHTML = '\u26c8\ufe0f\u2026';
+                    showToast(`\u26c8\ufe0f Initiating Storm with ${recip}.sui \u2014 sign to confirm`);
+                  }
                   const result = await signAndExecuteTransaction(txOrBytes);
                   // Mark Storm as created in cache
                   _stormExistsCache[groupUuid] = true;

@@ -260,15 +260,15 @@ export async function sendThunder(opts: {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
 
-    // 1. Transfer — direct if creating Storm (can't &mut shared in same PTB),
-    //    IOU initiate if Storm already exists (escrow + 7-day TTL)
+    // 1. Transfer
     if (hasTransfer) {
       if (needsStorm) {
-        // Direct transfer — Storm not available as &mut yet
+        // Storm initiation (first contact) — direct transfer + Storm creation
+        // Can't call iou::initiate on a shared object in the same PTB that shares it
         const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
         tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
       } else {
-        // IOU initiate — Storm exists, use on-chain escrow with TTL
+        // iUSD object — private on-chain IOU escrow on existing Storm (7-day TTL)
         const [iouCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
         const senderBare = (opts.senderName || '') + '.sui';
         const recipBare = (opts.recipientName || '') + '.sui';
