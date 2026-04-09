@@ -9572,7 +9572,7 @@ function bindEvents() {
           const _myLabel = (app.suinsName || '').replace(/\.sui$/, '');
           _idleActionBtn.title = _hasStorm
             ? `Thunder \u2014 encrypt a signal to ${label}.sui`
-            : `Encrypt a Storm between ${label} and ${_myLabel}`;
+            : `Encrypt a Storm between ${_myLabel} and ${label}`;
           _idleActionBtn.disabled = false;
         } else if (isOwned) {
           _idleActionBtn.textContent = 'SUIAMI';
@@ -9642,8 +9642,14 @@ function bindEvents() {
           _thunderComposeConfirmedRaw = '';
           _thunderComposeStage = 'idle';
           if (_idleThunderSend && !isQuestMode) {
-            _idleThunderSend.innerHTML = '\u26a1';
-            _idleThunderSend.title = 'Open Storm';
+            // Check Storm existence for current target
+            const _curTarget = (nsLabel || '').toLowerCase();
+            const _curMe = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+            const _curGid = _curTarget && _curMe ? `thunder-${[_curMe, _curTarget].sort().join('-')}` : '';
+            if (_curGid) _checkStormExists(_curGid);
+            const _curHasStorm = _curGid ? _stormExistsCache[_curGid] === true : true;
+            _idleThunderSend.innerHTML = _curHasStorm ? '\u26a1' : '\u26c8\ufe0f';
+            _idleThunderSend.title = _curHasStorm ? 'Open Storm' : `Create Storm`;
             _idleThunderSend.disabled = false;
           }
           return;
@@ -9669,7 +9675,7 @@ function bindEvents() {
             // No Storm exists — show Storm creation button
             _idleThunderSend.innerHTML = '\u26c8\ufe0f';
             const _myN = (app.suinsName || '').replace(/\.sui$/, '');
-            _idleThunderSend.title = `Encrypt a Storm between ${firstRecip} and ${_myN}`;
+            _idleThunderSend.title = `Encrypt a Storm between ${_myN} and ${firstRecip}`;
             _idleThunderSend.disabled = !!draft.error;
           } else if (_thunderComposeStage === 'confirmed') {
             _idleThunderSend.innerHTML = draft.amount !== undefined
