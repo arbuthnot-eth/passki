@@ -11151,7 +11151,8 @@ function bindEvents() {
           const transferAmtUsd = (draft.amount && !draft.amountError) ? draft.amount : undefined;
           const origBtnHtml = sendBtn?.innerHTML || '\u26a1';
 
-          // Show loading spinner on send button — hover reveals cancel
+          // Show loading spinner on send button — freeze GIF to show convo
+          _freezeGif();
           let _cancelled = false;
           if (sendBtn) {
             _thunderComposeStage = 'sending';
@@ -11185,7 +11186,12 @@ function bindEvents() {
                 text: msgText,
                 recipientAddress: recipAddr || undefined,
                 transfer,
-                signAndExecute: (txOrBytes: any) => signAndExecuteTransaction(txOrBytes),
+                signAndExecute: async (txOrBytes: any) => {
+                  // Show Storm creation status
+                  if (sendBtn) sendBtn.innerHTML = '\u26c8\ufe0f Creating Storm\u2026';
+                  showToast('\u26c8\ufe0f Creating Storm with ' + recip + '.sui \u2014 sign to confirm');
+                  return signAndExecuteTransaction(txOrBytes);
+                },
               });
               const amtLabel = transferAmtUsd ? ` ($${transferAmtUsd})` : '';
               await _storeThunderLocal(senderName || ws.address, recip, msgText + amtLabel, 'out', undefined, nsTargetAddress ?? undefined);
