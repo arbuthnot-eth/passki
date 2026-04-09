@@ -4345,8 +4345,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       if (status.ethAddress) { chainKeys.push('eth'); chainVals.push(status.ethAddress); }
       if (status.solAddress) { chainKeys.push('sol'); chainVals.push(status.solAddress); }
 
-      const ROSTER_PKG = '0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4';
-      const ROSTER_OBJ = '0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689';
+      const ROSTER_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
+      const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 
       const tx = new Transaction();
       tx.setSender(ultronAddr);

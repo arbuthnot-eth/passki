@@ -53,8 +53,8 @@ export function encodeIusdAmount(usdAmount: number, signalId: number): bigint {
 }
 
 // ─── SUIAMI Roster piggyback ──────────────────────────────────────────
-const ROSTER_PKG = '0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4'; // v2: chain address reverse lookup
-const ROSTER_OBJ = '0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689';
+const ROSTER_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa'; // v3: +walrus_blob_id, seal_nonce, verified
+const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 
 /**
  * Append a Roster set_identity call to an existing Transaction — only if

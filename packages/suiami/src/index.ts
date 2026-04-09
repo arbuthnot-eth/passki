@@ -118,5 +118,5 @@ export function extractName(message: SuiamiMessage): string {
 
 // ─── Constants ─────────────────────────────────────────────────────
 
-export const ROSTER_PACKAGE = '0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4';
-export const ROSTER_OBJECT = '0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689';
+export const ROSTER_PACKAGE = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
+export const ROSTER_OBJECT = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';

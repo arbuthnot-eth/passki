@@ -21,8 +21,13 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 const IOU_PACKAGE = '0x05b21b79f0fe052f685e4eee049ded3394f71d8384278c23d60532be3f04535f';
 
-/** Global SUIAMI Storm — public identity directory. Anyone with a SuiNS name can join. */
-export const GLOBAL_SUIAMI_STORM = ''; // TODO: deploy and fill with object ID
+/**
+ * Global SUIAMI Storm — public identity directory. Anyone with a SuiNS name can join.
+ * Deterministic UUID: 'suiami-global' -> derived via @mysten/sui-stack-messaging derive.
+ * Deploy: bun scripts/deploy-suiami-storm.ts
+ */
+export const GLOBAL_SUIAMI_STORM = '0xfe23aad02ff15935b09249b4c5369bcd85f02ce157f54f94a3e7cc6dfa10a6e8';
+export const GLOBAL_SUIAMI_STORM_UUID = 'suiami-global';
 
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
