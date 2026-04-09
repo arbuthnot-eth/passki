@@ -11000,6 +11000,8 @@ function bindEvents() {
                 groupRef: { uuid: groupUuid },
                 text: msgText,
                 recipientAddress: recipAddr || undefined,
+                senderName: senderName,
+                recipientName: recip,
                 transfer,
                 signAndExecute: async (txOrBytes: any) => {
                   const _amtNote = transferAmtUsd ? `$${transferAmtUsd} to ${recip}.sui` : `signal to ${recip}.sui`;

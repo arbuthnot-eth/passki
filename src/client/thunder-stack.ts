@@ -15,9 +15,11 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { DappKitSigner, type SignPersonalMessageFn } from './dapp-kit-signer.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 
 // ─── Constants ──────────────────────────────────────────────────────
 const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+const IOU_PACKAGE = '0x05b21b79f0fe052f685e4eee049ded3394f71d8384278c23d60532be3f04535f';
 
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
@@ -231,6 +233,8 @@ export async function sendThunder(opts: {
   groupRef: GroupRef;
   text: string;
   recipientAddress?: string;
+  senderName?: string;
+  recipientName?: string;
   transfer?: { recipientAddress: string; amountMist: bigint };
   /** Sign and execute a transaction (PTB for transfers + Storm creation) */
   signAndExecute?: (tx: Uint8Array | Transaction) => Promise<any>;
@@ -256,10 +260,29 @@ export async function sendThunder(opts: {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
 
-    // 1. SUI transfer (if amount specified)
+    // 1. IOU Initiate (if amount specified) — private on-chain escrow
     if (hasTransfer) {
-      const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-      tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
+      const [iouCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
+      const senderBare = opts.senderName || '';
+      const recipBare = opts.recipientName || '';
+      const senderHash = Array.from(keccak_256(new TextEncoder().encode(senderBare + '.sui')));
+      const recipHash = Array.from(keccak_256(new TextEncoder().encode(recipBare + '.sui')));
+      const nonce = Date.now();
+      tx.moveCall({
+        package: IOU_PACKAGE,
+        module: 'iou',
+        function: 'initiate',
+        arguments: [
+          tx.object(groupId), // StormID — the PermissionedGroup<Messaging> UID
+          tx.pure.vector('u8', senderHash),
+          tx.pure.vector('u8', recipHash),
+          iouCoin,
+          tx.pure.u64(604_800_000), // 7 day TTL
+          tx.pure.u64(nonce),
+          tx.pure.vector('u8', []), // sealed_memo — empty for now
+          tx.object('0x6'), // Clock
+        ],
+      });
     }
 
     // 2. Storm creation (if no on-chain Storm exists)
