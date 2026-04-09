@@ -138,6 +138,32 @@ Cross-chain identity resolver. Maps SuiNS names to BTC/ETH/SOL addresses via IKA
 
 **v2 Package:** `0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4`
 
+### SUIAMI Reciprocal Roster
+
+Seal-encrypted cross-chain identity exchange. No cleartext cross-chain addresses ever appear on-chain — only the SUI address (already public) and a Walrus blob ID.
+
+**How it works:**
+1. User proves SUIAMI ownership (signed message + SuiNS NFT verification)
+2. Cross-chain addresses (BTC/ETH/SOL) are AES-GCM encrypted and uploaded to Walrus as a blob
+3. Only the blob ID is written to the on-chain roster — no cleartext addresses on-chain
+4. Decryption is Storm-gated via Seal policy (`seal_approve_roster_reader`): you must hold a valid SUIAMI proof to decrypt anyone's addresses
+5. **Reciprocal:** reading someone's roster entry requires your own SUIAMI proof, which auto-writes your entry if it doesn't exist yet
+6. **Viral:** every lookup adds a new roster entry, growing the network organically
+
+**Contracts:**
+- Roster Package: `0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa`
+- Roster Object: `0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d`
+- Seal Policy: `seal_approve_roster_reader`
+
+**npm:** [`suiami@0.2.0`](https://github.com/arbuthnot-eth/SUIAMI)
+
+**Key files:**
+- `contracts/suiami/sources/roster.move` — on-chain roster contract
+- `contracts/suiami/sources/seal_roster.move` — Seal decryption policy
+- `src/client/roster.ts` — Walrus blob upload/fetch with AES-GCM encryption
+- `src/suins.ts` — `readRosterByAddress`, `maybeAppendRoster`
+- `scripts/deploy-suiami-storm.ts` — one-time global Storm deployment
+
 ---
 
 ## Shade
@@ -189,6 +215,7 @@ Keeper wallet for all server-side signing: iUSD minting, Shade execution, Thunde
 |----------|---------|
 | iUSD v2 | `0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9` |
 | SUIAMI Roster v2 | `0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4` |
+| SUIAMI Reciprocal Roster | `0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa` |
 | Storm v1 | `0xa3ed4fdf1369313647efcef77fd577aa4b77b50c62e5c5e29d4c383390cdf942` |
 | Thunder v4 | `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581` |
 | Shade | `0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff` |
