@@ -1904,16 +1904,6 @@ export function mountBalanceCycler(el: HTMLElement): () => void {
   };
 }
 
-/** In-memory thunder encryption key — derived from lockin signature. Only the private key holder can produce this. */
-let _thunderCryptoKey: CryptoKey | null = null;
-
-/** Derive the thunder AES key from a lockin signature. */
-async function _deriveThunderKeyFromSig(signature: string): Promise<CryptoKey> {
-  const sigBytes = Uint8Array.from(atob(signature), c => c.charCodeAt(0));
-  const hash = await crypto.subtle.digest('SHA-256', sigBytes);
-  return crypto.subtle.importKey('raw', hash, 'AES-GCM', false, ['encrypt', 'decrypt']);
-}
-
 /** The deterministic lockin message — no nonce, so the same wallet always produces the same signature → same thunder key. */
 function _thunderLockinMessage(address: string): string {
   return [`Lock in`, '', address].join('\n');
@@ -1930,8 +1920,6 @@ async function lockInIdentity(): Promise<void> {
   const message = _thunderLockinMessage(ws.address);
   try {
     const result = await signPersonalMessage(new TextEncoder().encode(message));
-    // Derive thunder encryption key from signature — only this wallet can produce it
-    _thunderCryptoKey = await _deriveThunderKeyFromSig(result.signature);
     // Detect WaaP auth method from account label
     const isWaap = /waap/i.test(ws.walletName || '');
     const waapProvider = isWaap && ws.account?.label
@@ -1951,8 +1939,6 @@ async function lockInIdentity(): Promise<void> {
     };
     try { localStorage.setItem('ski:session', JSON.stringify(proof)); } catch {}
     if (waapProvider) storeWaapProvider(ws.address, waapProvider);
-    // Decrypt conversations now that we have the key (card stays closed until clicked)
-    _refreshThunderLocalCounts();
     showToast(`Locked in as ${esc(name)}`);
     render();
   } catch (err) {
@@ -3379,7 +3365,6 @@ let nsTransferInputOpen = false; // transfer-recipient inline editor open
 let nsTransferRecipient = ''; // value in the transfer-recipient input
 // Thunder counts disabled — pending v4 migration (#63). Always empty.
 let _thunderCounts: Record<string, number> = {};
-let _thunderLocalCounts: Record<string, number> = {}; // total signals per counterparty from local log
 let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
 let _thunderDecryptBusy = false;
 let _thunderConvoTarget = ''; // current conversation counterparty (prevents re-render flicker)
@@ -3426,34 +3411,6 @@ function _updateIdleThunderBadge(): void {
   }
 }
 
-/** Recompute _thunderLocalCounts from the encrypted log.
- *  Groups by address when available so conversations persist across SuiNS name changes.
- *  Falls back to name-based grouping for entries without an addr field. */
-async function _refreshThunderLocalCounts() {
-  const ws = getState();
-  if (!ws.address) { _thunderLocalCounts = {}; return; }
-  try {
-    const all = await _readThunderLog();
-    const counts: Record<string, number> = {};
-    // Build addr→name mapping (most recent name wins)
-    const addrToName: Record<string, string> = {};
-    for (const e of all) {
-      const peer = ((e.dir === 'out' || (!e.dir && !e.from)) ? (e.to || '') : (e.from || '')).replace(/\.sui$/, '').toLowerCase();
-      if (peer && e.addr) addrToName[e.addr.toLowerCase()] = peer;
-    }
-    for (const e of all) {
-      let peer = ((e.dir === 'out' || (!e.dir && !e.from)) ? (e.to || '') : (e.from || '')).replace(/\.sui$/, '').toLowerCase();
-      // Normalize to most recent name for this address
-      if (e.addr) {
-        const canonical = addrToName[e.addr.toLowerCase()];
-        if (canonical) peer = canonical;
-      }
-      if (peer) counts[peer] = (counts[peer] ?? 0) + 1;
-    }
-    _thunderLocalCounts = counts;
-  } catch { _thunderLocalCounts = {}; }
-}
-
 /** Toggle card + conversation open/closed. */
 function _toggleThunderConvo() {
   const convoEl = document.getElementById('wk-thunder-convo');
@@ -3480,30 +3437,35 @@ async function _renderConversation(counterparty: string, force = false) {
   const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
   if (!bare) return;
 
-  const entries = await _getConversation(bare);
+  // Fetch messages from Timestream DO
+  const ws = getState();
+  const myName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+  const groupId = `thunder-${[myName, bare].sort().join('-')}`;
+  let doMessages: Array<{ text: string; senderAddress: string; createdAt: number; messageId: string }> = [];
+  try {
+    const { getThunders } = await import('./client/thunder.js');
+    const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+    doMessages = messages;
+  } catch { /* empty */ }
 
   // Re-query DOM after async — elements may have been rebuilt by renderSkiMenu
   const receivedEl = document.getElementById('wk-thunder-received');
   const thunderRowEl = document.getElementById('wk-thunder-convo');
   if (!receivedEl || !thunderRowEl) return;
 
-  const rows = entries.map(e => {
-    const isOut = e.dir === 'out' || (!e.dir && !e.from && !e.msg.startsWith('\u26a1 from'));
-    const sender = isOut ? '' : (e.from || '').replace(/\.sui$/, '');
+  const myAddr = ws.address?.toLowerCase() || '';
+  const rows = doMessages.map(m => {
+    const isOut = m.senderAddress.toLowerCase() === myAddr;
+    const sender = isOut ? '' : m.senderAddress.slice(0, 8);
     const cls = isOut ? 'wk-thunder-bubble--out' : 'wk-thunder-bubble--in';
-    const readCls = isOut && e.read ? ' wk-thunder-bubble--read' : '';
-    const selCls = _selectedThunderTs.has(e.ts) ? ' wk-thunder-bubble--selected' : '';
-    let msgText = e.msg;
-    if (!isOut && !e.dir) {
-      msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
-    }
+    const selCls = _selectedThunderTs.has(m.createdAt) ? ' wk-thunder-bubble--selected' : '';
     const label = isOut ? '' : (sender ? `<span class="wk-thunder-bubble-sender" data-sender="${esc(sender)}">${esc(sender)}</span> ` : '');
     // Render @mentions as clickable
-    const msgHtml = esc(msgText).replace(/@([a-z0-9-]{3,63})(\.sui)?/gi, (_, name) => {
-      const bare = name.toLowerCase();
-      return `<span class="wk-thunder-mention" data-mention="${bare}">@${bare}</span>`;
+    const msgHtml = esc(m.text).replace(/@([a-z0-9-]{3,63})(\.sui)?/gi, (_, name: string) => {
+      const b = name.toLowerCase();
+      return `<span class="wk-thunder-mention" data-mention="${b}">@${b}</span>`;
     });
-    return `<div class="wk-thunder-bubble ${cls}${readCls}${selCls}" data-ts="${e.ts}">${label}<span class="wk-thunder-bubble-msg">${msgHtml}</span><span class="wk-thunder-bubble-copy" data-copy="${esc(msgText)}" title="Copy">\u2398</span></div>`;
+    return `<div class="wk-thunder-bubble ${cls}${selCls}" data-ts="${m.createdAt}">${label}<span class="wk-thunder-bubble-msg">${msgHtml}</span><span class="wk-thunder-bubble-copy" data-copy="${esc(m.text)}" title="Copy">\u2398</span></div>`;
   }).join('');
 
   const deleteBtn = _selectedThunderTs.size > 0
@@ -3585,37 +3547,9 @@ async function _renderConversation(counterparty: string, force = false) {
     btn.disabled = true;
     btn.textContent = '\u2026';
 
-    // Check if any selected entries are unquested incoming signals (still on-chain)
-    // For now, all displayed entries are already quested (decrypted from Struck events)
-    // or sent by us — so we just delete from local log
-
-    const ws = getState();
-    if (!ws.address) return;
-    const key = await _deriveThunderKey(ws.address);
-    const storageKey = `ski:thunder-log:${ws.address}`;
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const { ct, iv } = JSON.parse(raw);
-        const plaintext = await crypto.subtle.decrypt(
-          { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-          key,
-          Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-        );
-        let all: ThunderLogEntry[] = JSON.parse(new TextDecoder().decode(plaintext));
-        all = all.filter(entry => !_selectedThunderTs.has(entry.ts));
-        // Re-encrypt
-        const updated = new TextEncoder().encode(JSON.stringify(all));
-        const newIv = crypto.getRandomValues(new Uint8Array(12));
-        const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
-        localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
-      }
-    } catch {}
-
     const count = _selectedThunderTs.size;
     _selectedThunderTs.clear();
     _thunderConvoTarget = '';
-    await _refreshThunderLocalCounts();
     _renderConversation(bare, true);
     _syncNftCardToInput();
     showToast(`\u26a1 ${count} signal${count > 1 ? 's' : ''} deleted`);
@@ -3668,15 +3602,10 @@ async function _renderConversation(counterparty: string, force = false) {
 
         groupRef: { uuid: groupUuid },
       });
-      const _myLog = app.suinsName || ws.address;
-      for (const m of messages) {
-        await _storeThunderLocal(_myLog, m.senderAddress.slice(0, 8), m.text, 'in', m.senderAddress.slice(0, 8), m.senderAddress);
-      }
       _thunderCounts[cardDomain] = 0;
       try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
       _patchNsOwnedList();
       _thunderConvoTarget = '';
-      await _refreshThunderLocalCounts();
       _renderConversation(cardDomain, true);
       _syncNftCardToInput();
       if (payloads.length > 0) {
@@ -3707,37 +3636,6 @@ function _restoreConversation() {
   // _syncNftCardToInput handles conversation restore based on card domain + unquested state
 }
 
-// ─── Encrypted local thunder log ─────────────────────────────────────
-// Signals are AES-GCM encrypted in localStorage. The encryption key is
-// derived from the lockin signature — only the private key holder can decrypt.
-// On session restore, the cached signature re-derives the same key.
-
-async function _deriveThunderKey(_seed: string): Promise<CryptoKey> {
-  if (_thunderCryptoKey) return _thunderCryptoKey;
-  // Try to restore from cached session signature
-  try {
-    const raw = localStorage.getItem('ski:session');
-    if (raw) {
-      const session = JSON.parse(raw);
-      if (session.signature) {
-        _thunderCryptoKey = await _deriveThunderKeyFromSig(session.signature);
-        return _thunderCryptoKey;
-      }
-    }
-  } catch {}
-  // No session — conversations stay locked until lockin
-  throw new Error('Thunder locked — lockin required');
-}
-
-interface ThunderLogEntry {
-  to: string;
-  from?: string;
-  msg: string;
-  ts: number;
-  dir?: 'in' | 'out';
-  addr?: string; // counterparty wallet address — groups conversations across names
-  read?: boolean; // secret read receipt — outgoing message was quested by recipient
-}
 
 interface ThunderComposeDraft {
   raw: string;
@@ -3798,17 +3696,6 @@ function _resolveThunderFallbackRecipient(): { name: string; source: ThunderComp
       name: topChain,
       source: 'signal',
       sourceLabel: `top active signal @${topChain}.sui`,
-    };
-  }
-
-  const topLocal = Object.entries(_thunderLocalCounts)
-    .filter(([, count]) => count > 0)
-    .sort(([, a], [, b]) => b - a)[0]?.[0] || '';
-  if (topLocal) {
-    return {
-      name: topLocal,
-      source: 'local',
-      sourceLabel: `local conversation @${topLocal}.sui`,
     };
   }
 
@@ -3888,158 +3775,6 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
   };
 }
 
-async function _storeThunderLocal(_ownerName: string, recipientName: string, message: string, dir: 'in' | 'out' = 'out', fromName?: string, counterpartyAddr?: string): Promise<void> {
-  const ws = getState();
-  if (!ws.address) return;
-  let key: CryptoKey;
-  try { key = await _deriveThunderKey(ws.address); } catch { return; } // locked
-  // Key by wallet address — stable across primary name changes
-  const storageKey = `ski:thunder-log:${ws.address}`;
-
-  // Decrypt existing log
-  let entries: ThunderLogEntry[] = [];
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (raw) {
-      const { ct, iv } = JSON.parse(raw);
-      const plaintext = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-        key,
-        Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-      );
-      entries = JSON.parse(new TextDecoder().decode(plaintext));
-    }
-  } catch { /* corrupt or first entry */ }
-
-  // Secret read receipt: if incoming message is a receipt (✓ read by ...),
-  // mark all prior outgoing messages to that counterparty as read — don't store the receipt itself
-  const isReceipt = dir === 'in' && /^\u2713 read by /i.test(message);
-  if (isReceipt) {
-    const senderBare = (fromName || '').replace(/\.sui$/i, '').toLowerCase();
-    for (const e of entries) {
-      if (e.dir === 'out' || (!e.dir && !e.from)) {
-        const toBare = (e.to || '').replace(/\.sui$/i, '').toLowerCase();
-        if (toBare === senderBare || (counterpartyAddr && e.addr === counterpartyAddr)) {
-          e.read = true;
-        }
-      }
-    }
-  } else {
-    // Append new entry (cap at 200 strikes)
-    entries.push({ to: recipientName, from: fromName, msg: message, ts: Date.now(), dir, ...(counterpartyAddr ? { addr: counterpartyAddr } : {}) });
-    if (entries.length > 200) entries = entries.slice(-200);
-  }
-
-  // Encrypt and store
-  const plaintext = new TextEncoder().encode(JSON.stringify(entries));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
-  const ct = btoa(String.fromCharCode(...ciphertext));
-  const ivB64 = btoa(String.fromCharCode(...iv));
-  localStorage.setItem(storageKey, JSON.stringify({ ct, iv: ivB64 }));
-}
-
-/** Read the full encrypted thunder log for the current user. */
-async function _readThunderLog(): Promise<ThunderLogEntry[]> {
-  const ws = getState();
-  if (!ws.address) return [];
-  let key: CryptoKey;
-  try { key = await _deriveThunderKey(ws.address); } catch { return []; } // locked
-  const storageKey = `ski:thunder-log:${ws.address}`;
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return [];
-    const { ct, iv } = JSON.parse(raw);
-    const plaintext = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-      key,
-      Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-    );
-    return JSON.parse(new TextDecoder().decode(plaintext)) as ThunderLogEntry[];
-  } catch { return []; }
-}
-
-/** Get conversation entries filtered by counterparty name OR address.
- *  Groups all names owned by the same address into one conversation. */
-async function _getConversation(counterparty: string): Promise<ThunderLogEntry[]> {
-  const all = await _readThunderLog();
-  const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
-
-  // Build set of all names owned by this wallet (our side of conversations)
-  const ownedNames = new Set<string>();
-  for (const d of nsOwnedDomains) {
-    ownedNames.add(d.name.replace(/\.sui$/, '').toLowerCase());
-  }
-  if (app.suinsName) ownedNames.add(app.suinsName.replace(/\.sui$/, '').toLowerCase());
-
-  // Step 1: Collect all addresses associated with the counterparty name
-  const addrs = new Set<string>();
-  for (const e of all) {
-    const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
-    const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
-    if ((to === bare || from === bare) && e.addr) addrs.add(e.addr.toLowerCase());
-  }
-  // Include the currently resolved target address
-  if (nsTargetAddress) addrs.add(nsTargetAddress.toLowerCase());
-  // Also resolve from nsNftOwner if available
-  if (nsNftOwner) addrs.add(nsNftOwner.toLowerCase());
-
-  // Step 2: Expand — find ALL names in the log that share any of those addresses
-  // e.g., alice, whitney, summer all point to 0xabc → treat them as one identity
-  const aliasNames = new Set<string>([bare]);
-  if (addrs.size > 0) {
-    for (const e of all) {
-      if (e.addr && addrs.has(e.addr.toLowerCase())) {
-        const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
-        const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
-        if (to && !ownedNames.has(to)) aliasNames.add(to);
-        if (from && !ownedNames.has(from)) aliasNames.add(from);
-      }
-    }
-  }
-
-  return all.filter(e => {
-    const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
-    const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
-    // Match by any alias name (alice, whitney, summer all resolve to same address)
-    if (aliasNames.has(to) || aliasNames.has(from)) return true;
-    // Match by address directly
-    if (e.addr && addrs.has(e.addr.toLowerCase())) return true;
-    // If the target IS one of our names, show all inbound to that name
-    if (ownedNames.has(bare) && to === bare) return true;
-    // Match by @tag in message body for any alias
-    for (const alias of aliasNames) {
-      if (e.msg && new RegExp(`(^|[^a-z0-9-])@${alias}(?![a-z0-9-])`, 'i').test(e.msg)) return true;
-    }
-    return false;
-  });
-}
-
-/** Remove the last entry from the encrypted thunder log (undo a pre-stored signal on tx failure). */
-async function _removeLastThunderLocal(_senderName: string): Promise<void> {
-  const ws = getState();
-  if (!ws.address) return;
-  let key: CryptoKey;
-  try { key = await _deriveThunderKey(ws.address); } catch { return; } // locked
-  const storageKey = `ski:thunder-log:${ws.address}`;
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return;
-    const { ct, iv } = JSON.parse(raw);
-    const plaintext = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-      key,
-      Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-    );
-    const entries: ThunderLogEntry[] = JSON.parse(new TextDecoder().decode(plaintext));
-    if (entries.length === 0) return;
-    entries.pop();
-    const updated = new TextEncoder().encode(JSON.stringify(entries));
-    const newIv = crypto.getRandomValues(new Uint8Array(12));
-    const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
-    localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
-  } catch { /* corrupt — ignore */ }
-}
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
 const _preRumbledNames = new Set<string>(
   JSON.parse(localStorage.getItem('ski:pre-rumbled') || '[]'),
@@ -4478,8 +4213,8 @@ function _nsOwnedListHtml(): string {
   const sorted = [...nsOwnedDomains].sort((a, b) => {
     const aB = a.name.replace(/\.sui$/, '').toLowerCase();
     const bB = b.name.replace(/\.sui$/, '').toLowerCase();
-    const ta = (_thunderCounts[aB] ?? 0) + (_thunderLocalCounts[aB] ?? 0);
-    const tb = (_thunderCounts[bB] ?? 0) + (_thunderLocalCounts[bB] ?? 0);
+    const ta = (_thunderCounts[aB] ?? 0);
+    const tb = (_thunderCounts[bB] ?? 0);
     if (ta !== tb) return tb - ta; // most signals first
     if (a.inKiosk !== b.inKiosk) return a.inKiosk ? -1 : 1;
     const ea = a.expirationMs ?? Infinity;
@@ -4522,8 +4257,7 @@ function _nsOwnedListHtml(): string {
     else if (d.kind === 'cap') badge = '<span class="wk-ns-owned-cap">cap</span>';
     let thunderHtml = '';
     const _tcOn = _thunderCounts[bare.toLowerCase()] ?? 0;
-    const _tcLocal = _thunderLocalCounts[bare.toLowerCase()] ?? 0;
-    const _tcTotal = _tcOn + _tcLocal;
+    const _tcTotal = _tcOn;
     if (_tcTotal > 0) {
       const pulseCls = _tcOn > 0 ? ' wk-ns-thunder-badge--pulse' : '';
       thunderHtml = `<span class="wk-ns-thunder-badge${pulseCls}" data-thunder-count="${_tcOn}" data-domain="${esc(bare)}" title="${_tcTotal} signal${_tcTotal > 1 ? 's' : ''}${_tcOn > 0 ? ` (${_tcOn} pending)` : ''}">\u26c8\ufe0f${_tcTotal > 1 ? _tcTotal : ''}</span>`;
@@ -4781,16 +4515,12 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
     expiryHtml = `<span class="ski-nft-expiry">\u2014</span>`;
   }
 
-  // Thunder badges: 🌩️N (total quested from local log) + ⚡N (unquested on-chain, pulsing)
+  // Thunder badges: ⚡N (unquested on-chain, pulsing)
   const unquestedCount = _thunderCounts[domainBare.toLowerCase()] ?? 0;
-  const totalCount = _thunderLocalCounts[domainBare.toLowerCase()] ?? 0;
-  const questedBadge = totalCount > 0
-    ? `<span class="ski-nft-thunder" title="${totalCount} decrypt${totalCount > 1 ? 'ed' : 'ed'} signal${totalCount > 1 ? 's' : ''}">\u26c8\ufe0f${totalCount}</span>`
-    : '';
   const unquestedBadge = unquestedCount > 0
     ? `<span class="ski-nft-thunder ski-nft-thunder--unquested" title="${unquestedCount} pending signal${unquestedCount > 1 ? 's' : ''} \u2014 tap to purge">\u26a1${unquestedCount}</span>`
     : '';
-  const thunderBadgeHtml = questedBadge + unquestedBadge;
+  const thunderBadgeHtml = unquestedBadge;
   const thunderCardCls = unquestedCount > 0 ? ' ski-nft-card--thunder' : '';
 
   popover.innerHTML = `
@@ -4899,10 +4629,6 @@ function _attachNftPopoverListeners() {
         const senderName = first.senderAddress.slice(0, 8) + '\u2026';
         const extra = messages.length > 1 ? ` (+${messages.length - 1} more)` : '';
         showToast(`\u26a1 ${senderName}: ${first.text}${extra}`);
-        const _myLog = app.suinsName || ws.address;
-        for (const m of messages) {
-          await _storeThunderLocal(_myLog, m.senderAddress.slice(0, 8), m.text, 'in', m.senderAddress.slice(0, 8), m.senderAddress);
-        }
 
         // Set input to sender's address for reply
         const senderBare = first.senderAddress.slice(0, 8);
@@ -6307,10 +6033,6 @@ function renderSkiMenu() {
       const top = Object.entries(_thunderCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
       if (top) domain = top[0];
     }
-    if (!domain) {
-      const topLocal = Object.entries(_thunderLocalCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
-      if (topLocal) domain = topLocal[0];
-    }
     if (domain) {
       nsLabel = domain;
       const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -6619,8 +6341,7 @@ function renderSkiMenu() {
     const quickBtn = document.getElementById('wk-thunder-quick') as HTMLButtonElement | null;
     if (quickBtn) {
       const hasUnquested = Object.values(_thunderCounts).some(c => c > 0);
-      const hasHistory = Object.values(_thunderLocalCounts).some(c => c > 0);
-      const showQuick = hasUnquested || hasHistory || _thunderConvoOpen;
+      const showQuick = hasUnquested || _thunderConvoOpen;
       if (showQuick) { quickBtn.removeAttribute('hidden'); } else { quickBtn.setAttribute('hidden', ''); }
     }
     // Conversation is now controlled by card click (_toggleThunderConvo), not input mode
@@ -6894,13 +6615,6 @@ function renderSkiMenu() {
         .filter(([, c]) => c > 0)
         .sort(([, a], [, b]) => b - a)[0];
       if (top) domain = top[0];
-    }
-    if (!domain) {
-      // Fall back to name with most conversation history
-      const topLocal = Object.entries(_thunderLocalCounts)
-        .filter(([, c]) => c > 0)
-        .sort(([, a], [, b]) => b - a)[0];
-      if (topLocal) domain = topLocal[0];
     }
     if (!domain) return;
     nsLabel = domain;
@@ -7586,14 +7300,12 @@ function renderSkiMenu() {
           text: msg,
         });
         _txOk = true;
-        await _storeThunderLocal(_logName, recipientName, msg, 'out', undefined, nsTargetAddress ?? undefined);
       } catch (txErr) {
         throw txErr;
       }
       if (_txOk) {
         showToast(`\u26a1 Signal sent to ${recipientName}.sui`);
         if (msgInput) msgInput.value = '';
-        await _refreshThunderLocalCounts();
         _thunderConvoTarget = '';
         _renderConversation(recipientName);
         _syncNftCardToInput();
@@ -8972,7 +8684,6 @@ function renderSkiMenu() {
             groupRef: { uuid: groupUuid },
           });
           for (const m of messages) {
-            await _storeThunderLocal(_myLog, m.senderAddress.slice(0, 8), m.text, 'in', m.senderAddress.slice(0, 8), m.senderAddress);
             lastSender = m.senderAddress;
           }
           totalDecrypted += messages.length;
@@ -8982,7 +8693,6 @@ function renderSkiMenu() {
       }
       try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
       _patchNsOwnedList();
-      await _refreshThunderLocalCounts();
       _syncNftCardToInput();
       if (lastSender) {
         nsLabel = lastSender;
@@ -9086,10 +8796,8 @@ async function handleDisconnect(reopenModal = false) {
   nsTransferInputOpen = false;
   nsTransferRecipient = '';
   _thunderCounts = {};
-  _thunderLocalCounts = {};
   _thunderDecryptBusy = false;
   _thunderConvoOpen = false;
-  _thunderCryptoKey = null;
   try { localStorage.removeItem('ski:thunder-card-open'); } catch {}
   try { localStorage.removeItem('ski:ns-variant'); } catch {}
   try { sessionStorage.removeItem('ski:thunder-convo'); } catch {}
@@ -9399,7 +9107,7 @@ function bindEvents() {
         const topName = [...nsOwnedDomains]
           .map(d => {
             const b = d.name.replace(/\.sui$/, '').toLowerCase();
-            return { bare: b, score: (_thunderCounts[b] ?? 0) + (_thunderLocalCounts[b] ?? 0) };
+            return { bare: b, score: (_thunderCounts[b] ?? 0) };
           })
           .sort((a, b) => b.score - a.score)[0];
         if (topName && topName.score > 0) _idleInputVal = topName.bare;
@@ -9720,7 +9428,7 @@ function bindEvents() {
           const primaryName = app.suinsName?.replace(/\.sui$/, '') || '';
           if (!primaryName) { card.innerHTML = ''; return; }
           // Show primary name card with SUIAMI balance
-          const primaryTotal = (_thunderCounts[primaryName.toLowerCase()] ?? 0) + (_thunderLocalCounts[primaryName.toLowerCase()] ?? 0);
+          const primaryTotal = (_thunderCounts[primaryName.toLowerCase()] ?? 0);
           const badgeHtml = primaryTotal > 0 ? `\u26c8\ufe0f${primaryTotal}` : '';
           const primaryOwned = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === primaryName.toLowerCase());
           let primaryExpiryHtml = '';
@@ -9743,8 +9451,7 @@ function bindEvents() {
         try { sessionStorage.setItem('ski:nft-card-domain', name); } catch {}
         try { localStorage.setItem('ski:ns-label', name); } catch {}
         const _tcOn = _thunderCounts[name.toLowerCase()] ?? 0;
-        const _tcLocal = _thunderLocalCounts[name.toLowerCase()] ?? 0;
-        const _tcTotal = _tcOn + _tcLocal;
+        const _tcTotal = _tcOn;
         const badgeHtml = _tcTotal > 0 ? `\u26c8\ufe0f${_tcTotal}` : '';
         // Expiration days — check owned domains first, then fall back to on-chain record
         const ownedEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name.toLowerCase());
@@ -10298,10 +10005,9 @@ function bindEvents() {
         // Force re-fetch even if cached — ensures _updateIdleStatus sees fresh ownership
         nsPriceFetchFor = '';
         fetchAndShowNsPrice(_initLabel).then(() => { _updateIdleStatus(); _updateIdleCard(_initLabel); });
-        // Auto-open conversation if there are pending signals or local history
+        // Auto-open conversation if there are pending signals
         const _pendingCount = _thunderCounts[_initLabel.toLowerCase()] ?? 0;
-        const _localCount = _thunderLocalCounts[_initLabel.toLowerCase()] ?? 0;
-        if (_pendingCount > 0 || _localCount > 0) {
+        if (_pendingCount > 0) {
           _expandIdleConvo(_initLabel);
         }
         // Activate quest mode based on aggregate count across ALL owned names
@@ -10318,7 +10024,7 @@ function bindEvents() {
           const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
           if (thunderInput && !thunderInput.value) thunderInput.placeholder = `${_totalPending} signal${_totalPending > 1 ? 's' : ''} waiting...`;
           // Auto-expand conversation for name with most signals
-          if (!_pendingCount && !_localCount) {
+          if (!_pendingCount) {
             const topName = nsOwnedDomains
               .filter(d => d.kind === 'nft')
               .map(d => ({ bare: d.name.replace(/\.sui$/, '').toLowerCase(), count: _thunderCounts[d.name.replace(/\.sui$/, '').toLowerCase()] ?? 0 }))
@@ -11197,7 +10903,6 @@ function bindEvents() {
                 });
                 for (const m of messages) {
                   _freshQuestTs.add(Date.now());
-                  await _storeThunderLocal(name, m.senderAddress.slice(0, 8), m.text, 'in', m.senderAddress.slice(0, 8), m.senderAddress);
                 }
                 totalDecrypted += messages.length;
               } catch (err) {
@@ -11211,7 +10916,6 @@ function bindEvents() {
               _thunderCounts[name] = 0;
             }
             try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
-            await _refreshThunderLocalCounts();
             if (toQuest.length > 0) _expandIdleConvo(toQuest[0].name);
 
             // Reset button via badge updater
@@ -11306,8 +11010,6 @@ function bindEvents() {
                   return result;
                 },
               });
-              const amtLabel = transferAmtUsd ? ` ($${transferAmtUsd})` : '';
-              await _storeThunderLocal(senderName || ws.address, recip, msgText + amtLabel, 'out', undefined, nsTargetAddress ?? undefined);
               _addThunderContact(recip);
             }
             if (_cancelled) {
@@ -11418,24 +11120,8 @@ function bindEvents() {
         } catch { /* fallback to empty */ }
 
         if (!entries.length) {
-          // Also check local log as fallback for old messages
-          const localEntries = await _getConversation(counterparty);
-          if (!localEntries.length) {
-            convoEl.setAttribute('hidden', '');
-            _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
-            return;
-          }
-          // Render from local log (legacy)
-          _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
-          const bubbles = localEntries.slice(-20).map(e => {
-            const isOut = e.dir === 'out' || (!e.dir && !e.from);
-            const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
-            return `<div class="ski-idle-bubble ${cls}">${esc(e.msg)}</div>`;
-          }).join('');
-          const title = `<div class="ski-idle-convo-title">\u26a1 <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></div>`;
-          convoEl.innerHTML = title + bubbles;
-          convoEl.removeAttribute('hidden');
-          convoEl.scrollTop = convoEl.scrollHeight;
+          convoEl.setAttribute('hidden', '');
+          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
           return;
         }
 
@@ -11477,28 +11163,6 @@ function bindEvents() {
         // Incoming signals on owned names → on-chain strike (rebate → treasury)
         // Outgoing or local-only → local delete
         let _deleteBusy = false;
-        const _deleteFromLocalLog = async (ts: number) => {
-          const ws = getState();
-          if (!ws.address) return;
-          try {
-            const key = await _deriveThunderKey(ws.address);
-            const storageKey = `ski:thunder-log:${ws.address}`;
-            const raw = localStorage.getItem(storageKey);
-            if (raw) {
-              const { ct, iv } = JSON.parse(raw);
-              const plaintext = await crypto.subtle.decrypt(
-                { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-                key, Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-              );
-              let all: any[] = JSON.parse(new TextDecoder().decode(plaintext));
-              all = all.filter(entry => entry.ts !== ts);
-              const updated = new TextEncoder().encode(JSON.stringify(all));
-              const newIv = crypto.getRandomValues(new Uint8Array(12));
-              const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
-              localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
-            }
-          } catch {}
-        };
 
         convoEl.querySelectorAll('.ski-idle-bubble').forEach(bubble => {
           bubble.addEventListener('click', async (ev) => {
@@ -11536,11 +11200,10 @@ function bindEvents() {
                 (bubble as HTMLElement).textContent = '\u2026';
                 // Delete signals locally (SDK handles off-chain message lifecycle)
 
-                // Delete all struck bubbles from local log + DOM
+                // Delete all struck bubbles from DOM
                 for (let i = 0; i <= idx; i++) {
                   const b = allBubbles[i] as HTMLElement;
                   const bTs = parseInt(b.dataset.ts || '0', 10);
-                  if (bTs) await _deleteFromLocalLog(bTs);
                   _freshQuestTs.delete(bTs);
                   b.remove();
                 }
@@ -11552,19 +11215,15 @@ function bindEvents() {
                 showToast(`\u26a1 ${strikeCount} struck \u2014 rebate \u2192 treasury`);
               } else {
                 // Local-only delete
-                await _deleteFromLocalLog(ts);
                 (bubble as HTMLElement).remove();
               }
               _freshQuestTs.delete(ts);
-              await _refreshThunderLocalCounts();
             } catch (err) {
               const msg = err instanceof Error ? err.message : '';
               // Signal already gone on-chain (struck/expired) — just clean up locally
               if (msg.includes('dynamic_field') || msg.includes('borrow_child_object') || msg.includes('abort code: 1')) {
-                await _deleteFromLocalLog(ts);
                 (bubble as HTMLElement).remove();
-                await _refreshThunderLocalCounts();
-                showToast('Signal already cleared — removed locally');
+                showToast('Signal already cleared');
               } else if (!msg.toLowerCase().includes('reject')) {
                 showToast(msg || 'Strike failed');
                 (bubble as HTMLElement).classList.remove('ski-idle-bubble--confirm-delete');
@@ -11586,10 +11245,6 @@ function bindEvents() {
         if (app.suinsName) ownedSet.add(app.suinsName.replace(/\.sui$/, '').toLowerCase());
 
         const contactSet = new Set<string>();
-        for (const n of Object.keys(_thunderLocalCounts)) {
-          const bare = n.toLowerCase();
-          if (!ownedSet.has(bare)) contactSet.add(bare);
-        }
         for (const n of Object.keys(_thunderCounts)) {
           const bare = n.toLowerCase();
           if (!ownedSet.has(bare)) contactSet.add(bare);
