@@ -9443,7 +9443,6 @@ function bindEvents() {
               <div class="ski-idle-quick-actions" id="ski-idle-quick-actions">
                 <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#22c55e" stroke="white" stroke-width="1.5"/></svg></button>
                 <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Squids" data-action="rumble">\ud83e\udd91</button>
-                <button class="ski-idle-quick-btn ski-idle-quick-btn--iusd" type="button" title="iUSD" data-action="iusd">$</button>
               </div>
               <div class="ski-idle-thunder-send-group">
                 <button class="ski-idle-quick-btn ski-idle-quick-btn--storm" id="ski-idle-thunder-send" type="button" title="Open Storm">\u26a1</button>
@@ -9650,11 +9649,13 @@ function bindEvents() {
             _idleThunderSend.innerHTML = _curHasStorm ? '\u26a1' : '\u26c8\ufe0f';
             _idleThunderSend.title = _curHasStorm ? 'Open Storm' : `Create Storm`;
             _idleThunderSend.disabled = false;
-            // Disable input until Storm exists
+            // Disable input + hide quick-actions until Storm exists
             if (_idleThunderInput) {
               _idleThunderInput.disabled = !_curHasStorm;
-              _idleThunderInput.placeholder = _curHasStorm ? '' : 'Create a Storm first';
+              _idleThunderInput.placeholder = '';
             }
+            const _qaEl = _idleOverlay?.querySelector('#ski-idle-quick-actions') as HTMLElement | null;
+            if (_qaEl) _qaEl.style.display = _curHasStorm ? '' : 'none';
           }
           return;
         }
