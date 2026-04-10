@@ -408,7 +408,7 @@ window.addEventListener('ski:request-suiami', async (e) => {
       btc: appState.btcAddress || undefined,
       sol: appState.solAddress || undefined,
       eth: appState.ethAddress || undefined,
-    }, appState.usd ?? undefined);
+    });
     if (name === 'nobody') message.suiami = 'I am nobody';
 
     const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));
