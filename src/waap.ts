@@ -17,6 +17,25 @@ let waapWallet: ReturnType<typeof initWaaPSui> | null = null;
 /** Get the WaaP wallet instance (null if not registered) */
 export function getWaaPWallet() { return waapWallet; }
 
+/**
+ * Force a fresh WaaP registration. Use after a sign-personal-message timeout
+ * — the underlying iframe may have failed to load from waap.xyz, leaving the
+ * postMessage channel pointing at the wrong origin. Tearing down and
+ * re-registering forces a new iframe load and clears the broken state.
+ */
+export async function reinitWaaP(): Promise<void> {
+  console.log('[.SKI] forcing WaaP re-registration after stale iframe');
+  // Try to clear any existing WaaP iframes the SDK injected.
+  if (typeof document !== 'undefined') {
+    document.querySelectorAll('iframe[src*="waap.xyz"], iframe[src*="silk-wallet"]').forEach(el => {
+      try { el.remove(); } catch {}
+    });
+  }
+  waapWallet = null;
+  registered = false;
+  await registerWaaP();
+}
+
 export async function registerWaaP(): Promise<void> {
   if (registered || typeof window === 'undefined') return;
   registered = true;

@@ -350,9 +350,12 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
 
   // Wallets sometimes hang indefinitely on signPersonalMessage (WaaP in
   // particular, when its iframe's message channel is in a bad state).
-  // Race the call against a 60s timeout so the caller gets a clear error
-  // instead of a forever-spinning signature prompt.
-  const timeoutMs = 60_000;
+  // Race each attempt against a 30s timeout; if WaaP times out we also
+  // tear down and re-register the iframe before a second attempt, which
+  // recovers from the "target origin mismatch" dead state without a
+  // full page refresh.
+  const timeoutMs = 30_000;
+  const isWaaP = /waap|silk/i.test(wallet.name);
   const doSign = () => withBackpackRetry(() => {
     if (/backpack/i.test(wallet.name)) return dappKit.signPersonalMessage({ message });
     if (!('sui:signPersonalMessage' in wallet.features)) {
@@ -363,12 +366,26 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
     };
     return feat.signPersonalMessage({ message, account });
   });
-  return Promise.race([
+  const withTimeout = () => Promise.race([
     doSign(),
     new Promise<{ bytes: string; signature: string }>((_, reject) =>
-      setTimeout(() => reject(new Error(`${wallet.name} signPersonalMessage timed out after ${timeoutMs / 1000}s — refresh the page and try again`)), timeoutMs),
+      setTimeout(() => reject(new Error(`${wallet.name} signPersonalMessage timed out after ${timeoutMs / 1000}s`)), timeoutMs),
     ),
   ]);
+
+  try {
+    return await withTimeout();
+  } catch (err) {
+    if (!isWaaP) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/timed out/i.test(msg)) throw err;
+    // WaaP timeout → iframe likely dead. Re-register + retry once.
+    try {
+      const { reinitWaaP } = await import('./waap.js');
+      await reinitWaaP();
+    } catch { /* best-effort */ }
+    return withTimeout();
+  }
 }
 
 // ─── Signature padding ──────────────────────────────────────────────
