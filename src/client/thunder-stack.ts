@@ -124,6 +124,36 @@ function fromB64(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 }
 
+// ─── Message padding (P1.2) ────────────────────────────────────────
+// Pad to fixed buckets so ciphertext size does not leak plaintext length.
+// Wire format: [u32 LE length][plaintext][zero padding up to bucket].
+const PAD_BUCKETS = [256, 1024, 4096, 16384] as const;
+const PAD_MAX = PAD_BUCKETS[PAD_BUCKETS.length - 1];
+
+function padPlaintext(data: Uint8Array): Uint8Array {
+  const len = data.length;
+  const needed = 4 + len;
+  if (needed > PAD_MAX) {
+    // Oversize: still length-prefixed, just not bucketed.
+    const out = new Uint8Array(needed);
+    new DataView(out.buffer).setUint32(0, len, true);
+    out.set(data, 4);
+    return out;
+  }
+  const bucket = PAD_BUCKETS.find(b => b >= needed) ?? PAD_MAX;
+  const out = new Uint8Array(bucket);
+  new DataView(out.buffer).setUint32(0, len, true);
+  out.set(data, 4);
+  return out;
+}
+
+function unpadPlaintext(padded: Uint8Array): Uint8Array {
+  if (padded.length < 4) return padded;
+  const len = new DataView(padded.buffer, padded.byteOffset, padded.byteLength).getUint32(0, true);
+  if (len > padded.length - 4 || len > PAD_MAX) return padded;
+  return padded.slice(4, 4 + len);
+}
+
 class TimestreamRelayer {
   async sendMessage(params: any) {
     const res = await fetch(`/api/timestream/${encodeURIComponent(params.groupId)}/send`, {
@@ -342,7 +372,7 @@ export async function sendThunder(opts: {
     if (hasTransfer) {
       const amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
       const transferNote = `\u26a1 $${amtLabel} sent`;
-      const noteBytes = new TextEncoder().encode(transferNote);
+      const noteBytes = padPlaintext(new TextEncoder().encode(transferNote));
       const noteEnv = await encryptWithRetry(groupId, noteBytes);
       await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
         method: 'POST',
@@ -369,7 +399,7 @@ export async function sendThunder(opts: {
   // ─── Seal-encrypt + send via Timestream DO (free, no on-chain tx) ───
   // NO plaintext fallback. If encryption fails, the send fails — we will
   // never store cleartext in the DO labeled as ciphertext.
-  const msgBytes = new TextEncoder().encode(opts.text);
+  const msgBytes = padPlaintext(new TextEncoder().encode(opts.text));
   const envelope = await encryptWithRetry(groupId, msgBytes);
   await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
     method: 'POST',
@@ -445,7 +475,7 @@ export async function getThunders(opts: {
             uuid: groupId,
             envelope: { ciphertext, nonce, keyVersion: kv },
           });
-          text = new TextDecoder().decode(plaintext);
+          text = new TextDecoder().decode(unpadPlaintext(plaintext));
         } catch {
           // Fallback: treat as plaintext (legacy or unencrypted messages)
           try { text = new TextDecoder().decode(ciphertext); } catch { text = m.encryptedText || ''; }
