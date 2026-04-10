@@ -438,8 +438,18 @@ export async function sendThunder(opts: {
       maybeAppendRoster(tx, _address);
     } catch { /* roster piggyback is best-effort */ }
 
+    // Pre-build the transaction to Uint8Array using our own GraphQL transport
+    // BEFORE handing off to the wallet. WaaP bundles a v1.x SuiClient whose
+    // resolveTransactionPlugin reads `gasConfig.price` — but v2.x Transaction
+    // uses `gasData`. If we pass the unbuilt Transaction, WaaP's internal
+    // build path crashes with "Cannot read properties of undefined (reading
+    // 'price')". Pre-building on our side with a v2 client bypasses WaaP's
+    // broken resolver entirely; the iframe just signs the exact bytes.
+    const _buildClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    const _txBytes = await tx.build({ client: _buildClient as never });
+
     // One signature for transfer + Storm + SUIAMI
-    await opts.signAndExecute(tx);
+    await opts.signAndExecute(_txBytes);
 
     if (needsStorm) {
       // The freshly-shared PermissionedGroup object needs to propagate to
