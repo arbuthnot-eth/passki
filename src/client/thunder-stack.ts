@@ -27,6 +27,16 @@ const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 export const GLOBAL_SUIAMI_STORM = '0xfe23aad02ff15935b09249b4c5369bcd85f02ce157f54f94a3e7cc6dfa10a6e8';
 export const GLOBAL_SUIAMI_STORM_UUID = 'suiami-global';
 
+// DeepBook v3 SUI/USDC pool — used to swap SUI → USDC in the Thunder $ transfer
+// path so recipients get a dollar-denominated stable and wallet popups display
+// the amount in USDC ($1.00) instead of SUI (0.0056).
+const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
+const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+const DB_SUI_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
+const DB_USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
+const DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION = 389750322;
+
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold):
 // Overclock, Studio Mirai, H2O Nodes.
 // NodeInfra excluded — broken CORS (duplicate Access-Control-Allow-Origin: *, *)
@@ -295,14 +305,38 @@ export async function sendThunder(opts: {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
 
-    // 1. Transfer — always a direct SUI transfer (splitCoins → transferObjects).
-    // The iou::initiate escrow path was aspirational code that never shipped:
-    // the Move function is declared PRIVATE (not callable from a PTB) and its
-    // first parameter is &mut UID, not a PermissionedGroup. Calling it surfaced
-    // as "Unexpected error" for every $ send on an existing Storm.
+    // 1. Transfer — swap SUI → USDC via DeepBook, then transfer USDC to the
+    // recipient. Phantom / WaaP / Suiet all render the net tx as "~$1.00 USDC
+    // to <recipient>" instead of "1.06722 SUI" so the signing screen matches
+    // the $ amount the user typed. amountMist is the SUI input size (computed
+    // upstream from the USD amount × live SUI price × slippage buffer).
     if (hasTransfer) {
-      const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-      tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
+      const [suiIn] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
+      const [zeroDeep] = tx.moveCall({
+        target: '0x2::coin::zero',
+        typeArguments: [DB_DEEP_TYPE],
+      });
+      // swap_exact_base_for_quote returns [usdcOut, suiChange, deepChange].
+      // min_quote_out = 0 (slippage tolerated — user chose the $ amount)
+      const swapOut = tx.moveCall({
+        target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+        typeArguments: [DB_SUI_TYPE, DB_USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({
+            objectId: DB_SUI_USDC_POOL,
+            initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION,
+            mutable: true,
+          }),
+          suiIn,
+          zeroDeep,
+          tx.pure.u64(0),
+          tx.object('0x6'),
+        ],
+      });
+      const recipientAddr = tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress));
+      // USDC → recipient; any SUI + DEEP change → sender
+      tx.transferObjects([swapOut[0]], recipientAddr);
+      tx.transferObjects([swapOut[1], swapOut[2]], tx.pure.address(normalizeSuiAddress(_address)));
     }
 
     // 2. Storm creation (if no on-chain Storm exists)

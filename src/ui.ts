@@ -11399,12 +11399,15 @@ function bindEvents() {
               const groupUuid = `thunder-${[senderName, recip].sort().join('-')}`;
 
               if (transferAmtUsd) {
-                // $amount transfer — needs on-chain tx
+                // $amount transfer — needs on-chain tx. sendThunder swaps the
+                // SUI input → USDC via DeepBook in the same PTB, so we need to
+                // over-provision the SUI side by ~5% to cover pool fee + slippage
+                // and still land the recipient above the requested $ amount.
                 const recipAddr = await lookupRecipientAddress(recip);
                 if (!recipAddr) { showToast(`Cannot resolve address for ${recip}`); continue; }
                 const suiPrice = suiPriceCache?.price ?? 0;
                 if (suiPrice <= 0) { showToast('Cannot determine SUI price'); continue; }
-                const suiAmount = transferAmtUsd / suiPrice;
+                const suiAmount = (transferAmtUsd / suiPrice) * 1.05;
                 const amountMist = BigInt(Math.floor(suiAmount * 1e9));
                 const transfer = { recipientAddress: recipAddr, amountMist };
                 if (_cancelled) break;
