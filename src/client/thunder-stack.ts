@@ -28,19 +28,18 @@ export const GLOBAL_SUIAMI_STORM = '0xfe23aad02ff15935b09249b4c5369bcd85f02ce157
 export const GLOBAL_SUIAMI_STORM_UUID = 'suiami-global';
 
 // DeepBook v3 SUI/USDC pool — used to swap SUI → USDC in the Thunder $ transfer
-// path so recipients get a dollar-denominated stable and wallet popups display
-// the amount in USDC ($1.00) instead of SUI (0.0056).
+// path. USDC is the canonical Thunder stable: it's dollar-pegged, every wallet
+// renders it as "≈ $N" on the confirm screen, and the SUI/USDC pool has deep
+// two-sided liquidity. iUSD was considered as the destination asset but its
+// Treasury is currently undercollateralized and the collateral-management
+// functions are all PRIVATE, so minting is blocked. Revisit iUSD-as-canonical
+// once the mint path is healthy and the iUSD/USDC pool is seeded two-sided.
 const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
 const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
 const DB_SUI_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
 const DB_USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
 const DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION = 389750322;
-// iUSD — canonical SKI stable (v2, 9 decimals). USDC/iUSD DeepBook pool is the
-// second hop; keeper provides liquidity so Thunder \$ transfers arrive in iUSD.
-const DB_IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
-const DB_IUSD_USDC_POOL = '0x38df72f5d07607321d684ed98c9a6c411c0b8968e100a1cd90a996f912cd6ce1';
-const DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 832866334;
 
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold):
 // Overclock, Studio Mirai, H2O Nodes.
@@ -319,11 +318,6 @@ export async function sendThunder(opts: {
       // Swap SUI → USDC via DeepBook, then transfer the USDC to the recipient.
       // USDC is dollar-pegged, so Phantom / WaaP / Suiet render the confirm
       // screen as "≈ 1 USDC → <recipient>" matching the $ the user typed.
-      //
-      // TODO: add a second hop USDC → iUSD once the iUSD/USDC DeepBook pool
-      // has two-sided liquidity. Until then a second hop aborts with code 12
-      // (insufficient pool liquidity), breaking dry-run and preventing any
-      // $ send from reaching the wallet's confirm screen.
       const [suiIn] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
       const [zeroDeep] = tx.moveCall({
         target: '0x2::coin::zero',
