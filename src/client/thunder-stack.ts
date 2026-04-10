@@ -8,9 +8,11 @@
  */
 import {
   createSuiStackMessagingClient,
+  MAINNET_SUI_STACK_MESSAGING_PACKAGE_CONFIG,
   type DecryptedMessage,
   type GroupRef,
 } from '@mysten/sui-stack-messaging';
+import { SessionKey, type ExportedSessionKey } from '@mysten/seal';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
@@ -79,18 +81,75 @@ let _signer: DappKitSigner | null = null;
 let _address = '';
 
 // ─── Seal session key cache ─────────────────────────────────────────
-// The Seal SDK normally re-mints a session key on every page load (and prompts
-// the wallet for a personal-message signature each time).
+// Phantom auto-signs trusted personal messages within a session, so users
+// don't see a prompt on hard refresh. WaaP doesn't have that shortcut and
+// re-prompts every time the SDK mints a fresh SessionKey.
 //
-// Attempted a sessionStorage cache via the SDK's getSessionKey mode but the
-// manual SessionKey.create + setPersonalMessageSignature path produced
-// certificates the Seal key servers rejected with "Missing or invalid
-// parameters". Reverted to the address + onSign tier that the SDK wires
-// internally (see node_modules/.../session-key-manager.mjs). Only change
-// vs default: bump ttlMin from the SDK default (10 min) to the Seal cap
-// (30 min). Persistence across page refresh will require a passkey/PRF
-// wrapper as a Phase 2 upgrade.
+// Fix: own the session key lifecycle via the SDK's `getSessionKey` tier.
+// Export the key after signing, persist to localStorage, restore via
+// SessionKey.import on the next page load. The earlier attempt at this
+// failed because I passed the raw gqlClient as `suiClient` to
+// SessionKey.create — the SDK's internal session-key-manager passes the
+// EXTENDED client (the one returned from createSuiStackMessagingClient
+// after the $extend chain). Using `_client` here closes that gap.
 const SESSION_KEY_TTL_MIN = 30;
+const SK_STORAGE_KEY = (addr: string) => `ski:seal-sk:v3:${addr.toLowerCase()}`;
+let _sessionKeyPromise: Promise<SessionKey> | null = null;
+
+async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<SessionKey> {
+  if (_sessionKeyPromise) return _sessionKeyPromise;
+  _sessionKeyPromise = (async () => {
+    if (!_client) throw new Error('Thunder client not yet initialized');
+    // Try to restore from localStorage.
+    try {
+      const raw = localStorage.getItem(SK_STORAGE_KEY(opts.address));
+      if (raw) {
+        const exported = JSON.parse(raw) as ExportedSessionKey;
+        if (exported?.address?.toLowerCase() === opts.address.toLowerCase()) {
+          const expiresAtMs = exported.creationTimeMs + exported.ttlMin * 60_000;
+          // Require at least 60s of validity left so we don't restore a key
+          // that will expire mid-encrypt.
+          if (expiresAtMs > Date.now() + 60_000) {
+            try {
+              const restored = SessionKey.import(exported, _client as never);
+              if (!restored.isExpired()) {
+                console.log('[thunder] restored Seal session key, expires in', Math.round((expiresAtMs - Date.now()) / 60_000), 'min');
+                return restored;
+              }
+            } catch (importErr) {
+              console.warn('[thunder] SessionKey.import failed, will mint fresh:', importErr);
+              try { localStorage.removeItem(SK_STORAGE_KEY(opts.address)); } catch {}
+            }
+          }
+        }
+      }
+    } catch { /* fall through to mint */ }
+
+    // Mint fresh — prompts the wallet once.
+    console.log('[thunder] minting fresh Seal session key (will prompt wallet)');
+    const key = await SessionKey.create({
+      address: opts.address,
+      packageId: MAINNET_SUI_STACK_MESSAGING_PACKAGE_CONFIG.originalPackageId,
+      ttlMin: SESSION_KEY_TTL_MIN,
+      suiClient: _client as never,
+    });
+    const personalMsg = key.getPersonalMessage();
+    const { signature } = await opts.signPersonalMessage({ message: personalMsg });
+    await key.setPersonalMessageSignature(signature);
+
+    // Persist for restoration on next page load.
+    try {
+      localStorage.setItem(SK_STORAGE_KEY(opts.address), JSON.stringify(key.export()));
+      console.log('[thunder] cached Seal session key for next page load');
+    } catch (e) {
+      console.warn('[thunder] failed to persist Seal session key:', e);
+    }
+    return key;
+  })();
+  // On failure, drop the in-flight promise so the next caller retries cleanly.
+  _sessionKeyPromise.catch(() => { _sessionKeyPromise = null; });
+  return _sessionKeyPromise;
+}
 
 /**
  * Initialize the Thunder Timestream client with Seal encryption.
@@ -98,6 +157,7 @@ const SESSION_KEY_TTL_MIN = 30;
  */
 export function initThunderClient(opts: ThunderClientOptions) {
   _address = opts.address;
+  _sessionKeyPromise = null; // clear in-memory cache on re-init
 
   _signer = new DappKitSigner({
     address: opts.address,
@@ -110,12 +170,7 @@ export function initThunderClient(opts: ThunderClientOptions) {
     seal: { serverConfigs: SEAL_SERVERS, verifyKeyServers: true },
     encryption: {
       sessionKey: {
-        address: opts.address,
-        ttlMin: SESSION_KEY_TTL_MIN,
-        onSign: async (message: Uint8Array) => {
-          const { signature } = await opts.signPersonalMessage(message);
-          return signature;
-        },
+        getSessionKey: () => _loadOrMintSessionKey(opts),
       },
     },
     relayer: {
