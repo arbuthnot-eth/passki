@@ -11472,7 +11472,12 @@ function bindEvents() {
             _thunderComposeConfirmedRaw = '';
             _thunderComposeStage = 'idle';
             _renderThunderComposePreview();
-            // Optimistic: append sent message to convo immediately
+            // Optimistic: append sent message to convo immediately.
+            // Do NOT auto-refresh from the DO — a failed/racing getThunders
+            // decrypt would return empty and wipe the bubble, making the
+            // message look like it "went back to the input". The 5s convo
+            // poll (set up by _expandIdleConvo when the convo is open) will
+            // pick up server-side additions on its own cadence.
             _freezeGif();
             const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
             if (convoEl) {
@@ -11483,8 +11488,6 @@ function bindEvents() {
               convoEl.removeAttribute('hidden');
               convoEl.scrollTop = convoEl.scrollHeight;
             }
-            // Refresh from DO after a short delay to catch any server-side additions
-            setTimeout(() => _expandIdleConvo(recipients[0]), 1000);
           } catch (txErr) {
             const txMsg = txErr instanceof Error ? txErr.message : 'Signal failed';
             _thunderComposeStage = 'confirmed';
@@ -11584,6 +11587,11 @@ function bindEvents() {
         } catch { /* fallback to empty */ }
 
         if (!entries.length) {
+          // If the convo already has optimistic bubbles from a recent send,
+          // don't wipe them — a transient fetch failure (Seal session race,
+          // DO cold start) should never make a just-sent message disappear.
+          const hasExistingBubbles = convoEl.querySelectorAll('.ski-idle-bubble').length > 0;
+          if (hasExistingBubbles) return;
           convoEl.setAttribute('hidden', '');
           _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
           try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
@@ -11694,16 +11702,27 @@ function bindEvents() {
         });
         convoEl.removeAttribute('hidden');
         convoEl.scrollTop = convoEl.scrollHeight;
-        // Sync the progress bar with scrollTop — right edge = newest message.
+        // Sync the cloud progress bar with scrollTop — only visible if the
+        // convo overflows. Right edge = newest message.
+        const _progressEl = convoEl.querySelector('.ski-idle-convo-progress') as HTMLElement | null;
         const _progressFill = convoEl.querySelector('.ski-idle-convo-progress-fill') as HTMLElement | null;
         const _syncProgress = () => {
-          if (!_progressFill) return;
+          if (!_progressEl || !_progressFill) return;
           const range = convoEl.scrollHeight - convoEl.clientHeight;
-          const pct = range > 0 ? Math.min(100, Math.max(0, (convoEl.scrollTop / range) * 100)) : 100;
+          if (range <= 2) {
+            // Nothing to scroll — hide the cloud entirely.
+            _progressEl.classList.remove('ski-idle-convo-progress--needed');
+            _progressFill.style.width = '0%';
+            return;
+          }
+          _progressEl.classList.add('ski-idle-convo-progress--needed');
+          const pct = Math.min(100, Math.max(0, (convoEl.scrollTop / range) * 100));
           _progressFill.style.width = `${pct}%`;
         };
         _syncProgress();
         convoEl.addEventListener('scroll', _syncProgress, { passive: true });
+        // Recompute on next frame in case layout hasn't settled (fonts, QR svg).
+        requestAnimationFrame(_syncProgress);
 
         // Click-to-delete: tap once = confirm (red), tap again = strike/delete
         // Incoming signals on owned names → on-chain strike (rebate → treasury)

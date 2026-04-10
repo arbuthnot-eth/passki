@@ -3354,30 +3354,59 @@ body {
 .ski-idle-thunder-convo::-webkit-scrollbar { display: none; }
 .ski-idle-thunder-convo[hidden] { display: none; }
 
-/* Horizontal scroll-progress bar along the top of the convo. Width of the
-   fill tracks scrollTop / (scrollHeight - clientHeight), so newer messages
-   (at the bottom of the stack) advance the bar to the right. */
+/* Horizontal "cloud" scroll-progress bar. Only shown when the convo has
+   enough content to scroll (.ski-idle-convo-progress--needed). Width of
+   the fill tracks scrollTop / (scrollHeight - clientHeight) so newer
+   messages (bottom of stack) push the cloud right. */
 .ski-idle-convo-progress {
+  display: none; /* hidden unless the content overflows */
   position: sticky;
   top: 0;
   left: 0;
   right: 0;
-  height: 3px;
-  margin: 0 0 4px 0;
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 2px;
-  overflow: hidden;
+  height: 14px;
+  margin: 2px 0 6px 0;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: visible; /* allow the puffy shadow to escape */
   z-index: 5;
   flex-shrink: 0;
   align-self: stretch;
 }
+.ski-idle-convo-progress--needed { display: block; }
 .ski-idle-convo-progress-fill {
+  position: relative;
   height: 100%;
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 2px;
+  background: radial-gradient(ellipse at center, rgba(255, 255, 255, 1) 0%, rgba(255, 255, 255, 0.92) 55%, rgba(255, 255, 255, 0.85) 100%);
+  border-radius: 20px;
   width: 0%;
-  transition: width 0.12s ease-out;
+  transition: width 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* Stacked shadows + highlights = cloud-puff texture */
+  box-shadow:
+    0 0 6px 2px rgba(255, 255, 255, 0.55),
+    0 0 14px 4px rgba(255, 255, 255, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -2px 3px rgba(180, 190, 210, 0.35);
 }
+/* Extra bumps along the top edge to suggest a cloud silhouette. */
+.ski-idle-convo-progress-fill::before,
+.ski-idle-convo-progress-fill::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  width: 10px;
+  height: 10px;
+  background: inherit;
+  border-radius: 50%;
+  box-shadow:
+    0 0 4px 1px rgba(255, 255, 255, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+.ski-idle-convo-progress-fill::before { right: 20%; }
+.ski-idle-convo-progress-fill::after { right: 4px; top: -4px; width: 12px; height: 12px; }
+/* When the fill is nearly empty, hide the bumps so they don't float loose. */
+.ski-idle-convo-progress-fill[style*="width: 0%"]::before,
+.ski-idle-convo-progress-fill[style*="width: 0%"]::after { display: none; }
 
 .ski-idle-convo-title {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
