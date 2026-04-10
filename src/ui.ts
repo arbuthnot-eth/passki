@@ -11691,7 +11691,8 @@ function bindEvents() {
             };
             setTimeout(() => document.addEventListener('click', _dismiss, true), 0);
             try {
-              const svg = await getQrSvg(`https://${name}.sui.ski`, '#ffffff');
+              // Dark modules on a white slot background — white-on-white is invisible.
+              const svg = await getQrSvg(`https://${name}.sui.ski`, '#0a0a0f');
               const slot = pop.querySelector('.ski-convo-qr-pop-slot') as HTMLElement | null;
               if (slot) slot.innerHTML = svg;
             } catch {
