@@ -11699,14 +11699,7 @@ function bindEvents() {
                </button>
              </div>`
           : `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">${stormLabel} <span class="ski-idle-convo-name">${esc(bare)}</span></a></div>`;
-        // In-convo reply input — auto-targets the current storm member so the
-        // user doesn't have to close the convo and retype @name in the main
-        // Thunder input. Sticks to the bottom of the panel.
-        const replyInput = `<div class="ski-convo-reply">
-          <input class="ski-convo-reply-input" type="text" placeholder="reply to ${esc(bare)}\u2026" spellcheck="false" autocomplete="off">
-          <button class="ski-convo-reply-send" type="button" title="Send">\u26a1</button>
-        </div>`;
-        convoEl.innerHTML = progress + header + bubbles + replyInput;
+        convoEl.innerHTML = progress + header + bubbles;
         // Wire the identity header: tap a party card → render a QR popover
         // encoding https://<name>.sui.ski. The popover is a sibling that lives
         // inside the convo container and traps clicks to dismiss itself.
@@ -11737,73 +11730,6 @@ function bindEvents() {
             }
           });
         });
-        // Wire the in-convo reply input. Enter or ⚡ click → sendThunder
-        // with the current storm's uuid. The message auto-targets `bare`,
-        // so the user never has to type @name or leave the convo panel.
-        const replyEl = convoEl.querySelector('.ski-convo-reply-input') as HTMLInputElement | null;
-        const replySendBtn = convoEl.querySelector('.ski-convo-reply-send') as HTMLButtonElement | null;
-        const _sendReply = async () => {
-          if (!replyEl) return;
-          const text = replyEl.value.trim();
-          if (!text) return;
-          const origBtnHtml = replySendBtn?.innerHTML || '\u26a1';
-          if (replySendBtn) {
-            replySendBtn.innerHTML = '<span class="ski-idle-thunder-spinner"></span>';
-            replySendBtn.disabled = true;
-          }
-          replyEl.disabled = true;
-          // Optimistic append so the user sees their message instantly.
-          const _sent = document.createElement('div');
-          _sent.className = 'ski-idle-bubble ski-idle-bubble--out';
-          _sent.textContent = text;
-          convoEl.insertBefore(_sent, convoEl.querySelector('.ski-convo-reply'));
-          convoEl.scrollTop = convoEl.scrollHeight;
-          try {
-            const { sendThunder, lookupRecipientAddress } = await import('./client/thunder.js');
-            const recipAddr = await lookupRecipientAddress(bare);
-            const _cacheSaysExists = _stormExistsCache[groupId] === true;
-            await sendThunder({
-              groupRef: { uuid: groupId },
-              text,
-              recipientAddress: recipAddr || undefined,
-              senderName: myName,
-              recipientName: bare,
-              signAndExecute: async (txOrBytes: any) => {
-                showToast(_cacheSaysExists
-                  ? `\u26a1 Sending to ${bare}`
-                  : `\u26c8\ufe0f Creating encrypted Storm with ${bare}`);
-                const result = await signAndExecuteTransaction(txOrBytes);
-                _markStormExists(groupId);
-                _updateIdleStatus();
-                return result;
-              },
-            });
-            _markStormExists(groupId);
-            replyEl.value = '';
-            showToast(`\u26a1 Thunder to ${bare} sent`);
-          } catch (err) {
-            _sent.classList.add('ski-idle-bubble--failed');
-            const { humanizeThunderError } = await import('./client/thunder.js');
-            const humanized = humanizeThunderError(err);
-            _sent.title = humanized.message;
-            if (!humanized.silent) showToast(humanized.message);
-          } finally {
-            replyEl.disabled = false;
-            if (replySendBtn) {
-              replySendBtn.innerHTML = origBtnHtml;
-              replySendBtn.disabled = false;
-            }
-            replyEl.focus();
-          }
-        };
-        replyEl?.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); void _sendReply(); }
-        });
-        replySendBtn?.addEventListener('click', (e) => {
-          e.stopPropagation();
-          void _sendReply();
-        });
-
         convoEl.removeAttribute('hidden');
         convoEl.scrollTop = convoEl.scrollHeight;
         // Sync the cloud progress bar with scrollTop — only visible if the
@@ -12402,6 +12328,28 @@ function bindEvents() {
           if (hdr) hdr.style.setProperty('--ski-header-w', `${overlayW + 16}px`); // +16 for header padding
         }
       });
+
+      // Constrain the thunder input's right edge to align with the squid
+      // button (or $ button) in the quick-actions row. This stops the input
+      // from spanning the full overlay width.
+      const _clampThunderInputWidth = () => {
+        const row = _idleOverlay?.querySelector('.ski-idle-thunder-row') as HTMLElement | null;
+        const inputWrap = _idleOverlay?.querySelector('.ski-idle-thunder-input-wrap') as HTMLElement | null;
+        const quickActions = _idleOverlay?.querySelector('#ski-idle-quick-actions') as HTMLElement | null;
+        if (!row || !inputWrap || !quickActions) return;
+        const squidBtn = quickActions.querySelector('.ski-idle-quick-btn--squid') as HTMLElement | null;
+        const iusdBtn = quickActions.querySelector('.ski-idle-quick-btn--iusd') as HTMLElement | null;
+        const target = squidBtn || iusdBtn;
+        if (!target) return;
+        const rowRect = row.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        if (rowRect.width <= 0 || targetRect.width <= 0) return;
+        // Right edge of the squid/$ button, relative to the row's left edge.
+        const rightEdge = targetRect.right - rowRect.left;
+        inputWrap.style.maxWidth = `${Math.max(60, rightEdge)}px`;
+      };
+      requestAnimationFrame(_clampThunderInputWidth);
+      window.addEventListener('resize', _clampThunderInputWidth, { passive: true });
   };
 
   const _resetIdle = () => {
