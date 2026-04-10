@@ -11539,6 +11539,22 @@ function bindEvents() {
               convoEl.appendChild(_sentBubble);
               convoEl.removeAttribute('hidden');
               convoEl.scrollTop = convoEl.scrollHeight;
+
+              // Re-expand the convo targeting the actual recipient. If the
+              // user had a previous storm open (e.g. devrel) and just sent
+              // an explicit @superteam message, the header was pinned to
+              // the old counterparty — this re-renders with the new bare
+              // so the identity cards and fetched history match who we
+              // actually messaged. _expandIdleConvo preserves existing
+              // optimistic bubbles (harvests .ski-idle-bubble outerHTML
+              // before re-rendering), so our just-appended ✓ bubble
+              // survives the re-render even if the DO fetch lags.
+              const _freshRecipient = recipients[0];
+              if (_freshRecipient) {
+                try { sessionStorage.setItem('ski:idle-convo', _freshRecipient.toLowerCase()); } catch {}
+                try { localStorage.setItem('ski:idle-convo', _freshRecipient.toLowerCase()); } catch {}
+                _expandIdleConvo(_freshRecipient).catch(() => {});
+              }
             }
           } catch (txErr) {
             const { humanizeThunderError } = await import('./client/thunder.js');
