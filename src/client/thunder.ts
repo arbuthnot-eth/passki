@@ -14,6 +14,9 @@ export {
   reverseLookupName,
   type ThunderMessage,
   type ThunderClientOptions,
+  humanizeThunderError,
   type DecryptedMessage,
   type GroupRef,
+  type HumanizedError,
+  type ThunderErrorKind,
 } from './thunder-stack.js';

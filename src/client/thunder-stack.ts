@@ -8,9 +8,11 @@
  */
 import {
   createSuiStackMessagingClient,
+  MAINNET_SUI_STACK_MESSAGING_PACKAGE_CONFIG,
   type DecryptedMessage,
   type GroupRef,
 } from '@mysten/sui-stack-messaging';
+import { SessionKey, type ExportedSessionKey } from '@mysten/seal';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
@@ -78,12 +80,73 @@ let _client: MessagingClient | null = null;
 let _signer: DappKitSigner | null = null;
 let _address = '';
 
+// ─── Seal session key cache ─────────────────────────────────────────
+// The Seal SDK normally re-mints a session key on every page load (and prompts
+// the wallet for a personal-message signature each time). We:
+//   1. Bump TTL from the default 10min → 60min so a single sign covers an hour.
+//   2. Persist the exported key to sessionStorage so page refresh within the
+//      tab lifetime doesn't re-prompt. Keyed per wallet address so swapping
+//      accounts doesn't reuse the wrong key.
+//
+// The SDK's `getSessionKey` mode lets us own the whole lifecycle. We memoize
+// the in-flight mint promise so concurrent encrypt/decrypt calls share one
+// signing round-trip instead of opening several wallet popups in parallel.
+const SESSION_KEY_TTL_MIN = 60;
+const SESSION_STORAGE_KEY = (address: string) => `ski:seal-session:${address.toLowerCase()}`;
+let _sessionKeyPromise: Promise<SessionKey> | null = null;
+
+async function _loadOrMintSessionKey(
+  address: string,
+  signPersonalMessage: SignPersonalMessageFn,
+  gqlClient: SuiGraphQLClient,
+): Promise<SessionKey> {
+  // Cache hit within this tab's memory — return the live instance.
+  if (_sessionKeyPromise) return _sessionKeyPromise;
+
+  _sessionKeyPromise = (async () => {
+    // Try sessionStorage first.
+    try {
+      const raw = sessionStorage.getItem(SESSION_STORAGE_KEY(address));
+      if (raw) {
+        const exported = JSON.parse(raw) as ExportedSessionKey;
+        if (exported.address?.toLowerCase() === address.toLowerCase()) {
+          const restored = SessionKey.import(exported, gqlClient as never);
+          if (!restored.isExpired()) return restored;
+        }
+      }
+    } catch { /* fall through to fresh mint */ }
+
+    // Mint fresh — prompts the wallet for one personal-message signature.
+    const key = await SessionKey.create({
+      address,
+      packageId: MAINNET_SUI_STACK_MESSAGING_PACKAGE_CONFIG.originalPackageId,
+      ttlMin: SESSION_KEY_TTL_MIN,
+      suiClient: gqlClient as never,
+    });
+    const personalMsg = key.getPersonalMessage();
+    const { signature } = await signPersonalMessage({ message: personalMsg });
+    await key.setPersonalMessageSignature(signature);
+
+    // Persist for the rest of the tab lifetime.
+    try {
+      sessionStorage.setItem(SESSION_STORAGE_KEY(address), JSON.stringify(key.export()));
+    } catch { /* storage quota / disabled — keep running from memory */ }
+
+    return key;
+  })();
+
+  // On failure, clear the promise so the next call retries cleanly.
+  _sessionKeyPromise.catch(() => { _sessionKeyPromise = null; });
+  return _sessionKeyPromise;
+}
+
 /**
  * Initialize the Thunder Timestream client with Seal encryption.
  * Called on wallet connect.
  */
 export function initThunderClient(opts: ThunderClientOptions) {
   _address = opts.address;
+  _sessionKeyPromise = null; // reset cache when wallet changes
 
   _signer = new DappKitSigner({
     address: opts.address,
@@ -96,11 +159,7 @@ export function initThunderClient(opts: ThunderClientOptions) {
     seal: { serverConfigs: SEAL_SERVERS, verifyKeyServers: true },
     encryption: {
       sessionKey: {
-        address: opts.address,
-        onSign: async (message: Uint8Array) => {
-          const { signature } = await opts.signPersonalMessage(message);
-          return signature;
-        },
+        getSessionKey: () => _loadOrMintSessionKey(opts.address, opts.signPersonalMessage, gqlClient),
       },
     },
     relayer: {
@@ -122,6 +181,11 @@ export function resetThunderClient() {
   }
   _client = null;
   _signer = null;
+  // Drop the cached Seal session key so a new wallet connection signs fresh.
+  if (_address) {
+    try { sessionStorage.removeItem(SESSION_STORAGE_KEY(_address)); } catch {}
+  }
+  _sessionKeyPromise = null;
   _address = '';
 }
 
@@ -674,6 +738,88 @@ export async function reverseLookupName(address: string): Promise<string | null>
     _reverseLookupCache[key] = null;
     return null;
   }
+}
+
+// ─── Error humanization ─────────────────────────────────────────────
+// Map common Thunder failure modes to user-facing messages so we don't show
+// "Unexpected error" for everything. Pattern-matching the raw error message
+// from the SDK / chain. Returns null when the user cancelled (caller should
+// silently ignore in that case to avoid a misleading toast).
+
+export type ThunderErrorKind =
+  | 'cancelled'
+  | 'insufficient-gas'
+  | 'insufficient-balance'
+  | 'pool-liquidity'
+  | 'iusd-undercollateralized'
+  | 'object-not-found'
+  | 'sequence-too-old'
+  | 'session-expired'
+  | 'seal-decrypt-failed'
+  | 'storm-not-found'
+  | 'unknown';
+
+export interface HumanizedError {
+  kind: ThunderErrorKind;
+  message: string;
+  /** When true, the caller should NOT show a toast — user dismissed the popup. */
+  silent: boolean;
+}
+
+export function humanizeThunderError(err: unknown): HumanizedError {
+  const raw = err instanceof Error ? (err.stack || err.message) : String(err ?? '');
+  const lower = raw.toLowerCase();
+
+  // ── User cancelled — never show a toast ─────────────────────────
+  if (lower.includes('reject') || lower.includes('cancel') || lower.includes('user denied') || lower.includes('user closed')) {
+    return { kind: 'cancelled', message: 'Cancelled', silent: true };
+  }
+
+  // ── Gas / balance issues ────────────────────────────────────────
+  if (lower.includes('gasbalancetoolow') || lower.includes('insufficient gas') || lower.includes('not enough gas')) {
+    return { kind: 'insufficient-gas', message: 'Not enough SUI to cover gas. Top up your wallet and retry.', silent: false };
+  }
+  if (lower.includes('insufficientcoinbalance') || lower.includes('insufficient balance') || lower.includes('balance too low') || lower.includes('notenoughcoins')) {
+    return { kind: 'insufficient-balance', message: 'Not enough balance for this send.', silent: false };
+  }
+
+  // ── DeepBook pool liquidity (abort code 12) ─────────────────────
+  if (/moveabort.*abort code:\s*12/i.test(raw) || lower.includes('insufficient liquidity')) {
+    return { kind: 'pool-liquidity', message: 'Pool liquidity too low. Try a smaller amount.', silent: false };
+  }
+
+  // ── iUSD undercollateralized (abort code 1 in iusd::mint) ───────
+  if (/moveabort.*abort code:\s*1.*iusd::mint/i.test(raw)) {
+    return { kind: 'iusd-undercollateralized', message: 'iUSD mint blocked — collateral state is unhealthy.', silent: false };
+  }
+
+  // ── Storm / object not found (fresh-Storm propagation race) ─────
+  const objNotFound = /object\s+0x[a-f0-9]+\s+not found/i.test(raw);
+  if (objNotFound && lower.includes('storm')) {
+    return { kind: 'storm-not-found', message: 'Storm not yet live on-chain. Wait a few seconds and retry.', silent: false };
+  }
+  if (objNotFound) {
+    return { kind: 'object-not-found', message: 'On-chain object not found. The network may be lagging — retry in a moment.', silent: false };
+  }
+
+  // ── Wallet sequence drift ───────────────────────────────────────
+  if (lower.includes('sequencenumbertooold') || lower.includes('stale')) {
+    return { kind: 'sequence-too-old', message: 'Wallet state out of sync. Refresh the page and retry.', silent: false };
+  }
+
+  // ── Seal session / decrypt issues ───────────────────────────────
+  if (lower.includes('expiredsessionkey') || lower.includes('session expired') || lower.includes('session key.*expired')) {
+    return { kind: 'session-expired', message: 'Encryption session expired. Sign in to your wallet again to continue.', silent: false };
+  }
+  if (lower.includes('decryption') || lower.includes('decrypt failed') || lower.includes('noaccess')) {
+    return { kind: 'seal-decrypt-failed', message: 'Decryption failed. The message may have been deleted or you may not be a Storm member.', silent: false };
+  }
+
+  // ── Fall through ────────────────────────────────────────────────
+  // Surface a short slice of the original message so we still get a clue
+  // for unmapped errors instead of opaque "Unexpected error".
+  const summary = (err instanceof Error ? err.message : String(err ?? '')).slice(0, 140) || 'Send failed';
+  return { kind: 'unknown', message: `Send failed: ${summary}`, silent: false };
 }
 
 // Re-export types

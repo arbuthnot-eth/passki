@@ -11496,16 +11496,19 @@ function bindEvents() {
               convoEl.scrollTop = convoEl.scrollHeight;
             }
           } catch (txErr) {
-            const txMsg = txErr instanceof Error ? txErr.message : 'Signal failed';
+            const { humanizeThunderError } = await import('./client/thunder.js');
+            const humanized = humanizeThunderError(txErr);
             _thunderComposeStage = 'confirmed';
             _renderThunderComposePreview();
-            if (!txMsg.toLowerCase().includes('reject')) {
+            if (!humanized.silent) {
               // Show failed bubble with retry
               const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
               const failBubble = document.createElement('div');
               failBubble.className = 'ski-idle-bubble ski-idle-bubble--out ski-idle-bubble--failed';
               failBubble.textContent = msgText;
-              failBubble.title = txMsg;
+              // Tooltip surfaces both the human message and the raw error for debugging.
+              const rawMsg = txErr instanceof Error ? txErr.message : String(txErr ?? '');
+              failBubble.title = `${humanized.message}\n\n${rawMsg}`;
               failBubble.style.cursor = 'pointer';
               if (convoEl) { convoEl.appendChild(failBubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
               failBubble.addEventListener('click', () => {
@@ -11516,7 +11519,7 @@ function bindEvents() {
                 _renderThunderComposePreview();
                 _sendIdleThunder();
               }, { once: true });
-              showToast(txMsg);
+              showToast(humanized.message);
             }
           } finally {
             if (sendBtn) { sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send'; sendBtn.title = `Open Storm to ${nsLabel || ''}`; }
