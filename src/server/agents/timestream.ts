@@ -6,6 +6,9 @@
  *
  * Messages are stored as encrypted blobs — the DO never sees plaintext.
  * Seal threshold encryption happens client-side via the SDK.
+ *
+ * Auth: only participant addresses can send/fetch. Participants are tracked
+ * by the addresses that have sent messages or been added explicitly.
  */
 
 import { Agent } from 'agents';
@@ -14,7 +17,7 @@ interface StoredMessage {
   messageId: string;
   groupId: string;
   order: number;
-  encryptedText: string;  // base64
+  encryptedText: string;  // base64 (Seal-encrypted ciphertext)
   nonce: string;          // base64
   keyVersion: string;     // bigint as string
   senderAddress: string;
@@ -29,6 +32,8 @@ interface StoredMessage {
 interface TimestreamState {
   messages: StoredMessage[];
   nextOrder: number;
+  /** Addresses allowed to read/write. Auto-populated from senders. */
+  participants: string[];
 }
 
 interface Env {
@@ -36,10 +41,16 @@ interface Env {
   [key: string]: unknown;
 }
 
+/** Normalize Sui address for comparison. */
+function normAddr(a: string): string {
+  return (a || '').replace(/^0x/, '').toLowerCase().padStart(64, '0');
+}
+
 export class TimestreamAgent extends Agent<Env, TimestreamState> {
   initialState: TimestreamState = {
     messages: [],
     nextOrder: 1,
+    participants: [],
   };
 
   async onRequest(request: Request): Promise<Response> {
@@ -62,10 +73,31 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
       if (request.method === 'POST' && path === 'delete') {
         return this._handleDelete(request);
       }
+      if (request.method === 'POST' && path === 'add-participant') {
+        return this._handleAddParticipant(request);
+      }
       return Response.json({ error: 'Not found' }, { status: 404 });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return Response.json({ error: msg }, { status: 500 });
+    }
+  }
+
+  /** Check if an address is a participant (can read/write). */
+  private _isParticipant(address: string): boolean {
+    if (!address) return false;
+    const norm = normAddr(address);
+    // Empty participants list = open (backward compat for existing DOs)
+    if (this.state.participants.length === 0) return true;
+    return this.state.participants.some(p => normAddr(p) === norm);
+  }
+
+  /** Add an address as a participant. */
+  private _addParticipant(address: string) {
+    if (!address) return;
+    const norm = normAddr(address);
+    if (!this.state.participants.some(p => normAddr(p) === norm)) {
+      this.setState({ ...this.state, participants: [...this.state.participants, address] });
     }
   }
 
@@ -79,6 +111,14 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
       signature?: string;
       publicKey?: string;
     };
+
+    // Auth: sender must be a participant (or first sender auto-joins)
+    if (this.state.participants.length > 0 && !this._isParticipant(body.senderAddress)) {
+      return Response.json({ error: 'Not a participant' }, { status: 403 });
+    }
+
+    // Auto-add sender as participant
+    this._addParticipant(body.senderAddress);
 
     const messageId = crypto.randomUUID();
     const order = this.state.nextOrder;
@@ -111,7 +151,16 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
       afterOrder?: number;
       beforeOrder?: number;
       limit?: number;
+      /** Required: address requesting the fetch. Must be a participant. */
+      address?: string;
     };
+
+    // Auth: require participant address
+    if (this.state.participants.length > 0) {
+      if (!body.address || !this._isParticipant(body.address)) {
+        return Response.json({ error: 'Not a participant' }, { status: 403 });
+      }
+    }
 
     let msgs = this.state.messages.filter(m => !m.isDeleted);
     if (body.afterOrder !== undefined) msgs = msgs.filter(m => m.order > body.afterOrder!);
@@ -126,7 +175,10 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
   }
 
   private async _handleFetchOne(request: Request): Promise<Response> {
-    const body = await request.json() as { messageId: string };
+    const body = await request.json() as { messageId: string; address?: string };
+    if (this.state.participants.length > 0 && body.address && !this._isParticipant(body.address)) {
+      return Response.json({ error: 'Not a participant' }, { status: 403 });
+    }
     const msg = this.state.messages.find(m => m.messageId === body.messageId);
     if (!msg) return Response.json({ error: 'Not found' }, { status: 404 });
     return Response.json(msg);
@@ -135,56 +187,60 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
   private async _handleUpdate(request: Request): Promise<Response> {
     const body = await request.json() as {
       messageId: string;
+      encryptedText?: string;
       senderAddress: string;
-      encryptedText: string;
-      nonce: string;
-      keyVersion: string;
-      signature?: string;
-      publicKey?: string;
     };
 
-    const idx = this.state.messages.findIndex(m => m.messageId === body.messageId);
-    if (idx === -1) return Response.json({ error: 'Not found' }, { status: 404 });
-
-    const msg = this.state.messages[idx];
-    if (msg.senderAddress !== body.senderAddress) {
-      return Response.json({ error: 'Not authorized' }, { status: 403 });
+    if (!this._isParticipant(body.senderAddress)) {
+      return Response.json({ error: 'Not a participant' }, { status: 403 });
     }
 
-    const updated: StoredMessage = {
-      ...msg,
-      encryptedText: body.encryptedText,
-      nonce: body.nonce,
-      keyVersion: body.keyVersion,
-      signature: body.signature || msg.signature,
-      publicKey: body.publicKey || msg.publicKey,
-      updatedAt: Date.now(),
-      isEdited: true,
-    };
+    const idx = this.state.messages.findIndex(m => m.messageId === body.messageId);
+    if (idx < 0) return Response.json({ error: 'Not found' }, { status: 404 });
+
+    // Only the original sender can edit
+    if (normAddr(this.state.messages[idx].senderAddress) !== normAddr(body.senderAddress)) {
+      return Response.json({ error: 'Not the sender' }, { status: 403 });
+    }
+
+    const updated = { ...this.state.messages[idx] };
+    if (body.encryptedText) { updated.encryptedText = body.encryptedText; updated.isEdited = true; }
+    updated.updatedAt = Date.now();
 
     const messages = [...this.state.messages];
     messages[idx] = updated;
     this.setState({ ...this.state, messages });
 
-    return Response.json({ ok: true });
+    return Response.json({ messageId: updated.messageId });
   }
 
   private async _handleDelete(request: Request): Promise<Response> {
-    const body = await request.json() as { messageId: string; senderAddress: string };
+    const body = await request.json() as { messageId: string; senderAddress?: string };
 
     const idx = this.state.messages.findIndex(m => m.messageId === body.messageId);
-    if (idx === -1) return Response.json({ error: 'Not found' }, { status: 404 });
+    if (idx < 0) return Response.json({ error: 'Not found' }, { status: 404 });
 
-    const msg = this.state.messages[idx];
-    if (msg.senderAddress !== body.senderAddress) {
-      return Response.json({ error: 'Not authorized' }, { status: 403 });
+    // Any participant can delete (both sides can remove messages)
+    if (body.senderAddress && !this._isParticipant(body.senderAddress)) {
+      return Response.json({ error: 'Not a participant' }, { status: 403 });
     }
 
-    const updated: StoredMessage = { ...msg, isDeleted: true, updatedAt: Date.now() };
     const messages = [...this.state.messages];
-    messages[idx] = updated;
+    messages[idx] = { ...messages[idx], isDeleted: true, updatedAt: Date.now() };
     this.setState({ ...this.state, messages });
 
-    return Response.json({ ok: true });
+    return Response.json({ deleted: true });
+  }
+
+  private async _handleAddParticipant(request: Request): Promise<Response> {
+    const body = await request.json() as { address: string; addedBy?: string };
+
+    // Only existing participants can add new ones
+    if (this.state.participants.length > 0 && body.addedBy && !this._isParticipant(body.addedBy)) {
+      return Response.json({ error: 'Not a participant' }, { status: 403 });
+    }
+
+    this._addParticipant(body.address);
+    return Response.json({ added: true, participants: this.state.participants.length });
   }
 }
