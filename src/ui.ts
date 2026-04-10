@@ -11756,21 +11756,14 @@ function bindEvents() {
         // the chrome, not the scroll — no handshake messages are ever sent.
         const _selfName = (myName || '').toLowerCase();
         const _hasBothNames = !!_selfName && !!bare;
-        // Counterparty on the left, self on the right — reads as "THEM ⟬ STORM ⟭ YOU",
-        // mirroring how message bubbles align (incoming on left, outgoing on right).
-        const header = _hasBothNames
-          ? `<div class="ski-idle-convo-header">
-               <button class="ski-convo-party" type="button" data-name="${esc(bare)}" title="${esc(bare)} — tap for QR">
-                 <span class="ski-convo-party-name">${esc(bare)}</span>
-                 <span class="ski-convo-party-badge">\u2713</span>
-               </button>
-               <span class="ski-convo-header-storm" title="${hasStorm ? 'Seal-encrypted Storm' : 'Storm not yet created'}">${stormLabel}</span>
-               <button class="ski-convo-party" type="button" data-name="${esc(_selfName)}" title="You — tap for QR">
-                 <span class="ski-convo-party-name">${esc(_selfName)}</span>
-                 <span class="ski-convo-party-badge">\u2713</span>
-               </button>
-             </div>`
-          : `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">${stormLabel} <span class="ski-idle-convo-name">${esc(bare)}</span></a></div>`;
+        // No header row rendered — the name search bar + card above the
+        // convo already show who the storm is with, and the ⚡/Storm action
+        // button in that same row indicates encryption state. The old
+        // identity-card header was redundant duplication.
+        // _hasBothNames and stormLabel are still computed upstream but
+        // intentionally unused here.
+        void _hasBothNames; void stormLabel;
+        const header = '';
         convoEl.innerHTML = progress + header + bubbles;
         // Wire the identity header: tap a party card → render a QR popover
         // encoding https://<name>.sui.ski. The popover is a sibling that lives
