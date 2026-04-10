@@ -436,7 +436,11 @@ window.addEventListener('ski:request-suiami', async (e) => {
       detail: { proof: proof.token, message: proof.message, signature: proof.signature, name, address: ws.address },
     }));
 
-    // Write roster entry with Walrus blob
+    // Write SUIAMI attestation on-chain (Roster v3). Always writes — even
+    // if the user hasn't rumbled cross-chain addresses yet — so their
+    // IdentityRecord (name + Sui address) exists on-chain. If cross-chain
+    // addresses are present, they're uploaded to Walrus first and the blob
+    // ID is included in the record.
     try {
       const { uploadRosterBlob } = await import('./client/roster.js');
       const { maybeAppendRoster } = await import('./suins.js');
@@ -445,14 +449,27 @@ window.addEventListener('ski:request-suiami', async (e) => {
       if (appSt.btcAddress) blobData.btc = appSt.btcAddress;
       if (appSt.ethAddress) blobData.eth = appSt.ethAddress;
       if (appSt.solAddress) blobData.sol = appSt.solAddress;
+      let blobId = '';
       if (Object.keys(blobData).length > 0) {
-        const blobId = await uploadRosterBlob(blobData);
-        const { Transaction } = await import('@mysten/sui/transactions');
-        const tx = new Transaction();
-        maybeAppendRoster(tx, ws.address, name, undefined, blobId);
-        await signAndExecuteTransaction(tx);
+        try { blobId = await uploadRosterBlob(blobData); } catch (walErr) {
+          console.warn('[suiami] Walrus blob upload failed, proceeding without cross-chain:', walErr);
+        }
       }
-    } catch { /* roster write is best-effort */ }
+      const { Transaction } = await import('@mysten/sui/transactions');
+      const tx = new Transaction();
+      maybeAppendRoster(tx, ws.address, name, undefined, blobId);
+      const { digest } = await signAndExecuteTransaction(tx);
+      console.log('[suiami] roster attestation written:', digest);
+      showToast(`\u2713 SUIAMI on-chain for ${name}.sui`);
+    } catch (rosterErr) {
+      const msg = rosterErr instanceof Error ? rosterErr.message : String(rosterErr);
+      console.error('[suiami] roster write failed:', rosterErr);
+      // Don't fail the whole SUIAMI flow — the off-chain proof is still
+      // valid even if the on-chain attestation couldn't be written.
+      if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
+        showToast(`SUIAMI saved \u2014 on-chain attest failed: ${msg.slice(0, 80)}`);
+      }
+    }
   } catch (err) {
     console.error('[suiami] Error:', err);
     showToast(err instanceof Error ? err.message : 'SUIAMI signing failed');
