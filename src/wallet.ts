@@ -348,7 +348,12 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   const { wallet, account } = currentState;
   if (!wallet || !account) throw new Error('No wallet connected');
 
-  return withBackpackRetry(() => {
+  // Wallets sometimes hang indefinitely on signPersonalMessage (WaaP in
+  // particular, when its iframe's message channel is in a bad state).
+  // Race the call against a 60s timeout so the caller gets a clear error
+  // instead of a forever-spinning signature prompt.
+  const timeoutMs = 60_000;
+  const doSign = () => withBackpackRetry(() => {
     if (/backpack/i.test(wallet.name)) return dappKit.signPersonalMessage({ message });
     if (!('sui:signPersonalMessage' in wallet.features)) {
       throw new Error(`${wallet.name} does not support personal message signing`);
@@ -358,6 +363,12 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
     };
     return feat.signPersonalMessage({ message, account });
   });
+  return Promise.race([
+    doSign(),
+    new Promise<{ bytes: string; signature: string }>((_, reject) =>
+      setTimeout(() => reject(new Error(`${wallet.name} signPersonalMessage timed out after ${timeoutMs / 1000}s — refresh the page and try again`)), timeoutMs),
+    ),
+  ]);
 }
 
 // ─── Signature padding ──────────────────────────────────────────────
