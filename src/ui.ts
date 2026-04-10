@@ -11571,7 +11571,8 @@ function bindEvents() {
             body: JSON.stringify({ limit: 50, address: getState().address || '' }),
           });
           if (_doRes.ok) {
-            const _doData = await _doRes.json() as { messages: any[] };
+            const _doData = await _doRes.json() as { messages: any[]; participants?: string[] };
+            const _participants: string[] = Array.isArray(_doData.participants) ? _doData.participants : [];
             entries = (_doData.messages || []).map((m: any) => {
               let text = '';
               try {
@@ -11579,9 +11580,13 @@ function bindEvents() {
                 // Try UTF-8 decode
                 try { text = decodeURIComponent(escape(raw)); } catch { text = raw; }
               } catch { text = m.encryptedText || ''; }
+              // P1.1 — prefer senderIndex → participants[], fall back to legacy senderAddress
+              const senderAddress = typeof m.senderIndex === 'number' && m.senderIndex >= 0 && m.senderIndex < _participants.length
+                ? _participants[m.senderIndex]
+                : (m.senderAddress || '');
               return {
                 text,
-                senderAddress: m.senderAddress || '',
+                senderAddress,
                 createdAt: m.timestamp ?? m.createdAt ?? Date.now(),
                 messageId: m.messageId || m.id || `msg-${m.order}`,
               };

@@ -462,7 +462,8 @@ export async function getThunders(opts: {
       }),
     });
     if (res.ok) {
-      const data = await res.json() as { messages: any[]; hasNext: boolean };
+      const data = await res.json() as { messages: any[]; hasNext: boolean; participants?: string[] };
+      const participants: string[] = Array.isArray(data.participants) ? data.participants : [];
       const messages: ThunderMessage[] = [];
       for (const m of data.messages) {
         let text = '';
@@ -480,12 +481,16 @@ export async function getThunders(opts: {
           // Fallback: treat as plaintext (legacy or unencrypted messages)
           try { text = new TextDecoder().decode(ciphertext); } catch { text = m.encryptedText || ''; }
         }
+        // P1.1 — prefer senderIndex → participants[] lookup, fall back to legacy senderAddress
+        const resolvedSender = typeof m.senderIndex === 'number' && m.senderIndex >= 0 && m.senderIndex < participants.length
+          ? participants[m.senderIndex]
+          : (m.senderAddress || '');
         messages.push({
           messageId: m.messageId || m.id || `msg-${m.order}`,
           groupId,
           order: m.order ?? 0,
           text,
-          senderAddress: m.senderAddress || '',
+          senderAddress: resolvedSender,
           createdAt: m.timestamp ?? m.createdAt ?? Date.now(),
           updatedAt: m.timestamp ?? m.updatedAt ?? Date.now(),
           isEdited: false,

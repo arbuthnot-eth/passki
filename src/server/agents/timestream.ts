@@ -20,7 +20,10 @@ interface StoredMessage {
   encryptedText: string;  // base64 (Seal-encrypted ciphertext)
   nonce: string;          // base64
   keyVersion: string;     // bigint as string
+  /** @deprecated post-P1.1 — populated only for legacy rows. New rows use senderIndex. */
   senderAddress: string;
+  /** Index into participants[] at write time. -1 for legacy rows. */
+  senderIndex: number;
   createdAt: number;
   updatedAt: number;
   isEdited: boolean;
@@ -108,6 +111,17 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     }
   }
 
+  /** Return the index of an address in participants, adding it if absent. Returns -1 for empty input. */
+  private _participantIndex(address: string): number {
+    if (!address) return -1;
+    const norm = normAddr(address);
+    let idx = this.state.participants.findIndex(p => normAddr(p) === norm);
+    if (idx >= 0) return idx;
+    const participants = [...this.state.participants, address];
+    this.setState({ ...this.state, participants });
+    return participants.length - 1;
+  }
+
   private async _handleSend(request: Request): Promise<Response> {
     const body = await request.json() as {
       groupId: string;
@@ -117,15 +131,24 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
       senderAddress: string;
       signature?: string;
       publicKey?: string;
+      attachments?: unknown[];
     };
 
-    // Auth: sender must be a participant (or first sender auto-joins)
+    // P1.4 — reject messages with attachments. Our transport does not
+    // round-trip attachments; silently accepting them would risk leaking
+    // blob IDs outside the Seal envelope.
+    if (Array.isArray(body.attachments) && body.attachments.length > 0) {
+      return Response.json({ error: 'Attachments not supported by this transport' }, { status: 400 });
+    }
+
+    // Auth: sender must be a participant (or first sender auto-joins).
     if (this.state.participants.length > 0 && !this._isParticipant(body.senderAddress)) {
       return Response.json({ error: 'Not a participant' }, { status: 403 });
     }
 
-    // Auto-add sender as participant
-    this._addParticipant(body.senderAddress);
+    // P1.1 — resolve the sender to a participant index; blank the stored address.
+    const senderIndex = this._participantIndex(body.senderAddress);
+    if (senderIndex < 0) return Response.json({ error: 'Invalid sender' }, { status: 400 });
 
     const messageId = crypto.randomUUID();
     const order = this.state.nextOrder;
@@ -138,7 +161,8 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
       encryptedText: body.encryptedText,
       nonce: body.nonce,
       keyVersion: body.keyVersion,
-      senderAddress: body.senderAddress,
+      senderAddress: '', // P1.1 — no raw address on new rows.
+      senderIndex,
       createdAt: now,
       updatedAt: now,
       isEdited: false,
@@ -148,7 +172,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     };
 
     const messages = [...this.state.messages, msg];
-    this.setState({ messages, nextOrder: order + 1 });
+    this.setState({ ...this.state, messages, nextOrder: order + 1 });
 
     return Response.json({ messageId });
   }
@@ -178,7 +202,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     const hasNext = msgs.length > limit;
     const page = msgs.slice(0, limit);
 
-    return Response.json({ messages: page, hasNext });
+    return Response.json({ messages: page, hasNext, participants: this.state.participants });
   }
 
   private async _handleFetchOne(request: Request): Promise<Response> {
@@ -205,8 +229,14 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     const idx = this.state.messages.findIndex(m => m.messageId === body.messageId);
     if (idx < 0) return Response.json({ error: 'Not found' }, { status: 404 });
 
-    // Only the original sender can edit
-    if (normAddr(this.state.messages[idx].senderAddress) !== normAddr(body.senderAddress)) {
+    // Only the original sender can edit — compare by participant index so
+    // the senderAddress field on new rows (which is blanked) is irrelevant.
+    const callerIdx = this._participantIndex(body.senderAddress);
+    const storedIdx = this.state.messages[idx].senderIndex;
+    const storedAddr = this.state.messages[idx].senderAddress;
+    const matchByIndex = typeof storedIdx === 'number' && storedIdx >= 0 && callerIdx === storedIdx;
+    const matchByLegacyAddr = !!storedAddr && normAddr(storedAddr) === normAddr(body.senderAddress);
+    if (!matchByIndex && !matchByLegacyAddr) {
       return Response.json({ error: 'Not the sender' }, { status: 403 });
     }
 
