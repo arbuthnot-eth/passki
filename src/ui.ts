@@ -11644,8 +11644,54 @@ function bindEvents() {
           return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
         }).join('');
         const progress = `<div class="ski-idle-convo-progress"><div class="ski-idle-convo-progress-fill"></div></div>`;
-        const title = `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">${stormLabel} <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></a></div>`;
-        convoEl.innerHTML = progress + title + bubbles;
+        // Identity header — two party cards (self + counterparty). Tap a card to
+        // expand a QR popover encoding https://<name>.sui.ski. Proofs live in
+        // the chrome, not the scroll — no handshake messages are ever sent.
+        const _selfName = (myName || '').toLowerCase();
+        const _hasBothNames = !!_selfName && !!bare;
+        const header = _hasBothNames
+          ? `<div class="ski-idle-convo-header">
+               <button class="ski-convo-party" type="button" data-name="${esc(_selfName)}" title="You — tap for QR">
+                 <span class="ski-convo-party-name">${esc(_selfName)}</span><span class="ski-convo-party-tld">.sui</span>
+                 <span class="ski-convo-party-badge">\u2713</span>
+               </button>
+               <span class="ski-convo-header-storm" title="${hasStorm ? 'Seal-encrypted Storm' : 'Storm not yet created'}">${stormLabel}</span>
+               <button class="ski-convo-party" type="button" data-name="${esc(bare)}" title="${esc(bare)}.sui — tap for QR">
+                 <span class="ski-convo-party-name">${esc(bare)}</span><span class="ski-convo-party-tld">.sui</span>
+                 <span class="ski-convo-party-badge">\u2713</span>
+               </button>
+             </div>`
+          : `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">${stormLabel} <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></a></div>`;
+        convoEl.innerHTML = progress + header + bubbles;
+        // Wire the identity header: tap a party card → render a QR popover
+        // encoding https://<name>.sui.ski. The popover is a sibling that lives
+        // inside the convo container and traps clicks to dismiss itself.
+        convoEl.querySelectorAll<HTMLButtonElement>('.ski-convo-party').forEach(btn => {
+          btn.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            const name = btn.dataset.name || '';
+            if (!name) return;
+            // Dismiss any existing popover first.
+            convoEl.querySelector('.ski-convo-qr-pop')?.remove();
+            const pop = document.createElement('div');
+            pop.className = 'ski-convo-qr-pop';
+            pop.innerHTML = `<div class="ski-convo-qr-pop-name">${esc(name)}.sui</div><div class="ski-convo-qr-pop-slot">\u2026</div>`;
+            convoEl.appendChild(pop);
+            // Dismiss on outside click.
+            const _dismiss = (e: Event) => {
+              if (!pop.contains(e.target as Node)) { pop.remove(); document.removeEventListener('click', _dismiss, true); }
+            };
+            setTimeout(() => document.addEventListener('click', _dismiss, true), 0);
+            try {
+              const svg = await getQrSvg(`https://${name}.sui.ski`, '#ffffff');
+              const slot = pop.querySelector('.ski-convo-qr-pop-slot') as HTMLElement | null;
+              if (slot) slot.innerHTML = svg;
+            } catch {
+              const slot = pop.querySelector('.ski-convo-qr-pop-slot') as HTMLElement | null;
+              if (slot) slot.textContent = 'QR unavailable';
+            }
+          });
+        });
         convoEl.removeAttribute('hidden');
         convoEl.scrollTop = convoEl.scrollHeight;
         // Sync the progress bar with scrollTop — right edge = newest message.
