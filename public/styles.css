@@ -3383,9 +3383,9 @@ body {
   gap: 3px;
   padding: 6px 8px 4px; /* progress bar is absolute-positioned, no top reserve needed */
   z-index: 4;
-  background: rgba(10, 10, 15, 0.92);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  /* Transparent container — the dark backdrop only lives on the bubbles
+     themselves so the video background shows through the gaps. */
+  background: transparent;
   border-radius: 6px;
   box-sizing: border-box;
   /* Hide native scrollbar — progress bar at the top replaces it */
@@ -3545,6 +3545,11 @@ body {
   max-width: 85%;
   word-break: break-word;
   line-height: 1.4;
+  /* Per-bubble backdrop blur — each bubble gets its own localized smoky
+     panel against the video background, instead of one giant dark container.
+     Gaps between bubbles stay transparent. */
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
 }
 .ski-idle-bubble--out {
   align-self: flex-end;
