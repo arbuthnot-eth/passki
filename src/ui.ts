@@ -9261,11 +9261,11 @@ function bindEvents() {
 
       // Track Storm existence per groupId (shared between action button + compose preview)
       const _stormExistsCache: Record<string, boolean | 'checking'> = (() => {
-        try { const c = sessionStorage.getItem('ski:storm-cache'); return c ? JSON.parse(c) : {}; } catch { return {}; }
+        try { const c = sessionStorage.getItem('ski:storm-cache:v2'); return c ? JSON.parse(c) : {}; } catch { return {}; }
       })();
       const _markStormExists = (gid: string) => {
         _stormExistsCache[gid] = true;
-        try { sessionStorage.setItem('ski:storm-cache', JSON.stringify(Object.fromEntries(Object.entries(_stormExistsCache).filter(([,v]) => v === true)))); } catch {}
+        try { sessionStorage.setItem('ski:storm-cache:v2', JSON.stringify(Object.fromEntries(Object.entries(_stormExistsCache).filter(([,v]) => v === true)))); } catch {}
       };
       const _checkStormExists = (groupId: string) => {
         if (_stormExistsCache[groupId] !== undefined) return;
@@ -9273,7 +9273,7 @@ function bindEvents() {
         import('./client/thunder.js').then(({ stormExists }) => {
           stormExists(groupId).then(exists => {
             _stormExistsCache[groupId] = exists;
-            if (exists) try { sessionStorage.setItem('ski:storm-cache', JSON.stringify(Object.fromEntries(Object.entries(_stormExistsCache).filter(([,v]) => v === true)))); } catch {}
+            if (exists) try { sessionStorage.setItem('ski:storm-cache:v2', JSON.stringify(Object.fromEntries(Object.entries(_stormExistsCache).filter(([,v]) => v === true)))); } catch {}
             _renderThunderComposePreview();
             _updateIdleStatus();
           }).catch(() => { _stormExistsCache[groupId] = false; _renderThunderComposePreview(); _updateIdleStatus(); });
@@ -11420,26 +11420,31 @@ function bindEvents() {
                   },
                 });
               } else {
-                // Seal-encrypt + send (creates Storm on first message if needed)
+                // Seal-encrypt + send. Always pass signAndExecute so sendThunder
+                // can build a creation PTB if its dynamic on-chain check finds
+                // the Storm missing — we never trust the session cache for
+                // correctness, only as a UX hint for which toast to show.
                 const _sendText = msgText || draft.raw || '';
                 if (!_sendText.trim()) continue;
                 const recipAddr = await lookupRecipientAddress(recip);
-                const _needsStormCreation = _stormExistsCache[groupUuid] !== true;
+                const _cacheSaysExists = _stormExistsCache[groupUuid] === true;
                 await sendThunder({
                   groupRef: { uuid: groupUuid },
                   text: _sendText,
                   recipientAddress: recipAddr || undefined,
                   senderName,
                   recipientName: recip,
-                  signAndExecute: _needsStormCreation ? async (txOrBytes: any) => {
-                    showToast(`\u26c8\ufe0f Creating encrypted Storm with ${recip}`);
+                  signAndExecute: async (txOrBytes: any) => {
+                    showToast(_cacheSaysExists
+                      ? `\u26a1 Sending to ${recip}`
+                      : `\u26c8\ufe0f Creating encrypted Storm with ${recip}`);
                     const result = await signAndExecuteTransaction(txOrBytes);
                     _markStormExists(groupUuid);
                     _updateIdleStatus();
                     return result;
-                  } : undefined,
+                  },
                 });
-                if (_needsStormCreation) _markStormExists(groupUuid);
+                _markStormExists(groupUuid);
               }
               _addThunderContact(recip);
             }
