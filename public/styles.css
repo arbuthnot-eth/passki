@@ -3573,9 +3573,9 @@ body {
 .ski-idle-bubble--failed .ski-idle-bubble-check { color: #ef4444; opacity: 1; }
 .ski-idle-bubble--in {
   align-self: flex-start;
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  color: #0a0a0f;
+  background: rgba(77, 162, 255, 0.2);
+  border: 1px solid rgba(77, 162, 255, 0.5);
+  color: #cfe4ff;
 }
 .ski-idle-bubble-sender {
   font-size: 0.7rem;
