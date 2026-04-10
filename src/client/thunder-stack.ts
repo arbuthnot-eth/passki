@@ -316,17 +316,22 @@ export async function sendThunder(opts: {
     // the $ amount the user typed. amountMist is the SUI input size (computed
     // upstream from the USD amount × live SUI price × slippage buffer).
     if (hasTransfer) {
-      // Two-hop swap: SUI → USDC → iUSD, then transfer iUSD to the recipient.
-      // Phantom / WaaP / Suiet render the confirm screen as "~1.00 iUSD → <recipient>"
-      // so the signing amount matches the $ the user typed AND is denominated
-      // in the canonical SKI stable.
+      // Swap SUI → USDC via DeepBook, then transfer the USDC to the recipient.
+      // USDC is dollar-pegged, so Phantom / WaaP / Suiet render the confirm
+      // screen as "≈ 1 USDC → <recipient>" matching the $ the user typed.
+      //
+      // TODO: add a second hop USDC → iUSD once the iUSD/USDC DeepBook pool
+      // has two-sided liquidity. Until then a second hop aborts with code 12
+      // (insufficient pool liquidity), breaking dry-run and preventing any
+      // $ send from reaching the wallet's confirm screen.
       const [suiIn] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-      const [zeroDeepHop1] = tx.moveCall({
+      const [zeroDeep] = tx.moveCall({
         target: '0x2::coin::zero',
         typeArguments: [DB_DEEP_TYPE],
       });
-      // Hop 1: SUI → USDC (base for quote), returns [usdcOut, suiChange, deepChange].
-      const hop1 = tx.moveCall({
+      // swap_exact_base_for_quote(pool, base_in, deep_in, min_quote_out, clock)
+      // returns [usdcOut, suiChange, deepChange].
+      const hop = tx.moveCall({
         target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
         typeArguments: [DB_SUI_TYPE, DB_USDC_TYPE],
         arguments: [
@@ -336,38 +341,15 @@ export async function sendThunder(opts: {
             mutable: true,
           }),
           suiIn,
-          zeroDeepHop1,
-          tx.pure.u64(0),
-          tx.object('0x6'),
-        ],
-      });
-      // Hop 2: USDC → iUSD (iUSD is base of the iUSD/USDC pool, so USDC is quote
-      // and we want base_out → swap_exact_quote_for_base). Returns
-      // [iusdOut, usdcChange, deepChange].
-      const [zeroDeepHop2] = tx.moveCall({
-        target: '0x2::coin::zero',
-        typeArguments: [DB_DEEP_TYPE],
-      });
-      const hop2 = tx.moveCall({
-        target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
-        typeArguments: [DB_IUSD_TYPE, DB_USDC_TYPE],
-        arguments: [
-          tx.sharedObjectRef({
-            objectId: DB_IUSD_USDC_POOL,
-            initialSharedVersion: DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION,
-            mutable: true,
-          }),
-          hop1[0],         // USDC from hop 1
-          zeroDeepHop2,
+          zeroDeep,
           tx.pure.u64(0),
           tx.object('0x6'),
         ],
       });
       const recipientAddr = tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress));
       const senderAddr = tx.pure.address(normalizeSuiAddress(_address));
-      // iUSD → recipient; all change coins → sender
-      tx.transferObjects([hop2[0]], recipientAddr);
-      tx.transferObjects([hop1[1], hop1[2], hop2[1], hop2[2]], senderAddr);
+      tx.transferObjects([hop[0]], recipientAddr);
+      tx.transferObjects([hop[1], hop[2]], senderAddr);
     }
 
     // 2. Storm creation (if no on-chain Storm exists)
