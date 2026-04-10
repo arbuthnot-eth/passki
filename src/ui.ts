@@ -11569,34 +11569,18 @@ function bindEvents() {
 
         let entries: Array<{ text: string; senderAddress: string; createdAt: number; messageId: string }> = [];
         try {
-          // Direct DO fetch — no Seal session key needed, no wallet popup
-          const _doRes = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/fetch`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ limit: 50, address: getState().address || '' }),
-          });
-          if (_doRes.ok) {
-            const _doData = await _doRes.json() as { messages: any[]; participants?: string[] };
-            const _participants: string[] = Array.isArray(_doData.participants) ? _doData.participants : [];
-            entries = (_doData.messages || []).map((m: any) => {
-              let text = '';
-              try {
-                const raw = atob(m.encryptedText);
-                // Try UTF-8 decode
-                try { text = decodeURIComponent(escape(raw)); } catch { text = raw; }
-              } catch { text = m.encryptedText || ''; }
-              // P1.1 — prefer senderIndex → participants[], fall back to legacy senderAddress
-              const senderAddress = typeof m.senderIndex === 'number' && m.senderIndex >= 0 && m.senderIndex < _participants.length
-                ? _participants[m.senderIndex]
-                : (m.senderAddress || '');
-              return {
-                text,
-                senderAddress,
-                createdAt: m.timestamp ?? m.createdAt ?? Date.now(),
-                messageId: m.messageId || m.id || `msg-${m.order}`,
-              };
-            });
-          }
+          // Fetch via getThunders so Seal decryption + padding-strip runs.
+          // The raw DO payload is Seal ciphertext — decoding it as text shows
+          // binary garbage. getThunders handles the full envelope pipeline
+          // including legacy (unencrypted) message fallback.
+          const { getThunders } = await import('./client/thunder.js');
+          const result = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+          entries = (result.messages || []).map((m: any) => ({
+            text: m.text || '',
+            senderAddress: m.senderAddress || '',
+            createdAt: m.createdAt ?? Date.now(),
+            messageId: m.messageId || `msg-${m.order}`,
+          }));
         } catch { /* fallback to empty */ }
 
         if (!entries.length) {
