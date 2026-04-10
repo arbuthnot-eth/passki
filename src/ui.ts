@@ -11665,7 +11665,10 @@ function bindEvents() {
         }
 
         const hasStorm = _stormExistsCache[groupId] === true;
-        const stormLabel = hasStorm ? '\uD83D\uDD12' : '\u26c8\ufe0f'; // 🔒 if encrypted, ⛈️ if not
+        // Text-based seal indicator. Z-notation brackets ⟬ ⟭ + monospace text
+        // render reliably across browsers and read as "this is a sealed channel"
+        // without needing emoji glyphs.
+        const stormLabel = hasStorm ? '\u27EC SEAL \u27ED' : '\u27E8 open \u27E9';
         const fetchedBubbles = entries.slice(-20).map(m => {
           const isOut = m.senderAddress.toLowerCase() === myAddr;
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
@@ -11684,16 +11687,16 @@ function bindEvents() {
         const header = _hasBothNames
           ? `<div class="ski-idle-convo-header">
                <button class="ski-convo-party" type="button" data-name="${esc(_selfName)}" title="You — tap for QR">
-                 <span class="ski-convo-party-name">${esc(_selfName)}</span><span class="ski-convo-party-tld">.sui</span>
+                 <span class="ski-convo-party-name">${esc(_selfName)}</span>
                  <span class="ski-convo-party-badge">\u2713</span>
                </button>
                <span class="ski-convo-header-storm" title="${hasStorm ? 'Seal-encrypted Storm' : 'Storm not yet created'}">${stormLabel}</span>
-               <button class="ski-convo-party" type="button" data-name="${esc(bare)}" title="${esc(bare)}.sui — tap for QR">
-                 <span class="ski-convo-party-name">${esc(bare)}</span><span class="ski-convo-party-tld">.sui</span>
+               <button class="ski-convo-party" type="button" data-name="${esc(bare)}" title="${esc(bare)} — tap for QR">
+                 <span class="ski-convo-party-name">${esc(bare)}</span>
                  <span class="ski-convo-party-badge">\u2713</span>
                </button>
              </div>`
-          : `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">${stormLabel} <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></a></div>`;
+          : `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">${stormLabel} <span class="ski-idle-convo-name">${esc(bare)}</span></a></div>`;
         convoEl.innerHTML = progress + header + bubbles;
         // Wire the identity header: tap a party card → render a QR popover
         // encoding https://<name>.sui.ski. The popover is a sibling that lives

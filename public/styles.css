@@ -3511,9 +3511,14 @@ body {
 }
 .ski-convo-header-storm {
   flex-shrink: 0;
-  font-size: 0.9rem;
-  opacity: 0.8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgba(255, 184, 0, 0.9);
+  padding: 2px 4px;
   user-select: none;
+  white-space: nowrap;
 }
 /* QR popover — centered inside the convo container, tap-outside dismisses. */
 .ski-convo-qr-pop {
