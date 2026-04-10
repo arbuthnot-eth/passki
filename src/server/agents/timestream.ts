@@ -46,6 +46,13 @@ function normAddr(a: string): string {
   return (a || '').replace(/^0x/, '').toLowerCase().padStart(64, '0');
 }
 
+/** Round timestamp to 10s bucket + add ±5s uniform noise. Preserves order via the monotonic `order` field. */
+function jitterTs(ms: number): number {
+  const bucket = Math.floor(ms / 10_000) * 10_000;
+  const noise = Math.floor((Math.random() - 0.5) * 10_000);
+  return bucket + noise;
+}
+
 export class TimestreamAgent extends Agent<Env, TimestreamState> {
   initialState: TimestreamState = {
     messages: [],
@@ -122,7 +129,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
 
     const messageId = crypto.randomUUID();
     const order = this.state.nextOrder;
-    const now = Date.now();
+    const now = jitterTs(Date.now());
 
     const msg: StoredMessage = {
       messageId,
@@ -205,7 +212,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
 
     const updated = { ...this.state.messages[idx] };
     if (body.encryptedText) { updated.encryptedText = body.encryptedText; updated.isEdited = true; }
-    updated.updatedAt = Date.now();
+    updated.updatedAt = jitterTs(Date.now());
 
     const messages = [...this.state.messages];
     messages[idx] = updated;
@@ -226,7 +233,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     }
 
     const messages = [...this.state.messages];
-    messages[idx] = { ...messages[idx], isDeleted: true, updatedAt: Date.now() };
+    messages[idx] = { ...messages[idx], isDeleted: true, updatedAt: jitterTs(Date.now()) };
     this.setState({ ...this.state, messages });
 
     return Response.json({ deleted: true });
