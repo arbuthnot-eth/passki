@@ -11500,10 +11500,14 @@ function bindEvents() {
               _renderThunderComposePreview();
               return;
             }
-            // Success: clear the input completely. The open storm context
-            // takes care of routing follow-up messages to the same recipient.
-            if (_idleThunderInput) {
-              _idleThunderInput.value = '';
+            // Success: clear the input completely. Re-query from the live
+            // DOM — the closure-captured _idleThunderInput can be stale if
+            // the overlay was re-rendered, and setting its .value wouldn't
+            // touch the element the user is actually typing in.
+            const _liveInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+            if (_liveInput) {
+              _liveInput.value = '';
+              _liveInput.dispatchEvent(new Event('input', { bubbles: true }));
             }
             const names = recipients.join(', ');
             if (transferAmtUsd) {
@@ -11514,18 +11518,24 @@ function bindEvents() {
             _thunderComposeConfirmedRaw = '';
             _thunderComposeStage = 'idle';
             _renderThunderComposePreview();
-            // Optimistic: append sent message to convo immediately.
-            // Do NOT auto-refresh from the DO — a failed/racing getThunders
-            // decrypt would return empty and wipe the bubble, making the
-            // message look like it "went back to the input". The 5s convo
-            // poll (set up by _expandIdleConvo when the convo is open) will
-            // pick up server-side additions on its own cadence.
+            // Optimistic: append sent message to convo immediately, with a
+            // confirmed ✓ status indicator so the user has a visual hook
+            // beyond the toast. The convo poll picks up server-side state
+            // on its own cadence.
             _freezeGif();
             const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
             if (convoEl) {
               const _sentBubble = document.createElement('div');
-              _sentBubble.className = 'ski-idle-bubble ski-idle-bubble--out';
-              _sentBubble.textContent = msgText || draft.raw || '';
+              _sentBubble.className = 'ski-idle-bubble ski-idle-bubble--out ski-idle-bubble--sent';
+              const _textSpan = document.createElement('span');
+              _textSpan.className = 'ski-idle-bubble-text';
+              _textSpan.textContent = msgText || draft.raw || '';
+              const _check = document.createElement('span');
+              _check.className = 'ski-idle-bubble-check';
+              _check.textContent = '\u2713';
+              _check.title = 'Sent';
+              _sentBubble.appendChild(_textSpan);
+              _sentBubble.appendChild(_check);
               convoEl.appendChild(_sentBubble);
               convoEl.removeAttribute('hidden');
               convoEl.scrollTop = convoEl.scrollHeight;

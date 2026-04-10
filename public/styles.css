@@ -3551,7 +3551,21 @@ body {
   background: rgba(10, 10, 15, 0.85);
   border: 1px solid rgba(255, 184, 0, 0.4);
   color: #FFB800;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
 }
+.ski-idle-bubble-text { flex: 1; }
+.ski-idle-bubble-check {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #22c55e;
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+}
+.ski-idle-bubble--sent .ski-idle-bubble-check { opacity: 1; }
+.ski-idle-bubble--failed .ski-idle-bubble-check { color: #ef4444; opacity: 1; }
 .ski-idle-bubble--in {
   align-self: flex-start;
   background: rgba(255, 255, 255, 0.95);
