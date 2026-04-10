@@ -134,8 +134,12 @@ async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<Sessio
       suiClient: _client as never,
     });
     const personalMsg = key.getPersonalMessage();
-    const { signature } = await opts.signPersonalMessage({ message: personalMsg });
-    await key.setPersonalMessageSignature(signature);
+    // opts.signPersonalMessage is actually a (msg: Uint8Array) => ... function
+    // at runtime despite the SignPersonalMessageFn type declaring an object
+    // arg — the caller in ui.ts passes bytes directly. Match the real runtime
+    // shape or the wallet signs garbage and Seal servers reject the cert.
+    const signed = await (opts.signPersonalMessage as unknown as (msg: Uint8Array) => Promise<{ signature: string }>)(personalMsg);
+    await key.setPersonalMessageSignature(signed.signature);
 
     // Persist for restoration on next page load.
     try {
