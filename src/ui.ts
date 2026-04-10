@@ -11665,10 +11665,10 @@ function bindEvents() {
         }
 
         const hasStorm = _stormExistsCache[groupId] === true;
-        // Text-based seal indicator. Z-notation brackets ⟬ ⟭ + monospace text
-        // render reliably across browsers and read as "this is a sealed channel"
-        // without needing emoji glyphs.
-        const stormLabel = hasStorm ? '\u27EC SEAL \u27ED' : '\u27E8 open \u27E9';
+        // Text-based storm indicator. Z-notation brackets ⟬ ⟭ + monospace text
+        // render reliably across browsers and read as "this is an encrypted
+        // channel" without needing emoji glyphs.
+        const stormLabel = hasStorm ? '\u27EC STORM \u27ED' : '\u27E8 open \u27E9';
         const fetchedBubbles = entries.slice(-20).map(m => {
           const isOut = m.senderAddress.toLowerCase() === myAddr;
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
@@ -11684,15 +11684,17 @@ function bindEvents() {
         // the chrome, not the scroll — no handshake messages are ever sent.
         const _selfName = (myName || '').toLowerCase();
         const _hasBothNames = !!_selfName && !!bare;
+        // Counterparty on the left, self on the right — reads as "THEM ⟬ STORM ⟭ YOU",
+        // mirroring how message bubbles align (incoming on left, outgoing on right).
         const header = _hasBothNames
           ? `<div class="ski-idle-convo-header">
-               <button class="ski-convo-party" type="button" data-name="${esc(_selfName)}" title="You — tap for QR">
-                 <span class="ski-convo-party-name">${esc(_selfName)}</span>
+               <button class="ski-convo-party" type="button" data-name="${esc(bare)}" title="${esc(bare)} — tap for QR">
+                 <span class="ski-convo-party-name">${esc(bare)}</span>
                  <span class="ski-convo-party-badge">\u2713</span>
                </button>
                <span class="ski-convo-header-storm" title="${hasStorm ? 'Seal-encrypted Storm' : 'Storm not yet created'}">${stormLabel}</span>
-               <button class="ski-convo-party" type="button" data-name="${esc(bare)}" title="${esc(bare)} — tap for QR">
-                 <span class="ski-convo-party-name">${esc(bare)}</span>
+               <button class="ski-convo-party" type="button" data-name="${esc(_selfName)}" title="You — tap for QR">
+                 <span class="ski-convo-party-name">${esc(_selfName)}</span>
                  <span class="ski-convo-party-badge">\u2713</span>
                </button>
              </div>`
