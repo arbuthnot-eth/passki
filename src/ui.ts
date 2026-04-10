@@ -9542,6 +9542,19 @@ function bindEvents() {
           _rosterCache = null;
           const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
           if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
+          // The convo panel is bound to the visible card. If the card just
+          // changed to someone else, hide any open convo whose target no
+          // longer matches — a Storm with brando shouldn't show on
+          // someone else's card.
+          const _convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+          if (_convoEl && !_convoEl.hasAttribute('hidden')) {
+            const _savedConvo = (localStorage.getItem('ski:idle-convo') || sessionStorage.getItem('ski:idle-convo') || '').toLowerCase();
+            if (_savedConvo && _savedConvo !== _effectiveName) {
+              _convoEl.setAttribute('hidden', '');
+              _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+              try { localStorage.removeItem('ski:idle-convo'); sessionStorage.removeItem('ski:idle-convo'); } catch {}
+            }
+          }
         }
         if (isOwnName || nsAvail === 'available' || (!nsAvail && !name)) {
           const primaryName = app.suinsName?.replace(/\.sui$/, '') || '';
@@ -12166,11 +12179,18 @@ function bindEvents() {
         }
       } catch {}
 
-      // Restore convo if it was open — use localStorage for cross-session persistence
+      // Restore convo if it was open — only when the saved convo target
+      // matches the current card. Otherwise the user's last storm with X
+      // would briefly pop up while they're looking at Y's card, which is
+      // confusing. The convo is bound to the visible card identity.
       try {
-        const _savedConvo = localStorage.getItem('ski:idle-convo') || sessionStorage.getItem('ski:idle-convo');
-        if (_savedConvo) {
+        const _savedConvo = (localStorage.getItem('ski:idle-convo') || sessionStorage.getItem('ski:idle-convo') || '').toLowerCase();
+        const _currentBare = (nsLabel || app.suinsName?.replace(/\.sui$/, '') || '').toLowerCase();
+        if (_savedConvo && _savedConvo === _currentBare) {
           setTimeout(() => _expandIdleConvo(_savedConvo), 500);
+        } else if (_savedConvo) {
+          // Mismatch — clear the stale entry so next overlay open is clean.
+          try { localStorage.removeItem('ski:idle-convo'); sessionStorage.removeItem('ski:idle-convo'); } catch {}
         }
       } catch {}
 
