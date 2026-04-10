@@ -2811,6 +2811,12 @@ body {
   top: 27%;
   left: 12px;
   z-index: 2;
+  padding: 4px 8px;
+  background: rgba(10, 10, 15, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 8px;
+  box-sizing: border-box;
 }
 .ski-idle-ns-row .wk-ns-status {
   flex-shrink: 0;
