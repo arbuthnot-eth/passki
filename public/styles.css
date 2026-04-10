@@ -3364,7 +3364,7 @@ body {
   right: 0;
   height: 3px;
   margin: 0 0 4px 0;
-  background: rgba(255, 184, 0, 0.12);
+  background: rgba(255, 255, 255, 0.12);
   border-radius: 2px;
   overflow: hidden;
   z-index: 5;
@@ -3373,7 +3373,7 @@ body {
 }
 .ski-idle-convo-progress-fill {
   height: 100%;
-  background: rgba(255, 184, 0, 0.85);
+  background: rgba(255, 255, 255, 0.9);
   border-radius: 2px;
   width: 0%;
   transition: width 0.12s ease-out;
