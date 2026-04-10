@@ -333,7 +333,13 @@ export async function sendThunder(opts: {
     // 2. Storm creation (if no on-chain Storm exists)
     if (needsStorm) {
       const members = opts.recipientAddress ? [opts.recipientAddress] : [];
+      // CRITICAL: pass `uuid` so the Storm is created at the deterministic
+      // object ID we look up later via `encrypt({ uuid })`. Without this,
+      // the SDK generates a random UUID and the object lands at a different
+      // derived address than the encrypt path resolves — every send fails
+      // with "Object <derived> not found" after the PTB succeeds.
       client.messaging.tx.createAndShareGroup({
+        uuid: groupId,
         name: groupId || 'thunder-storm',
         initialMembers: members,
         transaction: tx,
@@ -572,12 +578,15 @@ export async function* subscribeThunders(opts: {
  * Auto-called on first message to a new conversation.
  */
 export function createStorm(opts: {
+  /** UUID for deterministic object derivation. Same UUID → same on-chain address. */
+  uuid?: string;
   name: string;
   members: string[];
   transaction?: Transaction;
 }): Transaction {
   const client = getThunderClient();
   const tx = client.messaging.tx.createAndShareGroup({
+    uuid: opts.uuid ?? opts.name,
     name: opts.name,
     initialMembers: opts.members,
     transaction: opts.transaction,
