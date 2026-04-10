@@ -36,6 +36,11 @@ const DB_SUI_TYPE = '0x000000000000000000000000000000000000000000000000000000000
 const DB_USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
 const DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION = 389750322;
+// iUSD — canonical SKI stable (v2, 9 decimals). USDC/iUSD DeepBook pool is the
+// second hop; keeper provides liquidity so Thunder \$ transfers arrive in iUSD.
+const DB_IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+const DB_IUSD_USDC_POOL = '0x38df72f5d07607321d684ed98c9a6c411c0b8968e100a1cd90a996f912cd6ce1';
+const DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 832866334;
 
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold):
 // Overclock, Studio Mirai, H2O Nodes.
@@ -311,14 +316,17 @@ export async function sendThunder(opts: {
     // the $ amount the user typed. amountMist is the SUI input size (computed
     // upstream from the USD amount × live SUI price × slippage buffer).
     if (hasTransfer) {
+      // Two-hop swap: SUI → USDC → iUSD, then transfer iUSD to the recipient.
+      // Phantom / WaaP / Suiet render the confirm screen as "~1.00 iUSD → <recipient>"
+      // so the signing amount matches the $ the user typed AND is denominated
+      // in the canonical SKI stable.
       const [suiIn] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-      const [zeroDeep] = tx.moveCall({
+      const [zeroDeepHop1] = tx.moveCall({
         target: '0x2::coin::zero',
         typeArguments: [DB_DEEP_TYPE],
       });
-      // swap_exact_base_for_quote returns [usdcOut, suiChange, deepChange].
-      // min_quote_out = 0 (slippage tolerated — user chose the $ amount)
-      const swapOut = tx.moveCall({
+      // Hop 1: SUI → USDC (base for quote), returns [usdcOut, suiChange, deepChange].
+      const hop1 = tx.moveCall({
         target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
         typeArguments: [DB_SUI_TYPE, DB_USDC_TYPE],
         arguments: [
@@ -328,15 +336,38 @@ export async function sendThunder(opts: {
             mutable: true,
           }),
           suiIn,
-          zeroDeep,
+          zeroDeepHop1,
+          tx.pure.u64(0),
+          tx.object('0x6'),
+        ],
+      });
+      // Hop 2: USDC → iUSD (iUSD is base of the iUSD/USDC pool, so USDC is quote
+      // and we want base_out → swap_exact_quote_for_base). Returns
+      // [iusdOut, usdcChange, deepChange].
+      const [zeroDeepHop2] = tx.moveCall({
+        target: '0x2::coin::zero',
+        typeArguments: [DB_DEEP_TYPE],
+      });
+      const hop2 = tx.moveCall({
+        target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+        typeArguments: [DB_IUSD_TYPE, DB_USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({
+            objectId: DB_IUSD_USDC_POOL,
+            initialSharedVersion: DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION,
+            mutable: true,
+          }),
+          hop1[0],         // USDC from hop 1
+          zeroDeepHop2,
           tx.pure.u64(0),
           tx.object('0x6'),
         ],
       });
       const recipientAddr = tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress));
-      // USDC → recipient; any SUI + DEEP change → sender
-      tx.transferObjects([swapOut[0]], recipientAddr);
-      tx.transferObjects([swapOut[1], swapOut[2]], tx.pure.address(normalizeSuiAddress(_address)));
+      const senderAddr = tx.pure.address(normalizeSuiAddress(_address));
+      // iUSD → recipient; all change coins → sender
+      tx.transferObjects([hop2[0]], recipientAddr);
+      tx.transferObjects([hop1[1], hop1[2], hop2[1], hop2[2]], senderAddr);
     }
 
     // 2. Storm creation (if no on-chain Storm exists)
