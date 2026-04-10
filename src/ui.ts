@@ -12225,10 +12225,53 @@ function bindEvents() {
         }
       } catch {}
       void _loadIdleBg(IDLE_BACKGROUNDS[_currentBgIdx]);
+
+      // ── Audio: muted-by-default (autoplay constraint), unmute on first
+      // user gesture, persist preference. Browsers block autoplay-with-sound
+      // unconditionally, so the <video> element keeps the `muted` attribute
+      // until the user interacts; once unmuted we remember the choice and
+      // restore it on subsequent overlay opens.
+      let _userPrefersAudio = false;
+      try { _userPrefersAudio = localStorage.getItem('ski:idle-bg-audio') === '1'; } catch {}
+      const _setMuted = (muted: boolean) => {
+        if (!_idleVideo) return;
+        _idleVideo.muted = muted;
+        if (!muted) _idleVideo.volume = 1;
+        // Update the small overlay icon if present.
+        const icon = _idleOverlay?.querySelector('.ski-idle-audio-toggle') as HTMLElement | null;
+        if (icon) icon.textContent = muted ? '\u{1F507}' : '\u{1F50A}';
+      };
+      const _tryUnmuteOnGesture = () => {
+        if (!_userPrefersAudio || !_idleVideo) return;
+        _setMuted(false);
+        // Some browsers also pause on src reload — kick playback in case.
+        _idleVideo.play().catch(() => { /* still gated, will retry on next gesture */ });
+      };
+      _setMuted(true); // always start muted so autoplay works
+      // First gesture anywhere on the overlay lifts the mute (if user opted in).
+      _idleOverlay?.addEventListener('pointerdown', _tryUnmuteOnGesture, { once: false });
+
+      // Small mute / unmute toggle in the corner of the video.
+      const _audioToggle = document.createElement('button');
+      _audioToggle.className = 'ski-idle-audio-toggle';
+      _audioToggle.type = 'button';
+      _audioToggle.title = 'Toggle background audio';
+      _audioToggle.textContent = '\u{1F507}';
+      _idleOverlay?.appendChild(_audioToggle);
+      _audioToggle.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (!_idleVideo) return;
+        const nextMuted = !_idleVideo.muted;
+        _setMuted(nextMuted);
+        _userPrefersAudio = !nextMuted;
+        try { localStorage.setItem('ski:idle-bg-audio', _userPrefersAudio ? '1' : '0'); } catch {}
+        if (!nextMuted) _idleVideo.play().catch(() => {});
+      });
+
       // Click the video to cycle to the next background.
       _idleVideo?.addEventListener('click', (ev) => {
         // Don't intercept clicks that bubbled up from overlaid controls.
-        if ((ev.target as HTMLElement | null)?.closest('button, input, .ski-convo-party, .ski-idle-bubble')) return;
+        if ((ev.target as HTMLElement | null)?.closest('button, input, .ski-convo-party, .ski-idle-bubble, .ski-idle-audio-toggle')) return;
         ev.stopPropagation();
         _currentBgIdx = (_currentBgIdx + 1) % IDLE_BACKGROUNDS.length;
         const next = IDLE_BACKGROUNDS[_currentBgIdx];
