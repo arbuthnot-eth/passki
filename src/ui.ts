@@ -9640,11 +9640,34 @@ function bindEvents() {
           _idleActionBtn.title = _hasStorm ? `Seal-encrypted Storm with ${label}` : `Open Storm with ${label} (creates on first message)`;
           _idleActionBtn.disabled = false;
         } else if (isOwned) {
-          const _hasProof = _suiamiVerifyHtml.includes('verified');
-          _idleActionBtn.textContent = _hasProof ? 'SUIAMI \u2713' : 'SUIAMI';
-          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami-active';
-          _idleActionBtn.title = _hasProof ? `SUIAMI verified \u2014 ${_iamName}.sui` : `SUIAMI? I AM ${_iamName}`;
-          _idleActionBtn.disabled = false;
+          // Ownership doesn't imply identity. If I own the NFT but
+          // the target address is a DIFFERENT wallet, @name sends
+          // route to that wallet — so this is a Storm-with-another-
+          // wallet, not a SUIAMI self-claim. Only paint SUIAMI when
+          // the target actually resolves back to me (or isn't set).
+          const _myAddrLc = (ws.address || '').toLowerCase();
+          const _tgtLc = (nsTargetAddress || '').toLowerCase();
+          const _targetIsSelf = !_tgtLc || _tgtLc === _myAddrLc;
+          if (!_targetIsSelf) {
+            // Cross-wallet: build the deterministic pair-keyed storm
+            // gid from (me, target) and surface the same Storm button
+            // we use for 'taken && !isOwned'. Opaque, not transparent.
+            const _meHex = _myAddrLc.replace(/^0x/, '').slice(0, 14);
+            const _tgtHex = _tgtLc.replace(/^0x/, '').slice(0, 14);
+            const _gid = (_meHex && _tgtHex) ? `t-${[_meHex, _tgtHex].sort().join('')}` : '';
+            const _hasStorm = _stormExistsCache[_gid] === true;
+            if (_gid && !_stormExistsCache[_gid]) _checkStormExists(_gid);
+            _idleActionBtn.textContent = _hasStorm ? 'Storm \u26a1' : 'Storm';
+            _idleActionBtn.className = _hasStorm ? 'ski-idle-ns-action ski-idle-ns-action--thunder' : 'ski-idle-ns-action ski-idle-ns-action--storm';
+            _idleActionBtn.title = _hasStorm ? `Seal-encrypted Storm with ${label}` : `Open Storm with ${label} (creates on first message)`;
+            _idleActionBtn.disabled = false;
+          } else {
+            const _hasProof = _suiamiVerifyHtml.includes('verified');
+            _idleActionBtn.textContent = _hasProof ? 'SUIAMI \u2713' : 'SUIAMI';
+            _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami-active';
+            _idleActionBtn.title = _hasProof ? `SUIAMI verified \u2014 ${_iamName}.sui` : `SUIAMI? I AM ${_iamName}`;
+            _idleActionBtn.disabled = false;
+          }
         } else {
           _idleActionBtn.textContent = 'SUIAMI';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';

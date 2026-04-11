@@ -2967,14 +2967,14 @@ body {
 .ski-idle-context-icon { flex-shrink: 0; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5)); }
 .ski-idle-context-text { white-space: nowrap; }
 .ski-idle-ns-action--suiami {
-  background: rgba(90, 115, 145, 0.45);
-  border: 1px solid rgba(110, 140, 170, 0.5);
-  color: #a0b8d0;
+  background: rgba(90, 115, 145, 0.85);
+  border: 1px solid rgba(110, 140, 170, 0.9);
+  color: #d6e4f0;
 }
 .ski-idle-ns-action--suiami-active {
-  background: linear-gradient(135deg, rgba(126, 34, 206, 0.3), rgba(168, 85, 247, 0.25));
-  border: 1px solid rgba(168, 85, 247, 0.5);
-  color: #c4b5fd;
+  background: linear-gradient(135deg, rgba(126, 34, 206, 0.8), rgba(168, 85, 247, 0.75));
+  border: 1px solid rgba(168, 85, 247, 0.95);
+  color: #f3e8ff;
 }
 .ski-idle-ns-action--mint {
   background: linear-gradient(135deg, rgba(22, 101, 52, 0.4), rgba(34, 197, 94, 0.3));
