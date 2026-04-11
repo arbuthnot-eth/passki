@@ -672,12 +672,15 @@ import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
           import('@mysten/sui/graphql'),
           import('@mysten/sui/utils'),
           import('./wallet.js'),
-          fetch('/api/sponsor-info').then(r => r.json()).catch(() => null) as Promise<{ sponsorAddress?: string } | null>,
+          fetch('/api/sponsor-info').then(r => r.json()).catch(() => null) as Promise<{ sponsorAddress?: string; gasCoins?: Array<{ objectId: string; version: string; digest: string }> } | null>,
         ]);
         const ultron = sponsorInfo?.sponsorAddress;
+        const sponsorGasCoins = sponsorInfo?.gasCoins ?? [];
         if (!ultron) { console.error('[.SKI] sweepNsToCache: ultron address unavailable'); return null; }
         const addr = (wallet as any).getState?.()?.address;
         if (!addr) { console.error('[.SKI] sweepNsToCache: no wallet connected'); return null; }
+        const walletName = (wallet as any).getState?.()?.walletName || '';
+        const isWaaP = /waap/i.test(walletName);
 
         // Fetch user's NS coins via GraphQL.
         const NS_TYPE = '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS';
@@ -699,13 +702,122 @@ import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
         if (coins.length === 0) { console.log('[.SKI] sweepNsToCache: no NS to sweep'); return { swept: 0, digest: null }; }
         const totalNs = coins.reduce((s, c) => s + BigInt(c.contents?.json?.balance ?? '0'), 0n);
 
-        const tx = new Transaction();
-        tx.setSender(normalizeSuiAddress(addr));
-        const primary = tx.objectRef({ objectId: coins[0].address, version: coins[0].version, digest: coins[0].digest });
-        if (coins.length > 1) {
-          tx.mergeCoins(primary, coins.slice(1).map(c => tx.objectRef({ objectId: c.address, version: c.version, digest: c.digest })));
+        // Build the NS → ultron transfer tx. Used by both the
+        // sponsored and the drip-fallback paths.
+        const buildSweepTx = (opts: { gasOwner?: string; gasCoins?: Array<{ objectId: string; version: string; digest: string }> }) => {
+          const tx = new Transaction();
+          tx.setSender(normalizeSuiAddress(addr));
+          if (opts.gasOwner && opts.gasCoins?.length) {
+            tx.setGasOwner(normalizeSuiAddress(opts.gasOwner));
+            tx.setGasPayment(opts.gasCoins.map(c => ({
+              objectId: c.objectId, version: c.version, digest: c.digest,
+            })));
+          }
+          const primary = tx.objectRef({ objectId: coins[0].address, version: coins[0].version, digest: coins[0].digest });
+          if (coins.length > 1) {
+            tx.mergeCoins(primary, coins.slice(1).map(c => tx.objectRef({ objectId: c.address, version: c.version, digest: c.digest })));
+          }
+          tx.transferObjects([primary], tx.pure.address(normalizeSuiAddress(ultron)));
+          return tx;
+        };
+
+        // Path 1: dual-sig gasless sweep. User signs as sender, ultron
+        // signs as gas owner via /api/sponsor-gas. No SUI needed in the
+        // user's wallet. Only works on wallets where signTransaction is
+        // NOT broken (every wallet except WaaP).
+        if (!isWaaP && sponsorGasCoins.length > 0) {
+          try {
+            const tx = buildSweepTx({ gasOwner: ultron, gasCoins: sponsorGasCoins });
+            const bytes = await tx.build({ client: gql as never });
+            const userSig = await wallet.signTransaction(bytes);
+            const b64 = btoa(String.fromCharCode(...bytes));
+            const sigRes = await fetch('/api/sponsor-gas', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ txBytes: b64, senderAddress: addr }),
+            });
+            if (sigRes.ok) {
+              const { sponsorSig } = await sigRes.json() as { sponsorSig: string };
+              const { SuiGrpcClient } = await import('@mysten/sui/grpc');
+              const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://fullnode.mainnet.sui.io:443' });
+              const exec = await (grpc as unknown as { core: { executeTransaction: (r: { transaction: Uint8Array; signatures: string[] }) => Promise<Record<string, unknown>> } }).core.executeTransaction({
+                transaction: bytes,
+                signatures: [userSig.signature, sponsorSig],
+              });
+              const digest = (exec as any)?.digest ?? (exec as any)?.Transaction?.digest ?? '';
+              console.log(`[.SKI] swept ${Number(totalNs) / 1e6} NS → ultron gaslessly (${digest || 'no digest'})`);
+              return { swept: Number(totalNs) / 1e6, digest };
+            }
+            console.warn('[.SKI] sponsored sweep rejected — falling back to drip path');
+          } catch (err) {
+            console.warn('[.SKI] sponsored sweep failed, falling back to drip path:', err instanceof Error ? err.message : err);
+          }
         }
-        tx.transferObjects([primary], tx.pure.address(normalizeSuiAddress(ultron)));
+
+        // Path 2: drip fallback. Ultron sends 0.02 SUI to the user,
+        // then we pass that specific coin as explicit gas payment on
+        // the sweep tx so GraphQL's build path doesn't need to
+        // auto-select gas (which hits the same insufficient-balance
+        // error when the indexer hasn't caught up yet).
+        //
+        // Works on every wallet including WaaP (uses signAndExecute,
+        // not signTransaction).
+        try {
+          const dripRes = await fetch('/api/fund-gas', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ address: addr }),
+          });
+          const dripJson = await dripRes.json().catch(() => ({})) as { skipped?: boolean; digest?: string; error?: string };
+          if (dripRes.ok && dripJson.digest) {
+            console.log('[.SKI] drip landed:', dripJson.digest);
+          }
+        } catch { /* best effort */ }
+
+        // Poll for a SUI coin on the user's address, up to 10s.
+        // The drip may already have landed from a prior call, or the
+        // user may already hold some SUI — the poll covers all cases.
+        let userSuiCoin: { objectId: string; version: string; digest: string } | null = null;
+        const pollDeadline = Date.now() + 10_000;
+        while (Date.now() < pollDeadline) {
+          try {
+            const r2 = await fetch('https://graphql.mainnet.sui.io/graphql', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ query: `{
+                address(address: "${addr}") {
+                  objects(filter: { type: "0x2::coin::Coin<0x2::sui::SUI>" }, first: 5) {
+                    nodes { address version digest contents { json } }
+                  }
+                }
+              }` }),
+            });
+            const j2 = await r2.json() as { data?: { address?: { objects?: { nodes?: Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }> } } } };
+            const suiNodes = j2?.data?.address?.objects?.nodes ?? [];
+            // Pick the largest SUI coin — usually the just-dripped one.
+            let best: typeof suiNodes[number] | null = null;
+            let bestBal = 0n;
+            for (const n of suiNodes) {
+              const bal = BigInt(n.contents?.json?.balance ?? '0');
+              if (bal > bestBal) { bestBal = bal; best = n; }
+            }
+            if (best && bestBal >= 5_000_000n) { // need at least 0.005 SUI
+              userSuiCoin = { objectId: best.address, version: best.version, digest: best.digest };
+              break;
+            }
+          } catch { /* poll again */ }
+          await new Promise(r => setTimeout(r, 800));
+        }
+        if (!userSuiCoin) {
+          throw new Error('No SUI coin found after drip. /api/fund-gas may be on cooldown — try again in a few minutes, or top up the wallet with ~0.01 SUI.');
+        }
+
+        // Build with explicit gas payment pointing at the user's SUI
+        // coin, so tx.build doesn't try to auto-select gas (which was
+        // failing on the insufficient-balance error at the GraphQL
+        // layer before the dripped coin was indexed).
+        const tx = buildSweepTx({});
+        tx.setGasPayment([userSuiCoin]);
         const bytes = await tx.build({ client: gql as never });
         const r = await wallet.signAndExecuteTransaction(bytes);
         const digest = (r as any)?.digest ?? '';
