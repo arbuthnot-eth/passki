@@ -13229,25 +13229,25 @@ function bindEvents() {
                 b.classList.add('ski-idle-bubble--transfer-settled');
                 return;
               }
-              const ref = await lookupAnyVaultFromDigest(tx);
-              if (!ref) {
-                // lookupAnyVaultFromDigest fails two ways:
-                //   (a) the vault object has been consumed (deleted),
-                //       so the effects query no longer returns a live
-                //       outputState for it.
-                //   (b) the indexer hasn't caught up yet (rare; the
-                //       bubble is usually painted ≥1s after the tx).
-                // Treating it as settled is the right call almost
-                // all the time — the alternative ("leave live") is
-                // exactly the bug the user saw. Worst case under (b)
-                // is a brief gray flash on a brand-new deposit that
-                // fixes itself on the next render once the indexer
-                // catches up.
-                b.classList.add('ski-idle-bubble--transfer-settled');
-                _markSettled(tx);
-                return;
+              // Cache the resolved vault id on the bubble so repeat
+              // paints skip the digest→vault GraphQL hop.
+              let vaultId = b.dataset.vaultId || '';
+              if (!vaultId) {
+                let ref = await lookupAnyVaultFromDigest(tx);
+                if (!ref) {
+                  // Indexer lag on a fresh deposit — one short retry,
+                  // then bail and leave the bubble LIVE. Marking a
+                  // brand-new deposit settled was the exact false
+                  // positive that made every transfer look collected
+                  // the instant it sent.
+                  await new Promise(r => setTimeout(r, 1500));
+                  ref = await lookupAnyVaultFromDigest(tx);
+                }
+                if (!ref) return;
+                vaultId = ref.objectId;
+                b.dataset.vaultId = vaultId;
               }
-              const live = await isVaultLive(ref.objectId);
+              const live = await isVaultLive(vaultId);
               if (!live) {
                 b.classList.add('ski-idle-bubble--transfer-settled');
                 _markSettled(tx);

@@ -9,6 +9,12 @@
 
 ---
 
+## What .SKI Is
+
+.SKI is a Sui-native messaging and cross-chain identity dApp where SuiNS names are communication endpoints. You send a thunder to `@name` and it lands as an encrypted storm conversation whose ciphertext lives on Walrus and whose keys live behind Seal. Every wallet, agent, and cross-chain address is IKA-native — no private keys sit on Cloudflare Workers, ever. The same UI rails carry Thunder messages, Thunder IOU transfers, shielded Pedersen commitments, Shade grace-period snipes, and SUIAMI cross-chain identity proofs.
+
+Agents (ultron, chronicoms, t2000s) are Durable Objects that sign via IKA dWallet user shares + DWalletCap wrappers. `brando.sui` runs DKG in the browser and re-encrypts the user share to the agent. Either brando OR agent + IKA network = a valid signature.
+
 ## For Hackathon Devs (Frontier Colosseum)
 
 SKI is the best IKA-based Web2 social login experience you can build with today. Here's what you get out of the box:
@@ -59,6 +65,31 @@ Two DKG ceremonies. Two dWallets. Eight chains. One Sui account.
 - **Quantum-ready architecture** — Sui's flag-byte signature scheme lets the network add post-quantum primitives via a new flag byte — no hard fork, no address migration. See [`docs/ika-quantum-resistance.md`](docs/ika-quantum-resistance.md).
 
 ---
+
+## First Commandment: IKA-Native, Keyless Agents
+
+- **Every wallet, agent, and cross-chain address MUST be IKA-native.**
+- **No private keys on Cloudflare Workers — ever.** Agents sign via IKA dWallet user shares + DWalletCap wrapper.
+- Cross-chain addresses (BTC, ETH, SOL) come from IKA dWallet DKG — always. No raw keypair re-encoding as cross-chain addresses.
+- `brando.sui` runs DKG in-browser, re-encrypts user share to the agent. Either brando OR agent + IKA network = valid signature.
+- Batch DKG provisioning for agents = "Rumble your squids."
+- If a dWallet doesn't exist yet, the feature is blocked until DKG is run — no shortcuts.
+
+## Terminology
+
+| Word | Meaning |
+|---|---|
+| **Storm** | A conversation (not channel/group) |
+| **Thunder** | A message or signal |
+| **Quest** | The act of reading/opening |
+| **Purge** | Delete-on-read (never "decrypt") |
+| **Cache** | Fund storage (never "treasury/reserve/dao") |
+| **Rumble** | IKA DKG ceremony (never multi-token swap routing) |
+| **SKI Pass** | Access/membership proof |
+| **Stables** | Dollar-pegged value (never "stablecoins") |
+| **Sibyl** | The predictor (never "Sybil") |
+| **chain@name** | Address format: `sol@ultron`, `eth@brando`, `btc@stables` |
+| **encrypt / decrypt** | Always verb forms, never "encrypted/encryption" |
 
 ## Core Principles
 
@@ -132,6 +163,17 @@ Thunder is a thin wrapper around [`@mysten/sui-stack-messaging`](https://github.
 
 Remaining Phase 2 items (sealed sender, non-derivable group IDs, encrypted membership) are deferred — see `docs/superpowers/specs/2026-04-10-thunder-privacy-audit-and-roadmap.md`.
 
+### Thunder IOU + Thunder IOU Shielded
+
+Thunder carries value as well as text. A `$amount` in a thunder composes a token transfer into the same PTB as the signal.
+
+- **Thunder IOU** — plain escrowed transfers with recall + expiry. Package: `0x5a80b9753d6ccce11dc1f9a5039d9430d3e43a216f82f957ef11df9cb5c4dc79`.
+- **Thunder IOU Shielded** — BLS12-381 Pedersen commitment transfers. Amounts are hidden on-chain; the recipient decrypts a sealed opening via Seal and reveals via a zero-knowledge verification in Move. Package: `0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782`.
+- **Dust gate** — sub-cent sends bypass the shielded path (per `Diglett Lv.18`) and route to plain IOU.
+- **Batching** — `buildShieldedDepositManyTx` (Dugtrio Lv.36) and the in-flight Mr. Rime Lv.52 aggregate-vault evolution batch multiple deposits in one PTB.
+
+Active IOU work in the Pokedex covers the activate/redeem UI (Pikachu), iUSD-yield escrow (Typhlosion), iUSD gas (Ampharos), Seal-encrypted `sealed_memo` (Magnezone), multi-token `Iou<T>` (Garchomp), and the IKA cross-chain activate to ETH/SOL/BTC (Metagross).
+
 ## SUIAMI
 
 SUI-Authenticated Message Identity — cryptographic proof that a SuiNS name belongs to you. Verified server-side via `/api/suiami/verify`.
@@ -201,6 +243,36 @@ Dollar-pegged stable backed by diversified reserves (gold, silver, equities, ene
 
 ---
 
+## OpenCLOB — Cross-Chain Order Book
+
+Phase 3a is live: the `thunder_openclob::bundle` Move package is published and the `treasury-agents` scanner watches bundles over GraphQL. Sub-cent steganographic tags act as order-matching keys. Phase 3b adds a client-side bundle builder (merged) and a keeper settlement path (in-flight).
+
+**Package:** `0xdcbabe3d80cd9b421113f66f2a1287daa8259f5c02861c33e7cc92fc542af0d7`
+
+See `docs/superpowers/specs/2026-04-11-openclob-bundle-tags.md`.
+
+## Pokemon Swarm
+
+.SKI runs a Pokedex coordinator Durable Object that watches GitHub issues, branches, and PRs as a live swarm. Per the naming convention: legendary Pokemon are releases, regular Pokemon with level tags are commits and issues, merged PRs are evolutions. Recent evolutions include Raichu Lv.40 (ultron-sponsored thunder gas), Mr. Mime Lv.42 (shielded Pedersen transfers), Alakazam Lv.36 (forward secrecy via DEK rotation), Psyduck Lv.22 (collected-pill fix), Diglett Lv.18 (dust gate), and Dugtrio Lv.36 (batched shielded deposits).
+
+The Pokedex DO is bound as `PokedexAgent` and exposes `/api/pokedex/*` routes. See `docs/superpowers/specs/2026-04-11-pokemon-swarm-agents.md`.
+
+## Upcoming — Ghost Line for Colosseum Frontier
+
+Active in-flight work for the Ika + Encrypt side track of Colosseum Frontier. Submission deadline approximately 2026-05-11; side-track prize pool $15K USDC via Superteam Earn, main track $2.5M+.
+
+Thesis: native Ika dWallets on Solana plus Encrypt FHE claim logic equals bridgeless and encrypted capital markets on Solana, extending the existing Thunder and Storm UX to cross-chain. We keep the same storm → thunder → claim shell users already know, and swap the substrate to Ika pre-alpha on Solana (`solana-pre-alpha.ika.xyz`) and Encrypt (`docs.encrypt.xyz`).
+
+Ghost line issues:
+
+- **#101 Gastly Lv.20** — Solana redeem UI scaffold (stage 1)
+- **#102 Haunter Lv.40** — Sui-side claim + swap + burn + poltergeist keeper pickup (stage 2)
+- **#103 Gengar Lv.55** — feature-complete Solana redeem for encrypt.xyz Colosseum (stage 3)
+- **#104 Shelgon Lv.45** — shadow-DKG provisioning; keeper runs DKG alone, user share encrypted to recipient pubkey
+- **#105 Salamence Lv.65** — user reclaims shadow dWallet on first login
+
+Demo target: a judge opens a phone at the Colosseum stage, receives a live \$5 thunder, claims it as native USDC-SPL on `sol@name`, and sees it land in Phantom within 30 seconds. Zero bridges. The amount is never visible on-chain until claim execution inside an Encrypt FHE function. The Solana-side dWallet is provisioned on-demand via Ika.
+
 ## Sibyl — The Predictor
 
 Custom oracle. Timestreams flow price through time. Pythia (ultron.sui) channels visions. Offerings flow to the iUSD cache. Sibyl's Court: Anthropologists (research), Hunters (iUSD yield), Rogues (IKA squid breeding).
@@ -223,74 +295,27 @@ Keeper wallet for all server-side signing: iUSD minting, Shade execution, Thunde
 | Global SUIAMI Storm | `0xfe23aad02ff15935b09249b4c5369bcd85f02ce157f54f94a3e7cc6dfa10a6e8` |
 | Shade | `0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff` |
 | Ignite | `0x66a44a869fe8ea7354620f7c356514efc30490679aa5cb24b453480e97790677` |
+| Thunder IOU | `0x5a80b9753d6ccce11dc1f9a5039d9430d3e43a216f82f957ef11df9cb5c4dc79` |
+| Thunder IOU Shielded | `0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782` |
+| Thunder OpenCLOB (bundle) | `0xdcbabe3d80cd9b421113f66f2a1287daa8259f5c02861c33e7cc92fc542af0d7` |
 
 Thunder uses the upstream [`@mysten/sui-stack-messaging`](https://github.com/MystenLabs/sui-stack-messaging) Move package; no custom Thunder or Storm contract. An earlier hybrid-stack package (`0xa3ed4fdf...cdf942`) was published but never wired into the client and has been stripped from the source tree.
 
 ---
 
-## TODO — What's Next
+## What's Next — Live Pokedex
 
-### Subcent Intent Engine
-- [ ] Parse steganographic digits from iUSD amounts into structured intents
-- [ ] Route intents to correct chain + receiving address
-- [ ] Private encoding scheme legible only to sender/receiver participants
+The authoritative roadmap is the GitHub issue tracker, watched by the Pokedex DO and surfaced via `/api/pokedex/*`. Major in-flight lines:
 
-### Anti-Spam Token Filtering
-- [ ] Aggregate token value across all exchanges (Sui, Solana, EVM)
-- [ ] Filter sub-cent holdings from display
-- [ ] Auto-swap dust to stables (USD, ARS, etc.) via DEX aggregation
-- [ ] User-configurable threshold for what counts as "spam"
+- **Ghost** (#101-105) — Gastly / Haunter / Gengar Solana redeem for Colosseum Frontier; Shelgon / Salamence shadow-DKG provisioning
+- **Dragon** (#78-79) — Garchomp multi-token `Iou<T>`, Metagross IKA cross-chain activate
+- **Electric** (#76, #80) — Ampharos iUSD gas, Electivire decentralized activity feed via IOU events
+- **Fire** (#75) — Typhlosion iUSD yield on escrowed IOU balances
+- **Psychic** (#77, #94) — Magnezone Seal-encrypted `sealed_memo`, Mr. Rime aggregate shielded vault
+- **Thunder v4** (#63, #68-71) — migration to Sui Stack Messaging SDK, compose-preview UX, composable PTB alongside signal
+- **Security** (#54-58) — session cookie hardening, innerHTML XSS sweep, rate limiting, localStorage TTL
 
-### Solana Deep Integration
-- [ ] Helius webhook-driven deposit watchers for all SPL tokens
-- [ ] Jupiter aggregator routing for auto-swap to USDC
-- [ ] Kamino lending integration (TSLAx/NVDAx collateral)
-- [ ] CCTPv2 bridging: Phantom → Helius → Jupiter → USDC → iUSD
-
-### Cross-Chain Balance Chips
-- [ ] Real-time balance display per chain (SUI + SOL + ETH + BTC)
-- [ ] Stables aggregation: USDC, USDT, USD1, iUSD across all chains
-- [ ] RWA token display: XAUM, XAGM, TSLAx, NVDAx
-- [ ] Helius for Solana balances, Alchemy/Infura for EVM, Esplora for BTC
-
-### Rumble — Batch DKG UX
-- [ ] One-button DKG for all curve types (secp256k1 + ed25519)
-- [ ] Derive all chain addresses + write to SUIAMI Roster in single PTB
-- [ ] "Rumble your squids" button in idle overlay
-
-### Chronicom — Signal Caching
-- [ ] Per-wallet Durable Object caching thunder counts
-- [ ] 5s alarm polling (replaces 30s client gRPC polling)
-- [ ] `/api/thunder/chronicom` serves cached counts instantly
-
-### Storm v2 — Cross-Chain Messaging
-- [ ] Thunder signals addressable to BTC/ETH/SOL addresses via IKA dWallet-gated Seal decryption
-- [ ] StormIdentity linking DWalletCap public key to chain addresses
-
-### Hunters — Offer Stalkers
-- [ ] Chronicom agents monitor SuiNS name offers across Tradeport
-- [ ] Auto-execute trades when prices match Sibyl attestation
-- [ ] Storage rebates (~0.95 SUI per kiosk trade) → iUSD cache
-
-### OpenCLOB — Cross-Chain Order Book
-- [ ] Unified CLOB across DeepBook, Kamino, Cetus, Bluefin
-- [ ] Sub-cent steganographic tags as order matching
-- [ ] BAM (Burn/Attest/Mint) via IKA 2PC-MPC signing
-- [ ] iUSD settlement, agents as market makers
-
-### Prisms — Rich Encrypted Transactions
-- [ ] Thunder gate + encrypted sender/timestamp + Walrus blob
-- [ ] Partial encryption with ZK proofs (Thunderbun/Groth16)
-
-### QuestFi — Agent Economics
-- [ ] Parent keeps 1%, redistributes by performance
-- [ ] Lazy agents die, bold RWA agents spawn
-- [ ] 110% overcollateralization surplus deployed
-
-### Satellites — Sibyl's Flash Liquidity
-- [ ] Hot-potato flash loans from Sibyl
-- [ ] Borrow NS, register name, repay in any token
-- [ ] Discount spread → iUSD cache
+Closed recently: Raichu Lv.40 (ultron-sponsored thunder gas), Mr. Mime Lv.42 (shielded Pedersen transfers), Alakazam Lv.36 (DEK rotation forward secrecy), Jolteon Lv.25 (WebSocket thunder subscribe), Diglett Lv.18 (dust gate), and Psyduck Lv.22 (collected pill).
 
 ---
 
@@ -374,6 +399,8 @@ npx wrangler login
 bun run build && npx wrangler deploy
 ```
 
+Never skip the deploy step. Never use `bun run deploy` — only `npx wrangler deploy`. Two workers back the app: `dotski` (agents, treasury, messaging DOs) and `sui-ski` (subnames, auth).
+
 ### Durable Objects
 
 | Binding | Purpose |
@@ -409,9 +436,9 @@ bun run build && npx wrangler deploy
 - Solana: Helius (RPC + webhook deposit watchers), Jupiter (routing), Kamino (lending)
 - DEX: `aftermath-ts-sdk` (aggregation), DeepBook v3, Bluefin CLMM, Cetus CLMM
 - Marketplace: Tradeport (SuiNS listing proxy)
-- Transport: `SuiGrpcClient` primary, `SuiGraphQLClient` fallback — **no JSON-RPC** (sunsets April 2026)
-- Build: `bun build` with JSON import for version injection
-- Deploy: Cloudflare Workers + Durable Objects
+- Transport: `SuiGrpcClient` primary, `SuiGraphQLClient` fallback — **no JSON-RPC** (sunsets April 2026). Cloudflare Workers and DOs cannot speak gRPC (no HTTP/2 bidi streaming), so server code uses GraphQL. GraphQL is read-only, so `sui_executeTransactionBlock` submission falls back through PublicNode → BlockVision → Ankr.
+- Build: `bun build src/ski.ts --outdir public/dist --target browser` with JSON import for version injection
+- Deploy: Cloudflare Workers + Durable Objects (`dotski` + `sui-ski`)
 
 ## Local Development
 

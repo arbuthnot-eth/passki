@@ -48,34 +48,34 @@ function hGenerator() {
  * a ~50% chance of encoding a value >= Fr.ORDER, which the
  * contract rejects with abort code 1 in group_ops::from_bytes.
  *
- * Approach: generate, reduce mod ORDER, serialize back. Uses
- * LITTLE-ENDIAN byte order to match Sui's bls12381 serialization
- * convention (scalars are serialized little-endian in the Sui
- * framework; same as BLS12-381's standard serialization).
+ * Approach: generate, reduce mod ORDER, serialize back as BIG-ENDIAN.
+ * Sui's bls12381 module documents scalars as big-endian (see
+ * sui-framework/sources/crypto/bls12381.move: "Scalars are encoded
+ * using big-endian byte order" and SCALAR_ONE_BYTES = 0x00..01).
  *
  * The client-side pedersenCommit below also parses the blinding
- * as little-endian so both sides compute identical commitments.
+ * as big-endian so both sides compute identical commitments.
  */
 export function randomBlinding(): Uint8Array {
   const raw = randomBytes(32);
-  // Parse as little-endian bigint to match Sui serialization.
+  // Parse as big-endian bigint.
   let val = 0n;
-  for (let i = 31; i >= 0; i--) val = (val << 8n) | BigInt(raw[i]);
+  for (let i = 0; i < 32; i++) val = (val << 8n) | BigInt(raw[i]);
   val %= bls12_381.fields.Fr.ORDER;
-  // Serialize back as 32-byte little-endian.
+  // Serialize back as 32-byte big-endian.
   const out = new Uint8Array(32);
   let v = val;
-  for (let i = 0; i < 32; i++) {
+  for (let i = 31; i >= 0; i--) {
     out[i] = Number(v & 0xffn);
     v >>= 8n;
   }
   return out;
 }
 
-/** Parse 32 little-endian bytes into a bigint scalar. */
-function scalarFromLeBytes(bytes: Uint8Array): bigint {
+/** Parse 32 big-endian bytes into a bigint scalar. */
+function scalarFromBeBytes(bytes: Uint8Array): bigint {
   let val = 0n;
-  for (let i = 31; i >= 0; i--) val = (val << 8n) | BigInt(bytes[i]);
+  for (let i = 0; i < 32; i++) val = (val << 8n) | BigInt(bytes[i]);
   return val;
 }
 
@@ -95,9 +95,9 @@ export function pedersenCommit(amountMist: bigint, blinding: Uint8Array): Uint8A
   // toBytes() returns compressed 48-byte encoding by default.
   const G = bls12_381.G1.Point.BASE;
   const H = hGenerator();
-  // Parse blinding as little-endian to match Sui's serialization
+  // Parse blinding as big-endian to match Sui's serialization
   // convention + randomBlinding's output format above.
-  const rScalar = scalarFromLeBytes(blinding);
+  const rScalar = scalarFromBeBytes(blinding);
   const rG = G.multiply(rScalar % bls12_381.fields.Fr.ORDER);
   const aH = H.multiply(amountMist % bls12_381.fields.Fr.ORDER);
   const C = rG.add(aH);
@@ -132,6 +132,74 @@ export async function buildShieldedDepositTx(opts: {
   });
   const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
   return await tx.build({ client: gql as never });
+}
+
+/**
+ * Dugtrio Lv.36 — build a PTB with N shielded deposits in one tx.
+ *
+ * One `splitCoins(gas, [a1, a2, ..., aN])` split emits N new
+ * Coin<SUI> results, each passed to its own
+ * `shielded::deposit` moveCall. Result: ONE gas fee amortized
+ * across N escrow creations, and ONE storm-note encryption
+ * round per slot only (the caller is responsible for having
+ * Seal-encrypted each sealedOpening against the right group).
+ *
+ * Use when multiple shielded sends can be bundled into a single
+ * signature — either multiple @recipients in one compose line,
+ * or a debounced queue of rapid-fire sends to the same storm.
+ *
+ * Caller must supply the same number of entries in each array
+ * of the `deposits` list. The function returns the built bytes
+ * AND the unbuilt Transaction so WaaP callers can pass the
+ * Transaction object directly per the WaaP Holy Grail pattern.
+ */
+export async function buildShieldedDepositManyTx(opts: {
+  sender: string;
+  deposits: Array<{
+    amountMist: bigint;
+    blinding: Uint8Array;
+    sealedOpening: Uint8Array;
+    ttlMs?: number;
+  }>;
+  gasPayment?: Array<{ objectId: string; version: string; digest: string }>;
+}): Promise<{ tx: Transaction; bytes: Uint8Array }> {
+  if (opts.deposits.length === 0) {
+    throw new Error('buildShieldedDepositManyTx: deposits must be non-empty');
+  }
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(opts.sender));
+  if (opts.gasPayment?.length) {
+    tx.setGasPayment(opts.gasPayment.map(c => ({
+      objectId: c.objectId,
+      version: c.version,
+      digest: c.digest,
+    })));
+  }
+  // Single splitCoins call — one gas fee amortized across all
+  // deposit outputs. tx.splitCoins returns a tuple of results;
+  // Transaction's destructuring accessor semantics expose each
+  // by index even when there are more than 2.
+  const amounts = opts.deposits.map(d => tx.pure.u64(d.amountMist));
+  const splitResults = tx.splitCoins(tx.gas, amounts);
+  for (let i = 0; i < opts.deposits.length; i++) {
+    const d = opts.deposits[i];
+    const ttl = d.ttlMs ?? SHIELDED_DEFAULT_TTL_MS;
+    tx.moveCall({
+      target: `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::deposit`,
+      arguments: [
+        // splitResults is an array proxy; splitResults[i] gives the
+        // i-th nested result of the single splitCoins op.
+        (splitResults as unknown as Array<ReturnType<typeof tx.splitCoins>[0]>)[i],
+        tx.pure.vector('u8', Array.from(d.blinding)),
+        tx.pure.u64(BigInt(ttl)),
+        tx.pure.vector('u8', Array.from(d.sealedOpening)),
+        tx.object('0x6'),
+      ],
+    });
+  }
+  const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const bytes = await tx.build({ client: gql as never });
+  return { tx, bytes };
 }
 
 /**
