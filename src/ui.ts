@@ -11892,12 +11892,34 @@ function bindEvents() {
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         if (!convoEl) return;
 
+        // Paint the loader IMMEDIATELY so the user sees storm-opening
+        // feedback even while we're waiting on an async wallet address
+        // or SuiNS resolution. Without this, hard refresh races the
+        // wallet reconnect and the storm appears to never open at all.
+        const _hasBubblesBeforeAddr = convoEl.querySelectorAll('.ski-idle-bubble').length > 0;
+        if (!_hasBubblesBeforeAddr) {
+          convoEl.innerHTML = `<div class="ski-idle-convo-loading"><span class="ski-idle-convo-loading-spinner"></span><span class="ski-idle-convo-loading-text">Opening Storm\u2026</span></div>`;
+          convoEl.removeAttribute('hidden');
+          _idleThunderSend?.classList.add('ski-idle-thunder-send--loading');
+          _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+        }
+
         // Resolve both participants to addresses so the storm groupId is
         // pinned to immutable identity. Names are display-only — they can
         // rotate without orphaning history.
         const myName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
         const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
-        const myAddr = (getState().address || '').toLowerCase();
+        // On hard refresh the wallet address can take a moment to land
+        // (dappkit reconnect is async). Wait up to ~3s for it before
+        // giving up — otherwise the restore path silently bails and
+        // leaves the storm closed.
+        let myAddr = (getState().address || '').toLowerCase();
+        if (!myAddr) {
+          for (let i = 0; i < 30 && !myAddr; i++) {
+            await new Promise(r => setTimeout(r, 100));
+            myAddr = (getState().address || '').toLowerCase();
+          }
+        }
         if (!myAddr) return;
         let counterpartyAddr = '';
         try {
