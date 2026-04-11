@@ -11800,8 +11800,31 @@ function bindEvents() {
             const humanized = humanizeThunderError(txErr);
             _thunderComposeStage = 'confirmed';
             _renderThunderComposePreview();
-            if (!humanized.silent) {
-              // Show failed bubble with retry
+            // Special case: insufficient gas on a transfer attempt.
+            // Transfers need an on-chain PTB; plain text thunders
+            // don't. Offer to re-send as free text by stripping the
+            // $amount from the input, so the user isn't dead-ended.
+            if (humanized.kind === 'insufficient-gas' && transferAmtUsd) {
+              const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+              const failBubble = document.createElement('div');
+              failBubble.className = 'ski-idle-bubble ski-idle-bubble--out ski-idle-bubble--failed';
+              failBubble.textContent = `\u26a0\ufe0f Gas short — click to send as free text`;
+              failBubble.title = `${humanized.message}\n\nClick to strip the $${transferAmtUsd} and retry as a text-only thunder.`;
+              failBubble.style.cursor = 'pointer';
+              if (convoEl) { convoEl.appendChild(failBubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
+              failBubble.addEventListener('click', () => {
+                failBubble.remove();
+                // Strip any $amount tokens from the composed raw text.
+                const stripped = raw.replace(/\$\d+(?:\.\d{0,2})?/g, '').replace(/\s+/g, ' ').trim();
+                if (_idleThunderInput) _idleThunderInput.value = stripped;
+                _thunderComposeConfirmedRaw = stripped;
+                _thunderComposeStage = 'confirmed';
+                _renderThunderComposePreview();
+                _sendIdleThunder();
+              }, { once: true });
+              showToast(humanized.message);
+            } else if (!humanized.silent) {
+              // Show failed bubble with retry (same raw)
               const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
               const failBubble = document.createElement('div');
               failBubble.className = 'ski-idle-bubble ski-idle-bubble--out ski-idle-bubble--failed';

@@ -1436,8 +1436,18 @@ export function humanizeThunderError(err: unknown): HumanizedError {
   }
 
   // ── Gas / balance issues ────────────────────────────────────────
-  if (lower.includes('gasbalancetoolow') || lower.includes('insufficient gas') || lower.includes('not enough gas')) {
-    return { kind: 'insufficient-gas', message: 'Not enough SUI to cover gas. Top up your wallet and retry.', silent: false };
+  // Covers the common error shapes:
+  //   "GasBalanceTooLow", "insufficient gas", "not enough gas"
+  //   "Unable to perform gas selection due to insufficient SUI balance"
+  //   "insufficient SUI for gas"
+  if (
+    lower.includes('gasbalancetoolow')
+    || lower.includes('insufficient gas')
+    || lower.includes('not enough gas')
+    || /gas selection.*insufficient/.test(lower)
+    || /insufficient.*sui balance/.test(lower)
+  ) {
+    return { kind: 'insufficient-gas', message: 'Not enough SUI for gas. Drop the $amount and send as free text, or top up your wallet.', silent: false };
   }
   if (lower.includes('insufficientcoinbalance') || lower.includes('insufficient balance') || lower.includes('balance too low') || lower.includes('notenoughcoins')) {
     return { kind: 'insufficient-balance', message: 'Not enough balance for this send.', silent: false };
