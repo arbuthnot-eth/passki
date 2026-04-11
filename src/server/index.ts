@@ -1859,6 +1859,24 @@ app.get('/api/redeem/solana/list', async (c) => {
   }
 });
 
+// Haunter Lv.40 stage 1 (#102) — manual advance trigger for demos.
+// The DO's alarm tick calls _advanceShadowRedeems every ~15s
+// automatically; this endpoint lets demos step the state machine
+// on demand without waiting.
+app.post('/api/redeem/solana/advance', async (c) => {
+  try {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?redeem-solana-advance', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // Timestream — per-group encrypted message transport (Thunder Timestream)
 app.post('/api/timestream/:groupId/:action', async (c) => {
   const groupId = c.req.param('groupId');

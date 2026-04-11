@@ -550,6 +550,20 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       return new Response(JSON.stringify({ redeems: sorted }), { headers: { 'content-type': 'application/json' } });
     }
 
+    // redeem-solana-advance — Haunter Lv.40 stage 1 (#102) manual
+    // trigger for demos. Calls _advanceShadowRedeems once without
+    // waiting for the 15s tick cycle. Useful for on-stage demos
+    // where a judge wants to see state transitions in real time.
+    if ((url.pathname.endsWith('/redeem-solana-advance') || url.searchParams.has('redeem-solana-advance')) && request.method === 'POST') {
+      try {
+        await this._advanceShadowRedeems();
+        const redeems = ((this.state as any).cross_chain_redeems ?? []) as Array<Record<string, unknown>>;
+        return new Response(JSON.stringify({ advanced: true, count: redeems.length }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     // Quest Prism — client sends commitment + amount only, no domain ever leaves the client.
     // Ultron sends NS tokens to recipient. Client registers the name locally.
     if ((url.pathname.endsWith('/quest-bounty') || url.searchParams.has('quest-bounty')) && request.method === 'POST') {
@@ -1577,6 +1591,14 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // `*/10 * * * *`. Both call the same idempotent
       // sweepExpiredIous helper — whichever fires first wins.
       await this._sweepExpiredIous();
+
+      // Haunter Lv.40 stage 1 (#102) — advance cross-chain redeem
+      // records through the state machine. Stage 1 stubs the real
+      // Solana signing + RPC with time-delayed transitions so the
+      // lifecycle is observable in a demo without touching any
+      // mainnet path. Stage 2 replaces each transition with real
+      // keeper calls.
+      await this._advanceShadowRedeems();
 
       // Every 15 min: sweep dust, rotate yield across NAVI/Scallop/DeepBook
       const YIELD_INTERVAL = 30 * 1000; // 30s for testing — restore to 15 * 60 * 1000
@@ -3296,6 +3318,79 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    *  dynamically so the worker doesn't pull the sweeper's
    *  dependencies at cold start.
    */
+  /**
+   * Haunter Lv.40 stage-1 — advance cross_chain_redeem records
+   * through their state machine.
+   *
+   * Lifecycle:
+   *   pending    → resolving  (when recipient has shadow dWallet)
+   *   resolving  → submitting (after >= 5s in resolving)
+   *   submitting → delivered  (after >= 10s in submitting)
+   *
+   * Stage 1 stubs every transition — no real Solana signing, no real
+   * RPC calls, no real IKA SDK. The timestamps + state slot give any
+   * UI/keeper/demo a real API contract to poll against.
+   *
+   * Stage 2 replaces each transition:
+   *   pending → resolving: real SUIAMI Roster + shadow dWallet lookup
+   *   resolving → submitting: real iUSD burn_for_redeem event emission
+   *   submitting → delivered: real Helius tx submission + polling
+   *
+   * Idempotent: runs on every tick (~15s), only advances records that
+   * have aged past their per-stage dwell time. No-op if there are no
+   * pending redeems.
+   */
+  private async _advanceShadowRedeems(): Promise<void> {
+    const redeems = ((this.state as any).cross_chain_redeems ?? []) as Array<Record<string, unknown>>;
+    if (redeems.length === 0) return;
+    const shadows = ((this.state as any).shadow_dwallets ?? []) as Array<Record<string, unknown>>;
+    const now = Date.now();
+    const RESOLVE_DWELL_MS = 5_000;
+    const SUBMIT_DWELL_MS = 10_000;
+    let mutated = false;
+    for (const r of redeems) {
+      const status = r.status as string;
+      const updatedAt = Number(r.updatedAt || r.createdAt || 0);
+      const ageMs = now - updatedAt;
+      if (status === 'pending') {
+        // Only advance if recipient has a shadow dWallet.
+        // Without one, the redeem stays pending until Shelgon runs.
+        const hasShadow = shadows.some(s => s.recipient === r.recipientSui);
+        if (!hasShadow) continue;
+        r.status = 'resolving';
+        r.updatedAt = now;
+        r.resolvedAt = now;
+        // Record which shadow pubkey the redeem is targeting so the
+        // demo UI / downstream keeper can cross-reference. Stage 2
+        // replaces this with the real IKA-derived Ed25519 pubkey.
+        const shadow = shadows.find(s => s.recipient === r.recipientSui);
+        if (shadow) r.shadowPubkey = shadow.solPubkey;
+        mutated = true;
+        console.log(`[Haunter] ${r.trackingId} pending -> resolving (shadow=${shadow?.solPubkey})`);
+      } else if (status === 'resolving' && ageMs >= RESOLVE_DWELL_MS) {
+        r.status = 'submitting';
+        r.updatedAt = now;
+        r.submittedAt = now;
+        // Stage 2: emit real iusd::burn_for_redeem here and capture
+        // the burn tx digest. For stage 1, record a stub digest.
+        r.burnTxDigest = `stub-burn-${crypto.randomUUID().slice(0, 8)}`;
+        mutated = true;
+        console.log(`[Haunter] ${r.trackingId} resolving -> submitting (burnTx=${r.burnTxDigest})`);
+      } else if (status === 'submitting' && ageMs >= SUBMIT_DWELL_MS) {
+        r.status = 'delivered';
+        r.updatedAt = now;
+        r.deliveredAt = now;
+        // Stage 2: real Helius Solana tx hash goes here.
+        r.solTxHash = `stub-sol-${crypto.randomUUID().slice(0, 8)}`;
+        mutated = true;
+        console.log(`[Haunter] ${r.trackingId} submitting -> delivered (solTx=${r.solTxHash})`);
+      }
+    }
+    if (mutated) {
+      this.setState({ ...this.state, cross_chain_redeems: redeems } as any);
+    }
+  }
+
   private async _sweepExpiredIous(): Promise<void> {
     const IOU_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
     const now = Date.now();
