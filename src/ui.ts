@@ -2642,17 +2642,56 @@ function normalizeSuiAddress(addr: string): string {
 async function lookupSuiNS(address: string): Promise<string | null> {
   try {
     const normalized = normalizeSuiAddress(address);
+    // Single round-trip: primary + owned SuinsRegistration NFTs.
+    // If the user set a default, we return it. Otherwise we pick any
+    // name NFT they hold — longest-expiry first, preferring names
+    // whose NameRecord target actually resolves to the address (the
+    // intended reverse lookup) but falling back to any owned name.
     const res = await fetch(GQL_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        query: `query($a:SuiAddress!){ address(address:$a){ defaultNameRecord{domain} } }`,
+        query: `query($a:SuiAddress!){
+          address(address:$a){
+            defaultNameRecord { domain }
+            objects(filter:{ type: "0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::suins_registration::SuinsRegistration" }, first: 50) {
+              nodes { contents { json } }
+            }
+          }
+        }`,
         variables: { a: normalized },
       }),
     });
-    const json = await res.json();
-    const name = json?.data?.address?.defaultNameRecord?.domain;
-    return (name && typeof name === 'string') ? name : null;
+    const json = await res.json() as {
+      data?: {
+        address?: {
+          defaultNameRecord?: { domain?: string };
+          objects?: { nodes?: Array<{ contents?: { json?: Record<string, unknown> } }> };
+        };
+      };
+    };
+    const def = json?.data?.address?.defaultNameRecord?.domain;
+    if (def && typeof def === 'string') return def;
+
+    // Fallback: scan owned SuinsRegistration NFTs. Pick the one with
+    // the latest expiration that hasn't already expired. Non-expiring
+    // entries sort last. This captures names where the user just
+    // hasn't bothered to run `set_default`.
+    const nodes = json?.data?.address?.objects?.nodes ?? [];
+    const now = Date.now();
+    const candidates: Array<{ name: string; expiry: number }> = [];
+    for (const n of nodes) {
+      const j = n?.contents?.json;
+      if (!j) continue;
+      const domain = j['domain_name'] as string | undefined;
+      const exp = Number(j['expiration_timestamp_ms'] ?? 0);
+      if (!domain) continue;
+      if (exp > 0 && exp < now) continue;
+      candidates.push({ name: domain.endsWith('.sui') ? domain : `${domain}.sui`, expiry: exp || Infinity });
+    }
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => b.expiry - a.expiry);
+    return candidates[0].name;
   } catch {
     return null;
   }
