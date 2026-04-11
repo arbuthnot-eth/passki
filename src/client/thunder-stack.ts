@@ -486,6 +486,10 @@ export async function sendThunder(opts: {
   files?: AttachmentFile[];
   /** Sign and execute a transaction (PTB for transfers + Storm creation) */
   signAndExecute?: (tx: Uint8Array | Transaction) => Promise<any>;
+  /** When true, fetch `/api/sponsor-info` and build the PTB with
+   *  setGasOwner + setGasPayment pinned to ultron. Caller must pair
+   *  this with a sponsored signAndExecute (signAndExecuteSponsoredTx). */
+  sponsored?: boolean;
 }): Promise<{ messageId: string }> {
   const groupId = 'uuid' in opts.groupRef ? opts.groupRef.uuid : '';
 
@@ -509,6 +513,36 @@ export async function sendThunder(opts: {
 
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
+
+    // Sponsor setup: pin gas owner + payment to ultron so the sender
+    // doesn't need SUI for gas. Sender still signs as tx sender; sponsor
+    // signs as gas owner and covers the budget. /api/sponsor-gas gates
+    // on SuiNS NFT ownership, so non-holders fall through to user-pays.
+    //
+    // Only sponsor when there is no transfer — the transfer path splits
+    // coins from tx.gas, which would become ultron's coins under a
+    // sponsor, making ultron foot the transfer amount. Sponsored
+    // transfers need a separate owned-coin path that we don't build here.
+    const doSponsor = !!opts.sponsored && !hasTransfer;
+    if (doSponsor) {
+      try {
+        const sres = await fetch('/api/sponsor-info');
+        if (sres.ok) {
+          const sinfo = await sres.json() as {
+            sponsorAddress?: string;
+            gasCoins?: Array<{ objectId: string; version: string; digest: string }>;
+          };
+          if (sinfo.sponsorAddress && sinfo.gasCoins?.length) {
+            tx.setGasOwner(sinfo.sponsorAddress);
+            tx.setGasPayment(sinfo.gasCoins.map(c => ({
+              objectId: c.objectId,
+              version: c.version,
+              digest: c.digest,
+            })));
+          }
+        }
+      } catch { /* best-effort; fall through to user-pays */ }
+    }
 
     // 1. Transfer — lock SUI in a thunder_iou_shielded::ShieldedVault.
     // The vault stores only a Pedersen commitment C = r*G + amount*H

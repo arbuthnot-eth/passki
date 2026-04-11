@@ -11709,17 +11709,26 @@ function bindEvents() {
                 if (!_sendText.trim()) continue;
                 const recipAddr = await lookupRecipientAddress(recip);
                 const _cacheSaysExists = _stormExistsCache[groupUuid] === true;
+                // Non-WaaP wallets get ultron-sponsored gas for thunder
+                // storm creation — SuiNS holders don't burn their own
+                // SUI just to open a conversation. WaaP stays on the
+                // user-pays path because its signTransaction is broken.
+                const _sponsorThunder = !/waap/i.test(getState().walletName || '');
                 await sendThunder({
                   groupRef: { uuid: groupUuid },
                   text: _sendText,
                   recipientAddress: recipAddr || undefined,
                   senderName,
                   recipientName: recip,
+                  sponsored: _sponsorThunder,
                   signAndExecute: async (txOrBytes: any) => {
                     showToast(_cacheSaysExists
                       ? `\u26a1 Sending to ${recip}`
                       : `\u26c8\ufe0f Creating encrypted Storm with ${recip}`);
-                    const result = await signAndExecuteTransaction(txOrBytes);
+                    const bytes = txOrBytes instanceof Uint8Array ? txOrBytes : txOrBytes;
+                    const result = _sponsorThunder && bytes instanceof Uint8Array
+                      ? await signAndExecuteSponsoredTx(bytes)
+                      : await signAndExecuteTransaction(bytes);
                     _markStormExists(groupUuid);
                     _updateIdleStatus();
                     return result;
