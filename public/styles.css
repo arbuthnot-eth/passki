@@ -2992,10 +2992,12 @@ body {
 .ski-idle-storm-purge {
   all: unset;
   flex-shrink: 0;
-  /* Small forward margin so Storm + × read as a paired cluster
-   * without negative offsets that risk overlapping Storm's
-   * padding. 2px sits between the row gap's 6px and nothing. */
-  margin-left: 2px;
+  /* Pull left to cancel the row's 6px gap (Storm ends flush
+   * against × with ~0px between) and pull right to poke past
+   * the row's right padding so × sits hard against the overlay's
+   * right edge. */
+  margin-left: -6px;
+  margin-right: -6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
