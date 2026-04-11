@@ -9898,7 +9898,13 @@ function bindEvents() {
           _cardCacheKey = (totalUsd > 0 || hasExpiry) ? cacheKey : '';
           const badgeHtml = primaryTotal > 0 ? `\u26c8\ufe0f${primaryTotal}` : '';
           const primaryOwned = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === primaryName.toLowerCase());
-          const balHtml = totalUsd >= 0.50 ? `<span class="ski-idle-card-bal"><span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span></span> ` : '';
+          // Always show the balance, even at $0, so the user gets
+          // ground truth on the target address instead of a silent
+          // blank. Below $1 we keep two decimals so it reads as
+          // real money (e.g. "$0.03") rather than "$0".
+          const _bal = Math.max(0, totalUsd);
+          const _balLabel = _bal >= 1 ? Math.round(_bal).toLocaleString() : _bal.toFixed(2);
+          const balHtml = `<span class="ski-idle-card-bal"><span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_balLabel}</span></span> `;
           const iusdBadge = _suiamiVerifyHtml ? ' <img src="/assets/iusd.svg" class="ski-idle-card-iusd" width="16" height="16" alt="iUSD">' : '';
           const _atBtn = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
           card.innerHTML = `${_atBtn}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${balHtml}${iusdBadge}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
@@ -9928,7 +9934,12 @@ function bindEvents() {
         if (cacheKey === _cardCacheKey && _inMemFresh) return; // fresh in-memory render, no change
         _cardCacheKey = cacheKey;
 
-        const cachedBalHtml = cachedBal >= 0.50 ? `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(cachedBal).toLocaleString()}</span>` : '';
+        // Always render the balance slot, even at $0 / unknown, so
+        // the user gets ground truth (and the async pass can fill
+        // it in-place on the #ski-idle-card-bal element).
+        const _cb = Math.max(0, cachedBal);
+        const _cbLabel = cachedBal < 0 ? '\u2026' : (_cb >= 1 ? Math.round(_cb).toLocaleString() : _cb.toFixed(2));
+        const cachedBalHtml = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_cbLabel}</span>`;
         const _atBtn2 = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
         card.innerHTML = `${_atBtn2}<span class="ski-idle-card-name" title="Populate input">${esc(name)}</span><span class="ski-idle-card-bal" id="ski-idle-card-bal">${cachedBalHtml}</span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
 
@@ -9970,10 +9981,14 @@ function bindEvents() {
             // Cache the balance (memory + persisted)
             _cardBalCache = { addr, usd: totalUsd, ts: Date.now() };
             _saveCardBalPersisted(name, totalUsd, addr);
-            // Update balance in-place (no full rebuild)
+            // Update balance in-place (no full rebuild). Always
+            // render — even zero and sub-dollar amounts — so the
+            // user sees the truth about the resolved target wallet.
             const balEl = _idleOverlay?.querySelector('#ski-idle-card-bal');
-            if (balEl && totalUsd >= 0.50) {
-              balEl.innerHTML = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span>`;
+            if (balEl) {
+              const _t = Math.max(0, totalUsd);
+              const _tLabel = _t >= 1 ? Math.round(_t).toLocaleString() : _t.toFixed(2);
+              balEl.innerHTML = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_tLabel}</span>`;
             }
             _cardCacheKey = `other:${name}:${_tcTotal}:${Math.round(totalUsd)}`;
           } catch {}
