@@ -1543,23 +1543,55 @@ export function getTargetReverseName(address: string): string | null {
   return entries && entries.length > 0 ? entries[0] : null;
 }
 
-/** Reverse lookup: address → primary SuiNS name (without .sui suffix). */
+/** Reverse lookup: address → SuiNS name (without .sui suffix).
+ *
+ * Walks the same stack as lookupSuiNS in ui.ts, in order of truthiness:
+ *   1. SuiNS primary (defaultNameRecord) — canonical
+ *   2. Local target-reverse cache — names this client has resolved
+ *   3. Global NameIndex DO — names any visitor has resolved
+ *
+ * This way storm bubbles render friendly names even when the sender
+ * has no primary set but is the target of a name someone has touched.
+ */
 const _reverseLookupCache: Record<string, string | null> = {};
 export async function reverseLookupName(address: string): Promise<string | null> {
   if (!address) return null;
   const key = address.toLowerCase();
   if (key in _reverseLookupCache) return _reverseLookupCache[key];
   try {
+    // 1. Primary
     const res = await fetch(GQL_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query: `{ address(address: "${address}") { defaultNameRecord { domain } } }` }),
     });
-    const data = await res.json() as any;
-    const domain: string | undefined = data?.data?.address?.defaultNameRecord?.domain;
-    const name = domain ? domain.replace(/\.sui$/, '') : null;
-    _reverseLookupCache[key] = name;
-    return name;
+    const data = await res.json() as { data?: { address?: { defaultNameRecord?: { domain?: string } } } };
+    const domain = data?.data?.address?.defaultNameRecord?.domain;
+    if (domain && typeof domain === 'string') {
+      const name = domain.replace(/\.sui$/, '');
+      _reverseLookupCache[key] = name;
+      return name;
+    }
+
+    // 2. Local target-reverse cache (populated on send/receive resolves)
+    const local = getTargetReverseName(key);
+    if (local) {
+      _reverseLookupCache[key] = local;
+      return local;
+    }
+
+    // 3. Global NameIndex DO — shared across all sui.ski visitors.
+    // On a hit, mirror into the local cache so subsequent renders
+    // don't re-hit the DO for the same address.
+    const globalNames = await fetchGlobalTargetReverse(key);
+    if (globalNames.length > 0) {
+      rememberTargetReverse(key, globalNames[0]);
+      _reverseLookupCache[key] = globalNames[0];
+      return globalNames[0];
+    }
+
+    _reverseLookupCache[key] = null;
+    return null;
   } catch {
     _reverseLookupCache[key] = null;
     return null;
