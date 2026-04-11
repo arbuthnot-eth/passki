@@ -12172,7 +12172,12 @@ function bindEvents() {
         const stormLabel = hasStorm ? '\u27EC STORM \u27ED' : '\u27E8 open \u27E9';
         const fetchedBubbles = entries.slice(-20).map(m => {
           const isOut = m.senderAddress.toLowerCase() === myAddr;
-          const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
+          const baseCls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
+          // Transfer-note thunders start with the 💸 marker emitted by
+          // sendThunder's hasTransfer branch. Match the prefix and add
+          // a --transfer class so CSS can paint them green.
+          const isTransfer = /^\u{1F4B8}\s*\$/u.test(m.text);
+          const cls = isTransfer ? `${baseCls} ski-idle-bubble--transfer` : baseCls;
           const senderName = _rlCache[m.senderAddress.toLowerCase()] || m.senderAddress.slice(0, 8);
           const nameTag = !isOut ? `<span class="ski-idle-bubble-sender">${esc(senderName)}</span> ` : '';
           return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;

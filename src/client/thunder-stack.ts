@@ -556,7 +556,13 @@ export async function sendThunder(opts: {
     const _txBytes = await tx.build({ client: _buildClient as never });
 
     // One signature for transfer + Storm + SUIAMI
-    await opts.signAndExecute(_txBytes);
+    const _execResult = await opts.signAndExecute(_txBytes);
+    // Capture the tx digest for the transfer note — gives storm
+    // participants a way to verify the on-chain record privately,
+    // without exposing anything the on-chain tx doesn't already publish.
+    const _txDigest: string = (_execResult && typeof _execResult === 'object' && 'digest' in _execResult)
+      ? String((_execResult as { digest: unknown }).digest || '')
+      : '';
 
     if (needsStorm) {
       // The freshly-shared PermissionedGroup object needs to propagate to
@@ -579,11 +585,20 @@ export async function sendThunder(opts: {
     }
 
     // Record the transfer as a private Thunder in the Timestream DO.
-    // Route through Seal envelope encryption — the amount is sensitive
-    // metadata and must never hit the DO in cleartext.
+    // Route through Seal envelope encryption — the amount, recipient,
+    // and tx digest are sensitive metadata and must never hit the DO
+    // in cleartext. Plaintext is decryptable only by storm participants.
+    //
+    // Format: "💸 $1.12 → @justy · tx:abcd" where the tx suffix is the
+    // last 4 chars of the on-chain digest. Storm participants can
+    // verify the on-chain record via that suffix without leaking any
+    // info the on-chain tx doesn't already publish. The 💸 prefix is
+    // the render-side marker that styles the bubble green.
     if (hasTransfer) {
       const amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
-      const transferNote = `\u26a1 $${amtLabel} sent`;
+      const _recipTag = opts.recipientName ? ` \u2192 @${opts.recipientName}` : '';
+      const _digestSuffix = _txDigest ? ` \u00b7 tx:${_txDigest.slice(0, 6)}` : '';
+      const transferNote = `\u{1F4B8} $${amtLabel}${_recipTag}${_digestSuffix}`;
       const noteBytes = padPlaintext(new TextEncoder().encode(transferNote));
       const noteEnv = await encryptWithRetry(groupId, noteBytes);
       await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {

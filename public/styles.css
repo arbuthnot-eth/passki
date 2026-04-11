@@ -3664,6 +3664,15 @@ body {
   border: 1px solid rgba(77, 162, 255, 0.55);
   color: #4da2ff;
 }
+/* Transfer-note bubbles (emitted by sendThunder when a $ amount is
+ * included) override the regular outbound/inbound palette with a
+ * green treatment to signal "money changed hands." The text itself
+ * is still Seal-encrypted on the DO; the color is purely render-side. */
+.ski-idle-bubble--transfer {
+  background: rgba(10, 40, 20, 0.88) !important;
+  border-color: rgba(34, 197, 94, 0.7) !important;
+  color: #4ade80 !important;
+}
 .ski-idle-bubble-sender {
   font-size: 0.7rem;
   font-weight: 600;
