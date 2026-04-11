@@ -9473,6 +9473,19 @@ function bindEvents() {
         _thunderComposeDraft = draft;
         const isQuestMode = _idleThunderSend?.dataset.questMode === '1';
 
+        // Purge button visibility — runs on EVERY preview cycle,
+        // regardless of which branch below we end up in. The button
+        // only makes sense when the convo is open with at least one
+        // bubble to purge. (Was previously gated inside the empty-
+        // input branch, so if preview ran while the convo was still
+        // loading, the button stayed hidden indefinitely.)
+        if (_idleStormPurgeBtn) {
+          const _convoOpenForPurge = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
+          const _hasBubblesForPurge = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo .ski-idle-bubble'));
+          if (_convoOpenForPurge && _hasBubblesForPurge) _idleStormPurgeBtn.removeAttribute('hidden');
+          else _idleStormPurgeBtn.setAttribute('hidden', '');
+        }
+
         if (!raw || !draft) {
           _thunderComposeConfirmedRaw = '';
           _thunderComposeStage = 'idle';
@@ -9484,14 +9497,8 @@ function bindEvents() {
             if (_curGid) _checkStormExists(_curGid);
             const _curHasStorm = _curGid ? _stormExistsCache[_curGid] === true : true;
             const _convoVisible = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
-            // The × purge button only makes sense when a convo is open
-            // with at least one bubble. Show/hide it in lockstep with
-            // the convo visibility.
-            if (_idleStormPurgeBtn) {
-              const _hasBubbles = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo .ski-idle-bubble'));
-              if (_convoVisible && _hasBubbles) _idleStormPurgeBtn.removeAttribute('hidden');
-              else _idleStormPurgeBtn.setAttribute('hidden', '');
-            }
+            // Purge button visibility is handled at the top of this
+            // function — runs unconditionally on every preview cycle.
             // Auto-open the storm when we know it exists on-chain and
             // the convo isn't already visible. User-closed convos are
             // tracked separately so we don't fight a manual close.
@@ -12228,6 +12235,10 @@ function bindEvents() {
         void _hasBothNames; void stormLabel;
         const header = '';
         convoEl.innerHTML = progress + header + bubbles;
+        // Refresh the preview so the × purge button visibility picks
+        // up the freshly painted bubbles (the button is gated on
+        // convo-visible + at-least-one-bubble).
+        _renderThunderComposePreview?.();
         // Wire the identity header: tap a party card → render a QR popover
         // encoding https://<name>.sui.ski. The popover is a sibling that lives
         // inside the convo container and traps clicks to dismiss itself.
@@ -12301,6 +12312,10 @@ function bindEvents() {
               // (sender badge or @mention pill inside the label),
               // populate the name input + card with that name
               // instead of triggering the claim/recall flow.
+              // Mirrors the card-click handler's direct-state-set
+              // pattern — dispatching an `input` event cascades
+              // through multiple listeners and was clearing the
+              // field in the own-name case.
               const _target = ev.target as HTMLElement | null;
               const _popEl = _target?.closest<HTMLElement>('[data-populate-name]');
               if (_popEl) {
@@ -12309,8 +12324,24 @@ function bindEvents() {
                 const _popName = (_popEl.dataset.populateName || '').toLowerCase();
                 if (_popName && _idleNsInput) {
                   _idleNsInput.value = _popName;
-                  _idleNsInput.dispatchEvent(new Event('input', { bubbles: true }));
-                  _idleNsInput.focus();
+                  nsLabel = _popName;
+                  try { localStorage.setItem('ski:ns-label', _popName); } catch {}
+                  const _clearBtnEl = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+                  if (_clearBtnEl) _clearBtnEl.style.display = _popName ? '' : 'none';
+                  const _mainInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+                  if (_mainInput) _mainInput.value = _popName;
+                  nsAvail = null;
+                  nsTargetAddress = null;
+                  nsKioskListing = null;
+                  nsTradeportListing = null;
+                  _updateIdleStatus();
+                  // Kick off the async resolver + card refresh +
+                  // auto-open storm for the newly targeted name.
+                  fetchAndShowNsPrice(_popName).then(() => {
+                    _updateIdleStatus();
+                    _updateIdleCard(_popName);
+                    _expandIdleConvo(_popName).catch(() => {});
+                  }).catch(() => {});
                 }
                 return;
               }
