@@ -425,6 +425,7 @@ app.get('/api/sponsor-info', async (c) => {
 // ── IKA token funding (ultron → user) ────────────────────────────────
 
 import { Transaction } from '@mysten/sui/transactions';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 
 const IKA_COIN_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
 const IKA_FUND_AMOUNT = 5_000_000_000n; // 5 IKA (9 decimals)
@@ -482,12 +483,53 @@ app.post('/api/fund-gas', async (c) => {
     const keypair = Ed25519Keypair.fromSecretKey(key);
     const ultronAddress = keypair.toSuiAddress();
 
+    // Build via a real SuiGraphQLClient and pin ultron's explicit
+    // gas coin. A stub `{ url }` client throws
+    // 'Cannot read properties of undefined (getCurrentSystemState)'
+    // at tx.build time because the v2 build path calls client.core
+    // for gas-price discovery.
+    const graphql = new SuiGraphQLClient({ url: SUINS_GQL_URL, network: 'mainnet' });
+    const ultronCoinsRes = await fetch(SUINS_GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!){
+          address(address:$a){
+            objects(filter:{ type: "0x2::coin::Coin<0x2::sui::SUI>" }, first: 5) {
+              nodes { address version digest contents { json } }
+            }
+          }
+        }`,
+        variables: { a: ultronAddress },
+      }),
+    });
+    const ultronCoinsJson = await ultronCoinsRes.json() as {
+      data?: { address?: { objects?: { nodes?: Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }> } } };
+    };
+    const ultronCoins = (ultronCoinsJson?.data?.address?.objects?.nodes ?? [])
+      .map(n => ({
+        objectId: n.address,
+        version: n.version,
+        digest: n.digest,
+        balance: BigInt(n.contents?.json?.balance ?? '0'),
+      }))
+      .filter(cc => cc.balance > 0n)
+      .sort((a, b) => (a.balance > b.balance ? -1 : 1));
+    if (ultronCoins.length === 0) {
+      return c.json({ error: 'Ultron has no SUI to drip' }, 503);
+    }
+
     const tx = new Transaction();
     tx.setSender(ultronAddress);
+    tx.setGasPayment([{
+      objectId: ultronCoins[0].objectId,
+      version: ultronCoins[0].version,
+      digest: ultronCoins[0].digest,
+    }]);
     const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(GAS_DRIP_MIST.toString())]);
     tx.transferObjects([coin], tx.pure.address(address));
 
-    const txBytes = await tx.build({ client: { url: SUI_RPC_URLS[0] } as any });
+    const txBytes = await tx.build({ client: graphql as never });
     const { signature } = await keypair.signTransaction(txBytes);
     const b64 = btoa(String.fromCharCode(...txBytes));
 
