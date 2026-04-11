@@ -1914,6 +1914,42 @@ app.post('/api/cache/lend', async (c) => {
 });
 
 // Shade — create a Shade order (lock iUSD for grace-period name sniping)
+// Shuckle Lv.30 (#117) — attest ultron's live SUI+USDC balances to the
+// iUSD Treasury via iusd::update_collateral. Unblocks iUSD mint by
+// bringing the collateral ratio above 110%. Fires automatically every
+// 5 min from the TreasuryAgents tick loop; this endpoint is the manual
+// trigger for operators.
+app.post('/api/cache/attest-collateral', async (c) => {
+  try {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?attest-collateral', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Shuckle Lv.30 (#117) — unwind ultron's sSUI (Scallop receipt) back
+// to liquid SUI. One-time cleanup: ultron should not hold assets the
+// collateral attestation doesn't understand.
+app.post('/api/cache/unwind-ssui', async (c) => {
+  try {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?unwind-ssui', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 app.post('/api/cache/shade-create', async (c) => {
   try {
     const body = await c.req.json() as any;
