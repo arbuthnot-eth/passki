@@ -11797,6 +11797,28 @@ function bindEvents() {
 
           const { lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
           const _myAddrForSend = getState().address || '';
+
+          // WaaP pre-flight: drip 0.02 SUI from ultron if the sender
+          // is low on gas. The sponsor flow can't work under WaaP
+          // (broken signTransaction), so funding the user directly is
+          // the only way they can sign on-chain thunder ops at all.
+          // /api/fund-gas no-ops if already funded or within cooldown.
+          const _sendIsWaaP = /waap/i.test(getState().walletName || '');
+          if (_sendIsWaaP && _myAddrForSend) {
+            try {
+              const dripRes = await fetch('/api/fund-gas', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ address: _myAddrForSend }),
+              });
+              const dripJson = await dripRes.json().catch(() => ({})) as {
+                skipped?: boolean; digest?: string; error?: string;
+              };
+              if (dripRes.ok && dripJson.digest) {
+                await new Promise(r => setTimeout(r, 1500));
+              }
+            } catch { /* best-effort */ }
+          }
           try {
             for (const recip of recipients) {
               if (_cancelled) break;
@@ -12769,17 +12791,40 @@ function bindEvents() {
                 try {
                   const { lookupAnyVaultFromDigest, buildClaimIouTx, buildRecallIouTx, fetchThunderSponsorInfo } = await import('./client/thunder.js');
                   const ref = await lookupAnyVaultFromDigest(_txDigest);
-                  // Non-WaaP wallets fetch sponsor info so recipients
-                  // with zero SUI can still claim via ultron gas.
-                  // WaaP stays on user-pays (broken signTransaction).
-                  const _isWaaPClaim = /waap/i.test(getState().walletName || '');
-                  const _claimSponsor = _isWaaPClaim ? null : await fetchThunderSponsorInfo();
                   if (!ref) {
                     showToast('Escrow already settled — opening explorer');
                     _openExplorer();
                     return;
                   }
                   const _isShielded = ref.kind === 'shielded';
+
+                  // Two code paths for "recipient has no SUI":
+                  //   Non-WaaP → dual-sig sponsor flow (signTransaction
+                  //              works, ultron signs as gas owner).
+                  //   WaaP     → drip 0.02 SUI from ultron first so
+                  //              signAndExecuteTransaction works normally.
+                  //              /api/fund-gas is a no-op if already funded.
+                  const _isWaaPClaim = /waap/i.test(getState().walletName || '');
+                  const _claimSponsor = _isWaaPClaim ? null : await fetchThunderSponsorInfo();
+                  if (_isWaaPClaim) {
+                    try {
+                      const dripRes = await fetch('/api/fund-gas', {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ address: getState().address }),
+                      });
+                      const dripJson = await dripRes.json().catch(() => ({})) as {
+                        skipped?: boolean; digest?: string; error?: string;
+                      };
+                      if (dripRes.ok && dripJson.digest) {
+                        // Give the fullnode a beat to index the drip
+                        // before the user tries to spend the coin.
+                        await new Promise(r => setTimeout(r, 1500));
+                      } else if (!dripRes.ok && dripJson.error && !/cooldown|already/i.test(dripJson.error)) {
+                        console.warn('[thunder] gas drip failed:', dripJson.error);
+                      }
+                    } catch { /* best-effort; fall through to user-pays */ }
+                  }
 
                   if (_role === 'recipient') {
                     showToast(_isShielded ? '\u23f3 Claiming shielded\u2026' : '\u23f3 Claiming IOU\u2026');

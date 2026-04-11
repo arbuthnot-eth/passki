@@ -427,6 +427,84 @@ import { Transaction } from '@mysten/sui/transactions';
 const IKA_COIN_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
 const IKA_FUND_AMOUNT = 5_000_000_000n; // 5 IKA (9 decimals)
 
+// ── SUI gas drip (ultron → user) for WaaP thunder claims ──────────────
+// WaaP's signTransaction is broken (iframe re-serializes bytes), so the
+// dual-sig sponsor flow can't work there. Workaround: drip just enough
+// SUI to the user so they can pay gas themselves via signAndExecute.
+// Gate: only drip if the user has < DRIP_MIN_MIST SUI, and only once
+// per MIN_INTERVAL_MS per address. Fixed amount per drip.
+const GAS_DRIP_MIST     = 20_000_000n; // 0.02 SUI ≈ 160 claim txs worth
+const GAS_DRIP_MIN_MIST = 15_000_000n; // drip only if below this
+const GAS_DRIP_COOLDOWN_MS = 60 * 60 * 1000; // 1 drip per addr per hour
+const _gasDripLog = new Map<string, number>(); // addr → last drip ts
+
+app.post('/api/fund-gas', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Not configured' }, 503);
+  try {
+    const { address } = await c.req.json<{ address: string }>();
+    if (!address || !/^0x[0-9a-fA-F]{64}$/.test(address)) {
+      return c.json({ error: 'Invalid address' }, 400);
+    }
+    const addrLower = address.toLowerCase();
+
+    // Cooldown check
+    const last = _gasDripLog.get(addrLower) ?? 0;
+    if (Date.now() - last < GAS_DRIP_COOLDOWN_MS) {
+      return c.json({ error: 'Cooldown — try again later', retryAfterMs: GAS_DRIP_COOLDOWN_MS - (Date.now() - last) }, 429);
+    }
+
+    // Balance check — skip drip if user already has enough gas
+    const balRes = await fetch(SUINS_GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!){
+          address(address:$a){
+            balance(coinType:"0x2::sui::SUI"){ totalBalance }
+          }
+        }`,
+        variables: { a: address },
+      }),
+    });
+    const balJson = await balRes.json() as { data?: { address?: { balance?: { totalBalance?: string } } } };
+    const userBalance = BigInt(balJson?.data?.address?.balance?.totalBalance ?? '0');
+    if (userBalance >= GAS_DRIP_MIN_MIST) {
+      return c.json({ success: true, skipped: true, reason: 'already has gas', balance: userBalance.toString() });
+    }
+
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const ultronAddress = keypair.toSuiAddress();
+
+    const tx = new Transaction();
+    tx.setSender(ultronAddress);
+    const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(GAS_DRIP_MIST.toString())]);
+    tx.transferObjects([coin], tx.pure.address(address));
+
+    const txBytes = await tx.build({ client: { url: SUI_RPC_URLS[0] } as any });
+    const { signature } = await keypair.signTransaction(txBytes);
+    const b64 = btoa(String.fromCharCode(...txBytes));
+
+    const submitRes = await fetch(SUI_RPC_URLS[0], {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'sui_executeTransactionBlock',
+        params: [b64, [signature], { showEffects: true }, 'WaitForLocalExecution'],
+      }),
+    });
+    const submitJson = await submitRes.json() as { result?: { digest?: string }; error?: unknown };
+    const digest = submitJson?.result?.digest;
+    if (!digest) return c.json({ error: 'Drip failed', detail: submitJson?.error }, 500);
+
+    _gasDripLog.set(addrLower, Date.now());
+    return c.json({ success: true, digest, amountMist: GAS_DRIP_MIST.toString() });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 /**
  * POST /api/ika/fund
  * Body: { address: string }
