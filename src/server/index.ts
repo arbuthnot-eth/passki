@@ -1475,7 +1475,11 @@ app.post('/api/name-index/set', async (c) => {
   const body = await c.req.text();
   const res = await stub.fetch(new Request('https://do/set', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      'x-partykit-room': 'singleton',
+      'x-partykit-namespace': 'NameIndex',
+    },
     body,
   }));
   return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
@@ -1486,7 +1490,11 @@ app.post('/api/name-index/bulk', async (c) => {
   const body = await c.req.text();
   const res = await stub.fetch(new Request('https://do/bulk', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      'x-partykit-room': 'singleton',
+      'x-partykit-namespace': 'NameIndex',
+    },
     body,
   }));
   return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
@@ -1496,7 +1504,13 @@ app.get('/api/name-index/get/:address', async (c) => {
   const address = c.req.param('address');
   if (!/^0x[0-9a-fA-F]{64}$/.test(address)) return c.json({ error: 'bad address' }, 400);
   const stub = c.env.NameIndex.get(c.env.NameIndex.idFromName('singleton'));
-  const res = await stub.fetch(new Request(`https://do/get/${address}`, { method: 'GET' }));
+  const res = await stub.fetch(new Request(`https://do/get/${address}`, {
+    method: 'GET',
+    headers: {
+      'x-partykit-room': 'singleton',
+      'x-partykit-namespace': 'NameIndex',
+    },
+  }));
   return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
 });
 
