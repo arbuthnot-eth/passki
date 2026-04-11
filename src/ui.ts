@@ -10952,11 +10952,28 @@ function bindEvents() {
         // Use card name (authority) — fall back to input label, then primary
         const cardName = _cardCurrentName || nsLabel.trim().toLowerCase() || (app.suinsName?.replace(/\.sui$/, '') || '');
         if (!cardName) return;
-        // Set @name$ and focus for amount entry
+        // Set @name$, focus, then move the cursor to the END so the
+        // user can type the amount immediately. Order matters:
+        //   1. Set value
+        //   2. focus() — some browsers reset selection on focus
+        //      from a non-focused state, so setting selection
+        //      BEFORE focus gets overridden.
+        //   3. setSelectionRange to end-of-string
+        //   4. dispatch input so the preview / tag sync / icon swap
+        //      all see the new state.
+        // An extra rAF-scheduled re-clamp absorbs any async clamp
+        // from the input-click / keyup listeners that might fire as
+        // a side effect of the focus transition.
         _idleThunderInputEl.value = `@${cardName}$`;
-        _idleThunderInputEl.selectionStart = _idleThunderInputEl.selectionEnd = _idleThunderInputEl.value.length;
         _idleThunderInputEl.focus();
+        const _end = _idleThunderInputEl.value.length;
+        try { _idleThunderInputEl.setSelectionRange(_end, _end); } catch {}
         _idleThunderInputEl.dispatchEvent(new Event('input'));
+        requestAnimationFrame(() => {
+          if (!_idleThunderInputEl) return;
+          const _endAgain = _idleThunderInputEl.value.length;
+          try { _idleThunderInputEl.setSelectionRange(_endAgain, _endAgain); } catch {}
+        });
       });
 
       // Diamond click → toggle target address row (own addresses or Roster lookup for others)
