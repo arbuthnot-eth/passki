@@ -12,6 +12,7 @@
  */
 
 import { Agent } from 'agents';
+import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
 
 /** Wire-format attachment record from @mysten/sui-stack-messaging. */
 interface StoredAttachment {
@@ -83,6 +84,46 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
         participants: Array.isArray(s?.participants) ? s!.participants : [],
       });
     }
+  }
+
+  // ─── WebSocket subscribe path (Jolteon Lv. 25) ─────────────────────
+  // Clients connect to /api/timestream/<gid>/ws and receive real-time
+  // thunder events as JSON frames instead of polling. Broadcast helper
+  // sends to every open connection on this DO instance. Hibernation
+  // is handled by the base Server class — idle sockets don't pin RAM.
+
+  /** Send a JSON event to every connected websocket on this DO. */
+  private _broadcast(event: unknown) {
+    try {
+      this.broadcast(JSON.stringify(event));
+    } catch { /* no connections or send failed — best-effort */ }
+  }
+
+  onConnect(connection: Connection, _ctx: ConnectionContext) {
+    // Send an initial snapshot so the client can paint immediately
+    // without a separate fetch round-trip. The receiver decrypts
+    // client-side; we only carry ciphertext + metadata.
+    try {
+      this._ensureState();
+      const msgs = this.state.messages
+        .filter(m => !m.isDeleted)
+        .sort((a, b) => a.order - b.order)
+        .slice(-50);
+      connection.send(JSON.stringify({
+        kind: 'snapshot',
+        messages: msgs,
+        participants: this._participants,
+      }));
+    } catch (e) {
+      try { connection.send(JSON.stringify({ kind: 'error', error: e instanceof Error ? e.message : String(e) })); } catch {}
+    }
+  }
+
+  onMessage(_connection: Connection, _message: WSMessage) {
+    // Clients are currently pure subscribers — no inbound messages
+    // expected over the WS. Sends still go over the existing POST
+    // endpoints so the failure / validation / retry story stays
+    // uniform across browsers and server agents alike.
   }
 
   async onRequest(request: Request): Promise<Response> {
@@ -221,6 +262,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
 
     const messages = [...this.state.messages, msg];
     this.setState({ ...this.state, messages, nextOrder: order + 1 });
+    this._broadcast({ kind: 'thunder', message: msg, participants: this._participants });
 
     return Response.json({ messageId });
   }
@@ -301,6 +343,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     const messages = [...this.state.messages];
     messages[idx] = updated;
     this.setState({ ...this.state, messages });
+    this._broadcast({ kind: 'edit', message: updated });
 
     return Response.json({ messageId: updated.messageId });
   }
@@ -320,8 +363,10 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     // nonce, key version, and any attachment references are all dropped.
     // Delete-for-everyone is the ONLY delete — no soft-delete tombstones,
     // no recoverable ghosts in persisted DO storage.
+    const deletedId = this.state.messages[idx].messageId;
     const messages = this.state.messages.filter((_, i) => i !== idx);
     this.setState({ ...this.state, messages });
+    this._broadcast({ kind: 'delete', messageId: deletedId });
 
     return Response.json({ deleted: true });
   }
@@ -366,6 +411,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
 
     const purgedCount = this.state.messages.length;
     this.setState({ ...this.state, messages: [] });
+    this._broadcast({ kind: 'purge', purged: purgedCount });
     return Response.json({ purged: purgedCount });
   }
 

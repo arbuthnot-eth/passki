@@ -1394,6 +1394,29 @@ app.post('/api/timestream/:groupId/:action', async (c) => {
   catch { return c.json({ error: text }, 500); }
 });
 
+// Thunder subscribe WebSocket — Jolteon Lv. 25.
+// Clients open a WS to /api/timestream/:groupId/ws and receive real-time
+// thunder events pushed by the TimestreamAgent DO. The Agent's Server
+// base class handles the WS handshake + hibernation; we just forward
+// the upgrade request to the right DO stub.
+app.get('/api/timestream/:groupId/ws', async (c) => {
+  const groupId = c.req.param('groupId');
+  if (!groupId) return c.json({ error: 'groupId required' }, 400);
+  if (c.req.header('Upgrade')?.toLowerCase() !== 'websocket') {
+    return c.json({ error: 'WebSocket upgrade required' }, 426);
+  }
+  const stub = c.env.TimestreamAgent.get(c.env.TimestreamAgent.idFromName(groupId));
+  // Forward the raw request — the DO's Server base class recognizes
+  // the Upgrade header and performs the handshake + onConnect.
+  // The partykit room header tags this connection to the right room.
+  const headers = new Headers(c.req.raw.headers);
+  headers.set('x-partykit-room', groupId);
+  return stub.fetch(new Request(c.req.raw.url, {
+    method: 'GET',
+    headers,
+  }));
+});
+
 // Migrate ultron: sweep all assets to new keeper + update ultron.sui target address
 app.post('/api/cache/migrate', async (c) => {
   try {

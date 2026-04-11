@@ -11819,6 +11819,7 @@ function bindEvents() {
       }
 
       let _convoPollTimer: ReturnType<typeof setInterval> | null = null;
+      let _convoStreamHandle: { close(): void } | null = null;
       let _convoLastCount = 0;
 
       // Storm is top-priority UI. When a convo opens, close every
@@ -12052,30 +12053,92 @@ function bindEvents() {
         try { sessionStorage.setItem('ski:idle-convo', bare); localStorage.setItem('ski:idle-convo', bare); } catch {}
         _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
 
-        // Poll the DO for new thunders. Interval is 2s, which is snappy
-        // enough to feel near-real-time without hammering the DO. The
-        // handler also detects DECREASES in message count (someone
-        // deleted or purged on the other side) and re-renders to sync.
+        // Real-time subscribe (Jolteon Lv. 25): open a WebSocket to the
+        // TimestreamAgent DO. The DO broadcasts an event on every state
+        // change (new thunder, edit, delete, purge) and we re-expand
+        // the convo to re-render. Falls back to 2s polling if the WS
+        // drops for more than 5s consecutive so delivery never stalls.
         _convoLastCount = entries.length;
         if (_convoPollTimer) clearInterval(_convoPollTimer);
-        _convoPollTimer = setInterval(async () => {
-          const _cEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
-          if (!_cEl || _cEl.hasAttribute('hidden')) { clearInterval(_convoPollTimer!); _convoPollTimer = null; return; }
-          try {
-            const _pRes = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/fetch`, {
-              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limit: 50, address: getState().address || '' }),
-            });
-            if (!_pRes.ok) return;
-            const _pData = await _pRes.json() as { messages: any[] };
-            // Re-render on ANY count change (new thunder or remote
-            // delete). Previously only increases triggered — decreases
-            // left stale bubbles on screen until the next manual open.
-            if (_pData.messages.length !== _convoLastCount) {
-              _convoLastCount = _pData.messages.length;
-              _expandIdleConvo(bare);
+        if (_convoStreamHandle) { try { _convoStreamHandle.close(); } catch {} _convoStreamHandle = null; }
+
+        let _wsHealthy = false;
+        let _wsDropAt = 0;
+        const _startPollFallback = () => {
+          if (_convoPollTimer) return;
+          _convoPollTimer = setInterval(async () => {
+            const _cEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+            if (!_cEl || _cEl.hasAttribute('hidden')) {
+              if (_convoPollTimer) { clearInterval(_convoPollTimer); _convoPollTimer = null; }
+              return;
             }
-          } catch {}
-        }, 2000);
+            try {
+              const _pRes = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/fetch`, {
+                method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limit: 50, address: getState().address || '' }),
+              });
+              if (!_pRes.ok) return;
+              const _pData = await _pRes.json() as { messages: any[] };
+              if (_pData.messages.length !== _convoLastCount) {
+                _convoLastCount = _pData.messages.length;
+                _expandIdleConvo(bare);
+              }
+            } catch {}
+          }, 2000);
+        };
+
+        const _stopPollFallback = () => {
+          if (_convoPollTimer) { clearInterval(_convoPollTimer); _convoPollTimer = null; }
+        };
+
+        try {
+          const { subscribeThunderStream } = await import('./client/thunder.js');
+          _convoStreamHandle = subscribeThunderStream({
+            groupId,
+            onOpen: () => {
+              _wsHealthy = true;
+              _wsDropAt = 0;
+              _stopPollFallback();
+            },
+            onClose: () => {
+              _wsHealthy = false;
+              _wsDropAt = Date.now();
+              // Start polling as a short-term safety net. The subscribe
+              // handle will auto-reconnect in the background; once it
+              // succeeds, onOpen kills the poll again.
+              setTimeout(() => {
+                if (!_wsHealthy && Date.now() - _wsDropAt >= 5000) _startPollFallback();
+              }, 5000);
+            },
+            onEvent: (ev) => {
+              // Guard: only re-render if the convo is still open on
+              // the same target. Closed convo → ignore push.
+              const _cEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+              if (!_cEl || _cEl.hasAttribute('hidden')) return;
+              if (ev.kind === 'snapshot') {
+                _convoLastCount = (ev.messages || []).length;
+              } else if (ev.kind === 'thunder') {
+                _convoLastCount++;
+                _expandIdleConvo(bare);
+              } else if (ev.kind === 'edit') {
+                _expandIdleConvo(bare);
+              } else if (ev.kind === 'delete') {
+                _convoLastCount = Math.max(0, _convoLastCount - 1);
+                _expandIdleConvo(bare);
+              } else if (ev.kind === 'purge') {
+                _convoLastCount = 0;
+                // Wipe the convo + close. Other side purged.
+                _cEl.innerHTML = '';
+                _cEl.setAttribute('hidden', '');
+                _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+                try { localStorage.removeItem(_THUNDER_HIST_KEY(groupId)); } catch {}
+                try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+              }
+            },
+          });
+        } catch (e) {
+          console.warn('[thunder] subscribe failed, falling back to poll:', e);
+          _startPollFallback();
+        }
 
         // Render Timestream messages as bubbles with reverse lookup
         const ws = getState();

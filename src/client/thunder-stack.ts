@@ -805,6 +805,98 @@ export async function getThunders(opts: {
   };
 }
 
+// ─── Real-time thunder subscribe (Jolteon Lv. 25) ───────────────────
+// Opens a WebSocket to /api/timestream/<gid>/ws and routes pushed
+// events (snapshot / thunder / edit / delete / purge) to the caller.
+// Auto-reconnects with exponential backoff on drop. AbortSignal tears
+// down the socket + cancels any pending reconnect.
+
+export type ThunderStreamEvent =
+  | { kind: 'snapshot'; messages: any[]; participants: string[] }
+  | { kind: 'thunder'; message: any; participants: string[] }
+  | { kind: 'edit'; message: any }
+  | { kind: 'delete'; messageId: string }
+  | { kind: 'purge'; purged: number }
+  | { kind: 'error'; error: string };
+
+export interface ThunderStreamHandle {
+  close(): void;
+}
+
+export function subscribeThunderStream(opts: {
+  groupId: string;
+  onEvent: (ev: ThunderStreamEvent) => void;
+  onOpen?: () => void;
+  onClose?: () => void;
+  signal?: AbortSignal;
+}): ThunderStreamHandle {
+  let closed = false;
+  let ws: WebSocket | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let backoff = 500;
+
+  const url = (() => {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}/api/timestream/${encodeURIComponent(opts.groupId)}/ws`;
+  })();
+
+  const connect = () => {
+    if (closed) return;
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      console.warn('[thunder] WS constructor threw, will retry:', e);
+      schedule();
+      return;
+    }
+    ws.addEventListener('open', () => {
+      backoff = 500;
+      opts.onOpen?.();
+    });
+    ws.addEventListener('message', (ev) => {
+      try {
+        // Filter internal framework protocol frames (cf_agent_* etc.)
+        // and only surface our own JSON event envelopes.
+        const text = typeof ev.data === 'string' ? ev.data : '';
+        if (!text || text[0] !== '{') return;
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed.kind !== 'string') return;
+        if (!['snapshot', 'thunder', 'edit', 'delete', 'purge', 'error'].includes(parsed.kind)) return;
+        opts.onEvent(parsed);
+      } catch { /* ignore malformed frames */ }
+    });
+    ws.addEventListener('close', () => {
+      opts.onClose?.();
+      if (!closed) schedule();
+    });
+    ws.addEventListener('error', () => {
+      try { ws?.close(); } catch {}
+    });
+  };
+
+  const schedule = () => {
+    if (closed || reconnectTimer) return;
+    const delay = Math.min(backoff, 10_000);
+    backoff = Math.min(backoff * 2, 10_000);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, delay);
+  };
+
+  const close = () => {
+    closed = true;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    try { ws?.close(); } catch {}
+    ws = null;
+  };
+
+  opts.signal?.addEventListener('abort', close, { once: true });
+
+  connect();
+  return { close };
+}
+
 /**
  * Subscribe to real-time Thunder signals.
  */
