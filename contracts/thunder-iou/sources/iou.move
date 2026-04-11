@@ -137,16 +137,17 @@ entry fun claim(
 
 // ─── Recall ─────────────────────────────────────────────────────────
 
-/// Permissionless after TTL: sender (or any keeper) reclaims the
-/// locked SUI once the Iou has expired. Balance always returns to the
-/// original sender so a keeper bot can sweep without custody risk.
+/// The sender can always reclaim their own deposit; anyone else must
+/// wait until expiry. Balance always returns to the original sender so
+/// post-TTL keeper sweeps remain safe. Sender-anytime is the escape
+/// hatch for "sent to the wrong wallet" and for UX-initiated recalls.
 entry fun recall(
     iou: Iou,
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
     let Iou { id, sender, recipient: _, balance: bal, expires_ms, sealed_memo: _ } = iou;
-    assert!(clock.timestamp_ms() >= expires_ms, ENotExpired);
+    assert!(ctx.sender() == sender || clock.timestamp_ms() >= expires_ms, ENotExpired);
 
     let amount = balance::value(&bal);
     let iou_addr = object::uid_to_address(&id);

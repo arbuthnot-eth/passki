@@ -234,9 +234,12 @@ entry fun claim(
 
 // ─── Recall ──────────────────────────────────────────────────────────
 
-/// Permissionless after TTL: sender (or any keeper) reclaims the
-/// locked SUI once the vault has expired. Balance always returns to
-/// the original sender so a keeper bot can sweep without custody risk.
+/// The sender can always reclaim their own deposit; anyone else
+/// (keeper bots, post-TTL sweepers) must wait until expiry. Balance
+/// always returns to the original sender so a keeper sweep is still
+/// safe. The sender-anytime path is the escape hatch for "I sent to
+/// the wrong wallet / @name" and for the unclaimed-but-not-yet-expired
+/// UX flow where the user wants their money back immediately.
 entry fun recall(
     vault: ShieldedVault,
     clock: &Clock,
@@ -244,7 +247,8 @@ entry fun recall(
 ) {
     let ShieldedVault { id, sender, commitment: _, balance: bal, expires_ms, sealed_opening: _ } = vault;
 
-    assert!(clock.timestamp_ms() >= expires_ms, ENotExpired);
+    // Sender can recall anytime; others must wait for TTL.
+    assert!(ctx.sender() == sender || clock.timestamp_ms() >= expires_ms, ENotExpired);
 
     let amount = balance::value(&bal);
     let vault_addr = object::uid_to_address(&id);

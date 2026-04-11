@@ -12907,6 +12907,17 @@ function bindEvents() {
               const _bubEl = bubble as HTMLElement;
               const _txDigest = _bubEl.dataset.tx || '';
               const _role = _bubEl.dataset.iouRole || '';
+              // Optimistic paint on first click so the user has
+              // instant feedback that the action is in flight.
+              //   recipient → gray (settled) + @mention green
+              //   sender    → red (recalling — returning iOUSD jacket)
+              // The class gets removed on failure below (except the
+              // "already settled" branch, where gray is correct).
+              if (_role === 'recipient') {
+                _bubEl.classList.add('ski-idle-bubble--transfer-settled');
+              } else if (_role === 'sender') {
+                _bubEl.classList.add('ski-idle-bubble--transfer-recalling');
+              }
               const _openExplorer = () => {
                 if (_txDigest) window.open(`https://suivision.xyz/txblock/${_txDigest}`, '_blank', 'noopener,noreferrer');
               };
@@ -13009,14 +13020,21 @@ function bindEvents() {
                       // Paint the bubble as settled — escrow is closed.
                       _bubEl.classList.add('ski-idle-bubble--transfer-settled');
                     } catch (err) {
+                      // Claim failed — roll back the optimistic gray
+                      // paint so the user can see the escrow is still
+                      // live and retry.
+                      _bubEl.classList.remove('ski-idle-bubble--transfer-settled');
                       const msg = err instanceof Error ? err.message : String(err);
                       if (/reject|cancel/i.test(msg)) return;
                       showToast(`Claim failed: ${msg.slice(0, 120)}`);
                     }
                   } else {
-                    // Sender-side click. Try recall (only works after
-                    // TTL). On ENotExpired, stay put — no explorer.
-                    // Clicking a live bubble is an action, not a link.
+                    // Sender-side click. After the v2 contract upgrade,
+                    // the sender can recall anytime (no TTL wait). The
+                    // optimistic red paint above stays on during the tx;
+                    // on success we swap red → gray (settled); on
+                    // failure we roll back to the live (green) state.
+                    showToast(_isShielded ? '\u21a9\ufe0f Recalling\u2026' : '\u21a9\ufe0f Recalling IOU\u2026');
                     try {
                       let bytes: Uint8Array;
                       if (_isShielded) {
@@ -13035,13 +13053,18 @@ function bindEvents() {
                         : await signAndExecuteTransaction(bytes);
                       const digest = (r as any)?.digest || '';
                       showToast(digest ? `\u21a9\ufe0f Recalled — ${digest.slice(0, 10)}\u2026` : '\u21a9\ufe0f Recalled');
-                      // Paint the bubble as settled — balance returned.
+                      // Swap red → gray: balance returned, escrow closed.
+                      _bubEl.classList.remove('ski-idle-bubble--transfer-recalling');
                       _bubEl.classList.add('ski-idle-bubble--transfer-settled');
                     } catch (err) {
+                      // Roll back the red paint so the bubble flips back
+                      // to its live (green) state and the user can retry.
+                      _bubEl.classList.remove('ski-idle-bubble--transfer-recalling');
                       const msg = err instanceof Error ? err.message : String(err);
                       if (/reject|cancel/i.test(msg)) return;
                       if (/abort code:\s*2/i.test(msg) || /ENotExpired/i.test(msg)) {
-                        showToast('Escrow still live — waiting for claim or TTL');
+                        // Legacy (pre-upgrade) IOU — only recallable post-TTL.
+                        showToast('Legacy escrow — waiting for TTL to recall');
                       } else {
                         showToast(`Recall failed: ${msg.slice(0, 120)}`);
                       }
