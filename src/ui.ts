@@ -4036,16 +4036,14 @@ async function fetchAndShowNsPrice(label: string) {
       const ws = getState();
       const ownerMatch = sr?.nftOwner && ws.address && normalizeSuiAddress(sr.nftOwner) === normalizeSuiAddress(ws.address);
       if (inRoster || ownerMatch) nsAvail = 'owned';
-      // Buffer: if not yet in roster, re-check after owned domains load
+      // Not in the local roster yet — force a fresh owned-domains fetch
+      // (kiosk-held names may not have been scanned on initial login).
+      // _fetchOwnedDomains has its own self-heal at the bottom that
+      // promotes 'taken' → 'owned' when the fresh list contains the
+      // current label, so we don't need a second recheck here.
       if (nsAvail === 'taken' && !inRoster && ws.address) {
-        setTimeout(() => {
-          const _recheck = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);
-          if (_recheck && nsAvail === 'taken' && nsPriceFetchFor?.toLowerCase() === bareLabel) {
-            nsAvail = 'owned';
-            _patchNsStatus();
-            window.dispatchEvent(new Event('ski:ownership-changed'));
-          }
-        }, 2000);
+        nsOwnedFetchedFor = '';
+        void _fetchOwnedDomains();
       }
     }
     nsKioskListing = sr?.kioskId
@@ -7643,7 +7641,17 @@ function renderSkiMenu() {
         try {
           const resolvedAddr = addr.includes('.sui') ? await resolveNameToAddress(addr.replace(/\.sui$/, '')) : addr;
           if (!resolvedAddr) { showToast('Could not resolve address'); btn.disabled = false; btn.textContent = '\u2713'; return; }
-          const txBytes = await buildSetTargetAddressTx(ws2.address, `${label}.sui`, resolvedAddr);
+          // Guard: kiosked NFTs can't be mutated directly — the PTB
+          // would fail at execution. Tell the user to delist first.
+          const _domainFull = `${label}.sui`;
+          const _kiosked = nsOwnedDomains.find(d => d.name === _domainFull && d.kind === 'nft' && d.inKiosk);
+          if (_kiosked) {
+            showToast(`${_domainFull} is listed in a kiosk — delist first`);
+            btn.disabled = false;
+            btn.textContent = '\u2713';
+            return;
+          }
+          const txBytes = await buildSetTargetAddressTx(ws2.address, _domainFull, resolvedAddr, nsRealOwnerAddr || undefined);
           await signAndExecuteTransaction(txBytes);
           nsTargetAddress = resolvedAddr;
           nsShowTargetInput = false;
