@@ -661,6 +661,57 @@ import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
         const { getCachedKeyVersion } = await import('./client/thunder.js');
         return getCachedKeyVersion(uuid).toString();
       },
+      /** Transfer every NS coin in the connected wallet to ultron.
+       *  Ultron's alarm picks it up on the next tick and routes it
+       *  through _sweepNsToIusd → USDC → iUSD cache. Use this to
+       *  drain stranded quest-fill NS that never got consumed by a
+       *  registration tx. No-op if the wallet holds zero NS. */
+      sweepNsToCache: async () => {
+        const [{ Transaction }, { SuiGraphQLClient }, { normalizeSuiAddress }, wallet, sponsorInfo] = await Promise.all([
+          import('@mysten/sui/transactions'),
+          import('@mysten/sui/graphql'),
+          import('@mysten/sui/utils'),
+          import('./wallet.js'),
+          fetch('/api/sponsor-info').then(r => r.json()).catch(() => null) as Promise<{ sponsorAddress?: string } | null>,
+        ]);
+        const ultron = sponsorInfo?.sponsorAddress;
+        if (!ultron) { console.error('[.SKI] sweepNsToCache: ultron address unavailable'); return null; }
+        const addr = (wallet as any).getState?.()?.address;
+        if (!addr) { console.error('[.SKI] sweepNsToCache: no wallet connected'); return null; }
+
+        // Fetch user's NS coins via GraphQL.
+        const NS_TYPE = '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS';
+        const gql = new SuiGraphQLClient({ url: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+        const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: `{
+            address(address: "${addr}") {
+              objects(filter: { type: "0x2::coin::Coin<${NS_TYPE}>" }, first: 50) {
+                nodes { address version digest contents { json } }
+              }
+            }
+          }` }),
+        });
+        const data = await res.json() as { data?: { address?: { objects?: { nodes?: Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }> } } } };
+        const nodes = data?.data?.address?.objects?.nodes ?? [];
+        const coins = nodes.filter(n => BigInt(n.contents?.json?.balance ?? '0') > 0n);
+        if (coins.length === 0) { console.log('[.SKI] sweepNsToCache: no NS to sweep'); return { swept: 0, digest: null }; }
+        const totalNs = coins.reduce((s, c) => s + BigInt(c.contents?.json?.balance ?? '0'), 0n);
+
+        const tx = new Transaction();
+        tx.setSender(normalizeSuiAddress(addr));
+        const primary = tx.objectRef({ objectId: coins[0].address, version: coins[0].version, digest: coins[0].digest });
+        if (coins.length > 1) {
+          tx.mergeCoins(primary, coins.slice(1).map(c => tx.objectRef({ objectId: c.address, version: c.version, digest: c.digest })));
+        }
+        tx.transferObjects([primary], tx.pure.address(normalizeSuiAddress(ultron)));
+        const bytes = await tx.build({ client: gql as never });
+        const r = await wallet.signAndExecuteTransaction(bytes);
+        const digest = (r as any)?.digest ?? '';
+        console.log(`[.SKI] swept ${Number(totalNs) / 1e6} NS → ultron (${digest || 'no digest'})`);
+        return { swept: Number(totalNs) / 1e6, digest };
+      },
     });
   } catch {}
 }).catch(() => {});

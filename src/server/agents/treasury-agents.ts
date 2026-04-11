@@ -1287,6 +1287,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       await this._scanArb();
       await this._runT2000Missions();
       await this._retryOpenQuests();
+      await this._retryStrandedRegistrations();
       await this._deliberateShades();
       await this._sweepNsToIusd();
 
@@ -2757,14 +2758,31 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Submit pre-signed registration tx if available — auto-registers the name
       let regDigest: string | undefined;
+      let regError: string | undefined;
       if (bounty.preSignedTx && bounty.preSignedSig) {
         try {
           const txBytes = Uint8Array.from(atob(bounty.preSignedTx), c => c.charCodeAt(0));
           regDigest = await this._submitTx(txBytes, bounty.preSignedSig);
           console.log(`[TreasuryAgents] Auto-registered name for ${recipient.slice(0, 10)}…: ${regDigest}`);
         } catch (regErr) {
-          console.error(`[TreasuryAgents] Pre-signed registration failed (user registers manually):`, regErr);
+          regError = regErr instanceof Error ? regErr.message : String(regErr);
+          console.error(`[TreasuryAgents] Pre-signed registration failed (will retry in _retryStrandedRegistrations):`, regError);
         }
+      }
+
+      // Persist regDigest / regError on the bounty so the
+      // reconciler can find + retry stranded fills.
+      const postSwap = [...((this.state as any).quest_bounties ?? [])] as Array<Record<string, any>>;
+      const pIdx = postSwap.findIndex(b => b.id === bountyId);
+      if (pIdx !== -1) {
+        postSwap[pIdx] = {
+          ...postSwap[pIdx],
+          regDigest,
+          regError,
+          regAttempts: (postSwap[pIdx].regAttempts ?? 0) + 1,
+          regLastAttemptMs: Date.now(),
+        };
+        this.setState({ ...this.state, quest_bounties: postSwap } as any);
       }
 
       return { status: 'filled', digest, regDigest };
@@ -2997,6 +3015,71 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     // Update last processed signature
     this.setState({ ...this.state, last_sol_sig: signatures[0]?.signature } as any);
+  }
+
+  /** Retry pre-signed registrations that failed during quest fill.
+   *
+   * A quest fill is 2 steps: (1) swap payment coin → NS and transfer
+   * to the user, (2) submit the user's pre-signed registration tx
+   * that consumes the NS + mints the name. If step 2 fails (network
+   * flake, rpc rejection, gas coin stale) the NS is stranded in the
+   * user's wallet and the name never gets registered.
+   *
+   * This walks every filled bounty with a missing regDigest, retries
+   * the stored pre-signed tx up to 5 times total, then marks the
+   * bounty abandoned. Once abandoned, the UI surfaces an "NS dust →
+   * cache" affordance to the user (their NS is their own to sweep;
+   * ultron can't pull it back without a fresh signature).
+   */
+  private async _retryStrandedRegistrations(): Promise<void> {
+    const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+    if (bounties.length === 0) return;
+
+    const MAX_ATTEMPTS = 5;
+    const RETRY_COOLDOWN_MS = 60 * 1000; // 1 min between retries
+    const now = Date.now();
+
+    const stranded = bounties.filter(b =>
+      b.status === 'filled'
+      && !b.regDigest
+      && !b.regAbandoned
+      && b.preSignedTx
+      && b.preSignedSig
+      && (b.regAttempts ?? 0) < MAX_ATTEMPTS
+      && (now - (b.regLastAttemptMs ?? 0)) > RETRY_COOLDOWN_MS,
+    );
+    if (stranded.length === 0) return;
+
+    const updated = [...bounties];
+    for (const b of stranded) {
+      try {
+        const txBytes = Uint8Array.from(atob(b.preSignedTx), c => c.charCodeAt(0));
+        const regDigest = await this._submitTx(txBytes, b.preSignedSig);
+        const idx = updated.findIndex(x => x.id === b.id);
+        if (idx !== -1) {
+          updated[idx] = { ...updated[idx], regDigest, regError: undefined, regLastAttemptMs: now };
+          console.log(`[TreasuryAgents] Reconciled stranded reg for bounty ${b.id}: ${regDigest}`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const idx = updated.findIndex(x => x.id === b.id);
+        if (idx !== -1) {
+          const attempts = (updated[idx].regAttempts ?? 0) + 1;
+          const abandoned = attempts >= MAX_ATTEMPTS;
+          updated[idx] = {
+            ...updated[idx],
+            regAttempts: attempts,
+            regError: msg,
+            regLastAttemptMs: now,
+            regAbandoned: abandoned || undefined,
+          };
+          if (abandoned) {
+            console.warn(`[TreasuryAgents] Abandoning stranded reg for bounty ${b.id} after ${attempts} attempts: ${msg}`);
+          }
+        }
+      }
+    }
+    this.setState({ ...this.state, quest_bounties: updated } as any);
   }
 
   /** Sweep NS → USDC → iUSD. Ultron should never hold NS — always convert back to iUSD (backed by XAUM + USDC + SUI). */
