@@ -1933,6 +1933,41 @@ app.post('/api/cache/attest-collateral', async (c) => {
   }
 });
 
+// Shuckle Lv.30 stage 2 (#117) — zero out the phantom DUST collateral
+// record that the old broken sweepDust path accumulated. One-shot
+// cleanup; after this runs, attestLiveCollateral is the only writer.
+app.post('/api/cache/zero-dust-record', async (c) => {
+  try {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?zero-dust-record', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Shuckle Lv.30 stage 2 (#117) — recover the owned BalanceManager that
+// was holding 34.75 iUSD + $28.99 USDC stranded. One PTB withdraws both
+// balances, burns the recovered iUSD (reducing supply from 133.62 to
+// 98.87), and sends the USDC back to ultron for the next attest cycle.
+app.post('/api/cache/recover-owned-bm', async (c) => {
+  try {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?recover-owned-bm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // Shuckle Lv.30 (#117) — unwind ultron's sSUI (Scallop receipt) back
 // to liquid SUI. One-time cleanup: ultron should not hold assets the
 // collateral attestation doesn't understand.
