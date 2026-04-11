@@ -3681,12 +3681,12 @@ body {
   color: #4ade80 !important;
   text-align: center;
   text-decoration: none;
-  /* Flex so the inline sender-name link sits on the left of the
-   * transfer label instead of floating above it. Only relevant on
-   * the recipient side where a nameTag is prepended. */
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
+  /* Relative so the absolute-positioned sender-name badge can sit
+   * over the top-left edge of the bubble like a little tag. */
+  position: relative;
+  /* Extra top margin so the badge (which pokes up ~10px) doesn't
+   * collide with the previous bubble. */
+  margin-top: 14px !important;
 }
 /* Sender side — gold outline to signal "you locked these funds".
  * The green fill stays (it's still a transfer) but the border and
@@ -3697,24 +3697,45 @@ body {
   box-shadow: 0 0 0 1px rgba(255, 184, 0, 0.35),
               0 0 10px rgba(255, 184, 0, 0.25);
 }
-/* Sender name link inside a recipient-side transfer bubble —
- * readable white, visible on the left, opens name.sui.ski in a
- * new tab. Overrides the default faded .ski-idle-bubble-sender. */
+/* Sender name badge on a recipient-side transfer bubble — sits
+ * half above the top-left corner of the green bubble like a little
+ * tag. Click to populate the name input (handled in JS). */
 .ski-idle-bubble--transfer .ski-idle-bubble-sender {
+  position: absolute;
+  top: -10px;
+  left: 10px;
+  padding: 1px 8px;
+  background: rgba(10, 10, 15, 0.95);
+  border: 1px solid rgba(34, 197, 94, 0.65);
+  border-radius: 10px;
   opacity: 1;
   color: #ffffff;
   font-weight: 700;
-  font-size: 0.82rem;
-  text-decoration: none;
-}
-.ski-idle-bubble--transfer a.ski-idle-bubble-sender {
+  font-size: 0.72rem;
+  line-height: 1.25;
+  white-space: nowrap;
   cursor: pointer;
-  transition: color 0.12s, text-shadow 0.12s;
+  text-decoration: none;
+  transition: color 0.12s, border-color 0.12s, text-shadow 0.12s;
+  z-index: 1;
 }
-.ski-idle-bubble--transfer a.ski-idle-bubble-sender:hover {
+.ski-idle-bubble--transfer .ski-idle-bubble-sender:hover {
   color: #ffffff;
-  text-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
-  text-decoration: underline;
+  border-color: rgba(34, 197, 94, 1);
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+}
+/* In-bubble @mention → clickable pill, same populate-on-click behavior. */
+.ski-idle-bubble--transfer .ski-idle-bubble-mention {
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.45);
+  transition: border-color 0.12s, text-shadow 0.12s;
+}
+.ski-idle-bubble--transfer .ski-idle-bubble-mention:hover {
+  border-bottom-color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
 }
 a.ski-idle-bubble--transfer {
   cursor: pointer;

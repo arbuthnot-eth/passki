@@ -12189,14 +12189,23 @@ function bindEvents() {
             const cls = `ski-idle-bubble--transfer`;
             const _digestMatch = m.text.match(/tx:([A-Za-z0-9]{40,60})/);
             const _digest = _digestMatch ? _digestMatch[1] : '';
-            const _label = m.text.replace(/\s*\u00b7?\s*tx:[A-Za-z0-9]+\s*$/, '').trim();
-            // Recipient-side only: render the sender's name as a
-            // white link to https://<name>.sui.ski, visible on the
-            // left of the green transfer bubble.
-            const _transferNameTag = !isOut
-              ? `<a class="ski-idle-bubble-sender" href="https://${encodeURIComponent(senderName)}.sui.ski" target="_blank" rel="noopener noreferrer" data-no-bubble-click="1">${esc(senderName)}</a> `
+            const _rawLabel = m.text.replace(/\s*\u00b7?\s*tx:[A-Za-z0-9]+\s*$/, '').trim();
+            // Turn any @mention inside the label into a clickable
+            // pill that populates the name input on click (same
+            // behavior as the sender name badge). Everything else
+            // is plain escaped text.
+            const _labelHtml = esc(_rawLabel).replace(/@([a-z0-9-]{3,63})/gi, (_m, name) => {
+              const bare = String(name).toLowerCase();
+              return `<span class="ski-idle-bubble-mention" data-populate-name="${esc(bare)}" data-no-bubble-click="1">@${esc(bare)}</span>`;
+            });
+            // Recipient-side only: sender name badge sits over the
+            // top-left corner of the bubble as a little tag. Click
+            // populates the name input instead of navigating.
+            const _bareSender = (senderName || '').toLowerCase();
+            const _transferNameTag = !isOut && _bareSender
+              ? `<span class="ski-idle-bubble-sender" data-populate-name="${esc(_bareSender)}" data-no-bubble-click="1" title="Populate name input with @${esc(_bareSender)}">${esc(_bareSender)}</span>`
               : '';
-            const _inner = `${_transferNameTag}${esc(_label)}`;
+            const _inner = `${_transferNameTag}${_labelHtml}`;
             const _role = isOut ? 'sender' : 'recipient';
             return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}" data-tx="${esc(_digest)}" data-iou-role="${_role}" title="${_digest ? 'Click to claim / recall / view on-chain' : 'On-chain record (legacy)'}">${_inner}</div>`;
           }
@@ -12288,10 +12297,23 @@ function bindEvents() {
             // after expiry). On failure of either, fall back to
             // opening the explorer view of the tx.
             if ((bubble as HTMLElement).classList.contains('ski-idle-bubble--transfer')) {
-              // If the click landed on the inner sender-name link,
-              // let it navigate normally (new tab to <name>.sui.ski)
+              // If the click landed on an inline populate-name tag
+              // (sender badge or @mention pill inside the label),
+              // populate the name input + card with that name
               // instead of triggering the claim/recall flow.
               const _target = ev.target as HTMLElement | null;
+              const _popEl = _target?.closest<HTMLElement>('[data-populate-name]');
+              if (_popEl) {
+                ev.preventDefault();
+                ev.stopImmediatePropagation();
+                const _popName = (_popEl.dataset.populateName || '').toLowerCase();
+                if (_popName && _idleNsInput) {
+                  _idleNsInput.value = _popName;
+                  _idleNsInput.dispatchEvent(new Event('input', { bubbles: true }));
+                  _idleNsInput.focus();
+                }
+                return;
+              }
               if (_target && _target.closest('[data-no-bubble-click="1"]')) {
                 return;
               }
