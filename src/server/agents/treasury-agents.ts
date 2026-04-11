@@ -155,6 +155,12 @@ export interface TreasuryAgentsState {
    *  incoming USDC coin on every poll. Blank on first run → the
    *  first tick establishes a baseline and matches nothing. */
   last_sui_usdc_cursor?: string;
+  /** Last wall-clock ms when the IOU sweeper ran on the TreasuryAgents
+   *  alarm path. Throttles _sweepExpiredIous to once per 5 minutes so
+   *  a fast-firing _tick doesn't spam GraphQL. Separate from the
+   *  Cloudflare cron at `*\/10 * * * *` in wrangler.jsonc — the two
+   *  paths coexist for redundancy. */
+  last_iou_sweep_ms?: number;
 }
 
 interface Env {
@@ -1321,6 +1327,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // watcher's match set stays small.
       await this._purgeStaleIntents();
       await this._watchSuiUsdcDeposits();
+      // IOU expiry sweep — Rhydon Lv.35, issue #74. Runs on a
+      // 5-minute throttle, redundant with the Cloudflare cron
+      // `*/10 * * * *`. Both call the same idempotent
+      // sweepExpiredIous helper — whichever fires first wins.
+      await this._sweepExpiredIous();
 
       // Every 15 min: sweep dust, rotate yield across NAVI/Scallop/DeepBook
       const YIELD_INTERVAL = 30 * 1000; // 30s for testing — restore to 15 * 60 * 1000
@@ -3046,6 +3057,35 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     // Update last processed signature
     this.setState({ ...this.state, last_sol_sig: signatures[0]?.signature } as any);
+  }
+
+  /** Rhydon Lv.35 (#74) — run the IOU expiry sweeper on the
+   *  treasury alarm path, throttled to every 5 minutes so _tick
+   *  firing at high cadence doesn't thrash GraphQL. Redundant
+   *  with the `*\/10 * * * *` cron tick declared in wrangler.jsonc
+   *  — whichever fires first wins; the sweeper is idempotent so
+   *  double-runs are free. Gives us secondary liveness if the
+   *  cron misses a tick.
+   *
+   *  Imports the shared `sweepExpiredIous` from `../iou-sweeper.js`
+   *  dynamically so the worker doesn't pull the sweeper's
+   *  dependencies at cold start.
+   */
+  private async _sweepExpiredIous(): Promise<void> {
+    const IOU_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+    const now = Date.now();
+    const last = (this.state as any).last_iou_sweep_ms as number | undefined;
+    if (last && now - last < IOU_SWEEP_INTERVAL_MS) return;
+    // Update the cursor BEFORE running so a hang can't lock us into
+    // a busy-loop retry — failures still count against the throttle.
+    this.setState({ ...this.state, last_iou_sweep_ms: now } as any);
+    try {
+      const { sweepExpiredIous } = await import('../iou-sweeper.js');
+      const result = await sweepExpiredIous(this.env as unknown as { SHADE_KEEPER_PRIVATE_KEY?: string });
+      console.log(`[treasury] iou-sweep: ${JSON.stringify(result)}`);
+    } catch (err) {
+      console.error('[treasury] iou-sweep threw:', err instanceof Error ? err.message : err);
+    }
   }
 
   /** Sub-cent intents — Phase 1b. Purge stale intents so the tag
