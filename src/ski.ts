@@ -620,7 +620,23 @@ initUI();
 // Start WaaP loading immediately — don't wait for window.load.
 // The preflight fetch inside registerWaaP is non-blocking and the SDK init
 // is fast, so this shaves seconds off the time the modal shows stale state.
-import('./waap.js').then(({ registerWaaP }) => registerWaaP()).catch(() => {});
+import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
+  registerWaaP();
+  // Expose a console helper so users stuck in an INVALID_DEVICE_SESSION
+  // state can recover without a browser-wide localStorage wipe. Usage:
+  //     ski.resetWaaP()     // nuclear reset + reinit
+  //     ski.reinitWaaP()    // just re-register the iframe
+  try {
+    (window as any).ski = Object.assign((window as any).ski || {}, {
+      resetWaaP: async () => {
+        await purgeWaaPState();
+        await registerWaaP();
+        console.log('[.SKI] WaaP state purged and re-registered. Refresh the page to reconnect from scratch.');
+      },
+      reinitWaaP,
+    });
+  } catch {}
+}).catch(() => {});
 
 // Handle ?splash= URL param for cross-device Splash sponsorship
 (async () => {

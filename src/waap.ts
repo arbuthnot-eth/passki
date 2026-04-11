@@ -36,6 +36,59 @@ export async function reinitWaaP(): Promise<void> {
   await registerWaaP();
 }
 
+/**
+ * Nuclear reset: clear every WaaP-related client-side state, not just
+ * the iframe. Use when WaaP sign-in is stuck with INVALID_DEVICE_SESSION
+ * or similar "stale session" errors that a reinit alone can't recover.
+ *
+ * Nukes:
+ *   - localStorage keys matching /waap|silk|wallet.?connect/i
+ *   - sessionStorage keys matching the same
+ *   - The <origin>-connected marker so dappkit doesn't auto-reconnect
+ *   - All injected WaaP iframes
+ *   - In-memory registration state so the next register creates a fresh iframe
+ *
+ * Does NOT clear indexedDB — CryptoKeys for Seal session encryption live
+ * there and are orthogonal to WaaP's auth state.
+ */
+export async function purgeWaaPState(): Promise<void> {
+  console.log('[.SKI] nuclear WaaP state reset');
+  if (typeof document !== 'undefined') {
+    document.querySelectorAll('iframe[src*="waap.xyz"], iframe[src*="silk-wallet"]').forEach(el => {
+      try { el.remove(); } catch {}
+    });
+  }
+  if (typeof localStorage !== 'undefined') {
+    const keysToDrop: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      if (/waap|silk|walletconnect|\borigin\b.*connected/i.test(k)) keysToDrop.push(k);
+    }
+    // Also hit the dappkit "which wallet" marker explicitly so the next
+    // connect doesn't try to auto-resume WaaP with a dead session.
+    keysToDrop.push(`${location.origin}-connected`);
+    keysToDrop.push('dappkit-wallet');
+    for (const k of keysToDrop) {
+      try { localStorage.removeItem(k); } catch {}
+    }
+    console.log('[.SKI] purged', keysToDrop.length, 'localStorage keys');
+  }
+  if (typeof sessionStorage !== 'undefined') {
+    const keysToDrop: string[] = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const k = sessionStorage.key(i);
+      if (!k) continue;
+      if (/waap|silk|walletconnect/i.test(k)) keysToDrop.push(k);
+    }
+    for (const k of keysToDrop) {
+      try { sessionStorage.removeItem(k); } catch {}
+    }
+  }
+  waapWallet = null;
+  registered = false;
+}
+
 export async function registerWaaP(): Promise<void> {
   if (registered || typeof window === 'undefined') return;
   registered = true;
