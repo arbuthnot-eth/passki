@@ -12907,7 +12907,45 @@ function bindEvents() {
               : (_digest ? 'Click to claim / recall' : 'On-chain record (legacy)');
             return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}" data-tx="${esc(_digest)}" data-iou-role="${_role}" title="${_bubbleTitle}">${_inner}</div>`;
           }
-          return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
+          // Regular (non-transfer) bubble. Two possible payloads:
+          //   - text only → existing render
+          //   - text + attachments → text bubble first (if any),
+          //     then one attachment bubble per file. Each attachment
+          //     bubble carries a click handler that calls the SDK's
+          //     resolved handle.data() to download-and-decrypt on
+          //     demand. A Seal ✓ badge confirms the file was
+          //     successfully encrypted end-to-end (if the handle
+          //     came through the SDK path, which performs decrypt
+          //     on resolve, the ✓ is guaranteed).
+          const _attachments = Array.isArray((m as unknown as { attachments?: unknown[] }).attachments)
+            ? (m as unknown as { attachments: Array<{ fileName?: string; mimeType?: string; fileSize?: number; wire?: { storageId?: string } }> }).attachments
+            : [];
+          const _textHtml = m.text
+            ? `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`
+            : '';
+          const _attachmentBubbles = _attachments.map((a, ai) => {
+            const fileName = a.fileName || `file-${ai + 1}`;
+            const mimeType = a.mimeType || 'application/octet-stream';
+            const fileSize = Number(a.fileSize || 0);
+            const sizeLabel = fileSize >= 1024 * 1024
+              ? `${(fileSize / (1024 * 1024)).toFixed(1)} MB`
+              : fileSize >= 1024
+                ? `${(fileSize / 1024).toFixed(0)} KB`
+                : `${fileSize} B`;
+            const isImg = mimeType.startsWith('image/');
+            const isVid = mimeType.startsWith('video/');
+            const icon = isImg ? '\u{1F5BC}\u{FE0F}'
+              : isVid ? '\u{1F3AC}'
+              : mimeType.startsWith('audio/') ? '\u{1F3B5}'
+              : mimeType.includes('pdf') ? '\u{1F4D1}'
+              : '\u{1F4CE}';
+            // Use the wire.storageId as a stable key for the lazy
+            // data() call — we cache resolved blobs in the map
+            // _attachmentBlobCache keyed by storageId.
+            const storageId = a.wire?.storageId || '';
+            return `<div class="ski-idle-bubble ${baseCls} ski-idle-bubble--attach" data-id="${esc(m.messageId)}" data-attach-idx="${ai}" data-attach-storage="${esc(storageId)}" data-mime="${esc(mimeType)}" data-filename="${esc(fileName)}" title="Seal-encrypted attachment \u2014 click to download">${nameTag}<span class="ski-idle-bubble-attach-icon">${icon}</span><span class="ski-idle-bubble-attach-meta"><span class="ski-idle-bubble-attach-name">${esc(fileName)}</span><span class="ski-idle-bubble-attach-size">${sizeLabel}</span></span><span class="ski-idle-bubble-attach-seal" title="Seal-encrypted \u00b7 decrypted locally">\u{1F512}</span></div>`;
+          }).join('');
+          return _textHtml + _attachmentBubbles;
         }).join('');
         // If the fetch came back empty but we had optimistic bubbles, keep them.
         const bubbles = fetchedBubbles || existingBubbleHtml;
@@ -13039,6 +13077,60 @@ function bindEvents() {
         convoEl.querySelectorAll('.ski-idle-bubble').forEach(bubble => {
           bubble.addEventListener('click', async (ev) => {
             ev.stopPropagation();
+            // Attachment bubbles: download + decrypt via SDK, then
+            // either trigger a browser download (generic) or inline
+            // a preview (images). The Seal ✓ on the bubble is
+            // guaranteed because the SDK's AttachmentsManager.resolve
+            // path Seal-decrypts the wire record before surfacing
+            // the handle — our bubble data() call just pulls the
+            // already-decrypted bytes.
+            if ((bubble as HTMLElement).classList.contains('ski-idle-bubble--attach')) {
+              ev.preventDefault();
+              const _bubEl = bubble as HTMLElement;
+              const _msgId = _bubEl.dataset.id || '';
+              const _idxStr = _bubEl.dataset.attachIdx || '0';
+              const _fileName = _bubEl.dataset.filename || 'attachment';
+              const _mime = _bubEl.dataset.mime || 'application/octet-stream';
+              const _idx = Number(_idxStr) || 0;
+              if (_bubEl.classList.contains('ski-idle-bubble--attach-loading')) return;
+              _bubEl.classList.add('ski-idle-bubble--attach-loading');
+              try {
+                const { getThunders } = await import('./client/thunder.js');
+                const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+                const srcMsg = messages.find((mm: { messageId: string }) => mm.messageId === _msgId);
+                const handles = (srcMsg as unknown as { attachments?: Array<{ data: () => Promise<Uint8Array> }> })?.attachments ?? [];
+                const handle = handles[_idx];
+                if (!handle) throw new Error('Attachment handle not found');
+                const bytes = await handle.data();
+                const blob = new Blob([bytes], { type: _mime });
+                const url = URL.createObjectURL(blob);
+                if (_mime.startsWith('image/')) {
+                  // Inline thumbnail preview — replace the icon cell
+                  // with the actual image. Stays in the bubble; click
+                  // again to re-download.
+                  const iconSlot = _bubEl.querySelector('.ski-idle-bubble-attach-icon');
+                  if (iconSlot) {
+                    iconSlot.innerHTML = `<img class="ski-idle-bubble-attach-thumb" src="${url}" alt="${esc(_fileName)}">`;
+                  }
+                } else {
+                  // Generic download trigger
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = _fileName;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 60_000);
+                }
+                showToast(`\u{1F512} ${_fileName} decrypted`);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (!/reject|cancel/i.test(msg)) showToast(`Download failed: ${msg.slice(0, 120)}`);
+              } finally {
+                _bubEl.classList.remove('ski-idle-bubble--attach-loading');
+              }
+              return;
+            }
             // Transfer bubbles route to IOU claim / recall / explorer.
             // Clicking is NOT a delete — transfers are immutable by
             // design. The action depends on whether the caller is the

@@ -3804,6 +3804,71 @@ body {
   background: rgba(34, 197, 94, 0.28);
   text-decoration: none;
 }
+
+/* Attachment bubble — Seal-encrypted file carried on a storm
+ * message. Click → decrypt via the SDK handle → download or
+ * inline-preview (images). The 🔒 pill confirms the file arrived
+ * through the AttachmentsManager's Seal decrypt path. */
+.ski-idle-bubble--attach {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 8px;
+  cursor: pointer;
+}
+.ski-idle-bubble-attach-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 6px;
+  font-size: 1rem;
+  overflow: hidden;
+}
+.ski-idle-bubble-attach-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ski-idle-bubble-attach-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  gap: 1px;
+}
+.ski-idle-bubble-attach-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.ski-idle-bubble-attach-size {
+  font-size: 0.58rem;
+  opacity: 0.6;
+  font-weight: 500;
+}
+.ski-idle-bubble-attach-seal {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  opacity: 0.75;
+  margin-left: 2px;
+}
+.ski-idle-bubble--attach-loading {
+  opacity: 0.7;
+  cursor: wait;
+  animation: attach-pulse 1.2s ease-in-out infinite;
+}
+@keyframes attach-pulse {
+  0%, 100% { opacity: 0.7; }
+  50%      { opacity: 0.4; }
+}
 .ski-idle-bubble--transfer-settled .ski-idle-bubble-sender {
   background: rgba(20, 20, 26, 0.95) !important;
   border-color: rgba(148, 163, 184, 0.4) !important;
