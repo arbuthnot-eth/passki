@@ -8239,6 +8239,24 @@ function renderSkiMenu() {
   function parseNsError(raw: string): { display: string; full: string } {
     const lower = raw.toLowerCase();
 
+    // Compute the REAL required amount from the current state. If
+    // there's an active marketplace listing, the user is buying, not
+    // registering, and the required amount is the listing price +
+    // Tradeport's 3% fee. Otherwise fall back to the ~$7.50 SuiNS
+    // registration fee for a 5+ char name.
+    const listing = nsTradeportListing || nsKioskListing;
+    const op = listing ? 'purchase' : 'registration';
+    let requiredUsd = 7.50;
+    if (listing) {
+      try {
+        const suiAmt = Number(BigInt(listing.priceMist)) / 1e9;
+        const fee = listing.source === 'tradeport' ? suiAmt * 0.03 : 0;
+        const totalSui = suiAmt + fee;
+        if (suiPriceCache?.price) requiredUsd = totalSui * suiPriceCache.price;
+      } catch { /* fall through to $7.50 default */ }
+    }
+    const requiredStr = `~$${requiredUsd.toFixed(2)}`;
+
     const isInsufficientBalance =
       lower.includes('insufficientcoinbalance') ||
       lower.includes('insufficient coin balance') ||
@@ -8247,8 +8265,8 @@ function renderSkiMenu() {
     if (isInsufficientBalance) {
       return {
         display:
-          'Insufficient balance — not enough funds to complete the registration.\n\n' +
-          'You need SUI for gas fees plus ~$7.50 worth of one of:\n' +
+          `Insufficient balance — not enough funds to complete the ${op}.\n\n` +
+          `You need SUI for gas fees plus ${requiredStr} worth of one of:\n` +
           '  \u2022 NS (direct payment)\n' +
           '  \u2022 USDC (swapped via DeepBook)\n' +
           '  \u2022 SUI (swapped via DeepBook)\n\n' +
@@ -8262,8 +8280,8 @@ function renderSkiMenu() {
       if (inner.toLowerCase().includes('insufficient')) {
         return {
           display:
-            'Insufficient balance — the wallet could not resolve enough funds for the transaction.\n\n' +
-            'Make sure you have SUI for gas plus enough NS, USDC, or SUI (~$7.50) for the domain.\n\n' +
+            `Insufficient balance — the wallet could not resolve enough funds for the ${op}.\n\n` +
+            `Make sure you have SUI for gas plus enough NS, USDC, or SUI (${requiredStr}) for the domain.\n\n` +
             `Detail: ${inner}`,
           full: raw,
         };
