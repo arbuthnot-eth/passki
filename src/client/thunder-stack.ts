@@ -1084,6 +1084,117 @@ export async function stormExists(uuid: string): Promise<boolean> {
   }
 }
 
+// ─── Forward secrecy — Alakazam Lv. 36 ──────────────────────────────
+// Rotate the Seal DEK of a storm so leavers lose decrypt access to
+// new messages and newly-added members cannot read old ones.
+//
+// The SDK ships a two-tier rotation API:
+//   - rotateEncryptionKey:     rotate the DEK without member changes
+//   - removeMembersAndRotateKey: atomic kick + rotate in a single PTB
+//
+// Both are called via client.messaging.tx.* builders so we can bundle
+// the rotation into a larger PTB (e.g. kick + rotate + notify) under
+// a single wallet signature.
+//
+// We cache the latest known key version per-group in localStorage so
+// the client can paint stale bubbles confidently while the fresh
+// fetch under the new key version is in flight.
+
+const _KEYVER_STORAGE_KEY = (uuid: string) => `ski:thunder-keyver:v1:${uuid}`;
+
+/** Read the cached key version for a storm. Returns 0 if unknown. */
+export function getCachedKeyVersion(uuid: string): bigint {
+  try {
+    const raw = localStorage.getItem(_KEYVER_STORAGE_KEY(uuid));
+    if (!raw) return 0n;
+    return BigInt(raw);
+  } catch { return 0n; }
+}
+
+/** Persist the latest known key version for a storm. */
+export function setCachedKeyVersion(uuid: string, keyVersion: bigint): void {
+  try { localStorage.setItem(_KEYVER_STORAGE_KEY(uuid), keyVersion.toString()); } catch {}
+}
+
+/**
+ * Rotate the Seal DEK for an existing storm. No member changes —
+ * useful for periodic hygiene or manual "regenerate key" affordance.
+ * Returns the pre-built tx bytes ready for signAndExecute, plus the
+ * new encryption history ref the client should track afterward.
+ */
+export async function rotateStormKey(opts: {
+  uuid: string;
+  signAndExecute: (tx: Uint8Array | Transaction) => Promise<any>;
+}): Promise<{ digest: string; keyVersion: bigint }> {
+  const client = getThunderClient();
+  if (!_address) throw new Error('Thunder client not initialized');
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(_address));
+  client.messaging.tx.rotateEncryptionKey({ uuid: opts.uuid, transaction: tx });
+  const buildClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const txBytes = await tx.build({ client: buildClient as never });
+  const result = await opts.signAndExecute(txBytes);
+  const digest: string = (result && typeof result === 'object' && 'digest' in result)
+    ? String((result as { digest: unknown }).digest || '')
+    : '';
+  // Fetch the fresh key version after rotation. The SDK's view helper
+  // reads the EncryptionHistory object, so after the PTB lands the
+  // version will be bumped. Propagation is fast enough that a small
+  // delay + one retry is plenty.
+  let keyVersion = 0n;
+  for (let i = 0; i < 5; i++) {
+    try {
+      const kv = await client.messaging.view.getCurrentKeyVersion({ uuid: opts.uuid });
+      keyVersion = BigInt(kv as unknown as string | number | bigint);
+      if (keyVersion > getCachedKeyVersion(opts.uuid)) break;
+    } catch { /* DO propagation lag — retry */ }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  if (keyVersion > 0n) setCachedKeyVersion(opts.uuid, keyVersion);
+  return { digest, keyVersion };
+}
+
+/**
+ * Remove one or more members from a storm and rotate the DEK in a
+ * single PTB. Leavers cannot decrypt any message sent after this
+ * operation lands on-chain. Pre-rotation messages they were members
+ * for remain decryptable by them (the SDK walks historical key
+ * versions via EncryptionHistoryRef).
+ */
+export async function removeMemberFromStorm(opts: {
+  uuid: string;
+  members: string[];
+  signAndExecute: (tx: Uint8Array | Transaction) => Promise<any>;
+}): Promise<{ digest: string; keyVersion: bigint }> {
+  const client = getThunderClient();
+  if (!_address) throw new Error('Thunder client not initialized');
+  if (!opts.members?.length) throw new Error('removeMemberFromStorm: members required');
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(_address));
+  client.messaging.tx.removeMembersAndRotateKey({
+    uuid: opts.uuid,
+    members: opts.members.map(m => normalizeSuiAddress(m)),
+    transaction: tx,
+  });
+  const buildClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const txBytes = await tx.build({ client: buildClient as never });
+  const result = await opts.signAndExecute(txBytes);
+  const digest: string = (result && typeof result === 'object' && 'digest' in result)
+    ? String((result as { digest: unknown }).digest || '')
+    : '';
+  let keyVersion = 0n;
+  for (let i = 0; i < 5; i++) {
+    try {
+      const kv = await client.messaging.view.getCurrentKeyVersion({ uuid: opts.uuid });
+      keyVersion = BigInt(kv as unknown as string | number | bigint);
+      if (keyVersion > getCachedKeyVersion(opts.uuid)) break;
+    } catch { /* propagation — retry */ }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  if (keyVersion > 0n) setCachedKeyVersion(opts.uuid, keyVersion);
+  return { digest, keyVersion };
+}
+
 // ─── SuiNS resolution ───────────────────────────────────────────────
 
 /** Resolve a SuiNS name to its address. Tries target address first, falls back to NFT owner. */
