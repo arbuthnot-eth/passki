@@ -3,6 +3,7 @@
  */
 export {
   initThunderClient,
+  warmThunderSession,
   getThunderClient,
   resetThunderClient,
   sendThunder,
@@ -11,10 +12,15 @@ export {
   createStorm,
   stormExists,
   lookupRecipientAddress,
+  lookupRecipientAddressCached,
+  makeThunderGroupId,
   reverseLookupName,
   type ThunderMessage,
   type ThunderClientOptions,
   humanizeThunderError,
+  type Attachment,
+  type AttachmentFile,
+  type AttachmentHandle,
   type DecryptedMessage,
   type GroupRef,
   type HumanizedError,

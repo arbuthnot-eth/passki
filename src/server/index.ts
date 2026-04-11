@@ -787,6 +787,30 @@ app.get('/api/tradeport/listing/:label', async (c) => {
   }
 });
 
+// Debug: dump all Tradeport listings + activities for a name so we can
+// spot-check whether a current asking price ever had a lower historical.
+app.get('/api/tradeport/history/:label', async (c) => {
+  const label = c.req.param('label').toLowerCase().replace(/\.sui$/, '');
+  const name = `${label}.sui`;
+  try {
+    const res = await fetch(TRADEPORT_GQL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-user': c.env.TRADEPORT_API_USER,
+        'x-api-key': c.env.TRADEPORT_API_KEY,
+      },
+      body: JSON.stringify({
+        query: `{ sui { nfts(where: { collection_id: { _eq: "${SUINS_COLLECTION_ID}" }, name: { _eq: "${name}" } }, limit: 1) { token_id name listings(order_by: { price: asc }) { id price seller market_name listed block_time } actions(order_by: { block_time: desc }, limit: 20) { type price sender receiver market_name block_time } } } }`,
+      }),
+    });
+    const json = await res.json() as any;
+    return c.json(json);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'failed' }, 500);
+  }
+});
+
 // ── SuiAMI identity proof verification ────────────────────────────
 app.post('/api/suiami/verify', async (c) => {
   try {

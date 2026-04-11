@@ -13,6 +13,14 @@
 
 import { Agent } from 'agents';
 
+/** Wire-format attachment record from @mysten/sui-stack-messaging. */
+interface StoredAttachment {
+  storageId: string;
+  nonce: string;
+  encryptedMetadata: string;
+  metadataNonce: string;
+}
+
 interface StoredMessage {
   messageId: string;
   groupId: string;
@@ -30,6 +38,8 @@ interface StoredMessage {
   isDeleted: boolean;
   signature: string;      // hex
   publicKey: string;      // hex
+  /** Wire-format attachment records — point to Walrus blob IDs. */
+  attachments?: StoredAttachment[];
 }
 
 interface TimestreamState {
@@ -152,14 +162,27 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
       senderAddress: string;
       signature?: string;
       publicKey?: string;
-      attachments?: unknown[];
+      attachments?: StoredAttachment[];
     };
 
-    // P1.4 — reject messages with attachments. Our transport does not
-    // round-trip attachments; silently accepting them would risk leaking
-    // blob IDs outside the Seal envelope.
+    // Validate attachments shape. Each entry must have the four fields the
+    // SDK expects (storageId, nonce, encryptedMetadata, metadataNonce); any
+    // extra fields are dropped. Reject anything malformed to keep the store
+    // clean and prevent silent data loss.
+    let attachments: StoredAttachment[] | undefined;
     if (Array.isArray(body.attachments) && body.attachments.length > 0) {
-      return Response.json({ error: 'Attachments not supported by this transport' }, { status: 400 });
+      attachments = body.attachments.map(a => ({
+        storageId: String(a?.storageId ?? ''),
+        nonce: String(a?.nonce ?? ''),
+        encryptedMetadata: String(a?.encryptedMetadata ?? ''),
+        metadataNonce: String(a?.metadataNonce ?? ''),
+      }));
+      if (attachments.some(a => !a.storageId || !a.nonce || !a.encryptedMetadata || !a.metadataNonce)) {
+        return Response.json({ error: 'Malformed attachment entry' }, { status: 400 });
+      }
+      if (attachments.length > 8) {
+        return Response.json({ error: 'Too many attachments (max 8)' }, { status: 400 });
+      }
     }
 
     // Auth: sender must be a participant (or first sender auto-joins).
@@ -190,6 +213,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
       isDeleted: false,
       signature: body.signature || '',
       publicKey: body.publicKey || '',
+      ...(attachments ? { attachments } : {}),
     };
 
     const messages = [...this.state.messages, msg];

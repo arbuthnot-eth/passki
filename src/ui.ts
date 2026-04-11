@@ -423,10 +423,19 @@ function showCopyableToast(display: string, fullText: string, durationMs = 8000)
   requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
 
   let copied = false;
-  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), TOAST_ANIMATION_MS); };
-  // Error toasts stay until dismissed — no auto-timeout
+  let removed = false;
+  const remove = () => {
+    if (removed) return;
+    removed = true;
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), TOAST_ANIMATION_MS);
+  };
+  // Auto-dismiss after 4.5s regardless of interaction state. Click still
+  // copies; the copy state just sticks around until the timer fires or
+  // the user clicks again to dismiss early.
+  const _autoTimer = setTimeout(remove, 4500);
   toast.addEventListener('click', () => {
-    if (copied) { remove(); return; }
+    if (copied) { clearTimeout(_autoTimer); remove(); return; }
     copied = true;
     navigator.clipboard.writeText(fullText).catch(() => {});
     hint.textContent = '\u2713 Copied — click again to dismiss';
@@ -3408,7 +3417,7 @@ function _updateIdleThunderBadge(): void {
     sendBtn.dataset.questAll = '1';
     sendBtn.disabled = false;
   } else if (sendBtn.dataset.questAll === '1') {
-    sendBtn.innerHTML = '\u26a1';
+    sendBtn.innerHTML = '\u26c8\ufe0f';
     sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send';
     sendBtn.title = `Open Storm to ${nsLabel || ''}`;
     delete sendBtn.dataset.questMode;
@@ -3443,10 +3452,15 @@ async function _renderConversation(counterparty: string, force = false) {
   const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
   if (!bare) return;
 
-  // Fetch messages from Timestream DO
+  // Resolve both sides to addresses — storm group IDs are address-keyed
+  // so primary SuiNS rotations can't orphan history.
   const ws = getState();
-  const myName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
-  const groupId = `thunder-${[myName, bare].sort().join('-')}`;
+  const myAddrLc = (ws.address || '').toLowerCase();
+  if (!myAddrLc) return;
+  const { lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
+  const counterpartyAddr = await lookupRecipientAddressCached(bare);
+  if (!counterpartyAddr) return;
+  const groupId = makeThunderGroupId(myAddrLc, counterpartyAddr);
   let doMessages: Array<{ text: string; senderAddress: string; createdAt: number; messageId: string }> = [];
   try {
     const { getThunders } = await import('./client/thunder.js');
@@ -3585,12 +3599,14 @@ async function _renderConversation(counterparty: string, force = false) {
           const msgBytes = new TextEncoder().encode(JSON.stringify(raw));
           const { signature } = await signPersonalMessage(msgBytes);
           const proof = createSuiamiProof(raw, btoa(String.fromCharCode(...msgBytes)), signature);
-          // Read receipt — send via new SDK (best-effort)
-          const { sendThunder } = await import('./client/thunder.js');
+          // Read receipt — send via new SDK (best-effort). Group ID is
+          // address-keyed; resolve the original sender's name to address.
+          const { sendThunder, lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
           try {
+            const _senderAddr = await lookupRecipientAddressCached(senderName);
+            if (!_senderAddr || !ws.address) return;
             await sendThunder({
-
-              groupRef: { uuid: `thunder-${[myName, senderName].sort().join('-')}` },
+              groupRef: { uuid: makeThunderGroupId(ws.address, _senderAddr) },
               text: `\u2713 read by ${myName}.sui`,
             });
           } catch { /* receipt best-effort, may fail if no group exists yet */ }
@@ -7352,14 +7368,15 @@ function renderSkiMenu() {
     const sendBtn = document.getElementById('wk-thunder-send') as HTMLButtonElement | null;
     if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '\u2026'; }
     try {
-      const { sendThunder } = await import('./client/thunder.js');
+      const { sendThunder, lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
       const senderName = app.suinsName || '';
       const _logName = senderName || ws.address;
       let _txOk = false;
       try {
-        const groupUuid = `thunder-${[senderName, recipientName].sort().join('-')}`;
+        const _recipAddr = await lookupRecipientAddressCached(recipientName);
+        if (!_recipAddr) throw new Error(`Couldn't resolve ${recipientName}.sui to an address`);
+        const groupUuid = makeThunderGroupId(ws.address, _recipAddr);
         await sendThunder({
-  
           groupRef: { uuid: groupUuid },
           text: msg,
         });
@@ -9227,16 +9244,19 @@ function bindEvents() {
               <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#22c55e" stroke="white" stroke-width="1.5"/></svg></button>
               <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Squids" data-action="rumble">\ud83e\udd91</button>
               <button class="ski-idle-thunder-at-iusd ski-idle-quick-btn ski-idle-quick-btn--iusd" id="ski-idle-thunder-at-iusd" type="button" title="Attach amount">$</button>
+              <button class="ski-idle-quick-btn ski-idle-quick-btn--attach" id="ski-idle-thunder-attach" type="button" title="Attach files">\ud83d\udcce</button>
+              <input id="ski-idle-thunder-file-input" type="file" multiple accept="image/*,video/*,audio/*,.pdf,.txt,.json,.md" style="display:none">
             </div>
             <div class="ski-idle-thunder-input-wrap">
               <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
               <button class="ski-idle-thunder-clear" id="ski-idle-thunder-clear" type="button" title="Clear" style="display:none">\u2715</button>
               <div class="ski-idle-thunder-mirror" id="ski-idle-thunder-mirror" aria-hidden="true"></div>
               <div class="ski-idle-thunder-send-group">
-                <button class="ski-idle-quick-btn ski-idle-quick-btn--storm" id="ski-idle-thunder-send" type="button" title="">\u26a1</button>
+                <button class="ski-idle-quick-btn ski-idle-quick-btn--storm" id="ski-idle-thunder-send" type="button" title="">\u26c8\ufe0f</button>
               </div>
             </div>
           </div>
+          <div class="ski-idle-thunder-attach-chips" id="ski-idle-thunder-attach-chips" hidden></div>
         </div>
         <div class="ski-idle-bottom-row">
           <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
@@ -9367,10 +9387,13 @@ function bindEvents() {
           _idleActionBtn.title = `Shade ${label}.sui \u2014 lock funds for grace expiry`;
           _idleActionBtn.disabled = false;
         } else if (nsAvail === 'taken' && !isOwned) {
-          // Check if Storm exists for this conversation
-          const myName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
-          const targetBare = label.toLowerCase();
-          const _gid = `thunder-${[myName, targetBare].sort().join('-')}`;
+          // Check if Storm exists for this conversation. Group ID is
+          // address-keyed (nsTargetAddress resolved during the NS lookup);
+          // empty string falls through to an inert gid that won't hit
+          // the storm-exists cache.
+          const myAddrLc = (getState().address || '').toLowerCase().replace(/^0x/, '');
+          const _tgtAddrLc = (nsTargetAddress || '').toLowerCase().replace(/^0x/, '');
+          const _gid = (myAddrLc && _tgtAddrLc) ? `thunder-${[myAddrLc, _tgtAddrLc].sort().join('-')}` : '';
           const _hasStorm = _stormExistsCache[_gid] === true;
           if (_gid && !_stormExistsCache[_gid]) _checkStormExists(_gid);
           _idleActionBtn.textContent = _hasStorm ? 'Storm \u26a1' : 'Storm';
@@ -9446,11 +9469,14 @@ function bindEvents() {
           _thunderComposeStage = 'idle';
           if (_idleThunderSend && !isQuestMode) {
             const _curTarget = (nsLabel || '').toLowerCase();
-            const _curMe = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
-            const _curGid = _curTarget && _curMe ? `thunder-${[_curMe, _curTarget].sort().join('-')}` : '';
+            const _curMeAddr = (getState().address || '').toLowerCase().replace(/^0x/, '');
+            const _curTgtAddr = (nsTargetAddress || '').toLowerCase().replace(/^0x/, '');
+            const _curGid = _curMeAddr && _curTgtAddr ? `thunder-${[_curMeAddr, _curTgtAddr].sort().join('-')}` : '';
             if (_curGid) _checkStormExists(_curGid);
             const _curHasStorm = _curGid ? _stormExistsCache[_curGid] === true : true;
-            _idleThunderSend.innerHTML = _curHasStorm ? '\u26a1' : '\u26c8\ufe0f';
+            // Idle icon is always ⛈️ (thunderstorm cloud) — represents "open storm",
+            // not "storm exists on-chain". The ⚡ bolt is reserved for active send.
+            _idleThunderSend.innerHTML = '\u26c8\ufe0f';
             _idleThunderSend.title = _curHasStorm ? `Open Storm to ${_curTarget}` : `Create Storm with ${_curTarget}`;
             _idleThunderSend.disabled = false;
             // Input always enabled — $ transfers don't need a Storm
@@ -9468,10 +9494,16 @@ function bindEvents() {
           _thunderComposeStage = 'confirmed';
         }
 
-        // Check if Storm exists for the current conversation
-        const senderName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+        // Check if Storm exists for the current conversation. Address-
+        // keyed: draft.recipients are names; we pair the current target's
+        // resolved address with our own. If the target differs from
+        // nsLabel (e.g. the tag points elsewhere) we fall back to unknown.
+        const _meAddr = (getState().address || '').toLowerCase().replace(/^0x/, '');
         const firstRecip = (draft.recipients[0] || '').toLowerCase();
-        const groupId = firstRecip ? `thunder-${[senderName, firstRecip].sort().join('-')}` : '';
+        const _tgtAddr = (firstRecip && firstRecip === (nsLabel || '').toLowerCase())
+          ? (nsTargetAddress || '').toLowerCase().replace(/^0x/, '')
+          : '';
+        const groupId = (_meAddr && _tgtAddr) ? `thunder-${[_meAddr, _tgtAddr].sort().join('-')}` : '';
         if (groupId) _checkStormExists(groupId);
         const hasStorm = groupId ? _stormExistsCache[groupId] === true : false;
         const stormChecking = groupId ? _stormExistsCache[groupId] === 'checking' : false;
@@ -9525,7 +9557,21 @@ function bindEvents() {
       let _cardCacheKey = ''; // tracks what's currently rendered to avoid redundant updates
       let _cardBalCache: { addr: string; usd: number; ts: number } | null = null;
       let _cardCurrentName = ''; // tracks which name the card is showing
-      const _CARD_BAL_TTL = 60_000; // 1 min balance cache
+      const _CARD_BAL_TTL = 60_000; // 1 min in-memory cache
+      const _CARD_BAL_PERSIST_TTL = 30 * 60 * 1000; // 30 min localStorage cache
+      const _CARD_BAL_KEY = (label: string) => `ski:card-bal:v1:${label.toLowerCase()}`;
+      const _loadCardBalPersisted = (label: string): { usd: number; addr: string } | null => {
+        try {
+          const raw = localStorage.getItem(_CARD_BAL_KEY(label));
+          if (!raw) return null;
+          const parsed = JSON.parse(raw) as { usd: number; addr: string; ts: number };
+          if (typeof parsed?.usd !== 'number' || Date.now() - (parsed.ts ?? 0) > _CARD_BAL_PERSIST_TTL) return null;
+          return { usd: parsed.usd, addr: parsed.addr || '' };
+        } catch { return null; }
+      };
+      const _saveCardBalPersisted = (label: string, usd: number, addr: string) => {
+        try { localStorage.setItem(_CARD_BAL_KEY(label), JSON.stringify({ usd, addr, ts: Date.now() })); } catch {}
+      };
 
       const _updateIdleCard = (name: string) => {
         const card = _idleOverlay?.querySelector('#ski-idle-card') as HTMLElement | null;
@@ -9542,19 +9588,11 @@ function bindEvents() {
           _rosterCache = null;
           const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
           if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
-          // The convo panel is bound to the visible card. If the card just
-          // changed to someone else, hide any open convo whose target no
-          // longer matches — a Storm with brando shouldn't show on
-          // someone else's card.
-          const _convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
-          if (_convoEl && !_convoEl.hasAttribute('hidden')) {
-            const _savedConvo = (localStorage.getItem('ski:idle-convo') || sessionStorage.getItem('ski:idle-convo') || '').toLowerCase();
-            if (_savedConvo && _savedConvo !== _effectiveName) {
-              _convoEl.setAttribute('hidden', '');
-              _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
-              try { localStorage.removeItem('ski:idle-convo'); sessionStorage.removeItem('ski:idle-convo'); } catch {}
-            }
-          }
+          // Storm visibility is owned by _expandIdleConvo — don't hide it
+          // here. The card's "effective name" often resolves to the primary
+          // name of the target's owner address, which legitimately differs
+          // from the typed label used to key the storm. Mismatching those
+          // two was nuking the convo milliseconds after it opened.
         }
         if (isOwnName || nsAvail === 'available' || (!nsAvail && !name)) {
           const primaryName = app.suinsName?.replace(/\.sui$/, '') || '';
@@ -9582,19 +9620,30 @@ function bindEvents() {
         const badgeHtml = _tcTotal > 0 ? `\u26c8\ufe0f${_tcTotal}` : '';
         const ownedEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name.toLowerCase());
         const expMs = ownedEntry?.expirationMs ?? nsExpirationMs;
-        // Use cached balance if available
+        // Use cached balance if available. In-memory cache wins if fresh;
+        // otherwise fall back to the persisted localStorage cache keyed by
+        // name (30 min TTL) so restored overlays paint a real number
+        // instantly while the async GQL refresh runs in the background.
         const _resolvedAddr = nsTargetAddress || nsNftOwner || '';
-        const cachedBal = _cardBalCache && _cardBalCache.addr === _resolvedAddr && (Date.now() - _cardBalCache.ts) < _CARD_BAL_TTL ? _cardBalCache.usd : -1;
+        const _inMemFresh = !!(_cardBalCache && _cardBalCache.addr === _resolvedAddr && (Date.now() - _cardBalCache.ts) < _CARD_BAL_TTL);
+        let cachedBal = _inMemFresh ? _cardBalCache!.usd : -1;
+        let _cacheIsStale = false;
+        if (cachedBal < 0) {
+          const _persisted = _loadCardBalPersisted(name);
+          if (_persisted) { cachedBal = _persisted.usd; _cacheIsStale = true; }
+        }
         const cacheKey = `other:${name}:${_tcTotal}:${Math.round(cachedBal)}`;
-        if (cacheKey === _cardCacheKey && cachedBal >= 0) return; // no change
+        if (cacheKey === _cardCacheKey && _inMemFresh) return; // fresh in-memory render, no change
         _cardCacheKey = cacheKey;
 
         const cachedBalHtml = cachedBal >= 0.50 ? `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(cachedBal).toLocaleString()}</span>` : '';
         const _atBtn2 = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
         card.innerHTML = `${_atBtn2}<span class="ski-idle-card-name" title="Populate input">${esc(name)}</span><span class="ski-idle-card-bal" id="ski-idle-card-bal">${cachedBalHtml}</span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
 
-        // Only fetch balance if not cached
-        if (cachedBal >= 0) return;
+        // Skip the fetch only when in-memory cache is still fresh. A
+        // persisted (localStorage) hit always triggers a background refresh
+        // so the displayed number converges on the truth.
+        if (cachedBal >= 0 && !_cacheIsStale) return;
         (async () => {
           try {
             const _listing = _nsListing();
@@ -9626,8 +9675,9 @@ function bindEvents() {
             if (ws.address && addr?.toLowerCase() === ws.address.toLowerCase() && app.solBalance > 0) {
               totalUsd += app.solBalance * (getTokenPrice('SOL') ?? 83);
             }
-            // Cache the balance
+            // Cache the balance (memory + persisted)
             _cardBalCache = { addr, usd: totalUsd, ts: Date.now() };
+            _saveCardBalPersisted(name, totalUsd, addr);
             // Update balance in-place (no full rebuild)
             const balEl = _idleOverlay?.querySelector('#ski-idle-card-bal');
             if (balEl && totalUsd >= 0.50) {
@@ -9710,6 +9760,19 @@ function bindEvents() {
         const active = _idleThunderInputEl === document.activeElement || !!val;
         _thunderRow?.classList.toggle('ski-idle-thunder-row--active', active);
         if (_thunderClearBtn) _thunderClearBtn.style.display = val ? '' : 'none';
+        // Icon swap: empty input = "open storm" ⛈️ (thunderstorm cloud),
+        // text present = "send thunder" ⚡ (lightning bolt). Skip when in
+        // quest mode or mid-send — those paths set their own content.
+        const _sendBtnEl = _idleThunderSend as HTMLElement | null;
+        if (_sendBtnEl && !_sendBtnEl.dataset.questMode && !_sendBtnEl.querySelector('.ski-idle-thunder-spinner')) {
+          // Strip any message-only text (e.g. `@name` with no body) when
+          // deciding icon: if there's literally nothing to send, stay ⛈️.
+          const _hasSendableText = val.replace(/@[a-z0-9-]+/gi, '').trim().length > 0;
+          const _nextIcon = _hasSendableText ? '\u26a1' : '\u26c8\ufe0f';
+          if (!_sendBtnEl.innerHTML.includes(_nextIcon)) {
+            _sendBtnEl.innerHTML = _nextIcon;
+          }
+        }
         // Color modes: green (valid amount), red (over budget), yellow (thunder only)
         const hasAmount = val.includes('$');
         const hasAt = val.includes('@');
@@ -9752,6 +9815,71 @@ function bindEvents() {
         _updateThunderRowActive();
       });
       _idleThunderInputEl?.addEventListener('input', _updateThunderRowActive);
+
+      // ─── Thunder tag locking ─────────────────────────────────────────
+      // The `@name ` prefix at the start of the thunder input is an
+      // atomic tag. The cursor can never sit inside or before it and
+      // backspace at the tag boundary deletes the whole tag in a single
+      // keystroke — matching the mental model of a chip, not plain text.
+      const _thunderTagMatch = (): { name: string; len: number } | null => {
+        const val = _idleThunderInputEl?.value ?? '';
+        const m = val.match(/^@([a-z0-9-]{1,63})(\s|$)/i);
+        if (!m) return null;
+        return { name: m[1].toLowerCase(), len: m[0].length };
+      };
+      const _clampCursorPastTag = () => {
+        const el = _idleThunderInputEl;
+        if (!el) return;
+        const tag = _thunderTagMatch();
+        if (!tag) return;
+        const start = el.selectionStart ?? 0;
+        const end = el.selectionEnd ?? 0;
+        if (start < tag.len || end < tag.len) {
+          try { el.setSelectionRange(Math.max(start, tag.len), Math.max(end, tag.len)); } catch {}
+        }
+      };
+      _idleThunderInputEl?.addEventListener('click', _clampCursorPastTag);
+      _idleThunderInputEl?.addEventListener('keyup', _clampCursorPastTag);
+      _idleThunderInputEl?.addEventListener('select', _clampCursorPastTag);
+      _idleThunderInputEl?.addEventListener('keydown', (ev) => {
+        const el = _idleThunderInputEl;
+        if (!el) return;
+        const tag = _thunderTagMatch();
+        if (!tag) return;
+        const start = el.selectionStart ?? 0;
+        const end = el.selectionEnd ?? 0;
+        // Backspace at or inside the tag boundary → delete the whole tag
+        if (ev.key === 'Backspace' && start === end && start <= tag.len) {
+          ev.preventDefault();
+          el.value = el.value.slice(tag.len);
+          try { el.setSelectionRange(0, 0); } catch {}
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+        // Arrow-left / Home past the tag boundary → clamp
+        if ((ev.key === 'ArrowLeft' || ev.key === 'Home') && start <= tag.len && end <= tag.len) {
+          ev.preventDefault();
+          try { el.setSelectionRange(tag.len, tag.len); } catch {}
+        }
+      });
+
+      // Sync tag → name input + card. When the storm target tag is
+      // present, mirror it into the top NS search bar so the card shows
+      // the primary reverse resolution of that name. Debounced via the
+      // name input's own handler — we just set .value and dispatch.
+      let _lastSyncedThunderTag = '';
+      const _syncThunderTagToNameInput = () => {
+        const tag = _thunderTagMatch();
+        const tagName = tag?.name ?? '';
+        if (tagName === _lastSyncedThunderTag) return;
+        _lastSyncedThunderTag = tagName;
+        if (!tagName || !_idleNsInput) return;
+        if (_idleNsInput.value.trim().toLowerCase() !== tagName) {
+          _idleNsInput.value = tagName;
+          _idleNsInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      };
+      _idleThunderInputEl?.addEventListener('input', _syncThunderTagToNameInput);
 
       // @ button — insert @tag and focus thunder input for autocomplete
       // ── Idle roster cache ──
@@ -10277,16 +10405,24 @@ function bindEvents() {
             _idleActionBtn!.disabled = false;
           })();
         } else if (btnText === 'Storm') {
-          // Toggle Storm convo — open/close conversation with history
+          // Toggle Storm convo — open/close conversation with history.
+          // Mirror the lightning quick-action: always pre-fill the thunder
+          // input with the @tag and focus it, and keep the send button
+          // pressed while the convo is visible.
           const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
           if (convoEl && !convoEl.hasAttribute('hidden')) {
             convoEl.setAttribute('hidden', '');
+            _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
             try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
           } else if (label) {
-            _expandIdleConvo(label);
+            _expandIdleConvo(label).catch(() => {});
+            // Force the convo visible even if the fetch is still in flight.
+            if (convoEl && convoEl.hasAttribute('hidden')) convoEl.removeAttribute('hidden');
+            _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+            // Focus only — recipient is implicit from the open storm,
+            // auto-prefixed at send time. No @tag clutter in the input.
             const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
             if (thunderInput) {
-              if (!thunderInput.value.includes(`@${label}`)) thunderInput.value = `@${label} `;
               thunderInput.focus();
               _renderThunderComposePreview();
             }
@@ -10324,11 +10460,13 @@ function bindEvents() {
           }
           _updateIdleCard(cardName);
         });
-        // Auto-open conversation if there are pending signals
+        // Auto-open conversation unconditionally on overlay mount with a
+        // pre-filled name. Storm is top-priority UI: if a label is loaded,
+        // show the convo without waiting for the user to click the Storm
+        // button. _expandIdleConvo safely hides itself if there are no
+        // messages and no existing bubbles.
         const _pendingCount = _thunderCounts[_initLabel.toLowerCase()] ?? 0;
-        if (_pendingCount > 0) {
-          _expandIdleConvo(_initLabel);
-        }
+        _expandIdleConvo(_initLabel);
         // Activate quest mode based on aggregate count across ALL owned names
         const _totalPending = _totalThunderCount();
         if (_totalPending > 0) {
@@ -11328,11 +11466,11 @@ function bindEvents() {
               }
             } else {
               const questName = sendBtn.dataset.questName || '';
-              if (!questName) { sendBtn.innerHTML = '\u26a1'; sendBtn.disabled = false; return; }
+              if (!questName) { sendBtn.innerHTML = '\u26c8\ufe0f'; sendBtn.disabled = false; return; }
               toQuest.push({ name: questName, count: _thunderCounts[questName.toLowerCase()] ?? 1 });
             }
 
-            if (toQuest.length === 0) { showToast('No signals to quest'); sendBtn.innerHTML = '\u26a1'; sendBtn.disabled = false; return; }
+            if (toQuest.length === 0) { showToast('No signals to quest'); sendBtn.innerHTML = '\u26c8\ufe0f'; sendBtn.disabled = false; return; }
 
             let totalDecrypted = 0;
 
@@ -11418,7 +11556,7 @@ function bindEvents() {
           const recipients = draft.recipients;
           const msgText = draft.message;
           const transferAmtUsd = (draft.amount && !draft.amountError) ? draft.amount : undefined;
-          const origBtnHtml = sendBtn?.innerHTML || '\u26a1';
+          const origBtnHtml = sendBtn?.innerHTML || '\u26c8\ufe0f';
 
           // Show loading spinner on send button — freeze GIF to show convo
           _freezeGif();
@@ -11432,10 +11570,19 @@ function bindEvents() {
             sendBtn.addEventListener('click', _onCancel);
           }
 
+          const { lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
+          const _myAddrForSend = getState().address || '';
           try {
             for (const recip of recipients) {
               if (_cancelled) break;
-              const groupUuid = `thunder-${[senderName, recip].sort().join('-')}`;
+              // Resolve the recipient to an address first — the group ID
+              // is pinned to the address pair, never the names.
+              const _recipAddrForGid = await lookupRecipientAddressCached(recip);
+              if (!_recipAddrForGid || !_myAddrForSend) {
+                showToast(`Cannot resolve address for ${recip}`);
+                continue;
+              }
+              const groupUuid = makeThunderGroupId(_myAddrForSend, _recipAddrForGid);
 
               if (transferAmtUsd) {
                 // $amount transfer — needs on-chain tx. sendThunder swaps the
@@ -11652,15 +11799,148 @@ function bindEvents() {
         if (rumblePanel && !rumblePanel.hasAttribute('hidden')) rumblePanel.setAttribute('hidden', '');
         squidBtn?.classList.remove('ski-idle-quick-btn--active');
       };
+      // ─── Thunder history stale-while-revalidate cache ────────────────
+      // Decrypted messages are cached in localStorage (AES-GCM encrypted)
+      // keyed by groupId so re-opening a storm paints instantly from the
+      // last known state, with a background fetch refreshing the view if
+      // anything changed. The AES key is a non-extractable CryptoKey
+      // persisted in IndexedDB — raw key material never leaves the
+      // browser's crypto store, so a localStorage dump yields ciphertext
+      // alone with no way to recover plaintext.
+      type _ThunderEntry = { text: string; senderAddress: string; createdAt: number; messageId: string };
+      const _THUNDER_HIST_KEY = (gid: string) => `ski:thunder-hist:v2:${gid}`;
+      const _THUNDER_HIST_TTL = 24 * 60 * 60 * 1000;
+      const _IDB_NAME = 'ski-crypto';
+      const _IDB_STORE = 'keys';
+      const _IDB_KEY_ID = 'thunder-hist-aes';
+
+      let _histKeyPromise: Promise<CryptoKey | null> | null = null;
+      const _openHistIdb = (): Promise<IDBDatabase> => new Promise((resolve, reject) => {
+        const req = indexedDB.open(_IDB_NAME, 1);
+        req.onupgradeneeded = () => { req.result.createObjectStore(_IDB_STORE); };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      const _idbGet = (db: IDBDatabase, k: string) => new Promise<unknown>((resolve, reject) => {
+        const tx = db.transaction(_IDB_STORE, 'readonly');
+        const req = tx.objectStore(_IDB_STORE).get(k);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      const _idbPut = (db: IDBDatabase, k: string, v: unknown) => new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(_IDB_STORE, 'readwrite');
+        tx.objectStore(_IDB_STORE).put(v, k);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      const _getHistKey = (): Promise<CryptoKey | null> => {
+        if (_histKeyPromise) return _histKeyPromise;
+        _histKeyPromise = (async () => {
+          try {
+            const db = await _openHistIdb();
+            let key = await _idbGet(db, _IDB_KEY_ID) as CryptoKey | undefined;
+            if (!key) {
+              key = await crypto.subtle.generateKey(
+                { name: 'AES-GCM', length: 256 },
+                false, // non-extractable — raw bits stay in the browser crypto store
+                ['encrypt', 'decrypt'],
+              );
+              await _idbPut(db, _IDB_KEY_ID, key);
+            }
+            return key;
+          } catch { return null; }
+        })();
+        _histKeyPromise.catch(() => { _histKeyPromise = null; });
+        return _histKeyPromise;
+      };
+      const _bytesToB64 = (u8: Uint8Array): string => btoa(String.fromCharCode(...u8));
+      const _b64ToBytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+
+      const _loadThunderHist = async (gid: string): Promise<_ThunderEntry[] | null> => {
+        try {
+          const raw = localStorage.getItem(_THUNDER_HIST_KEY(gid));
+          if (!raw) return null;
+          const env = JSON.parse(raw) as { ts: number; iv: string; ct: string };
+          if (!env?.iv || !env?.ct) return null;
+          if (Date.now() - env.ts > _THUNDER_HIST_TTL) return null;
+          const key = await _getHistKey();
+          if (!key) return null;
+          const iv = _b64ToBytes(env.iv);
+          const ct = _b64ToBytes(env.ct);
+          const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+          const entries = JSON.parse(new TextDecoder().decode(pt)) as _ThunderEntry[];
+          return Array.isArray(entries) ? entries : null;
+        } catch { return null; }
+      };
+      const _saveThunderHist = async (gid: string, entries: _ThunderEntry[]): Promise<void> => {
+        try {
+          const key = await _getHistKey();
+          if (!key) return;
+          const trimmed = entries.slice(-20);
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const pt = new TextEncoder().encode(JSON.stringify(trimmed));
+          const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, pt);
+          localStorage.setItem(_THUNDER_HIST_KEY(gid), JSON.stringify({
+            ts: Date.now(),
+            iv: _bytesToB64(iv),
+            ct: _bytesToB64(new Uint8Array(ct)),
+          }));
+        } catch {}
+      };
+
       async function _expandIdleConvo(counterparty: string) {
         _closeCompetingPanels();
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         if (!convoEl) return;
 
-        // Fetch messages from Timestream DO
+        // Resolve both participants to addresses so the storm groupId is
+        // pinned to immutable identity. Names are display-only — they can
+        // rotate without orphaning history.
         const myName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
         const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
-        const groupId = `thunder-${[myName, bare].sort().join('-')}`;
+        const myAddr = (getState().address || '').toLowerCase();
+        if (!myAddr) return;
+        let counterpartyAddr = '';
+        try {
+          const { lookupRecipientAddressCached } = await import('./client/thunder.js');
+          counterpartyAddr = (await lookupRecipientAddressCached(bare)) || '';
+        } catch {}
+        if (!counterpartyAddr) return;
+        const { makeThunderGroupId } = await import('./client/thunder.js');
+        const groupId = makeThunderGroupId(myAddr, counterpartyAddr);
+
+        // Stale-while-revalidate: paint cached history immediately so the
+        // storm feels instant. The fetch below still runs in the background
+        // and re-renders when fresh data arrives (or the cache expires).
+        // Cached plaintext is AES-GCM-encrypted with a non-extractable key
+        // held in IndexedDB — see _loadThunderHist / _getHistKey above.
+        const _hadExistingBubbles = convoEl.querySelectorAll('.ski-idle-bubble').length > 0;
+        if (!_hadExistingBubbles) {
+          // Show loader first; if cache hit resolves quickly it replaces the loader.
+          convoEl.innerHTML = `<div class="ski-idle-convo-loading"><span class="ski-idle-convo-loading-spinner"></span><span class="ski-idle-convo-loading-text">Opening Storm\u2026</span></div>`;
+          convoEl.removeAttribute('hidden');
+          _idleThunderSend?.classList.add('ski-idle-thunder-send--loading');
+          _loadThunderHist(groupId).then(cached => {
+            if (!cached || cached.length === 0) return;
+            // Only paint cache if the convo is still open on the same target
+            // and no real bubbles have arrived yet (fetch may have beat us).
+            if (convoEl.hasAttribute('hidden')) return;
+            if (convoEl.querySelectorAll('.ski-idle-bubble').length > 0) return;
+            const _myAddrLc = (getState().address || '').toLowerCase();
+            const _cachedBubbles = cached.slice(-20).map(m => {
+              const isOut = m.senderAddress.toLowerCase() === _myAddrLc;
+              const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
+              return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${esc(m.text)}</div>`;
+            }).join('');
+            convoEl.innerHTML = `<div class="ski-idle-convo-progress"><div class="ski-idle-convo-progress-fill"></div></div>${_cachedBubbles}`;
+            _idleThunderSend?.classList.remove('ski-idle-thunder-send--loading');
+          }).catch(() => {});
+        }
+        // Snap the send button into its pressed/active state immediately
+        // so the user sees the storm is engaged without waiting for the
+        // fetch round-trip. If the fetch comes back empty and the convo
+        // closes itself, the class is removed on the failure path below.
+        _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
 
         let entries: Array<{ text: string; senderAddress: string; createdAt: number; messageId: string }> = [];
         try {
@@ -11677,6 +11957,9 @@ function bindEvents() {
             messageId: m.messageId || `msg-${m.order}`,
           }));
         } catch { /* fallback to empty */ }
+        // Always clear the loading class on the send button once the fetch
+        // settles — the subsequent render replaces the convo innerHTML anyway.
+        _idleThunderSend?.classList.remove('ski-idle-thunder-send--loading');
 
         // Harvest any optimistic bubbles already in the DOM — a transient
         // fetch failure (Seal session race, DO cold start) should never wipe
@@ -11685,16 +11968,15 @@ function bindEvents() {
           .map(b => b.outerHTML)
           .join('');
 
-        if (!entries.length && !existingBubbleHtml) {
-          convoEl.setAttribute('hidden', '');
-          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
-          try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
-          if (_convoPollTimer) { clearInterval(_convoPollTimer); _convoPollTimer = null; }
-          return;
+        // Empty fetch with no optimistic bubbles is a VALID state — a fresh
+        // storm with no history yet. Keep the convo open so the user can
+        // start composing, persist the target for refresh, and keep the
+        // send button in its pressed/active state. Only mark the storm as
+        // actually existing once there's at least one real message.
+        if (entries.length > 0) {
+          _markStormExists(groupId);
+          _saveThunderHist(groupId, entries).catch(() => {});
         }
-
-        // Messages exist = Storm exists — cache convo state for refresh persistence
-        _markStormExists(groupId);
         _updateIdleStatus();
         try { sessionStorage.setItem('ski:idle-convo', bare); localStorage.setItem('ski:idle-convo', bare); } catch {}
         _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
@@ -11720,7 +12002,8 @@ function bindEvents() {
 
         // Render Timestream messages as bubbles with reverse lookup
         const ws = getState();
-        const myAddr = ws.address?.toLowerCase() || '';
+        void ws;
+        // myAddr already bound at function entry for group-id resolution.
 
         // Resolve sender names via reverse lookup (batch, cached)
         const _rlCache: Record<string, string> = {};
@@ -12080,10 +12363,12 @@ function bindEvents() {
             }
           }
           _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+          // Don't pre-fill the thunder input with an @tag — the convo is
+          // open and the implicit recipient is resolved from the visible
+          // storm at send time. Just focus so the user can type straight
+          // into a clean input.
           if (_idleThunderInput) {
-            _idleThunderInput.value = `@${cardName} `;
             _idleThunderInput.focus();
-            _idleThunderInput.setSelectionRange(_idleThunderInput.value.length, _idleThunderInput.value.length);
             _updateThunderRowActive?.();
             _renderThunderComposePreview?.();
           }
@@ -12219,19 +12504,12 @@ function bindEvents() {
         }
       } catch {}
 
-      // Restore convo if it was open — only when the saved convo target
-      // matches the current card. Otherwise the user's last storm with X
-      // would briefly pop up while they're looking at Y's card, which is
-      // confusing. The convo is bound to the visible card identity.
+      // Restore convo if it was open — unconditional. Storm state persists
+      // across hard refresh so the convo pops back as soon as the overlay
+      // mounts, no click or signature required (session key is warmed above).
       try {
         const _savedConvo = (localStorage.getItem('ski:idle-convo') || sessionStorage.getItem('ski:idle-convo') || '').toLowerCase();
-        const _currentBare = (nsLabel || app.suinsName?.replace(/\.sui$/, '') || '').toLowerCase();
-        if (_savedConvo && _savedConvo === _currentBare) {
-          setTimeout(() => _expandIdleConvo(_savedConvo), 500);
-        } else if (_savedConvo) {
-          // Mismatch — clear the stale entry so next overlay open is clean.
-          try { localStorage.removeItem('ski:idle-convo'); sessionStorage.removeItem('ski:idle-convo'); } catch {}
-        }
+        if (_savedConvo) _expandIdleConvo(_savedConvo);
       } catch {}
 
       // Close the SKI menu so it doesn't show behind the overlay
@@ -12366,32 +12644,34 @@ function bindEvents() {
       _audioToggle.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         if (!_idleVideo) return;
+        // Mute state is bound 1:1 to which background video plays:
+        //   muted   → ski-idle (silent snow idle)
+        //   unmuted → basmr    (ambient audio track)
+        // The video element itself has pointer-events: none, so the
+        // audio toggle is the only control that cycles backgrounds.
         const nextMuted = !_idleVideo.muted;
         _setMuted(nextMuted);
         _userPrefersAudio = !nextMuted;
         try { localStorage.setItem('ski:idle-bg-audio', _userPrefersAudio ? '1' : '0'); } catch {}
+        const nextBgId = nextMuted ? 'ski-idle' : 'basmr';
+        const nextBg = IDLE_BACKGROUNDS.find(b => b.id === nextBgId) ?? IDLE_BACKGROUNDS[0];
+        _currentBgIdx = IDLE_BACKGROUNDS.indexOf(nextBg);
+        void _loadIdleBg(nextBg);
+        showToast(`\u{1F3AC} ${nextBg.label}`);
         if (!nextMuted) {
-          // Resume playback from current position under user gesture — browsers
-          // require .play() to be called inside a handler to lift the autoplay
-          // mute gate. Catch + ignore if the browser still blocks.
+          // Resume playback under user gesture so browsers lift the
+          // autoplay mute gate. Catch + ignore if still blocked.
           try { await _idleVideo.play(); } catch {}
         }
       });
 
-      // Click the video to cycle to the next background.
-      _idleVideo?.addEventListener('click', (ev) => {
-        // Don't intercept clicks that bubbled up from overlaid controls.
-        if ((ev.target as HTMLElement | null)?.closest('button, input, .ski-convo-party, .ski-idle-bubble, .ski-idle-audio-toggle, .ski-convo-reply')) return;
-        ev.stopPropagation();
-        _currentBgIdx = (_currentBgIdx + 1) % IDLE_BACKGROUNDS.length;
-        const next = IDLE_BACKGROUNDS[_currentBgIdx];
-        void _loadIdleBg(next);
-        showToast(`\u{1F3AC} ${next.label}`);
-      });
-
-      // Auto-resolve pre-filled name on overlay open (e.g. restored from localStorage on refresh)
+      // Auto-resolve pre-filled name on overlay open (e.g. restored from
+      // localStorage on refresh). Also auto-open storm so the convo is
+      // visible without a click — no signature needed because the Seal
+      // session key was warmed on wallet connect.
       if (_idleNsInput?.value && _idleNsInput.value.length >= 3 && isValidNsLabel(_idleNsInput.value)) {
         fetchAndShowNsPrice(_idleNsInput.value).catch(() => {});
+        _expandIdleConvo(_idleNsInput.value).catch(() => {});
       }
 
       // Match header width to overlay width
@@ -12553,12 +12833,16 @@ export function initUI() {
         detail: { address: ws.address, walletName: ws.walletName },
       }));
 
-      // Initialize Thunder Timestream client (Seal 2-of-3 + Timestream DO)
-      import('./client/thunder.js').then(({ initThunderClient }) => {
+      // Initialize Thunder Timestream client (Seal 2-of-3 + Timestream DO).
+      // Immediately warm the Seal session key so the first convo open doesn't
+      // stall on a signature round-trip — on refresh this restores from
+      // localStorage with zero prompts.
+      import('./client/thunder.js').then(({ initThunderClient, warmThunderSession }) => {
         initThunderClient({
           address: ws.address,
           signPersonalMessage: async (msg: Uint8Array) => signPersonalMessage(msg),
         });
+        warmThunderSession().catch(() => {});
       }).catch(() => {});
 
       // Execute Prism intent if one was stored from ?prism= URL

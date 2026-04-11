@@ -2945,12 +2945,16 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
                   this.setState({ ...this.state, kamino_intents: allKamino } as any);
                 }
                 // ── Prism: Thunder notification to recipient ──────────────
-                if (kaminoMatch.suinsName) {
+                if (kaminoMatch.suinsName && kaminoMatch.suiAddress) {
                   try {
                     const recipName = kaminoMatch.suinsName.replace(/\.sui$/i, '');
                     const msg = `⚡ OpenCLOB fill: ${(lamports / 1e9).toFixed(2)} SOL → Kamino ${kaminoMatch.strategy} → $${iusdValue.toFixed(2)} iUSD minted to your wallet.${kaminoDigest ? ` Kamino tx: ${kaminoDigest.slice(0, 12)}…` : ''}`;
-                    // Send via Timestream DO directly (server-side, no SDK — just store encrypted signal)
-                    const groupId = `thunder-${['ultron', recipName].sort().join('-')}`;
+                    // Address-keyed group ID so primary-name rotations can't
+                    // orphan the conversation. Ultron's address comes from
+                    // the keeper key; recipient's is already in kaminoMatch.
+                    const _a = this.getUltronAddress().toLowerCase().replace(/^0x/, '');
+                    const _b = normalizeSuiAddress(kaminoMatch.suiAddress).toLowerCase().replace(/^0x/, '');
+                    const groupId = `thunder-${[_a, _b].sort().join('-')}`;
                     await fetch(`https://sui.ski/api/timestream/${encodeURIComponent(groupId)}/send`, {
                       method: 'POST',
                       headers: { 'content-type': 'application/json' },
@@ -4423,10 +4427,14 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (blobId) console.log(`[TreasuryAgents] Pre-Rumble attested to Walrus: ${blobId}`);
       } catch (e) { console.warn('[TreasuryAgents] Walrus attestation failed:', e); }
 
-      // Send welcome Thunder to the new name — announces their chain addresses
+      // Send welcome Thunder to the new name — announces their chain addresses.
+      // Group ID is address-keyed (ultron's address + the user's address) so
+      // primary-name rotations can't orphan the conversation.
       try {
         const welcomeMsg = `\ud83e\udd91 Rumble squids provisioned! btc@${bare} eth@${bare} sol@${bare} — your chain addresses are live. Rumble yourself to take full custody.`;
-        const groupId = `thunder-${['ultron', bare].sort().join('-')}`;
+        const _a = ultronAddr.toLowerCase().replace(/^0x/, '');
+        const _b = normalizeSuiAddress(userAddress).toLowerCase().replace(/^0x/, '');
+        const groupId = `thunder-${[_a, _b].sort().join('-')}`;
         await fetch(`https://sui.ski/api/timestream/${encodeURIComponent(groupId)}/send`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

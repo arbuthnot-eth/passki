@@ -9,6 +9,10 @@
 import {
   createSuiStackMessagingClient,
   MAINNET_SUI_STACK_MESSAGING_PACKAGE_CONFIG,
+  WalrusHttpStorageAdapter,
+  type Attachment,
+  type AttachmentFile,
+  type AttachmentHandle,
   type DecryptedMessage,
   type GroupRef,
 } from '@mysten/sui-stack-messaging';
@@ -43,6 +47,19 @@ const DB_USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846
 const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
 const DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION = 389750322;
 
+// Walrus mainnet publisher / aggregator for Thunder file attachments.
+// Attached files are encrypted client-side by the SDK's AttachmentsManager
+// (Seal envelope per file) and uploaded as quilts via the HTTP publisher.
+// The blob IDs travel with the message through the TimestreamAgent DO.
+const WALRUS_PUBLISHER_URL = 'https://publisher.walrus-mainnet.h2o-nodes.com';
+const WALRUS_AGGREGATOR_URL = 'https://aggregator.walrus-mainnet.h2o-nodes.com';
+const WALRUS_EPOCHS = 10;
+
+// Attachment size limits — kept well under public publisher 413 ceilings.
+const ATTACH_MAX_FILES = 4;
+const ATTACH_MAX_FILE_BYTES = 2_000_000;      // 2 MB per file
+const ATTACH_MAX_TOTAL_BYTES = 5_000_000;     // 5 MB total per send
+
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold):
 // Overclock, Studio Mirai, H2O Nodes.
 // NodeInfra excluded — broken CORS (duplicate Access-Control-Allow-Origin: *, *)
@@ -65,6 +82,9 @@ export interface ThunderMessage {
   isEdited: boolean;
   isDeleted: boolean;
   senderVerified: boolean;
+  /** Resolved attachment handles from AttachmentsManager.resolve.
+   *  Each handle has fileName / mimeType / fileSize + a lazy data() loader. */
+  attachments?: AttachmentHandle[];
 }
 
 export interface ThunderClientOptions {
@@ -117,9 +137,11 @@ async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<Sessio
                 return restored;
               }
             } catch (importErr) {
-              console.warn('[thunder] SessionKey.import failed, will mint fresh:', importErr);
+              console.warn('[thunder] SessionKey.import failed, will mint fresh:', importErr instanceof Error ? importErr.message : importErr);
               try { localStorage.removeItem(SK_STORAGE_KEY(opts.address)); } catch {}
             }
+          } else {
+            console.log('[thunder] cached Seal session key expired, will mint fresh');
           }
         }
       }
@@ -141,12 +163,25 @@ async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<Sessio
     const signed = await (opts.signPersonalMessage as unknown as (msg: Uint8Array) => Promise<{ signature: string }>)(personalMsg);
     await key.setPersonalMessageSignature(signed.signature);
 
-    // Persist for restoration on next page load.
+    // Persist for restoration on next page load. The SDK's `export()` returns
+    // an object with a booby-trapped `toJSON` property that throws if you call
+    // JSON.stringify on it directly — intended to force IndexedDB usage. Pluck
+    // the fields into a plain object ourselves so localStorage works.
     try {
-      localStorage.setItem(SK_STORAGE_KEY(opts.address), JSON.stringify(key.export()));
-      console.log('[thunder] cached Seal session key for next page load');
+      const raw = key.export() as ExportedSessionKey & { sessionKey: string };
+      const serializable = {
+        address: raw.address,
+        packageId: raw.packageId,
+        mvrName: raw.mvrName,
+        creationTimeMs: raw.creationTimeMs,
+        ttlMin: raw.ttlMin,
+        personalMessageSignature: raw.personalMessageSignature,
+        sessionKey: raw.sessionKey,
+      };
+      localStorage.setItem(SK_STORAGE_KEY(opts.address), JSON.stringify(serializable));
+      console.log('[thunder] cached Seal session key for', SESSION_KEY_TTL_MIN, 'min');
     } catch (e) {
-      console.warn('[thunder] failed to persist Seal session key:', e);
+      console.warn('[thunder] failed to persist Seal session key:', e instanceof Error ? e.message : e);
     }
     return key;
   })();
@@ -170,6 +205,7 @@ export function initThunderClient(opts: ThunderClientOptions) {
 
   const gqlClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
+  _warmer = () => _loadOrMintSessionKey(opts);
   _client = createSuiStackMessagingClient(gqlClient as any, {
     seal: { serverConfigs: SEAL_SERVERS, verifyKeyServers: true },
     encryption: {
@@ -179,6 +215,16 @@ export function initThunderClient(opts: ThunderClientOptions) {
     },
     relayer: {
       transport: new TimestreamRelayer(),
+    },
+    attachments: {
+      storageAdapter: new WalrusHttpStorageAdapter({
+        publisherUrl: WALRUS_PUBLISHER_URL,
+        aggregatorUrl: WALRUS_AGGREGATOR_URL,
+        epochs: WALRUS_EPOCHS,
+      }),
+      maxAttachments: ATTACH_MAX_FILES,
+      maxFileSizeBytes: ATTACH_MAX_FILE_BYTES,
+      maxTotalFileSizeBytes: ATTACH_MAX_TOTAL_BYTES,
     },
   });
 
@@ -190,6 +236,13 @@ export function getThunderClient(): MessagingClient {
   return _client;
 }
 
+let _warmer: (() => Promise<SessionKey>) | null = null;
+
+export async function warmThunderSession(): Promise<void> {
+  if (!_client || !_address || !_warmer) return;
+  try { await _warmer(); } catch (e) { console.warn('[thunder] warm session failed:', e instanceof Error ? e.message : e); }
+}
+
 export function resetThunderClient() {
   if (_client) {
     try { _client.messaging.disconnect(); } catch {}
@@ -197,6 +250,8 @@ export function resetThunderClient() {
   _client = null;
   _signer = null;
   _address = '';
+  _warmer = null;
+  _sessionKeyPromise = null;
 }
 
 // ─── Timestream DO transport ────────────────────────────────────────
@@ -240,6 +295,15 @@ function unpadPlaintext(padded: Uint8Array): Uint8Array {
   return padded.slice(4, 4 + len);
 }
 
+/** Strip the pad/length prefix off an already-decoded string.
+ *  The SDK returns decrypted text as a string; we re-encode, unpad, re-decode. */
+function unpadPlaintextText(text: string): string {
+  try {
+    const bytes = new TextEncoder().encode(text);
+    return new TextDecoder().decode(unpadPlaintext(bytes));
+  } catch { return text; }
+}
+
 class TimestreamRelayer {
   async sendMessage(params: any) {
     const res = await fetch(`/api/timestream/${encodeURIComponent(params.groupId)}/send`, {
@@ -252,6 +316,9 @@ class TimestreamRelayer {
         keyVersion: params.keyVersion.toString(),
         senderAddress: params.signer.toSuiAddress(),
         signature: params.messageSignature || '',
+        // Wire-format attachments from the SDK's AttachmentsManager.upload —
+        // just forward the array. Each entry is already JSON-safe.
+        attachments: params.attachments,
       }),
     });
     if (!res.ok) throw new Error(`Send failed: ${res.status}`);
@@ -276,7 +343,9 @@ class TimestreamRelayer {
         encryptedText: fromB64(m.encryptedText),
         nonce: fromB64(m.nonce),
         keyVersion: BigInt(m.keyVersion),
-        attachments: [],
+        // Forward wire attachments to the SDK so AttachmentsManager.resolve
+        // can turn them into AttachmentHandle[] on read.
+        attachments: Array.isArray(m.attachments) ? m.attachments : [],
       })),
       hasNext: data.hasNext,
     };
@@ -290,7 +359,13 @@ class TimestreamRelayer {
     });
     if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
     const m = await res.json() as any;
-    return { ...m, encryptedText: fromB64(m.encryptedText), nonce: fromB64(m.nonce), keyVersion: BigInt(m.keyVersion), attachments: [] };
+    return {
+      ...m,
+      encryptedText: fromB64(m.encryptedText),
+      nonce: fromB64(m.nonce),
+      keyVersion: BigInt(m.keyVersion),
+      attachments: Array.isArray(m.attachments) ? m.attachments : [],
+    };
   }
 
   async updateMessage(params: any) {
@@ -360,6 +435,9 @@ export async function sendThunder(opts: {
   senderName?: string;
   recipientName?: string;
   transfer?: { recipientAddress: string; amountMist: bigint };
+  /** Optional file attachments — Seal-encrypted per file, uploaded to Walrus
+   *  via the configured HTTP publisher. Limits enforced by the SDK. */
+  files?: AttachmentFile[];
   /** Sign and execute a transaction (PTB for transfers + Storm creation) */
   signAndExecute?: (tx: Uint8Array | Transaction) => Promise<any>;
 }): Promise<{ messageId: string }> {
@@ -367,14 +445,17 @@ export async function sendThunder(opts: {
 
   const client = getThunderClient();
   const hasTransfer = opts.transfer && opts.transfer.amountMist > 0n && opts.signAndExecute;
+  const hasFiles = Array.isArray(opts.files) && opts.files.length > 0;
 
   // Check if Storm exists
   let needsStorm = false;
   try {
     await client.messaging.view.getCurrentKeyVersion({ uuid: groupId });
-  } catch {
+  } catch (e) {
     needsStorm = true;
+    try { console.log('[thunder] Storm missing for uuid', groupId, '— will create. Reason:', e instanceof Error ? e.message : e); } catch {}
   }
+  try { console.log('[thunder] sendThunder start', { groupId, needsStorm, hasTransfer, hasFiles, recipient: opts.recipientAddress }); } catch {}
 
   // ─── Build single PTB: transfer + Storm + SUIAMI roster ──────
   // One signature covers everything
@@ -505,6 +586,22 @@ export async function sendThunder(opts: {
     }
   }
 
+  // ─── Attachment path — route through SDK's AttachmentsManager ───────
+  // When files are attached, bypass the direct DO POST and use the SDK's
+  // client.messaging.sendMessage. It orchestrates: encrypt text → upload
+  // each file via Walrus HTTP publisher → build Attachment[] wire records
+  // → post all of it through our TimestreamRelayer transport in one call.
+  if (hasFiles) {
+    if (!_signer) throw new Error('Thunder client not initialized');
+    const result = await client.messaging.sendMessage({
+      signer: _signer as never,
+      groupRef: opts.groupRef,
+      text: opts.text,
+      files: opts.files,
+    });
+    return { messageId: result.messageId };
+  }
+
   // ─── Seal-encrypt + send via Timestream DO (free, no on-chain tx) ───
   // NO plaintext fallback. If encryption fails, the send fails — we will
   // never store cleartext in the DO labeled as ciphertext.
@@ -597,6 +694,34 @@ export async function getThunders(opts: {
     if (res.ok) {
       const data = await res.json() as { messages: any[]; hasNext: boolean; participants?: string[] };
       const participants: string[] = Array.isArray(data.participants) ? data.participants : [];
+      // If any message carries attachments, fall through to the SDK read
+      // path — AttachmentsManager.resolve is private and only reachable via
+      // client.messaging.getMessages. The SDK handles the full pipeline
+      // (decrypt text + resolve attachment handles) using our TimestreamRelayer.
+      const hasAnyAttachments = data.messages.some((m: any) => Array.isArray(m.attachments) && m.attachments.length > 0);
+      if (hasAnyAttachments) {
+        if (!_signer) throw new Error('Thunder client not initialized');
+        const sdkResult = await client.messaging.getMessages({
+          signer: _signer as never,
+          groupRef: opts.groupRef,
+          afterOrder: opts.afterOrder,
+          limit: opts.limit,
+        });
+        const sdkMessages: ThunderMessage[] = sdkResult.messages.map((dm: DecryptedMessage) => ({
+          messageId: dm.messageId,
+          groupId,
+          order: dm.order,
+          text: unpadPlaintextText(dm.text),
+          senderAddress: dm.senderAddress,
+          createdAt: dm.createdAt,
+          updatedAt: dm.updatedAt,
+          isEdited: dm.isEdited,
+          isDeleted: dm.isDeleted,
+          senderVerified: dm.senderVerified,
+          attachments: dm.attachments,
+        }));
+        return { messages: sdkMessages, hasNext: sdkResult.hasNext };
+      }
       const messages: ThunderMessage[] = [];
       for (const m of data.messages) {
         let text = '';
@@ -727,6 +852,34 @@ export async function stormExists(uuid: string): Promise<boolean> {
 // ─── SuiNS resolution ───────────────────────────────────────────────
 
 /** Resolve a SuiNS name to its address. Tries target address first, falls back to NFT owner. */
+// Forward lookup cache: bare name → address. Populated by
+// lookupRecipientAddress and its cached variant. Pair-based storm
+// group IDs are built from addresses so that primary-name rotations
+// don't orphan conversation history.
+const _forwardLookupCache: Record<string, string | null> = {};
+
+/**
+ * Compose the canonical Storm group ID from two Sui addresses. Lower-
+ * cased + sorted so the ID is independent of which participant is the
+ * "sender". Addresses are immutable, so this ID survives any primary
+ * SuiNS rotation on either side.
+ */
+export function makeThunderGroupId(addrA: string, addrB: string): string {
+  const a = (addrA || '').toLowerCase().replace(/^0x/, '');
+  const b = (addrB || '').toLowerCase().replace(/^0x/, '');
+  if (!a || !b) throw new Error('makeThunderGroupId: both addresses required');
+  return `thunder-${[a, b].sort().join('-')}`;
+}
+
+/** Cached forward lookup: bare name → target address. */
+export async function lookupRecipientAddressCached(name: string): Promise<string | null> {
+  const key = name.replace(/\.sui$/i, '').toLowerCase();
+  if (key in _forwardLookupCache) return _forwardLookupCache[key];
+  const addr = await lookupRecipientAddress(name);
+  _forwardLookupCache[key] = addr;
+  return addr;
+}
+
 export async function lookupRecipientAddress(name: string): Promise<string | null> {
   const fullName = name.replace(/\.sui$/i, '').toLowerCase() + '.sui';
   try {
@@ -805,6 +958,10 @@ export interface HumanizedError {
 export function humanizeThunderError(err: unknown): HumanizedError {
   const raw = err instanceof Error ? (err.stack || err.message) : String(err ?? '');
   const lower = raw.toLowerCase();
+  // Log the full raw error so diagnostics aren't lost to the toast slice.
+  // The UI toast shows only the first ~300 chars; this console line carries
+  // the complete stack including truncated package/module/function paths.
+  try { console.error('[thunder] send error (full):', err); } catch {}
 
   // ── User cancelled — never show a toast ─────────────────────────
   if (lower.includes('reject') || lower.includes('cancel') || lower.includes('user denied') || lower.includes('user closed')) {
@@ -852,11 +1009,12 @@ export function humanizeThunderError(err: unknown): HumanizedError {
   }
 
   // ── Fall through ────────────────────────────────────────────────
-  // Surface a short slice of the original message so we still get a clue
-  // for unmapped errors instead of opaque "Unexpected error".
-  const summary = (err instanceof Error ? err.message : String(err ?? '')).slice(0, 140) || 'Send failed';
+  // Surface a longer slice of the original message so unmapped errors
+  // include the package/module/function that aborted. The toast CSS
+  // wraps long text across multiple lines.
+  const summary = (err instanceof Error ? err.message : String(err ?? '')).slice(0, 400) || 'Send failed';
   return { kind: 'unknown', message: `Send failed: ${summary}`, silent: false };
 }
 
 // Re-export types
-export type { DecryptedMessage, GroupRef, SignPersonalMessageFn };
+export type { Attachment, AttachmentFile, AttachmentHandle, DecryptedMessage, GroupRef, SignPersonalMessageFn };
