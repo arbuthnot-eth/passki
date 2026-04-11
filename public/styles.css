@@ -2465,6 +2465,17 @@ body {
 .ski-nft-expiry--warn { color: rgba(251, 191, 36, 0.7); }
 .ski-nft-expiry--urgent { color: rgba(239, 68, 68, 0.7); }
 
+/* Target-address total USD balance (SUI + stables) shown under the
+ * expiry row. Green so it reads as "value parked here". */
+.ski-nft-bal {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: rgba(34, 197, 94, 0.92);
+  letter-spacing: 0.02em;
+}
+
 .ski-nft-card--thunder {
   border-color: rgba(250, 204, 21, 0.35);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.8), 0 0 24px rgba(250, 204, 21, 0.1);

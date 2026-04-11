@@ -4631,6 +4631,52 @@ function _hideNftPopover(immediate = false) {
   }, NFT_POPOVER_HIDE_MS);
 }
 
+/** Light balance cache for the NFT popover — shared across renders
+ *  of the same target address so we don't spam GraphQL every time
+ *  the card re-opens. 60s TTL is plenty for a display widget. */
+const _cardBalCache: Record<string, { suiUsd: number; stableUsd: number; totalUsd: number; ts: number }> = {};
+const _CARD_BAL_TTL_MS = 60 * 1000;
+
+async function _fetchCardBalance(addr: string): Promise<{ suiUsd: number; stableUsd: number; totalUsd: number } | null> {
+  if (!addr) return null;
+  const key = addr.toLowerCase();
+  const cached = _cardBalCache[key];
+  if (cached && Date.now() - cached.ts < _CARD_BAL_TTL_MS) return cached;
+  try {
+    const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a: SuiAddress!) {
+          address(address: $a) {
+            balances(first: 20) { nodes { coinType { repr } totalBalance } }
+          }
+        }`,
+        variables: { a: addr },
+      }),
+    });
+    const data = await res.json() as { data?: { address?: { balances?: { nodes?: Array<{ coinType: { repr: string }; totalBalance: string }> } } } };
+    const nodes = data?.data?.address?.balances?.nodes ?? [];
+    const suiPrice = suiPriceCache?.price ?? 0;
+    let suiBal = 0;
+    let stableUsd = 0;
+    for (const n of nodes) {
+      const ct = n.coinType.repr;
+      const bal = BigInt(n.totalBalance);
+      if (ct === '0x2::sui::SUI') {
+        suiBal = Number(bal) / 1e9;
+      } else if (ct.includes('::usdc::USDC') || ct.includes('::iusd::IUSD') || ct.toLowerCase().includes('usdt')) {
+        stableUsd += Number(bal) / 1e6;
+      }
+    }
+    const suiUsd = suiBal * suiPrice;
+    const totalUsd = suiUsd + stableUsd;
+    const out = { suiUsd, stableUsd, totalUsd, ts: Date.now() };
+    _cardBalCache[key] = out;
+    return out;
+  } catch { return null; }
+}
+
 function _showNftPopover(chip: HTMLElement, domainBare: string) {
   if (_nftPopoverHideTimer) { clearTimeout(_nftPopoverHideTimer); _nftPopoverHideTimer = null; }
   _nftPopoverPinned = false;
@@ -4667,6 +4713,15 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
   const thunderBadgeHtml = unquestedBadge;
   const thunderCardCls = unquestedCount > 0 ? ' ski-nft-card--thunder' : '';
 
+  // Balance row: resolve the target's total USD (SUI + stables)
+  // asynchronously. The card renders with an em-dash placeholder
+  // and a second pass fills it in via innerHTML on #ski-nft-bal.
+  const _balTargetAddr = nsTargetAddress || nsNftOwner || '';
+  const _balCached = _balTargetAddr ? _cardBalCache[_balTargetAddr.toLowerCase()] : null;
+  const _balInitial = _balCached
+    ? `$${_balCached.totalUsd.toFixed(2)}`
+    : '\u2014';
+
   popover.innerHTML = `
     <div class="ski-nft-card ski-nft-card--inline${thunderCardCls}">
       <a class="ski-nft-qr" id="ski-nft-qr-slot" href="${esc(suiSkiUrl)}" target="_blank" rel="noopener" title="${esc(domainBare)}.sui.ski"></a>
@@ -4679,6 +4734,7 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
         <span class="ski-nft-domain">${esc(domainBare)}<span class="ski-nft-tld">.sui</span></span>
         <a class="ski-nft-link" href="${esc(suiSkiUrl)}" target="_blank" rel="noopener">${esc(domainBare)}.sui.ski \u2197</a>
         ${expiryHtml}
+        <span class="ski-nft-bal" id="ski-nft-bal" title="Total USD value (SUI + stables) held at the resolved target address">${_balInitial}</span>
       </div>
       <div class="ski-nft-owner">${ownerBadge}</div>
       <button class="ski-nft-dismiss" id="ski-nft-dismiss" type="button" title="Clear">\u2715</button>
@@ -4692,6 +4748,20 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
   if (qrSlot) {
     getQrSvg(suiSkiUrl, qrColor).then(svg => {
       if (!popover.hasAttribute('hidden')) qrSlot.innerHTML = svg;
+    }).catch(() => {});
+  }
+
+  // Async load balance — 60s-cached per address. Fills in the
+  // #ski-nft-bal slot on success; leaves the placeholder em-dash
+  // on failure so the layout doesn't shift.
+  if (_balTargetAddr) {
+    _fetchCardBalance(_balTargetAddr).then(r => {
+      if (!r) return;
+      // Make sure the user hasn't clicked away to a different card
+      if (popover.dataset.domain !== domainBare) return;
+      const slot = popover.querySelector('#ski-nft-bal') as HTMLElement | null;
+      if (!slot) return;
+      slot.textContent = `$${r.totalUsd.toFixed(2)}`;
     }).catch(() => {});
   }
 }
