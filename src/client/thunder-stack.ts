@@ -496,6 +496,12 @@ export async function sendThunder(opts: {
    *  setGasOwner + setGasPayment pinned to ultron. Caller must pair
    *  this with a sponsored signAndExecute (signAndExecuteSponsoredTx). */
   sponsored?: boolean;
+  /** Optional explicit gas coin reference(s) for the user's wallet,
+   *  pinned via tx.setGasPayment BEFORE build. Bypasses the v2
+   *  SuiGraphQLClient auto-gas-selection path that otherwise races
+   *  the indexer when a just-dripped SUI coin hasn't propagated yet.
+   *  Required for the WaaP-drip flow on sub-cent transfers. */
+  gasPayment?: Array<{ objectId: string; version: string; digest: string }>;
 }): Promise<{ messageId: string }> {
   const groupId = 'uuid' in opts.groupRef ? opts.groupRef.uuid : '';
 
@@ -548,6 +554,17 @@ export async function sendThunder(opts: {
           }
         }
       } catch { /* best-effort; fall through to user-pays */ }
+    } else if (opts.gasPayment?.length) {
+      // Explicit user-side gas coin — used when the caller just
+      // dripped SUI to the user and wants to bypass the v2 build
+      // path's auto-gas-selection, which races the indexer before
+      // the new coin is visible. Pinning here means tx.build
+      // doesn't have to query anything.
+      tx.setGasPayment(opts.gasPayment.map(c => ({
+        objectId: c.objectId,
+        version: c.version,
+        digest: c.digest,
+      })));
     }
 
     // 1. Transfer — lock SUI in a thunder_iou_shielded::ShieldedVault.

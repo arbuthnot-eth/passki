@@ -12226,16 +12226,21 @@ function bindEvents() {
           const { lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
           const _myAddrForSend = getState().address || '';
 
-          // Universal gas pre-flight: ultron drips 0.02 SUI if the
-          // sender is low on gas, regardless of wallet type. This
-          // unlocks **true micropayments** — a user with $0.03 total
-          // no longer has to reserve dollars of their own SUI for
-          // gas, they can spend their full balance as thunder value.
-          // /api/fund-gas no-ops if the wallet already has ≥ 0.015
-          // SUI and is SuiNS-gated so only real users get the drip.
-          // 60s cooldown protects against spam.
-          const _sendIsWaaP = /waap/i.test(getState().walletName || '');
-          void _sendIsWaaP;
+          // Universal gas pre-flight: drip 0.02 SUI from ultron if
+          // the user is low on gas, then POLL for the coin and pin
+          // it as explicit gas payment on the send tx. This unlocks
+          // **true micropayments** — a user with $0.03 total no
+          // longer reserves dollars of their own SUI for gas, their
+          // full balance is available for thunder value, gas comes
+          // from the drip coin directly.
+          //
+          // The poll is critical: tx.build's auto-gas-select queries
+          // GraphQL for user coins, which races the indexer. A drip
+          // that landed on-chain seconds ago may not be visible yet
+          // to the build, causing an 'insufficient SUI balance'
+          // rejection. Pinning the coin explicitly via
+          // setGasPayment skips that query entirely.
+          let _dripGasCoin: { objectId: string; version: string; digest: string } | null = null;
           if (_myAddrForSend) {
             try {
               const dripRes = await fetch('/api/fund-gas', {
@@ -12250,6 +12255,41 @@ function bindEvents() {
                 await new Promise(r => setTimeout(r, 1500));
               }
             } catch { /* best-effort */ }
+            // Poll for the user's largest SUI coin (up to 10s).
+            // The drip may have landed a moment ago; indexer lag
+            // means it might take a beat to show up on the first
+            // query.
+            const _pollDeadline = Date.now() + 10_000;
+            while (Date.now() < _pollDeadline) {
+              try {
+                const _cr = await fetch('https://graphql.mainnet.sui.io/graphql', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ query: `{
+                    address(address: "${_myAddrForSend}") {
+                      objects(filter: { type: "0x2::coin::Coin<0x2::sui::SUI>" }, first: 10) {
+                        nodes { address version digest contents { json } }
+                      }
+                    }
+                  }` }),
+                });
+                const _cj = await _cr.json() as { data?: { address?: { objects?: { nodes?: Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }> } } } };
+                const _coinNodes = _cj?.data?.address?.objects?.nodes ?? [];
+                let best: typeof _coinNodes[number] | null = null;
+                let bestBal = 0n;
+                for (const n of _coinNodes) {
+                  const bal = BigInt(n.contents?.json?.balance ?? '0');
+                  if (bal > bestBal) { bestBal = bal; best = n; }
+                }
+                // Need at least 5M mist (0.005 SUI) to cover even
+                // the smallest realistic gas budget.
+                if (best && bestBal >= 5_000_000n) {
+                  _dripGasCoin = { objectId: best.address, version: best.version, digest: best.digest };
+                  break;
+                }
+              } catch { /* poll again */ }
+              await new Promise(r => setTimeout(r, 600));
+            }
           }
           try {
             for (const recip of recipients) {
@@ -12294,6 +12334,11 @@ function bindEvents() {
                   // note reflects exactly what they typed, not the
                   // slippage-inflated SUI equivalent.
                   intentUsd: transferAmtUsd,
+                  // Pin the just-dripped SUI coin as explicit gas payment
+                  // so tx.build doesn't try to auto-select and race the
+                  // indexer. Only set when the pre-flight poll found a
+                  // coin on the user's address.
+                  gasPayment: _dripGasCoin ? [_dripGasCoin] : undefined,
                   files: _hasTransferAttachments
                     ? _pendingThunderFiles.map(f => ({
                         fileName: f.fileName,
