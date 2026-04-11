@@ -2816,6 +2816,12 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  row-gap: 6px;
+  /* flex-wrap lets the Storm action button drop to a second row when
+   * the name input would otherwise clip the text. Input-wrap claims
+   * flex: 1 1 60% so it keeps priority for width on a single row and
+   * falls back cleanly to a row of its own when space runs out. */
+  flex-wrap: wrap;
   width: calc(100% - 32px);
   position: absolute;
   top: 27%;
@@ -2844,7 +2850,11 @@ body {
   z-index: 1;
 }
 .ski-idle-ns-input-wrap {
-  flex: 1;
+  /* flex-basis large enough that the Storm button wraps below when
+   * the overlay is narrow. On wider overlays the two fit side by
+   * side; on narrow ones the input claims the full row and Storm
+   * wraps to a second row. */
+  flex: 1 1 180px;
   position: relative;
   display: flex;
   align-items: center;
