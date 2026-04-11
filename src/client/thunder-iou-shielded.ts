@@ -60,18 +60,15 @@ export function randomBlinding(): Uint8Array {
  */
 export function pedersenCommit(amountMist: bigint, blinding: Uint8Array): Uint8Array {
   if (blinding.length !== 32) throw new Error('pedersenCommit: blinding must be 32 bytes');
-  // Build G1 points via Noble's BLS12-381 API.
-  const G = bls12_381.G1.BASE;
+  // Noble 2.x: BASE lives under G1.Point (was G1.BASE in 1.x).
+  // toBytes() returns compressed 48-byte encoding by default.
+  const G = bls12_381.G1.Point.BASE;
   const H = hGenerator();
-  // Scalars are reduced into the curve's scalar field automatically
-  // by the multiply method when given bigint / bytes.
   const rScalar = BigInt('0x' + Array.from(blinding).map(b => b.toString(16).padStart(2, '0')).join(''));
   const rG = G.multiply(rScalar % bls12_381.fields.Fr.ORDER);
   const aH = H.multiply(amountMist % bls12_381.fields.Fr.ORDER);
   const C = rG.add(aH);
-  // Compressed encoding — 48 bytes. toRawBytes() defaults to
-  // compressed form per Noble's BLS spec.
-  return C.toRawBytes(true);
+  return C.toBytes();
 }
 
 /**
