@@ -48,34 +48,34 @@ function hGenerator() {
  * a ~50% chance of encoding a value >= Fr.ORDER, which the
  * contract rejects with abort code 1 in group_ops::from_bytes.
  *
- * Approach: generate, reduce mod ORDER, serialize back. Uses
- * LITTLE-ENDIAN byte order to match Sui's bls12381 serialization
- * convention (scalars are serialized little-endian in the Sui
- * framework; same as BLS12-381's standard serialization).
+ * Approach: generate, reduce mod ORDER, serialize back as BIG-ENDIAN.
+ * Sui's bls12381 module documents scalars as big-endian (see
+ * sui-framework/sources/crypto/bls12381.move: "Scalars are encoded
+ * using big-endian byte order" and SCALAR_ONE_BYTES = 0x00..01).
  *
  * The client-side pedersenCommit below also parses the blinding
- * as little-endian so both sides compute identical commitments.
+ * as big-endian so both sides compute identical commitments.
  */
 export function randomBlinding(): Uint8Array {
   const raw = randomBytes(32);
-  // Parse as little-endian bigint to match Sui serialization.
+  // Parse as big-endian bigint.
   let val = 0n;
-  for (let i = 31; i >= 0; i--) val = (val << 8n) | BigInt(raw[i]);
+  for (let i = 0; i < 32; i++) val = (val << 8n) | BigInt(raw[i]);
   val %= bls12_381.fields.Fr.ORDER;
-  // Serialize back as 32-byte little-endian.
+  // Serialize back as 32-byte big-endian.
   const out = new Uint8Array(32);
   let v = val;
-  for (let i = 0; i < 32; i++) {
+  for (let i = 31; i >= 0; i--) {
     out[i] = Number(v & 0xffn);
     v >>= 8n;
   }
   return out;
 }
 
-/** Parse 32 little-endian bytes into a bigint scalar. */
-function scalarFromLeBytes(bytes: Uint8Array): bigint {
+/** Parse 32 big-endian bytes into a bigint scalar. */
+function scalarFromBeBytes(bytes: Uint8Array): bigint {
   let val = 0n;
-  for (let i = 31; i >= 0; i--) val = (val << 8n) | BigInt(bytes[i]);
+  for (let i = 0; i < 32; i++) val = (val << 8n) | BigInt(bytes[i]);
   return val;
 }
 
@@ -95,9 +95,9 @@ export function pedersenCommit(amountMist: bigint, blinding: Uint8Array): Uint8A
   // toBytes() returns compressed 48-byte encoding by default.
   const G = bls12_381.G1.Point.BASE;
   const H = hGenerator();
-  // Parse blinding as little-endian to match Sui's serialization
+  // Parse blinding as big-endian to match Sui's serialization
   // convention + randomBlinding's output format above.
-  const rScalar = scalarFromLeBytes(blinding);
+  const rScalar = scalarFromBeBytes(blinding);
   const rG = G.multiply(rScalar % bls12_381.fields.Fr.ORDER);
   const aH = H.multiply(amountMist % bls12_381.fields.Fr.ORDER);
   const C = rG.add(aH);

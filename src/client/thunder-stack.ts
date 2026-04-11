@@ -60,6 +60,19 @@ const THUNDER_IOU_SHIELDED_PACKAGE = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd3
 // vacation to catch up.
 const IOU_DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Diglett Lv.18 — dust threshold. Below this mist amount, a shielded
+// deposit's BLS12-381 Pedersen commitment + shared-object rent
+// dominate gas 100x over the notional value. We route these to the
+// legacy plain `thunder_iou::iou::create` path instead, which has no
+// on-chain crypto and cheaper object creation. Privacy is moot for
+// dust — the amount is already visible in the storm note's $ label,
+// and the recipient address is already on the transfer note.
+//
+// 3M mist ≈ $0.012 at SUI=$4. Tunable — move higher if the plain
+// path turns out cheaper than expected, lower if users complain
+// about $0.01 sends leaking recipient address on-chain.
+const SHIELDED_DUST_THRESHOLD_MIST = 3_000_000n;
+
 const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
 const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
 const DB_SUI_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
@@ -567,47 +580,70 @@ export async function sendThunder(opts: {
       })));
     }
 
-    // 1. Transfer — lock SUI in a thunder_iou_shielded::ShieldedVault.
-    // The vault stores only a Pedersen commitment C = r*G + amount*H
-    // and an encrypted opening blob; the RECIPIENT ADDRESS is NOT on
-    // the deposit tx. The recipient claims by recovering (r, amount)
-    // from the Seal-encrypted storm note and resubmitting them.
-    // Sender (or any keeper) can recall after TTL.
+    // 1. Transfer — lock SUI in escrow. Two paths:
     //
-    // This replaces the legacy thunder_iou::create path. The shielded
-    // package ID and helpers live in src/client/thunder-iou-shielded.ts.
+    //   SHIELDED (amount >= SHIELDED_DUST_THRESHOLD_MIST):
+    //     thunder_iou_shielded::ShieldedVault with a Pedersen commitment
+    //     C = r*G + amount*H and encrypted opening blob. Recipient
+    //     address is NOT on-chain; recipient claims by recovering
+    //     (r, amount) from the Seal-encrypted storm note.
+    //
+    //   PLAIN (amount < dust threshold):
+    //     thunder_iou::iou::create — dust sends skip BLS ops + crypto
+    //     overhead. Gas drops 70-80% per send. The recipient address
+    //     lands on-chain in cleartext here, which is fine for micro
+    //     dust where the $ label in the storm note already reveals it.
+    //     The sealed_memo still carries the Seal-encrypted opening
+    //     (zero-filled for plain path) so storm note format is stable.
     if (hasTransfer) {
-      const { pedersenCommit, randomBlinding, encodeOpening } = await import('../client/thunder-iou-shielded.js');
       const amountBig = BigInt(opts.transfer!.amountMist);
-      const blinding = randomBlinding();
-      // Sanity check: recompute C client-side so we never ship a
-      // commitment the contract would reject (the contract
-      // recomputes C itself from the same inputs, so this check is
-      // mostly a developer-safety net against buggy upstream code).
-      void pedersenCommit(amountBig, blinding);
-      // Seal-encrypt the opening so only storm members can reconstruct
-      // (r, amount) later. The encryption uses the existing storm DEK.
-      const openingPlain = encodeOpening(blinding, amountBig);
-      const openingPadded = padPlaintext(new TextEncoder().encode(openingPlain));
-      const openingEnv = await encryptWithRetry(groupId, openingPadded);
-      // Concatenate nonce (12 bytes) + ciphertext into a single
-      // opaque blob so the contract stores one vector<u8>. The
-      // recipient splits it back on decrypt via the Seal SDK with
-      // the same keyVersion they find in the storm history.
-      const _sealedOpening = new Uint8Array(12 + openingEnv.ciphertext.length);
-      _sealedOpening.set(openingEnv.nonce, 0);
-      _sealedOpening.set(openingEnv.ciphertext, 12);
-      const [suiIn] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-      tx.moveCall({
-        target: `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::deposit`,
-        arguments: [
-          suiIn,
-          tx.pure.vector('u8', Array.from(blinding)),
-          tx.pure.u64(IOU_DEFAULT_TTL_MS),
-          tx.pure.vector('u8', Array.from(_sealedOpening)),
-          tx.object('0x6'),
-        ],
-      });
+      const isDust = amountBig < SHIELDED_DUST_THRESHOLD_MIST;
+      if (isDust) {
+        // Plain IOU path — cleartext recipient, no BLS.
+        const recipForPlain = opts.transfer!.recipientAddress || opts.recipientAddress;
+        if (!recipForPlain) throw new Error('Plain IOU deposit needs recipientAddress for dust threshold');
+        const [suiIn] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
+        tx.moveCall({
+          target: `${THUNDER_IOU_PACKAGE}::iou::create`,
+          arguments: [
+            suiIn,
+            tx.pure.address(recipForPlain),
+            tx.pure.u64(IOU_DEFAULT_TTL_MS),
+            // sealed_memo left empty — the storm note itself already
+            // carries the encrypted context; the Move module accepts
+            // any vector<u8>.
+            tx.pure.vector('u8', []),
+            tx.object('0x6'),
+          ],
+        });
+      } else {
+        const { pedersenCommit, randomBlinding, encodeOpening } = await import('../client/thunder-iou-shielded.js');
+        const blinding = randomBlinding();
+        // Sanity check: recompute C client-side so we never ship a
+        // commitment the contract would reject (the contract
+        // recomputes C itself from the same inputs, so this check is
+        // mostly a developer-safety net against buggy upstream code).
+        void pedersenCommit(amountBig, blinding);
+        // Seal-encrypt the opening so only storm members can reconstruct
+        // (r, amount) later. The encryption uses the existing storm DEK.
+        const openingPlain = encodeOpening(blinding, amountBig);
+        const openingPadded = padPlaintext(new TextEncoder().encode(openingPlain));
+        const openingEnv = await encryptWithRetry(groupId, openingPadded);
+        const _sealedOpening = new Uint8Array(12 + openingEnv.ciphertext.length);
+        _sealedOpening.set(openingEnv.nonce, 0);
+        _sealedOpening.set(openingEnv.ciphertext, 12);
+        const [suiIn] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
+        tx.moveCall({
+          target: `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::deposit`,
+          arguments: [
+            suiIn,
+            tx.pure.vector('u8', Array.from(blinding)),
+            tx.pure.u64(IOU_DEFAULT_TTL_MS),
+            tx.pure.vector('u8', Array.from(_sealedOpening)),
+            tx.object('0x6'),
+          ],
+        });
+      }
     }
 
     // 2. Storm creation (if no on-chain Storm exists)
