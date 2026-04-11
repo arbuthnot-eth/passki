@@ -12869,12 +12869,13 @@ function bindEvents() {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ senderAddress: _myAddrPurge }),
           });
+          const _body = await r.text();
           if (r.ok) {
-            const j = await r.json().catch(() => ({})) as { purged?: number };
+            const j = (() => { try { return JSON.parse(_body); } catch { return {}; } })() as { purged?: number };
             _purgedCount = j.purged ?? bubbles.length;
             _ok = true;
           } else {
-            console.warn('[thunder] purge-all rejected:', r.status);
+            console.warn('[thunder] purge-all rejected:', r.status, _body, 'gid:', _purgeGid, 'addr:', _myAddrPurge);
           }
         } catch (e) { console.warn('[thunder] purge-all threw:', e); }
 

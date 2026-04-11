@@ -328,15 +328,42 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
 
   /**
    * Hard-wipe every thunder in this storm. Called from the × purge
-   * button. Caller must be a participant. Messages array is reset to
-   * empty and nextOrder is preserved (new thunders after purge get
-   * strictly monotonic order regardless — no replay risk).
+   * button. Caller must prove storm membership by sending from an
+   * address that either (a) is already in the participants list, or
+   * (b) matches the senderAddress on one of the existing messages.
+   * Condition (b) handles the "I sent messages to this DO but was
+   * never explicitly added as a participant" race where the add-
+   * participant call lost to the delete request.
+   *
+   * Messages array is reset to empty. nextOrder is preserved so new
+   * thunders after purge keep strict monotonic order — no replay
+   * risk against old message IDs.
    */
   private async _handlePurgeAll(request: Request): Promise<Response> {
     const body = await request.json().catch(() => ({})) as { senderAddress?: string };
-    if (body.senderAddress && !this._isParticipant(body.senderAddress)) {
-      return Response.json({ error: 'Not a participant' }, { status: 403 });
+    const addr = body.senderAddress || '';
+    if (!addr) return Response.json({ error: 'senderAddress required' }, { status: 400 });
+
+    const isMember = this._isParticipant(addr);
+    const hasSentBefore = this.state.messages.some(m => {
+      const sa = (m as any).senderAddress;
+      if (sa && normAddr(sa) === normAddr(addr)) return true;
+      return false;
+    });
+    if (!isMember && !hasSentBefore) {
+      return Response.json({
+        error: 'Not authorized',
+        debug: {
+          addr: normAddr(addr),
+          participants: this._participants.map(p => normAddr(p)),
+          messageCount: this.state.messages.length,
+        },
+      }, { status: 403 });
     }
+    // Auto-promote a proven sender to a first-class participant so
+    // future operations don't need this fallback.
+    if (!isMember) this._addParticipant(addr);
+
     const purgedCount = this.state.messages.length;
     this.setState({ ...this.state, messages: [] });
     return Response.json({ purged: purgedCount });
