@@ -3752,6 +3752,39 @@ body {
   color: #fca5a5 !important;
   border-bottom-color: rgba(239, 68, 68, 0.55) !important;
 }
+/* Recall confirmed + submitted: collapse the bubble out of the
+ * convo over 320ms, then the JS removes it from the DOM. */
+.ski-idle-bubble--recall-done {
+  transform: scaleY(0);
+  opacity: 0;
+  max-height: 0;
+  margin: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  border-width: 0 !important;
+  overflow: hidden;
+  transition: transform 0.28s ease-in, opacity 0.28s ease-in, max-height 0.28s ease-in, margin 0.28s ease-in, padding 0.28s ease-in, border-width 0.28s ease-in;
+}
+/* Claim-tx pill stamped into a settled transfer bubble so the user
+ * can click through to the on-chain settlement record. */
+.ski-idle-bubble-claim-tx {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.55);
+  border-radius: 4px;
+  color: #22c55e !important;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-decoration: none;
+  vertical-align: middle;
+}
+.ski-idle-bubble-claim-tx:hover {
+  background: rgba(34, 197, 94, 0.28);
+  text-decoration: none;
+}
 .ski-idle-bubble--transfer-settled .ski-idle-bubble-sender {
   background: rgba(20, 20, 26, 0.95) !important;
   border-color: rgba(148, 163, 184, 0.4) !important;

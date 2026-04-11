@@ -12907,16 +12907,31 @@ function bindEvents() {
               const _bubEl = bubble as HTMLElement;
               const _txDigest = _bubEl.dataset.tx || '';
               const _role = _bubEl.dataset.iouRole || '';
-              // Optimistic paint on first click so the user has
-              // instant feedback that the action is in flight.
-              //   recipient → gray (settled) + @mention green
-              //   sender    → red (recalling — returning iOUSD jacket)
-              // The class gets removed on failure below (except the
-              // "already settled" branch, where gray is correct).
+
+              // Sender-side recall uses a two-click confirm pattern:
+              //   1st click → paint red, arm for 3s (no tx yet)
+              //   2nd click → fire recall, on success delete bubble
+              //   timeout  → auto-revert to green live state
+              // First-click-only prevents accidental click-to-recall.
+              if (_role === 'sender' && !_bubEl.classList.contains('ski-idle-bubble--recall-armed')) {
+                _bubEl.classList.add('ski-idle-bubble--transfer-recalling', 'ski-idle-bubble--recall-armed');
+                const _revertTimer = setTimeout(() => {
+                  _bubEl.classList.remove('ski-idle-bubble--transfer-recalling', 'ski-idle-bubble--recall-armed');
+                }, 3000);
+                // Stash timer handle so the second click can clear it.
+                (_bubEl as unknown as { _recallRevertTimer?: ReturnType<typeof setTimeout> })._recallRevertTimer = _revertTimer;
+                return;
+              }
+              // Second click on an armed bubble — clear the timer and
+              // fall through to the recall flow below.
+              if (_role === 'sender' && _bubEl.classList.contains('ski-idle-bubble--recall-armed')) {
+                const t = (_bubEl as unknown as { _recallRevertTimer?: ReturnType<typeof setTimeout> })._recallRevertTimer;
+                if (t) { clearTimeout(t); (_bubEl as unknown as { _recallRevertTimer?: ReturnType<typeof setTimeout> })._recallRevertTimer = undefined; }
+              }
+
+              // Recipient: optimistic gray paint immediately.
               if (_role === 'recipient') {
                 _bubEl.classList.add('ski-idle-bubble--transfer-settled');
-              } else if (_role === 'sender') {
-                _bubEl.classList.add('ski-idle-bubble--transfer-recalling');
               }
               const _openExplorer = () => {
                 if (_txDigest) window.open(`https://suivision.xyz/txblock/${_txDigest}`, '_blank', 'noopener,noreferrer');
@@ -13015,10 +13030,32 @@ function bindEvents() {
                       const r = _claimSponsor
                         ? await signAndExecuteSponsoredTx(bytes, true)
                         : await signAndExecuteTransaction(bytes);
-                      const digest = (r as any)?.digest || '';
-                      showToast(digest ? `\u2705 Claimed — ${digest.slice(0, 10)}\u2026` : '\u2705 Claimed');
-                      // Paint the bubble as settled — escrow is closed.
+                      const claimDigest = (r as any)?.digest || '';
+                      showToast(claimDigest ? `\u2705 Claimed — ${claimDigest.slice(0, 10)}\u2026` : '\u2705 Claimed');
+                      // Paint the bubble as settled + stamp the claim
+                      // tx digest in so the user can click through to
+                      // the on-chain settlement record. The bubble's
+                      // own click now opens the claim tx (not the
+                      // deposit), and a small ' · claimed' marker is
+                      // appended to the label so it's visually obvious.
                       _bubEl.classList.add('ski-idle-bubble--transfer-settled');
+                      if (claimDigest) {
+                        _bubEl.dataset.tx = claimDigest;
+                        _bubEl.dataset.claimTx = claimDigest;
+                        const textSpan = _bubEl.querySelector('.ski-idle-bubble-text') as HTMLElement | null
+                          ?? _bubEl;
+                        // Append a compact claim-tx pill to the end of
+                        // the bubble text. The anchor opens Suivision.
+                        const claimLink = document.createElement('a');
+                        claimLink.className = 'ski-idle-bubble-claim-tx';
+                        claimLink.href = `https://suivision.xyz/txblock/${claimDigest}`;
+                        claimLink.target = '_blank';
+                        claimLink.rel = 'noopener noreferrer';
+                        claimLink.dataset.noBubbleClick = '1';
+                        claimLink.textContent = ` \u2713 ${claimDigest.slice(0, 6)}\u2026`;
+                        claimLink.title = `Claim tx — ${claimDigest}`;
+                        textSpan.appendChild(claimLink);
+                      }
                     } catch (err) {
                       // Claim failed — roll back the optimistic gray
                       // paint so the user can see the escrow is still
@@ -13053,13 +13090,17 @@ function bindEvents() {
                         : await signAndExecuteTransaction(bytes);
                       const digest = (r as any)?.digest || '';
                       showToast(digest ? `\u21a9\ufe0f Recalled — ${digest.slice(0, 10)}\u2026` : '\u21a9\ufe0f Recalled');
-                      // Swap red → gray: balance returned, escrow closed.
-                      _bubEl.classList.remove('ski-idle-bubble--transfer-recalling');
-                      _bubEl.classList.add('ski-idle-bubble--transfer-settled');
+                      // Recall success: balance returned. Animate the
+                      // bubble out — a short collapse then remove from
+                      // DOM so the storm convo cleanly drops the refund
+                      // off the conversation. Feels like undo.
+                      _bubEl.classList.remove('ski-idle-bubble--recall-armed');
+                      _bubEl.classList.add('ski-idle-bubble--recall-done');
+                      setTimeout(() => { try { _bubEl.remove(); } catch {} }, 320);
                     } catch (err) {
                       // Roll back the red paint so the bubble flips back
                       // to its live (green) state and the user can retry.
-                      _bubEl.classList.remove('ski-idle-bubble--transfer-recalling');
+                      _bubEl.classList.remove('ski-idle-bubble--transfer-recalling', 'ski-idle-bubble--recall-armed');
                       const msg = err instanceof Error ? err.message : String(err);
                       if (/reject|cancel/i.test(msg)) return;
                       if (/abort code:\s*2/i.test(msg) || /ENotExpired/i.test(msg)) {
