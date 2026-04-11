@@ -40,6 +40,17 @@ export const GLOBAL_SUIAMI_STORM_UUID = 'suiami-global';
 // Treasury is currently undercollateralized and the collateral-management
 // functions are all PRIVATE, so minting is blocked. Revisit iUSD-as-canonical
 // once the mint path is healthy and the iUSD/USDC pool is seeded two-sided.
+// Thunder IOU — self-contained shared escrow objects used by the
+// transfer-in-storm flow. See contracts/thunder-iou/sources/iou.move.
+// Sender locks SUI with `iou::create`; recipient claims before expiry;
+// sender (or any keeper) recalls after expiry.
+const THUNDER_IOU_PACKAGE = '0x5a80b9753d6ccce11dc1f9a5039d9430d3e43a216f82f957ef11df9cb5c4dc79';
+// 7 days — gives the recipient a week to claim before the sender
+// (or a keeper bot) can sweep the balance back. Short enough that
+// unredeemed funds don't sit forever; long enough for anyone on a
+// vacation to catch up.
+const IOU_DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
 const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
 const DB_SUI_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
@@ -490,41 +501,27 @@ export async function sendThunder(opts: {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
 
-    // 1. Transfer — swap SUI → USDC via DeepBook, then transfer USDC to the
-    // recipient. Phantom / WaaP / Suiet all render the net tx as "~$1.00 USDC
-    // to <recipient>" instead of "1.06722 SUI" so the signing screen matches
-    // the $ amount the user typed. amountMist is the SUI input size (computed
-    // upstream from the USD amount × live SUI price × slippage buffer).
+    // 1. Transfer — lock SUI in a thunder_iou::Iou shared escrow object.
+    // The recipient can claim it with their own signature before the
+    // TTL expires; after the TTL, any keeper (typically the sender)
+    // can recall the balance back to the sender. This replaces the
+    // prior direct SUI → USDC → transfer path with an explicit
+    // intent-gated escrow so unredeemed sends don't get stranded in
+    // the recipient's wallet if they never come back online.
     if (hasTransfer) {
-      // Swap SUI → USDC via DeepBook, then transfer the USDC to the recipient.
-      // USDC is dollar-pegged, so Phantom / WaaP / Suiet render the confirm
-      // screen as "≈ 1 USDC → <recipient>" matching the $ the user typed.
       const [suiIn] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-      const [zeroDeep] = tx.moveCall({
-        target: '0x2::coin::zero',
-        typeArguments: [DB_DEEP_TYPE],
-      });
-      // swap_exact_base_for_quote(pool, base_in, deep_in, min_quote_out, clock)
-      // returns [usdcOut, suiChange, deepChange].
-      const hop = tx.moveCall({
-        target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
-        typeArguments: [DB_SUI_TYPE, DB_USDC_TYPE],
+      tx.moveCall({
+        target: `${THUNDER_IOU_PACKAGE}::iou::create`,
         arguments: [
-          tx.sharedObjectRef({
-            objectId: DB_SUI_USDC_POOL,
-            initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION,
-            mutable: true,
-          }),
           suiIn,
-          zeroDeep,
-          tx.pure.u64(0),
+          tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)),
+          tx.pure.u64(IOU_DEFAULT_TTL_MS),
+          // Empty sealed memo — the encrypted transfer note already
+          // lives on the DO and carries amount + recipient + tx digest.
+          tx.pure.vector('u8', []),
           tx.object('0x6'),
         ],
       });
-      const recipientAddr = tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress));
-      const senderAddr = tx.pure.address(normalizeSuiAddress(_address));
-      tx.transferObjects([hop[0]], recipientAddr);
-      tx.transferObjects([hop[1], hop[2]], senderAddr);
     }
 
     // 2. Storm creation (if no on-chain Storm exists)
@@ -858,6 +855,78 @@ export async function getThunders(opts: {
     })),
     hasNext: result.hasNext,
   };
+}
+
+// ─── Thunder IOU claim / recall PTB builders ────────────────────────
+// Each returns pre-built tx bytes ready for signAndExecute. The IOU
+// object address is discovered from the transfer note's tx digest
+// via a GraphQL effects lookup (see lookupIouFromDigest below), so
+// callers don't have to manage the object ref themselves.
+
+/** Look up the first Thunder IOU object created by a given tx digest. */
+export async function lookupIouFromDigest(digest: string): Promise<{ objectId: string; initialSharedVersion: number } | null> {
+  if (!digest) return null;
+  try {
+    const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    const query = `query($d: String!) {
+      transactionBlock(digest: $d) {
+        effects {
+          objectChanges { nodes { address idCreated outputState { asMoveObject { contents { type { repr } } } } } }
+        }
+      }
+    }`;
+    const res = await (gql as any).query({ query, variables: { d: digest } });
+    const nodes = res?.data?.transactionBlock?.effects?.objectChanges?.nodes || [];
+    for (const n of nodes) {
+      if (!n?.idCreated) continue;
+      const repr: string = n?.outputState?.asMoveObject?.contents?.type?.repr || '';
+      if (!repr.includes('::iou::Iou')) continue;
+      const addr: string = n.address || '';
+      if (!addr) continue;
+      // Fetch the initial shared version via a second query since the
+      // GraphQL schema above doesn't surface it directly.
+      const obj = await (gql as any).query({
+        query: `query($a: SuiAddress!) { object(address: $a) { version } }`,
+        variables: { a: addr },
+      });
+      const version = Number(obj?.data?.object?.version || 0);
+      return { objectId: addr, initialSharedVersion: version };
+    }
+    return null;
+  } catch (e) {
+    console.warn('[iou] lookupIouFromDigest failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/** Build a claim PTB for the given IOU shared object. Recipient only. */
+export async function buildClaimIouTx(iouObjectId: string, initialSharedVersion: number): Promise<Uint8Array> {
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(_address));
+  tx.moveCall({
+    target: `${THUNDER_IOU_PACKAGE}::iou::claim`,
+    arguments: [
+      tx.sharedObjectRef({ objectId: iouObjectId, initialSharedVersion, mutable: true }),
+      tx.object('0x6'),
+    ],
+  });
+  const buildClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  return await tx.build({ client: buildClient as never });
+}
+
+/** Build a recall PTB. Permissionless after TTL expiry — balance goes to sender. */
+export async function buildRecallIouTx(iouObjectId: string, initialSharedVersion: number): Promise<Uint8Array> {
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(_address));
+  tx.moveCall({
+    target: `${THUNDER_IOU_PACKAGE}::iou::recall`,
+    arguments: [
+      tx.sharedObjectRef({ objectId: iouObjectId, initialSharedVersion, mutable: true }),
+      tx.object('0x6'),
+    ],
+  });
+  const buildClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  return await tx.build({ client: buildClient as never });
 }
 
 // ─── Real-time thunder subscribe (Jolteon Lv. 25) ───────────────────

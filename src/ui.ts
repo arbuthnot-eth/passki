@@ -12178,26 +12178,25 @@ function bindEvents() {
           const isOut = m.senderAddress.toLowerCase() === myAddr;
           const baseCls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
           // Transfer-note thunders: both the new 💸 format and the
-          // legacy "⚡ $X sent" format render centered + green. The
-          // bubble becomes a clickable explorer link when the note
-          // includes a tx:<digest> suffix (new format only).
+          // legacy "⚡ $X sent" format render centered + green.
+          // New format carries a tx:<digest> suffix so the UI can
+          // look up the on-chain IOU escrow object and surface a
+          // claim (recipient) / recall (sender, post-TTL) action.
           const _isTransfer = /^[\u{1F4B8}\u26A1]\s*(?:\$|\u00A5|\u20AC)/u.test(m.text) || /^[\u{1F4B8}\u26A1].*\$\d+.*\bsent\b/iu.test(m.text);
           const senderName = _rlCache[m.senderAddress.toLowerCase()] || m.senderAddress.slice(0, 8);
           const nameTag = !isOut ? `<span class="ski-idle-bubble-sender">${esc(senderName)}</span> ` : '';
           if (_isTransfer) {
             const cls = `ski-idle-bubble--transfer`;
-            // Extract tx digest if present (Sui digests are base58 ~44 chars).
             const _digestMatch = m.text.match(/tx:([A-Za-z0-9]{40,60})/);
             const _digest = _digestMatch ? _digestMatch[1] : '';
-            // Visible label: drop the tx:<digest> tail so the bubble
-            // stays compact. The link itself carries the digest.
             const _label = m.text.replace(/\s*\u00b7?\s*tx:[A-Za-z0-9]+\s*$/, '').trim();
+            // The transfer bubble is a clickable <div> — the click
+            // handler below resolves the IOU from the tx digest and
+            // routes to claim (recipient) or explorer (sender, or
+            // pre-TTL) or recall (sender, post-TTL).
             const _inner = `${nameTag}${esc(_label)}`;
-            if (_digest) {
-              return `<a class="ski-idle-bubble ${cls}" href="https://suivision.xyz/txblock/${esc(_digest)}" target="_blank" rel="noopener noreferrer" data-id="${esc(m.messageId)}" title="Open on Suivision \u2197">${_inner}</a>`;
-            }
-            // Legacy bubble (no digest stored) — render as a non-link div.
-            return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${_inner}</div>`;
+            const _role = isOut ? 'sender' : 'recipient';
+            return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}" data-tx="${esc(_digest)}" data-iou-role="${_role}" title="${_digest ? 'Click to claim / recall / view on-chain' : 'On-chain record (legacy)'}">${_inner}</div>`;
           }
           return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
         }).join('');
@@ -12280,16 +12279,72 @@ function bindEvents() {
         convoEl.querySelectorAll('.ski-idle-bubble').forEach(bubble => {
           bubble.addEventListener('click', async (ev) => {
             ev.stopPropagation();
-            // Transfer bubbles (money sends) are immutable once the
-            // on-chain tx is confirmed — there is no correct way to
-            // "delete" a record of funds that already moved. Clicking
-            // a --transfer bubble opens the Suivision explorer via its
-            // anchor href (don't preventDefault); the delete flow is
-            // skipped entirely. Future: iOUSD jackets will let the
-            // sender recall un-redeemed transfers, at which point this
-            // gate softens to "recall sends back to sender" instead
-            // of hard immutability.
+            // Transfer bubbles route to IOU claim / recall / explorer.
+            // Clicking is NOT a delete — transfers are immutable by
+            // design. The action depends on whether the caller is the
+            // recipient (claim before expiry) or the sender (recall
+            // after expiry). On failure of either, fall back to
+            // opening the explorer view of the tx.
             if ((bubble as HTMLElement).classList.contains('ski-idle-bubble--transfer')) {
+              ev.preventDefault();
+              const _bubEl = bubble as HTMLElement;
+              const _txDigest = _bubEl.dataset.tx || '';
+              const _role = _bubEl.dataset.iouRole || '';
+              const _openExplorer = () => {
+                if (_txDigest) window.open(`https://suivision.xyz/txblock/${_txDigest}`, '_blank', 'noopener,noreferrer');
+              };
+              if (!_txDigest) { _openExplorer(); return; }
+              // Look up the IOU shared object from the tx effects, then
+              // route the click based on role.
+              (async () => {
+                try {
+                  const { lookupIouFromDigest, buildClaimIouTx, buildRecallIouTx } = await import('./client/thunder.js');
+                  const ref = await lookupIouFromDigest(_txDigest);
+                  if (!ref) {
+                    // IOU already consumed (claimed or recalled) OR
+                    // lookup failed. Either way, the explorer still
+                    // shows the historical record.
+                    showToast('IOU already settled — opening explorer');
+                    _openExplorer();
+                    return;
+                  }
+                  if (_role === 'recipient') {
+                    showToast('\u23f3 Claiming IOU\u2026');
+                    try {
+                      const bytes = await buildClaimIouTx(ref.objectId, ref.initialSharedVersion);
+                      const r = await signAndExecuteTransaction(bytes);
+                      const digest = (r as any)?.digest || '';
+                      showToast(digest ? `\u2705 Claimed — ${digest.slice(0, 10)}\u2026` : '\u2705 Claimed');
+                    } catch (err) {
+                      const msg = err instanceof Error ? err.message : String(err);
+                      if (/reject|cancel/i.test(msg)) return;
+                      showToast(`Claim failed: ${msg.slice(0, 120)}`);
+                    }
+                  } else {
+                    // Sender-side click. Try recall (only works after
+                    // TTL). On ENotExpired, fall through to the
+                    // explorer so the sender can still inspect.
+                    try {
+                      const bytes = await buildRecallIouTx(ref.objectId, ref.initialSharedVersion);
+                      const r = await signAndExecuteTransaction(bytes);
+                      const digest = (r as any)?.digest || '';
+                      showToast(digest ? `\u21a9\ufe0f Recalled — ${digest.slice(0, 10)}\u2026` : '\u21a9\ufe0f Recalled');
+                    } catch (err) {
+                      const msg = err instanceof Error ? err.message : String(err);
+                      if (/reject|cancel/i.test(msg)) return;
+                      if (/abort code:\s*2/i.test(msg) || /ENotExpired/i.test(msg)) {
+                        showToast('Not yet recallable — opening explorer');
+                        _openExplorer();
+                      } else {
+                        showToast(`Recall failed: ${msg.slice(0, 120)}`);
+                      }
+                    }
+                  }
+                } catch (e) {
+                  console.warn('[iou] click handler threw:', e);
+                  _openExplorer();
+                }
+              })();
               return;
             }
             ev.preventDefault();
