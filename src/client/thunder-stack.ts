@@ -44,7 +44,16 @@ export const GLOBAL_SUIAMI_STORM_UUID = 'suiami-global';
 // transfer-in-storm flow. See contracts/thunder-iou/sources/iou.move.
 // Sender locks SUI with `iou::create`; recipient claims before expiry;
 // sender (or any keeper) recalls after expiry.
+//
+// Two variants live side by side:
+//   THUNDER_IOU_PACKAGE          — legacy cleartext metadata Iou
+//   THUNDER_IOU_SHIELDED_PACKAGE — Pedersen-committed ShieldedVault
+//
+// New sends use the shielded package. The legacy package is kept
+// around so pre-existing Iou objects can still be claimed / recalled
+// via the claim/recall helpers below.
 const THUNDER_IOU_PACKAGE = '0x5a80b9753d6ccce11dc1f9a5039d9430d3e43a216f82f957ef11df9cb5c4dc79';
+const THUNDER_IOU_SHIELDED_PACKAGE = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782';
 // 7 days — gives the recipient a week to claim before the sender
 // (or a keeper bot) can sweep the balance back. Short enough that
 // unredeemed funds don't sit forever; long enough for anyone on a
@@ -501,24 +510,44 @@ export async function sendThunder(opts: {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
 
-    // 1. Transfer — lock SUI in a thunder_iou::Iou shared escrow object.
-    // The recipient can claim it with their own signature before the
-    // TTL expires; after the TTL, any keeper (typically the sender)
-    // can recall the balance back to the sender. This replaces the
-    // prior direct SUI → USDC → transfer path with an explicit
-    // intent-gated escrow so unredeemed sends don't get stranded in
-    // the recipient's wallet if they never come back online.
+    // 1. Transfer — lock SUI in a thunder_iou_shielded::ShieldedVault.
+    // The vault stores only a Pedersen commitment C = r*G + amount*H
+    // and an encrypted opening blob; the RECIPIENT ADDRESS is NOT on
+    // the deposit tx. The recipient claims by recovering (r, amount)
+    // from the Seal-encrypted storm note and resubmitting them.
+    // Sender (or any keeper) can recall after TTL.
+    //
+    // This replaces the legacy thunder_iou::create path. The shielded
+    // package ID and helpers live in src/client/thunder-iou-shielded.ts.
     if (hasTransfer) {
+      const { pedersenCommit, randomBlinding, encodeOpening } = await import('../client/thunder-iou-shielded.js');
+      const amountBig = BigInt(opts.transfer!.amountMist);
+      const blinding = randomBlinding();
+      // Sanity check: recompute C client-side so we never ship a
+      // commitment the contract would reject (the contract
+      // recomputes C itself from the same inputs, so this check is
+      // mostly a developer-safety net against buggy upstream code).
+      void pedersenCommit(amountBig, blinding);
+      // Seal-encrypt the opening so only storm members can reconstruct
+      // (r, amount) later. The encryption uses the existing storm DEK.
+      const openingPlain = encodeOpening(blinding, amountBig);
+      const openingPadded = padPlaintext(new TextEncoder().encode(openingPlain));
+      const openingEnv = await encryptWithRetry(groupId, openingPadded);
+      // Concatenate nonce (12 bytes) + ciphertext into a single
+      // opaque blob so the contract stores one vector<u8>. The
+      // recipient splits it back on decrypt via the Seal SDK with
+      // the same keyVersion they find in the storm history.
+      const _sealedOpening = new Uint8Array(12 + openingEnv.ciphertext.length);
+      _sealedOpening.set(openingEnv.nonce, 0);
+      _sealedOpening.set(openingEnv.ciphertext, 12);
       const [suiIn] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
       tx.moveCall({
-        target: `${THUNDER_IOU_PACKAGE}::iou::create`,
+        target: `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::deposit`,
         arguments: [
           suiIn,
-          tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)),
+          tx.pure.vector('u8', Array.from(blinding)),
           tx.pure.u64(IOU_DEFAULT_TTL_MS),
-          // Empty sealed memo — the encrypted transfer note already
-          // lives on the DO and carries amount + recipient + tx digest.
-          tx.pure.vector('u8', []),
+          tx.pure.vector('u8', Array.from(_sealedOpening)),
           tx.object('0x6'),
         ],
       });

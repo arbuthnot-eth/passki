@@ -18,8 +18,8 @@
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { normalizeSuiAddress, toBase64, fromBase64 } from '@mysten/sui/utils';
-import { bls12_381 } from '@noble/curves/bls12-381';
-import { randomBytes } from '@noble/hashes/utils';
+import { bls12_381 } from '@noble/curves/bls12-381.js';
+import { randomBytes } from '@noble/curves/utils.js';
 
 const THUNDER_IOU_SHIELDED_PACKAGE = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782';
 const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
