@@ -1933,6 +1933,24 @@ app.post('/api/cache/attest-collateral', async (c) => {
   }
 });
 
+// Chansey Lv.40 (#76) — manual activity-yield mint trigger. The
+// treasury mints iUSD up to its current surplus above 110% and sends
+// it to ultron's wallet. No-op if senior <= 1.1 * supply. Also fires
+// automatically on the 5-min tick loop after attestLiveCollateral.
+app.post('/api/cache/realize-yield', async (c) => {
+  try {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?realize-yield', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // Shuckle Lv.30 stage 2 (#117) — zero out the phantom DUST collateral
 // record that the old broken sweepDust path accumulated. One-shot
 // cleanup; after this runs, attestLiveCollateral is the only writer.

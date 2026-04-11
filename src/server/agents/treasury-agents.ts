@@ -68,8 +68,26 @@ const FETCH_TIMEOUT_MS = 8_000;
 const PRICE_FEED_TIMEOUT_MS = 5_000;
 const LONG_FETCH_TIMEOUT_MS = 15_000;
 
-// ─── Cache state: 110% overcollateralization ─────────────────────────
-const OVERCOLLATERAL_BPS = 11000; // 110% — everything above this is surplus for agents
+// ─── Cache state: overcollateralization targets ─────────────────────
+// IMPORTANT: two distinct constants.
+//
+// OVERCOLLATERAL_BPS — TypeScript policy target, used by _yieldRotate
+// to decide when surplus exists for yield deployment. 110% matches the
+// *intended* design.
+//
+// ONCHAIN_MIN_RATIO_BPS — what the DEPLOYED iUSD v2 Move package actually
+// enforces in mint_and_transfer assertion (line 292 of iusd.move). The
+// source file was updated to 11000 after deployment, but the bytecode at
+// 0x2c5653... still contains the original 15000 (150%). Verified by
+// scanning the deployed module bytes for u64 little-endian constants —
+// 15000 at offset 1904, no trace of 11000.
+//
+// Chansey's realizeActivityYield formula MUST use ONCHAIN_MIN_RATIO_BPS
+// because the on-chain assertion is the hard safety rail. Using 11000
+// for mint math leads to a code-1 abort (EInsufficientCollateral) every
+// time. Asked the hard way on the first realize-yield attempt.
+const OVERCOLLATERAL_BPS = 11000; // 110% — policy target (TS only)
+const ONCHAIN_MIN_RATIO_BPS = 15000; // 150% — deployed contract constant
 
 // ─── QuestFi: Agent Economics ────────────────────────────────────────
 // Parent keeps 1% of all deployed amounts, redistributes based on performance.
@@ -301,6 +319,16 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if ((url.pathname.endsWith('/attest-collateral') || url.searchParams.has('attest-collateral')) && request.method === 'POST') {
       try {
         const result = await this.attestLiveCollateral();
+        return new Response(JSON.stringify(result), { status: result.error ? 400 : 200, headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Chansey Lv.40 (#76) — manual activity-yield mint trigger.
+    if ((url.pathname.endsWith('/realize-yield') || url.searchParams.has('realize-yield')) && request.method === 'POST') {
+      try {
+        const result = await this.realizeActivityYield();
         return new Response(JSON.stringify(result), { status: result.error ? 400 : 200, headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
@@ -1417,14 +1445,36 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // Idempotent — each call upserts the per-asset CollateralRecord.
       // Runs AFTER _yieldRotate so any rebalancing is reflected in
       // the next attestation pass.
+      //
+      // Chansey Lv.40 (#76) — immediately after a successful attest,
+      // realize any surplus above 110% as newly minted iUSD. The
+      // activity-yield loop is no-op until senior > 1.1 * supply,
+      // so it's safe to call on every throttled cycle — it simply
+      // returns {skipReason: 'no surplus'} when the treasury isn't
+      // healthy. Once activity pushes senior past the threshold
+      // (price appreciation, arb profit, yield accrual, fees), this
+      // call realizes the delta as new supply.
       const COLLATERAL_ATTEST_INTERVAL_MS = 5 * 60 * 1000;
       const lastAttest = (this.state as any).last_collateral_attest_ms as number | undefined;
       if (!lastAttest || now - lastAttest >= COLLATERAL_ATTEST_INTERVAL_MS) {
         this.setState({ ...this.state, last_collateral_attest_ms: now } as any);
         try {
-          const res = await this.attestLiveCollateral();
-          if (res.error && !/No assets above/i.test(res.error)) {
-            console.warn('[TreasuryAgents] Shuckle tick attest error:', res.error);
+          const attestRes = await this.attestLiveCollateral();
+          if (attestRes.error && !/No assets above/i.test(attestRes.error)) {
+            console.warn('[TreasuryAgents] Shuckle tick attest error:', attestRes.error);
+          }
+          // Chansey pairs with attest — realize any new surplus
+          // surfaced by the attestation. Errors here are logged but
+          // don't block the rest of the tick loop.
+          try {
+            const yieldRes = await this.realizeActivityYield();
+            if (yieldRes.error) {
+              console.warn('[TreasuryAgents] Chansey tick mint error:', yieldRes.error);
+            } else if (yieldRes.mintedUsd) {
+              console.log(`[TreasuryAgents] Chansey tick mint: ${yieldRes.mintedUsd} iUSD, ratio ${yieldRes.ratioBeforeBps} -> ${yieldRes.ratioAfterBps} bps`);
+            }
+          } catch (err) {
+            console.error('[TreasuryAgents] Chansey tick mint threw:', err);
           }
         } catch (err) {
           console.error('[TreasuryAgents] Shuckle tick attest threw:', err);
@@ -2147,6 +2197,135 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[TreasuryAgents] recoverOwnedBalanceManager error:', msg);
+      return { error: msg };
+    }
+  }
+
+  /**
+   * Chansey Lv.40 (#76) — activity-yield mint loop.
+   *
+   * iUSD is a synthetic stable backed by a productive reserve basket
+   * (SUI, USDC, future BTC/ETH via IKA). The 110% target is a safety
+   * reserve, not a peg. When the treasury's senior collateral exceeds
+   * 110% of outstanding supply, the overage is REALIZED YIELD —
+   * activity (arb profits, yield accrual, fees, price appreciation
+   * on the basket) pushed the reserve past the target, and that
+   * surplus can be minted into new supply WITHOUT breaking the
+   * 110% invariant.
+   *
+   * Math (mint invariant): to keep ratio >= 110% post-mint with no
+   * accompanying deposit:
+   *   new_senior / new_supply >= 1.1
+   *   senior / (supply + m) >= 1.1
+   *   m <= senior/1.1 - supply
+   *
+   * So: `max_mintable = max(0, senior/1.1 - supply)`.
+   *
+   * At the equilibrium ratio (exactly 110%), max_mintable is 0.
+   * When activity lifts senior above 110%, the delta becomes
+   * mintable yield. The mint itself consumes the surplus — ratio
+   * stays pinned at 110% after a full yield realization.
+   *
+   * Destination: ultron's own wallet (v1). From there, operators can
+   * split it via seedIusdPool for DEX liquidity (option B in the
+   * user's chosen D split) or keep it as treasury capital for
+   * sponsorship / arb (option A). The split policy is separable —
+   * this method just makes iUSD exist, downstream code decides where
+   * it goes.
+   *
+   * Throttle: 5 min, shares the last_collateral_attest_ms cursor
+   * since attest + realize form a logical pair (attest first, then
+   * mint any newly-visible surplus).
+   *
+   * Safety:
+   * - No-op until senior > 1.1 * supply (gap must be closed first)
+   * - Skips mints below $0.10 to avoid gas-dominant noise
+   * - Contract's assert on mint_and_transfer is the ultimate safety
+   *   rail — if our math is off the tx reverts and nothing changes
+   */
+  async realizeActivityYield(): Promise<{
+    digest?: string;
+    mintedUsd?: string;
+    ratioBeforeBps?: number;
+    ratioAfterBps?: number;
+    skipReason?: string;
+    error?: string;
+  }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+    try {
+      const cache = await this._getCacheState();
+      const { supply, total } = cache;
+      const ratioBefore = cache.ratioBps;
+      // Mint headroom: keeps post-mint ratio >= ON-CHAIN minimum (150%)
+      // with no deposit. The deployed iUSD package enforces 150% in
+      // mint_and_transfer's assertion (see ONCHAIN_MIN_RATIO_BPS above
+      // and the investigation in #76).
+      //
+      // Derivation:
+      //   senior * 10000 >= new_supply * ONCHAIN_MIN_RATIO_BPS
+      //   senior * 10000 >= (supply + m) * ONCHAIN_MIN_RATIO_BPS
+      //   m <= (senior * 10000 - supply * ONCHAIN_MIN_RATIO_BPS) / ONCHAIN_MIN_RATIO_BPS
+      //
+      // At 15000 bps that simplifies to: m <= senior*10/15 - supply,
+      // i.e. senior*2/3 - supply.
+      const RATIO_BPS = BigInt(ONCHAIN_MIN_RATIO_BPS);
+      const rawHeadroom = (total * 10000n - supply * RATIO_BPS) / RATIO_BPS;
+      // Safety buffer: subtract 0.1% of supply so we land meaningfully
+      // inside the assertion, not on the boundary. Without this, a 5k
+      // raw-mist Pyth price tick between read and tx execution aborts
+      // the whole realize-yield tx.
+      const SAFETY_BUFFER = supply / 1000n;
+      const headroom = rawHeadroom > SAFETY_BUFFER ? rawHeadroom - SAFETY_BUFFER : 0n;
+      if (headroom <= 0n) {
+        const targetMist = supply * RATIO_BPS / 10000n;
+        const gapMist = targetMist > total ? targetMist - total : 0n;
+        const targetPct = ONCHAIN_MIN_RATIO_BPS / 100;
+        return {
+          skipReason: `no surplus (senior \$${(Number(total) / 1e9).toFixed(2)} vs ${targetPct}% target \$${(Number(targetMist) / 1e9).toFixed(2)}; gap \$${(Number(gapMist) / 1e9).toFixed(2)})`,
+          ratioBeforeBps: ratioBefore,
+        };
+      }
+      // Skip tiny mints.
+      const MIN_MINT_MIST = 100_000_000n; // $0.10
+      if (headroom < MIN_MINT_MIST) {
+        return {
+          skipReason: `surplus \$${Number(headroom) / 1e9} below \$0.10 threshold`,
+          ratioBeforeBps: ratioBefore,
+        };
+      }
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      tx.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'mint_and_transfer',
+        arguments: [
+          tx.object(TreasuryAgents.IUSD_TREASURY_CAP),
+          tx.object(TreasuryAgents.IUSD_TREASURY),
+          tx.pure.u64(headroom),
+          tx.pure.address(ultronAddr),
+        ],
+      });
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      // Recompute ratio post-mint
+      const newSupply = supply + headroom;
+      const ratioAfter = Number((total * 10000n) / newSupply);
+      console.log(`[TreasuryAgents] Chansey activity-yield minted \$${Number(headroom) / 1e9} iUSD to ultron. Ratio ${ratioBefore} -> ${ratioAfter} bps. tx=${digest}`);
+      return {
+        digest,
+        mintedUsd: `\$${(Number(headroom) / 1e9).toFixed(6)}`,
+        ratioBeforeBps: ratioBefore,
+        ratioAfterBps: ratioAfter,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents] realizeActivityYield error:', msg);
       return { error: msg };
     }
   }
