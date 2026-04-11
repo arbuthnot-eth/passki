@@ -50,6 +50,10 @@
       {
         "name": "NameIndex",
         "class_name": "NameIndex"
+      },
+      {
+        "name": "Pokedex",
+        "class_name": "Pokedex"
       }
     ]
   },
@@ -86,6 +90,10 @@
     {
       "tag": "v8",
       "new_sqlite_classes": ["NameIndex"]
+    },
+    {
+      "tag": "v9",
+      "new_sqlite_classes": ["Pokedex"]
     }
   ],
 

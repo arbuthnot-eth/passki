@@ -12,6 +12,7 @@ interface Env {
   Chronicom: DurableObjectNamespace;
   TimestreamAgent: DurableObjectNamespace;
   NameIndex: DurableObjectNamespace;
+  Pokedex: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
@@ -1514,6 +1515,60 @@ app.get('/api/name-index/get/:address', async (c) => {
   return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
 });
 
+// ── Pokedex — Pokemon Swarm coordinator (Phase 2) ───────────────────────
+// Singleton DO orchestrating spawn/capture/evolve loops from
+// docs/superpowers/specs/2026-04-11-pokemon-swarm-agents.md. Phase 2
+// exposes observation ingestion + stubbed spawn logging; Phase 3 will
+// plug live GitHub REST calls into the same DO.
+async function _pokedexForward(c: any, path: string, init: RequestInit = {}): Promise<Response> {
+  const stub = c.env.Pokedex.get(c.env.Pokedex.idFromName('singleton'));
+  const headers: Record<string, string> = {
+    'x-partykit-room': 'singleton',
+    'x-partykit-namespace': 'Pokedex',
+    ...(init.headers as Record<string, string> | undefined ?? {}),
+  };
+  if (init.body && !headers['content-type']) headers['content-type'] = 'application/json';
+  const res = await stub.fetch(new Request(`https://do${path}`, { ...init, headers }));
+  return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
+}
+
+app.post('/api/pokedex/observe-todos', async (c) => {
+  const body = await c.req.text();
+  return _pokedexForward(c, '/observe-todos', { method: 'POST', body });
+});
+
+app.post('/api/pokedex/observe-errors', async (c) => {
+  const body = await c.req.text();
+  return _pokedexForward(c, '/observe-errors', { method: 'POST', body });
+});
+
+app.post('/api/pokedex/observe-issues', async (c) => {
+  const body = await c.req.text();
+  return _pokedexForward(c, '/observe-issues', { method: 'POST', body });
+});
+
+app.post('/api/pokedex/tick', async (c) => {
+  return _pokedexForward(c, '/tick', { method: 'POST' });
+});
+
+app.get('/api/pokedex/state', async (c) => {
+  return _pokedexForward(c, '/state', { method: 'GET' });
+});
+
+app.get('/api/pokedex/spawned', async (c) => {
+  return _pokedexForward(c, '/spawned', { method: 'GET' });
+});
+
+app.post('/api/pokedex/mark-captured', async (c) => {
+  const body = await c.req.text();
+  return _pokedexForward(c, '/mark-captured', { method: 'POST', body });
+});
+
+app.post('/api/pokedex/mark-merged', async (c) => {
+  const body = await c.req.text();
+  return _pokedexForward(c, '/mark-merged', { method: 'POST', body });
+});
+
 // Timestream — per-group encrypted message transport (Thunder Timestream)
 app.post('/api/timestream/:groupId/:action', async (c) => {
   const groupId = c.req.param('groupId');
@@ -1867,3 +1922,4 @@ export { TreasuryAgents } from './agents/treasury-agents.js';
 export { Chronicom } from './agents/chronicom.js';
 export { TimestreamAgent } from './agents/timestream.js';
 export { NameIndex } from './agents/name-index.js';
+export { Pokedex } from './agents/pokedex.js';
