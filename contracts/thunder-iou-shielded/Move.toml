@@ -1,0 +1,9 @@
+[package]
+name = "thunder_iou_shielded"
+edition = "2024.beta"
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }
+
+[addresses]
+thunder_iou_shielded = "0x0"
