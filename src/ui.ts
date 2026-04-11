@@ -9390,10 +9390,11 @@ function bindEvents() {
           // Check if Storm exists for this conversation. Group ID is
           // address-keyed (nsTargetAddress resolved during the NS lookup);
           // empty string falls through to an inert gid that won't hit
-          // the storm-exists cache.
-          const myAddrLc = (getState().address || '').toLowerCase().replace(/^0x/, '');
-          const _tgtAddrLc = (nsTargetAddress || '').toLowerCase().replace(/^0x/, '');
-          const _gid = (myAddrLc && _tgtAddrLc) ? `thunder-${[myAddrLc, _tgtAddrLc].sort().join('-')}` : '';
+          // the storm-exists cache. Uses the same short-hash format as
+          // makeThunderGroupId so sync previews match async sends.
+          const _meHex = (getState().address || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+          const _tgtHex = (nsTargetAddress || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+          const _gid = (_meHex && _tgtHex) ? `t-${[_meHex, _tgtHex].sort().join('')}` : '';
           const _hasStorm = _stormExistsCache[_gid] === true;
           if (_gid && !_stormExistsCache[_gid]) _checkStormExists(_gid);
           _idleActionBtn.textContent = _hasStorm ? 'Storm \u26a1' : 'Storm';
@@ -9469,9 +9470,9 @@ function bindEvents() {
           _thunderComposeStage = 'idle';
           if (_idleThunderSend && !isQuestMode) {
             const _curTarget = (nsLabel || '').toLowerCase();
-            const _curMeAddr = (getState().address || '').toLowerCase().replace(/^0x/, '');
-            const _curTgtAddr = (nsTargetAddress || '').toLowerCase().replace(/^0x/, '');
-            const _curGid = _curMeAddr && _curTgtAddr ? `thunder-${[_curMeAddr, _curTgtAddr].sort().join('-')}` : '';
+            const _curMeHex = (getState().address || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+            const _curTgtHex = (nsTargetAddress || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+            const _curGid = _curMeHex && _curTgtHex ? `t-${[_curMeHex, _curTgtHex].sort().join('')}` : '';
             if (_curGid) _checkStormExists(_curGid);
             const _curHasStorm = _curGid ? _stormExistsCache[_curGid] === true : true;
             // Idle icon is always ⛈️ (thunderstorm cloud) — represents "open storm",
@@ -9495,15 +9496,13 @@ function bindEvents() {
         }
 
         // Check if Storm exists for the current conversation. Address-
-        // keyed: draft.recipients are names; we pair the current target's
-        // resolved address with our own. If the target differs from
-        // nsLabel (e.g. the tag points elsewhere) we fall back to unknown.
-        const _meAddr = (getState().address || '').toLowerCase().replace(/^0x/, '');
+        // keyed, short-hash form matching makeThunderGroupId.
+        const _meHex = (getState().address || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
         const firstRecip = (draft.recipients[0] || '').toLowerCase();
-        const _tgtAddr = (firstRecip && firstRecip === (nsLabel || '').toLowerCase())
-          ? (nsTargetAddress || '').toLowerCase().replace(/^0x/, '')
+        const _tgtHex = (firstRecip && firstRecip === (nsLabel || '').toLowerCase())
+          ? (nsTargetAddress || '').toLowerCase().replace(/^0x/, '').slice(0, 14)
           : '';
-        const groupId = (_meAddr && _tgtAddr) ? `thunder-${[_meAddr, _tgtAddr].sort().join('-')}` : '';
+        const groupId = (_meHex && _tgtHex) ? `t-${[_meHex, _tgtHex].sort().join('')}` : '';
         if (groupId) _checkStormExists(groupId);
         const hasStorm = groupId ? _stormExistsCache[groupId] === true : false;
         const stormChecking = groupId ? _stormExistsCache[groupId] === 'checking' : false;

@@ -863,12 +863,20 @@ const _forwardLookupCache: Record<string, string | null> = {};
  * cased + sorted so the ID is independent of which participant is the
  * "sender". Addresses are immutable, so this ID survives any primary
  * SuiNS rotation on either side.
+ *
+ * Length constraint: the Move-side `metadata::new` in the messaging
+ * package asserts the `name`/`uuid` strings are below some maximum.
+ * Full address pairs (2×64 = 128 hex chars) blow past that limit and
+ * abort with code 0 at instruction 7. We truncate each address to its
+ * leading 14 hex chars — 56 bits per side, 112 bits total — which is
+ * more than enough to avoid collisions for any realistic user base.
+ * Final ID length: `t-` + 14 + 14 = 30 chars.
  */
 export function makeThunderGroupId(addrA: string, addrB: string): string {
-  const a = (addrA || '').toLowerCase().replace(/^0x/, '');
-  const b = (addrB || '').toLowerCase().replace(/^0x/, '');
+  const a = (addrA || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+  const b = (addrB || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
   if (!a || !b) throw new Error('makeThunderGroupId: both addresses required');
-  return `thunder-${[a, b].sort().join('-')}`;
+  return `t-${[a, b].sort().join('')}`;
 }
 
 /** Cached forward lookup: bare name → target address. */
