@@ -101,11 +101,23 @@ jobs:
       # v3.1.42 bump commit, so `gh release create v3.1.43` 422'd).
       - name: Commit version bump and tag
         run: |
+          set -e
+          VERSION="v${{ steps.version.outputs.value }}"
           git checkout -- .npmrc 2>/dev/null || true
           git add package.json bun.lock
-          git commit -m "chore(release): v${{ steps.version.outputs.value }} [skip ci]"
-          git tag "v${{ steps.version.outputs.value }}"
-          git push origin HEAD:master --follow-tags
+          git commit -m "chore(release): $VERSION [skip ci]"
+          # Annotated tag (-a -m) instead of lightweight. `git push
+          # --follow-tags` ONLY pushes annotated tags, not lightweight
+          # ones — a lightweight tag here will silently vanish and the
+          # 'Create GitHub Release' step will fail with
+          # "tag exists locally but has not been pushed".
+          git tag -a "$VERSION" -m "$VERSION"
+          # Belt-and-suspenders: push the branch first, then push the
+          # tag explicitly as a second operation. This way the tag
+          # lands even if --follow-tags semantics change or the tag
+          # type accidentally reverts to lightweight in the future.
+          git push origin HEAD:master
+          git push origin "refs/tags/$VERSION"
 
       # Idempotent: if a release with this tag already exists (from a
       # partial earlier run or manual cleanup), skip and keep going
