@@ -21,6 +21,7 @@
         "@mysten/suins": "^1.0.2",
         "@mysten/wallet-standard": "^0.20.1",
         "@mysten/walrus": "^1.1.0",
+        "@noble/curves": "^2.0.1",
         "@noble/hashes": "^2.0.1",
         "@pythnetwork/pyth-sui-js": "^3.0.0",
         "@scure/base": "^2.0.0",

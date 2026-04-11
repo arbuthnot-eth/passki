@@ -2723,11 +2723,10 @@ body {
   cursor: pointer;
   animation: ski-idle-fade 0.5s ease-in;
   transform-origin: top right;
-  /* Floor the overlay width so the name row + storm button + input
-   * can't get crushed into an unreadable sliver on narrow layouts.
-   * 280px is just barely enough to show the input at a usable size
-   * alongside the clear X and the Storm action pill. */
-  min-width: 280px;
+  /* Floor the overlay width just enough to keep the name row usable.
+   * 230px: tight enough to stop sprawling, still wide enough for
+   * the input + Storm button + × purge cluster on one row. */
+  min-width: 230px;
   overflow: visible;
 }
 @keyframes ski-idle-fade {
@@ -2821,7 +2820,9 @@ body {
   top: 27%;
   left: 12px;
   z-index: 2;
-  padding: 4px 8px;
+  /* Right padding is zero so the × purge button can sit flush
+   * against the overlay's right edge without trailing whitespace. */
+  padding: 4px 0 4px 8px;
   /* Row itself is transparent — the input and the Storm action button
    * carry their own backgrounds, the space between them stays clear. */
   background: transparent;
@@ -2839,19 +2840,35 @@ body {
 }
 .ski-idle-ns-input-wrap .wk-ns-dot-sui {
   position: absolute;
-  right: 6px;
+  /* 8px inset so there's visible pill edge to the right of the
+   * .sui label — the label reads as "inside the chip" instead
+   * of "the chip is cut off where the label ends". */
+  right: 8px;
   pointer-events: none;
   z-index: 1;
 }
 .ski-idle-ns-input-wrap {
-  flex: 1;
+  /* Claim ALL leftover horizontal space in the row so the name
+   * input visually extends from the status icon on the left right
+   * up to the Storm action button. flex-basis: 0 lets the wrap
+   * start from zero-width and grow entirely from the flex-grow
+   * share instead of a content-based baseline. overflow: hidden
+   * guarantees the inner input can't visually bleed over Storm
+   * when the flex layout is under pressure. */
+  flex: 1 1 0;
   position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
+  overflow: hidden;
 }
 .ski-idle-ns-input {
-  width: 100%;
+  /* flex: 1 on the input (inside the display: flex wrap) so it
+   * grows to fill the wrap. Don't combine with `width: 100%` —
+   * that conflicts with flex-basis and was overflowing the wrap
+   * and visually stepping on the Storm button to the right. */
+  flex: 1 1 0;
+  min-width: 0;
   background: rgba(10, 10, 15, 0.78);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
@@ -2860,11 +2877,15 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
   font-weight: 600;
-  padding: 5px 30px 5px 10px;
+  /* Right padding reserves space for the .sui label so the typed
+   * name doesn't render under it. Label is absolute at right: 8px
+   * inside the wrap; 30px of padding keeps the name clear of it. */
+  padding: 5px 30px 5px 8px;
   box-sizing: border-box;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   text-align: left;
+  text-overflow: ellipsis;
 }
 .ski-idle-ns-input:focus { border-color: rgba(96, 165, 250, 0.5); background: rgba(10, 10, 15, 0.85); }
 .ski-idle-ns-input::placeholder { color: rgba(255, 255, 255, 0.3); }
@@ -2884,7 +2905,11 @@ body {
   flex-shrink: 0;
   padding: 5px 6px;
   border-radius: 6px;
-  margin-left: auto;
+  /* NO margin-left: auto here. In flexbox, auto margins absorb
+   * free space BEFORE flex-grow distribution — so setting auto
+   * would starve the input-wrap's flex: 1 0 0 growth and leave
+   * the .sui label short of the Storm button. Position is driven
+   * purely by the wrap's flex-grow consuming all available slack. */
   box-sizing: border-box;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
@@ -2965,12 +2990,19 @@ body {
   border: 1px solid rgba(129, 140, 248, 0.55);
   color: #818cf8;
 }
-/* X clear button that sits next to the Storm action button. First
- * click arms the purge (all bubbles turn red). Second click fires
- * the bulk delete + pulls the local cache down with them. */
+/* X clear button — sits on the far right edge of the name row,
+ * immediately after the Storm action button. First click arms the
+ * purge (all bubbles turn red). Second click fires the bulk delete
+ * + pulls the local cache down with them. */
 .ski-idle-storm-purge {
   all: unset;
   flex-shrink: 0;
+  /* Pull left to cancel the row's 6px gap — Storm ends flush
+   * against × with ~0px between them. margin-right: 0 is fine
+   * now that the row's right padding is zero; × sits at the
+   * literal right edge of the row. */
+  margin-left: -6px;
+  margin-right: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2996,8 +3028,9 @@ body {
   border-color: rgba(239, 68, 68, 1);
 }
 .ski-idle-storm-purge[hidden] { display: none; }
-/* Red-mark all bubbles when purge is armed. Second click clears. */
-.ski-idle-thunder-convo--purge-armed .ski-idle-bubble {
+/* Red-mark all non-transfer bubbles when purge is armed. Transfer
+ * bubbles are immutable receipts of on-chain sends and never red. */
+.ski-idle-thunder-convo--purge-armed .ski-idle-bubble:not(.ski-idle-bubble--transfer) {
   background: rgba(239, 68, 68, 0.22) !important;
   border-color: rgba(239, 68, 68, 0.6) !important;
   color: #fecaca !important;
@@ -3663,6 +3696,83 @@ body {
   background: rgba(10, 20, 50, 0.88);
   border: 1px solid rgba(77, 162, 255, 0.55);
   color: #4da2ff;
+}
+/* Transfer-note bubbles (emitted by sendThunder when a $ amount is
+ * included) are system-level notices — they represent a transaction
+ * both parties witnessed, so they render centered with a green palette
+ * regardless of sender/receiver. Clickable when the stored note has a
+ * tx:<digest> suffix (new format) — opens Suivision in a new tab. */
+.ski-idle-bubble--transfer {
+  align-self: center !important;
+  background: rgba(10, 40, 20, 0.88) !important;
+  border-color: rgba(34, 197, 94, 0.7) !important;
+  color: #4ade80 !important;
+  text-align: center;
+  text-decoration: none;
+  /* Relative so the absolute-positioned sender-name badge can sit
+   * over the top-left edge of the bubble like a little tag. */
+  position: relative;
+  /* Extra top margin so the badge (which pokes up ~10px) doesn't
+   * collide with the previous bubble. */
+  margin-top: 14px !important;
+}
+/* Sender side — gold outline to signal "you locked these funds".
+ * The green fill stays (it's still a transfer) but the border and
+ * its glow shift to the storm palette so it reads as a sender's
+ * IOU rather than a received one. */
+.ski-idle-bubble--transfer[data-iou-role="sender"] {
+  border-color: rgba(255, 184, 0, 0.9) !important;
+  box-shadow: 0 0 0 1px rgba(255, 184, 0, 0.35),
+              0 0 10px rgba(255, 184, 0, 0.25);
+}
+/* Sender name badge on a recipient-side transfer bubble — sits
+ * half above the top-left corner of the green bubble like a little
+ * tag. Click to populate the name input (handled in JS). */
+.ski-idle-bubble--transfer .ski-idle-bubble-sender {
+  position: absolute;
+  top: -10px;
+  left: 10px;
+  padding: 1px 8px;
+  background: rgba(10, 10, 15, 0.95);
+  border: 1px solid rgba(34, 197, 94, 0.65);
+  border-radius: 10px;
+  opacity: 1;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.72rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 0.12s, border-color 0.12s, text-shadow 0.12s;
+  z-index: 1;
+}
+.ski-idle-bubble--transfer .ski-idle-bubble-sender:hover {
+  color: #ffffff;
+  border-color: rgba(34, 197, 94, 1);
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+}
+/* In-bubble @mention → clickable pill, same populate-on-click behavior. */
+.ski-idle-bubble--transfer .ski-idle-bubble-mention {
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.45);
+  transition: border-color 0.12s, text-shadow 0.12s;
+}
+.ski-idle-bubble--transfer .ski-idle-bubble-mention:hover {
+  border-bottom-color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+}
+a.ski-idle-bubble--transfer {
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.12s;
+}
+a.ski-idle-bubble--transfer:hover {
+  background: rgba(10, 60, 30, 0.95) !important;
+  border-color: rgba(34, 197, 94, 1) !important;
+  transform: translateY(-1px);
 }
 .ski-idle-bubble-sender {
   font-size: 0.7rem;

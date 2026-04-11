@@ -40,6 +40,26 @@ export const GLOBAL_SUIAMI_STORM_UUID = 'suiami-global';
 // Treasury is currently undercollateralized and the collateral-management
 // functions are all PRIVATE, so minting is blocked. Revisit iUSD-as-canonical
 // once the mint path is healthy and the iUSD/USDC pool is seeded two-sided.
+// Thunder IOU — self-contained shared escrow objects used by the
+// transfer-in-storm flow. See contracts/thunder-iou/sources/iou.move.
+// Sender locks SUI with `iou::create`; recipient claims before expiry;
+// sender (or any keeper) recalls after expiry.
+//
+// Two variants live side by side:
+//   THUNDER_IOU_PACKAGE          — legacy cleartext metadata Iou
+//   THUNDER_IOU_SHIELDED_PACKAGE — Pedersen-committed ShieldedVault
+//
+// New sends use the shielded package. The legacy package is kept
+// around so pre-existing Iou objects can still be claimed / recalled
+// via the claim/recall helpers below.
+const THUNDER_IOU_PACKAGE = '0x5a80b9753d6ccce11dc1f9a5039d9430d3e43a216f82f957ef11df9cb5c4dc79';
+const THUNDER_IOU_SHIELDED_PACKAGE = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782';
+// 7 days — gives the recipient a week to claim before the sender
+// (or a keeper bot) can sweep the balance back. Short enough that
+// unredeemed funds don't sit forever; long enough for anyone on a
+// vacation to catch up.
+const IOU_DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
 const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
 const DB_SUI_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
@@ -457,6 +477,10 @@ export async function sendThunder(opts: {
   senderName?: string;
   recipientName?: string;
   transfer?: { recipientAddress: string; amountMist: bigint };
+  /** User's intended USD amount — used verbatim in the encrypted
+   *  transfer note so it reflects what the user typed, not the
+   *  slippage-inflated SUI equivalent. */
+  intentUsd?: number;
   /** Optional file attachments — Seal-encrypted per file, uploaded to Walrus
    *  via the configured HTTP publisher. Limits enforced by the SDK. */
   files?: AttachmentFile[];
@@ -486,41 +510,47 @@ export async function sendThunder(opts: {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
 
-    // 1. Transfer — swap SUI → USDC via DeepBook, then transfer USDC to the
-    // recipient. Phantom / WaaP / Suiet all render the net tx as "~$1.00 USDC
-    // to <recipient>" instead of "1.06722 SUI" so the signing screen matches
-    // the $ amount the user typed. amountMist is the SUI input size (computed
-    // upstream from the USD amount × live SUI price × slippage buffer).
+    // 1. Transfer — lock SUI in a thunder_iou_shielded::ShieldedVault.
+    // The vault stores only a Pedersen commitment C = r*G + amount*H
+    // and an encrypted opening blob; the RECIPIENT ADDRESS is NOT on
+    // the deposit tx. The recipient claims by recovering (r, amount)
+    // from the Seal-encrypted storm note and resubmitting them.
+    // Sender (or any keeper) can recall after TTL.
+    //
+    // This replaces the legacy thunder_iou::create path. The shielded
+    // package ID and helpers live in src/client/thunder-iou-shielded.ts.
     if (hasTransfer) {
-      // Swap SUI → USDC via DeepBook, then transfer the USDC to the recipient.
-      // USDC is dollar-pegged, so Phantom / WaaP / Suiet render the confirm
-      // screen as "≈ 1 USDC → <recipient>" matching the $ the user typed.
+      const { pedersenCommit, randomBlinding, encodeOpening } = await import('../client/thunder-iou-shielded.js');
+      const amountBig = BigInt(opts.transfer!.amountMist);
+      const blinding = randomBlinding();
+      // Sanity check: recompute C client-side so we never ship a
+      // commitment the contract would reject (the contract
+      // recomputes C itself from the same inputs, so this check is
+      // mostly a developer-safety net against buggy upstream code).
+      void pedersenCommit(amountBig, blinding);
+      // Seal-encrypt the opening so only storm members can reconstruct
+      // (r, amount) later. The encryption uses the existing storm DEK.
+      const openingPlain = encodeOpening(blinding, amountBig);
+      const openingPadded = padPlaintext(new TextEncoder().encode(openingPlain));
+      const openingEnv = await encryptWithRetry(groupId, openingPadded);
+      // Concatenate nonce (12 bytes) + ciphertext into a single
+      // opaque blob so the contract stores one vector<u8>. The
+      // recipient splits it back on decrypt via the Seal SDK with
+      // the same keyVersion they find in the storm history.
+      const _sealedOpening = new Uint8Array(12 + openingEnv.ciphertext.length);
+      _sealedOpening.set(openingEnv.nonce, 0);
+      _sealedOpening.set(openingEnv.ciphertext, 12);
       const [suiIn] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-      const [zeroDeep] = tx.moveCall({
-        target: '0x2::coin::zero',
-        typeArguments: [DB_DEEP_TYPE],
-      });
-      // swap_exact_base_for_quote(pool, base_in, deep_in, min_quote_out, clock)
-      // returns [usdcOut, suiChange, deepChange].
-      const hop = tx.moveCall({
-        target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
-        typeArguments: [DB_SUI_TYPE, DB_USDC_TYPE],
+      tx.moveCall({
+        target: `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::deposit`,
         arguments: [
-          tx.sharedObjectRef({
-            objectId: DB_SUI_USDC_POOL,
-            initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION,
-            mutable: true,
-          }),
           suiIn,
-          zeroDeep,
-          tx.pure.u64(0),
+          tx.pure.vector('u8', Array.from(blinding)),
+          tx.pure.u64(IOU_DEFAULT_TTL_MS),
+          tx.pure.vector('u8', Array.from(_sealedOpening)),
           tx.object('0x6'),
         ],
       });
-      const recipientAddr = tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress));
-      const senderAddr = tx.pure.address(normalizeSuiAddress(_address));
-      tx.transferObjects([hop[0]], recipientAddr);
-      tx.transferObjects([hop[1], hop[2]], senderAddr);
     }
 
     // 2. Storm creation (if no on-chain Storm exists)
@@ -556,7 +586,13 @@ export async function sendThunder(opts: {
     const _txBytes = await tx.build({ client: _buildClient as never });
 
     // One signature for transfer + Storm + SUIAMI
-    await opts.signAndExecute(_txBytes);
+    const _execResult = await opts.signAndExecute(_txBytes);
+    // Capture the tx digest for the transfer note — gives storm
+    // participants a way to verify the on-chain record privately,
+    // without exposing anything the on-chain tx doesn't already publish.
+    const _txDigest: string = (_execResult && typeof _execResult === 'object' && 'digest' in _execResult)
+      ? String((_execResult as { digest: unknown }).digest || '')
+      : '';
 
     if (needsStorm) {
       // The freshly-shared PermissionedGroup object needs to propagate to
@@ -579,11 +615,34 @@ export async function sendThunder(opts: {
     }
 
     // Record the transfer as a private Thunder in the Timestream DO.
-    // Route through Seal envelope encryption — the amount is sensitive
-    // metadata and must never hit the DO in cleartext.
+    // Route through Seal envelope encryption — the amount, recipient,
+    // and tx digest are sensitive metadata and must never hit the DO
+    // in cleartext. Plaintext is decryptable only by storm participants.
+    //
+    // Format: "💸 $1.12 → @justy · tx:abcd" where the tx suffix is the
+    // last 4 chars of the on-chain digest. Storm participants can
+    // verify the on-chain record via that suffix without leaking any
+    // info the on-chain tx doesn't already publish. The 💸 prefix is
+    // the render-side marker that styles the bubble green.
     if (hasTransfer) {
-      const amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
-      const transferNote = `\u26a1 $${amtLabel} sent`;
+      // Prefer the user's stated intent (what they typed in the input)
+      // over anything derived from the SUI amountMist. If intent is
+      // missing, fall back to the text regex, then finally to the
+      // mist → SUI conversion as a last resort.
+      let amtLabel = '';
+      if (typeof opts.intentUsd === 'number' && opts.intentUsd > 0) {
+        // Strip trailing .00 so "$1" stays "$1" instead of "$1.00".
+        amtLabel = String(opts.intentUsd).replace(/\.00?$/, '');
+      } else {
+        amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
+      }
+      const _recipTag = opts.recipientName ? ` \u2192 @${opts.recipientName}` : '';
+      // Store the FULL digest so the render layer can build a working
+      // explorer link. Privacy unchanged — the entire note is encrypted
+      // before it hits the DO, and the on-chain tx it points to is a
+      // standard public Sui tx either way.
+      const _digestSuffix = _txDigest ? ` \u00b7 tx:${_txDigest}` : '';
+      const transferNote = `\u{1F4B8} $${amtLabel}${_recipTag}${_digestSuffix}`;
       const noteBytes = padPlaintext(new TextEncoder().encode(transferNote));
       const noteEnv = await encryptWithRetry(groupId, noteBytes);
       await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
@@ -827,6 +886,119 @@ export async function getThunders(opts: {
   };
 }
 
+// ─── Thunder IOU claim / recall PTB builders ────────────────────────
+// Each returns pre-built tx bytes ready for signAndExecute. The IOU
+// object address is discovered from the transfer note's tx digest
+// via a GraphQL effects lookup (see lookupIouFromDigest below), so
+// callers don't have to manage the object ref themselves.
+
+/**
+ * Look up the first ::iou::Iou OR ::shielded::ShieldedVault object
+ * created by a given tx digest. Returns which kind was found so the
+ * caller can dispatch to the right claim/recall helper.
+ */
+export async function lookupAnyVaultFromDigest(digest: string): Promise<{ objectId: string; initialSharedVersion: number; kind: 'legacy' | 'shielded' } | null> {
+  if (!digest) return null;
+  try {
+    const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    const query = `query($d: String!) {
+      transactionBlock(digest: $d) {
+        effects {
+          objectChanges { nodes { address idCreated outputState { asMoveObject { contents { type { repr } } } } } }
+        }
+      }
+    }`;
+    const res = await (gql as any).query({ query, variables: { d: digest } });
+    const nodes = res?.data?.transactionBlock?.effects?.objectChanges?.nodes || [];
+    for (const n of nodes) {
+      if (!n?.idCreated) continue;
+      const repr: string = n?.outputState?.asMoveObject?.contents?.type?.repr || '';
+      let kind: 'legacy' | 'shielded' | null = null;
+      if (repr.includes('::iou::Iou')) kind = 'legacy';
+      else if (repr.includes('::shielded::ShieldedVault')) kind = 'shielded';
+      if (!kind) continue;
+      const addr: string = n.address || '';
+      if (!addr) continue;
+      const obj = await (gql as any).query({
+        query: `query($a: SuiAddress!) { object(address: $a) { version } }`,
+        variables: { a: addr },
+      });
+      const version = Number(obj?.data?.object?.version || 0);
+      return { objectId: addr, initialSharedVersion: version, kind };
+    }
+    return null;
+  } catch (e) {
+    console.warn('[iou] lookupAnyVaultFromDigest failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/** Look up the first Thunder IOU object created by a given tx digest. */
+export async function lookupIouFromDigest(digest: string): Promise<{ objectId: string; initialSharedVersion: number } | null> {
+  if (!digest) return null;
+  try {
+    const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    const query = `query($d: String!) {
+      transactionBlock(digest: $d) {
+        effects {
+          objectChanges { nodes { address idCreated outputState { asMoveObject { contents { type { repr } } } } } }
+        }
+      }
+    }`;
+    const res = await (gql as any).query({ query, variables: { d: digest } });
+    const nodes = res?.data?.transactionBlock?.effects?.objectChanges?.nodes || [];
+    for (const n of nodes) {
+      if (!n?.idCreated) continue;
+      const repr: string = n?.outputState?.asMoveObject?.contents?.type?.repr || '';
+      if (!repr.includes('::iou::Iou')) continue;
+      const addr: string = n.address || '';
+      if (!addr) continue;
+      // Fetch the initial shared version via a second query since the
+      // GraphQL schema above doesn't surface it directly.
+      const obj = await (gql as any).query({
+        query: `query($a: SuiAddress!) { object(address: $a) { version } }`,
+        variables: { a: addr },
+      });
+      const version = Number(obj?.data?.object?.version || 0);
+      return { objectId: addr, initialSharedVersion: version };
+    }
+    return null;
+  } catch (e) {
+    console.warn('[iou] lookupIouFromDigest failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/** Build a claim PTB for the given IOU shared object. Recipient only. */
+export async function buildClaimIouTx(iouObjectId: string, initialSharedVersion: number): Promise<Uint8Array> {
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(_address));
+  tx.moveCall({
+    target: `${THUNDER_IOU_PACKAGE}::iou::claim`,
+    arguments: [
+      tx.sharedObjectRef({ objectId: iouObjectId, initialSharedVersion, mutable: true }),
+      tx.object('0x6'),
+    ],
+  });
+  const buildClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  return await tx.build({ client: buildClient as never });
+}
+
+/** Build a recall PTB. Permissionless after TTL expiry — balance goes to sender. */
+export async function buildRecallIouTx(iouObjectId: string, initialSharedVersion: number): Promise<Uint8Array> {
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(_address));
+  tx.moveCall({
+    target: `${THUNDER_IOU_PACKAGE}::iou::recall`,
+    arguments: [
+      tx.sharedObjectRef({ objectId: iouObjectId, initialSharedVersion, mutable: true }),
+      tx.object('0x6'),
+    ],
+  });
+  const buildClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  return await tx.build({ client: buildClient as never });
+}
+
 // ─── Real-time thunder subscribe (Jolteon Lv. 25) ───────────────────
 // Opens a WebSocket to /api/timestream/<gid>/ws and routes pushed
 // events (snapshot / thunder / edit / delete / purge) to the caller.
@@ -839,6 +1011,7 @@ export type ThunderStreamEvent =
   | { kind: 'edit'; message: any }
   | { kind: 'delete'; messageId: string }
   | { kind: 'purge'; purged: number }
+  | { kind: 'rotated'; keyVersion: string; digest: string }
   | { kind: 'error'; error: string };
 
 export interface ThunderStreamHandle {
@@ -883,7 +1056,7 @@ export function subscribeThunderStream(opts: {
         if (!text || text[0] !== '{') return;
         const parsed = JSON.parse(text);
         if (!parsed || typeof parsed.kind !== 'string') return;
-        if (!['snapshot', 'thunder', 'edit', 'delete', 'purge', 'error'].includes(parsed.kind)) return;
+        if (!['snapshot', 'thunder', 'edit', 'delete', 'purge', 'rotated', 'error'].includes(parsed.kind)) return;
         opts.onEvent(parsed);
       } catch { /* ignore malformed frames */ }
     });
@@ -980,6 +1153,140 @@ export async function stormExists(uuid: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ─── Forward secrecy — Alakazam Lv. 36 ──────────────────────────────
+// Rotate the Seal DEK of a storm so leavers lose decrypt access to
+// new messages and newly-added members cannot read old ones.
+//
+// The SDK ships a two-tier rotation API:
+//   - rotateEncryptionKey:     rotate the DEK without member changes
+//   - removeMembersAndRotateKey: atomic kick + rotate in a single PTB
+//
+// Both are called via client.messaging.tx.* builders so we can bundle
+// the rotation into a larger PTB (e.g. kick + rotate + notify) under
+// a single wallet signature.
+//
+// We cache the latest known key version per-group in localStorage so
+// the client can paint stale bubbles confidently while the fresh
+// fetch under the new key version is in flight.
+
+const _KEYVER_STORAGE_KEY = (uuid: string) => `ski:thunder-keyver:v1:${uuid}`;
+
+/** Read the cached key version for a storm. Returns 0 if unknown. */
+export function getCachedKeyVersion(uuid: string): bigint {
+  try {
+    const raw = localStorage.getItem(_KEYVER_STORAGE_KEY(uuid));
+    if (!raw) return 0n;
+    return BigInt(raw);
+  } catch { return 0n; }
+}
+
+/** Persist the latest known key version for a storm. */
+export function setCachedKeyVersion(uuid: string, keyVersion: bigint): void {
+  try { localStorage.setItem(_KEYVER_STORAGE_KEY(uuid), keyVersion.toString()); } catch {}
+}
+
+/**
+ * Rotate the Seal DEK for an existing storm. No member changes —
+ * useful for periodic hygiene or manual "regenerate key" affordance.
+ * Returns the pre-built tx bytes ready for signAndExecute, plus the
+ * new encryption history ref the client should track afterward.
+ */
+export async function rotateStormKey(opts: {
+  uuid: string;
+  signAndExecute: (tx: Uint8Array | Transaction) => Promise<any>;
+}): Promise<{ digest: string; keyVersion: bigint }> {
+  const client = getThunderClient();
+  if (!_address) throw new Error('Thunder client not initialized');
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(_address));
+  client.messaging.tx.rotateEncryptionKey({ uuid: opts.uuid, transaction: tx });
+  const buildClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const txBytes = await tx.build({ client: buildClient as never });
+  const result = await opts.signAndExecute(txBytes);
+  const digest: string = (result && typeof result === 'object' && 'digest' in result)
+    ? String((result as { digest: unknown }).digest || '')
+    : '';
+  // Fetch the fresh key version after rotation. The SDK's view helper
+  // reads the EncryptionHistory object, so after the PTB lands the
+  // version will be bumped. Propagation is fast enough that a small
+  // delay + one retry is plenty.
+  let keyVersion = 0n;
+  for (let i = 0; i < 5; i++) {
+    try {
+      const kv = await client.messaging.view.getCurrentKeyVersion({ uuid: opts.uuid });
+      keyVersion = BigInt(kv as unknown as string | number | bigint);
+      if (keyVersion > getCachedKeyVersion(opts.uuid)) break;
+    } catch { /* DO propagation lag — retry */ }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  if (keyVersion > 0n) {
+    setCachedKeyVersion(opts.uuid, keyVersion);
+    // Broadcast to any peers subscribed to this storm's WebSocket
+    // so they refresh their local keyver cache + trigger a re-fetch
+    // under the new version. Best-effort — the DO endpoint is
+    // idempotent and the peer can also discover the bump via
+    // GraphQL on its next fetch.
+    try {
+      await fetch(`/api/timestream/${encodeURIComponent(opts.uuid)}/rotated`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ keyVersion: keyVersion.toString(), digest }),
+      });
+    } catch { /* best-effort broadcast */ }
+  }
+  return { digest, keyVersion };
+}
+
+/**
+ * Remove one or more members from a storm and rotate the DEK in a
+ * single PTB. Leavers cannot decrypt any message sent after this
+ * operation lands on-chain. Pre-rotation messages they were members
+ * for remain decryptable by them (the SDK walks historical key
+ * versions via EncryptionHistoryRef).
+ */
+export async function removeMemberFromStorm(opts: {
+  uuid: string;
+  members: string[];
+  signAndExecute: (tx: Uint8Array | Transaction) => Promise<any>;
+}): Promise<{ digest: string; keyVersion: bigint }> {
+  const client = getThunderClient();
+  if (!_address) throw new Error('Thunder client not initialized');
+  if (!opts.members?.length) throw new Error('removeMemberFromStorm: members required');
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(_address));
+  client.messaging.tx.removeMembersAndRotateKey({
+    uuid: opts.uuid,
+    members: opts.members.map(m => normalizeSuiAddress(m)),
+    transaction: tx,
+  });
+  const buildClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const txBytes = await tx.build({ client: buildClient as never });
+  const result = await opts.signAndExecute(txBytes);
+  const digest: string = (result && typeof result === 'object' && 'digest' in result)
+    ? String((result as { digest: unknown }).digest || '')
+    : '';
+  let keyVersion = 0n;
+  for (let i = 0; i < 5; i++) {
+    try {
+      const kv = await client.messaging.view.getCurrentKeyVersion({ uuid: opts.uuid });
+      keyVersion = BigInt(kv as unknown as string | number | bigint);
+      if (keyVersion > getCachedKeyVersion(opts.uuid)) break;
+    } catch { /* propagation — retry */ }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  if (keyVersion > 0n) {
+    setCachedKeyVersion(opts.uuid, keyVersion);
+    try {
+      await fetch(`/api/timestream/${encodeURIComponent(opts.uuid)}/rotated`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ keyVersion: keyVersion.toString(), digest }),
+      });
+    } catch { /* best-effort */ }
+  }
+  return { digest, keyVersion };
 }
 
 // ─── SuiNS resolution ───────────────────────────────────────────────

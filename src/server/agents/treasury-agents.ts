@@ -2281,15 +2281,27 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const dead = agents.find(a => a.objectId === deadId);
       if (!dead) continue;
 
-      // Pick a random RWA focus
-      const focusCount = 2 + Math.floor(Math.random() * (RWA_TARGETS.length - 1));
-      const shuffled = [...RWA_TARGETS].sort(() => Math.random() - 0.5);
+      // Pick an RWA focus using crypto.getRandomValues for an
+      // unbiased selection. Math.random was front-runnable and
+      // statistically skewed under the sort-comparator shuffle.
+      const _rand32 = () => { const u = new Uint32Array(1); crypto.getRandomValues(u); return u[0] / 0x100000000; };
+      const focusCount = 2 + Math.floor(_rand32() * (RWA_TARGETS.length - 1));
+      // Fisher-Yates with secure randomness — unbiased permutation
+      // where the Array.sort(_ => Math.random() - 0.5) idiom was not.
+      const shuffled = [...RWA_TARGETS];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(_rand32() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
       const focus = shuffled.slice(0, focusCount);
 
+      const _idBytes = new Uint8Array(6);
+      crypto.getRandomValues(_idBytes);
+      const _idSuffix = Array.from(_idBytes).map(b => b.toString(16).padStart(2, '0')).join('');
       const spawn: T2000Agent = {
         designation: `${dead.designation}-mk${dead.runs}`,
         mission: 'farm', // RWA agents are farmers — hunt for tokenized collateral
-        objectId: `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        objectId: `spawn-${Date.now()}-${_idSuffix}`,
         dwalletId: dead.dwalletId, // inherit dWallet
         operator: dead.operator,
         deployed_ms: Date.now(),

@@ -60,10 +60,18 @@ function normAddr(a: string): string {
   return (a || '').replace(/^0x/, '').toLowerCase().padStart(64, '0');
 }
 
-/** Round timestamp to 10s bucket + add ±5s uniform noise. Preserves order via the monotonic `order` field. */
+/**
+ * Round timestamp to 10s bucket + add ±5s uniform noise. Preserves
+ * order via the monotonic `order` field. Noise source is
+ * crypto.getRandomValues (not Math.random) so statistical analysis
+ * across many messages can't recover the true send times.
+ */
 function jitterTs(ms: number): number {
   const bucket = Math.floor(ms / 10_000) * 10_000;
-  const noise = Math.floor((Math.random() - 0.5) * 10_000);
+  const r = new Uint32Array(1);
+  crypto.getRandomValues(r);
+  // r[0] / 2^32 → uniform [0,1); shift to [-0.5, 0.5); scale to ±5000ms.
+  const noise = Math.floor((r[0] / 0x100000000 - 0.5) * 10_000);
   return bucket + noise;
 }
 
@@ -149,6 +157,9 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
       }
       if (request.method === 'POST' && path === 'purge-all') {
         return this._handlePurgeAll(request);
+      }
+      if (request.method === 'POST' && path === 'rotated') {
+        return this._handleRotated(request);
       }
       if (request.method === 'POST' && path === 'add-participant') {
         return this._handleAddParticipant(request);
@@ -413,6 +424,28 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     this.setState({ ...this.state, messages: [] });
     this._broadcast({ kind: 'purge', purged: purgedCount });
     return Response.json({ purged: purgedCount });
+  }
+
+  /**
+   * Key-rotation notification endpoint. Called by the client right
+   * after a successful rotateEncryptionKey or removeMembersAndRotateKey
+   * on-chain tx lands. The DO doesn't store the key version itself —
+   * it just broadcasts a { kind: 'rotated' } event to every open
+   * WebSocket subscriber so they can bump their local cache and
+   * refetch any stale historical bubbles under the new key.
+   *
+   * Permissionless from the DO's perspective: the underlying on-chain
+   * rotation is already signed by a group admin, and the key version
+   * itself is discoverable via GraphQL by any participant, so there's
+   * no value in gating this endpoint behind participant auth. Any
+   * client observing the on-chain event could call it and produce
+   * the same refresh behavior on subscribers.
+   */
+  private async _handleRotated(request: Request): Promise<Response> {
+    const body = await request.json().catch(() => ({})) as { keyVersion?: string | number; digest?: string };
+    const kv = String(body.keyVersion ?? '0');
+    this._broadcast({ kind: 'rotated', keyVersion: kv, digest: body.digest || '' });
+    return Response.json({ broadcast: true, keyVersion: kv });
   }
 
   private async _handleAddParticipant(request: Request): Promise<Response> {

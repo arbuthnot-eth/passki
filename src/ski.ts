@@ -622,10 +622,12 @@ initUI();
 // is fast, so this shaves seconds off the time the modal shows stale state.
 import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
   registerWaaP();
-  // Expose a console helper so users stuck in an INVALID_DEVICE_SESSION
-  // state can recover without a browser-wide localStorage wipe. Usage:
-  //     ski.resetWaaP()     // nuclear reset + reinit
-  //     ski.reinitWaaP()    // just re-register the iframe
+  // Console helpers on window.ski:
+  //   ski.resetWaaP()           — nuclear WaaP state purge + reinit
+  //   ski.reinitWaaP()          — just re-register the iframe
+  //   ski.rotateStorm(uuid)     — rotate Seal DEK for a storm (Alakazam Lv. 36)
+  //   ski.kickFromStorm(uuid, members) — remove + rotate atomically
+  //   ski.getKeyVersion(uuid)   — read the cached key version
   try {
     (window as any).ski = Object.assign((window as any).ski || {}, {
       resetWaaP: async () => {
@@ -634,6 +636,31 @@ import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
         console.log('[.SKI] WaaP state purged and re-registered. Refresh the page to reconnect from scratch.');
       },
       reinitWaaP,
+      rotateStorm: async (uuid: string) => {
+        const { rotateStormKey } = await import('./client/thunder.js');
+        const { signAndExecuteTransaction } = await import('./wallet.js');
+        const r = await rotateStormKey({
+          uuid,
+          signAndExecute: async (tx) => signAndExecuteTransaction(tx as never),
+        });
+        console.log('[.SKI] storm rotated', uuid, r);
+        return r;
+      },
+      kickFromStorm: async (uuid: string, members: string[]) => {
+        const { removeMemberFromStorm } = await import('./client/thunder.js');
+        const { signAndExecuteTransaction } = await import('./wallet.js');
+        const r = await removeMemberFromStorm({
+          uuid,
+          members,
+          signAndExecute: async (tx) => signAndExecuteTransaction(tx as never),
+        });
+        console.log('[.SKI] storm members removed + key rotated', uuid, r);
+        return r;
+      },
+      getKeyVersion: async (uuid: string) => {
+        const { getCachedKeyVersion } = await import('./client/thunder.js');
+        return getCachedKeyVersion(uuid).toString();
+      },
     });
   } catch {}
 }).catch(() => {});

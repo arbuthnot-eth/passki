@@ -25,10 +25,20 @@ const app = new Hono<{ Bindings: Env }>();
 // Sufficient for edge abuse prevention; not a substitute for CF Rate Limiting rules.
 const _rateCounters = new Map<string, { count: number; resetAt: number }>();
 const RATE_WINDOW_MS = 60_000; // 1 minute
-const RATE_LIMIT_DEFAULT = 60; // 60 req/min per IP
-const RATE_LIMIT_WRITE = 20;   // 20 req/min for mutating endpoints
+const RATE_LIMIT_DEFAULT = 240; // 240 req/min per IP (4/s steady)
+const RATE_LIMIT_WRITE = 120;   // 120 req/min for mutating endpoints
+// Timestream storm routes (thunder send/fetch/delete/purge-all) are
+// exempt from the write limiter entirely — they're pure user data
+// flowing through the DO which enforces its own per-participant auth,
+// and bulk operations like strike/purge can legitimately burst past
+// the generic write cap in a single user gesture.
+const RATE_LIMIT_EXEMPT_PREFIXES = ['/api/timestream/'];
 
 app.use('/api/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname;
+  if (RATE_LIMIT_EXEMPT_PREFIXES.some(p => path.startsWith(p))) {
+    return next();
+  }
   const ip = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown';
   const isWrite = c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'DELETE';
   const limit = isWrite ? RATE_LIMIT_WRITE : RATE_LIMIT_DEFAULT;
@@ -1686,7 +1696,40 @@ app.post('/api/cache/rescan-deposits', async (c) => {
   }
 });
 
-export default app;
+// Manual sweep endpoint — useful for testing the sweeper without
+// waiting for the cron tick. No auth because the sweep itself is
+// permissionless (anyone can call iou::recall after TTL), so this
+// endpoint can't be abused to move funds anywhere other than back
+// to their original senders.
+app.post('/api/iou/sweep', async (c) => {
+  try {
+    const { sweepExpiredIous } = await import('./iou-sweeper.js');
+    const result = await sweepExpiredIous(c.env as unknown as { SHADE_KEEPER_PRIVATE_KEY?: string });
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Worker default export: Hono fetch + Cron Triggers scheduled().
+// The scheduled() handler is invoked by Cloudflare on the cron
+// schedule declared in wrangler.jsonc (every 10 minutes). It runs
+// the Thunder IOU sweeper so expired escrows get recalled without
+// requiring either the sender or the recipient to be online.
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil((async () => {
+      try {
+        const { sweepExpiredIous } = await import('./iou-sweeper.js');
+        const result = await sweepExpiredIous(env as unknown as { SHADE_KEEPER_PRIVATE_KEY?: string });
+        console.log('[cron] iou-sweeper:', JSON.stringify(result));
+      } catch (err) {
+        console.error('[cron] iou-sweeper threw:', err instanceof Error ? err.message : err);
+      }
+    })());
+  },
+} satisfies ExportedHandler<Env>;
 
 // Export Durable Object classes for Wrangler binding
 export { SessionAgent } from './agents/session.js';

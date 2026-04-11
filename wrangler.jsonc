@@ -79,5 +79,12 @@
       "tag": "v7",
       "new_sqlite_classes": ["TimestreamAgent"]
     }
-  ]
+  ],
+
+  // Cron Triggers. Every 10 minutes the worker's scheduled() handler
+  // sweeps expired Thunder IOUs on-chain via ultron. Cheap: ~1 GraphQL
+  // query + one tx per expired IOU. No-op when nothing has expired.
+  "triggers": {
+    "crons": ["*/10 * * * *"]
+  }
 }
