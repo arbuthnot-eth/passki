@@ -519,17 +519,24 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         }
         if (!solPrice) throw new Error('Sibyl could not determine SOL price');
 
-        // Calculate exact lamport amount with tag encoded in sub-cent digits.
-        // SOL has 9 decimals so it carries the wider 8-digit tag
-        // (route in tens, action in ones of the top 4 digits).
-        // Tag is recomputed at width=8 from the same (route, action,
-        // nonce) so 6-digit USDC and 8-digit SOL decode to the same
-        // intent row.
+        // SOL lamports: use the SAME 6-digit tag as USDC so both
+        // carriers decode to the same intent. Tag lives in the
+        // LOWEST 6 lamport positions (10^0 to 10^5 lamports =
+        // 1 lamport to 0.0001 SOL). This is "sub-cent" relative
+        // to the SOL native unit — a 6-digit tag costs at most
+        // 999_999 lamports ≈ 0.001 SOL ≈ $0.08, which is
+        // effectively rounding noise on any sane SOL deposit.
+        //
+        // Can't use composeAmount here because it assumes the
+        // carrier unit is worth $1. At $84/SOL, 1 SOL ≠ $1 so
+        // composeAmount's "whole units" math would put the tag
+        // in positions 10^-1 to 10^-6 SOL = $8.40 to $0.0008,
+        // overcharging by dozens of dollars on a $10 deposit.
         const solDecimals = 9;
-        const tagSol = encodeTag({ route, action, nonce: finalNonce, width: 8 });
         const baseLamports = BigInt(Math.floor((body.amountUsd / solPrice) * 10 ** solDecimals));
-        const baseWhole = (baseLamports / 100_000_000n) * 100_000_000n;
-        const taggedLamportsBig = baseWhole + BigInt(tagSol) * 10n;  // slack=1 for 9→8 shift
+        const mask = 1_000_000n;                                    // bottom 6 lamport digits
+        const baseWhole = (baseLamports / mask) * mask;
+        const taggedLamportsBig = baseWhole + BigInt(tag);          // tag in bottom 6 digits
         const taggedLamports = Number(taggedLamportsBig);
 
         // Store the intent — carries route/action/params alongside
@@ -538,8 +545,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const existing = intents.findIndex(i => i.suiAddress === body.suiAddress);
         const intent = {
           suiAddress: body.suiAddress,
-          tag,              // 6-digit canonical — matches USDC watcher
-          tagSol,           // 8-digit SOL variant — matches Helius watcher
+          tag,              // 6-digit canonical — shared by USDC and SOL watchers
           route,
           action,
           params: body.params ?? null,
@@ -555,11 +561,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
         const tagStr = formatTag(tag, 6);
 
-        // iUSD tagged amount (9 decimals): compose via the shared helper.
-        const iusdRaw = composeAmount(body.amountUsd, encodeTag({ route, action, nonce: finalNonce, width: 8 }), 9, 8);
+        // iUSD tagged amount (9 decimals, 6-digit tag): compose via shared helper.
+        // Same 6-digit tag as USDC so both stables decode to the same intent row.
+        const iusdRaw = composeAmount(body.amountUsd, tag, 9, 6);
         const iusdTaggedStr = formatAmount(iusdRaw, 9);
 
-        // USDC tagged amount (6 decimals): compose via the shared helper.
+        // USDC tagged amount (6 decimals): compose via shared helper.
         const usdcRaw = composeAmount(body.amountUsd, tag, 6, 6);
         const usdcTagged = formatAmount(usdcRaw, 6);
 
