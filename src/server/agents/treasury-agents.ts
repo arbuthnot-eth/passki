@@ -37,6 +37,16 @@ const SUI_TYPE = '0x000000000000000000000000000000000000000000000000000000000000
 
 // DeepBook v3
 const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
+// DeepBook v3 BalanceManager package (separate from the pool/trade package)
+const DB_BM_PACKAGE = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809';
+// Known owned BalanceManager that black-holed a historical mint of iUSD +
+// USDC. Both balances are recoverable via withdraw_all<T>(bm, ctx) — the
+// CLAUDE.md "owned BMs are deposit black holes" note was about ORDER
+// PLACEMENT, not withdrawability. The owner can always withdraw.
+const ULTRON_OWNED_BM = '0x2261d2bad4c716d2f542c9ef3db3a7f2cab9188439dc4d81d5aae402481c4f92';
+// iUSD TreasuryCap owned by ultron (minter). Required for burn_and_redeem.
+const IUSD_TREASURY_CAP = '0x0c7873b52c69f409f3c9772e85d927b509a133a42e9c134c826121bb6595e543';
+const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
 const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
 
 // ─── Scallop Protocol constants ──────────────────────────────────────
@@ -291,6 +301,26 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if ((url.pathname.endsWith('/attest-collateral') || url.searchParams.has('attest-collateral')) && request.method === 'POST') {
       try {
         const result = await this.attestLiveCollateral();
+        return new Response(JSON.stringify(result), { status: result.error ? 400 : 200, headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Shuckle Lv.30 stage 2 (#117) — zero out phantom DUST collateral record.
+    if ((url.pathname.endsWith('/zero-dust-record') || url.searchParams.has('zero-dust-record')) && request.method === 'POST') {
+      try {
+        const result = await this.zeroDustCollateralRecord();
+        return new Response(JSON.stringify(result), { status: result.error ? 400 : 200, headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Shuckle Lv.30 stage 2 (#117) — recover owned BM (withdraw + burn).
+    if ((url.pathname.endsWith('/recover-owned-bm') || url.searchParams.has('recover-owned-bm')) && request.method === 'POST') {
+      try {
+        const result = await this.recoverOwnedBalanceManager();
         return new Response(JSON.stringify(result), { status: result.error ? 400 : 200, headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
@@ -2034,6 +2064,136 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
+  /**
+   * Shuckle Lv.30 stage 2 (#117) — recover the owned DeepBook v3
+   * BalanceManager that's holding stranded iUSD + USDC.
+   *
+   * The owned BM (ULTRON_OWNED_BM) was created at some point and had
+   * iUSD + USDC deposited into it for what was probably going to be
+   * a trading setup. The BM couldn't be used for orders because
+   * DeepBook orders require a SHARED BM (see the CLAUDE.md black-hole
+   * note) so the funds sat there, but withdraw_all IS public + callable
+   * by the owner. We recover both balances and simultaneously burn the
+   * recovered iUSD via burn_and_redeem — that reduces the outstanding
+   * supply on the Treasury, tightening the collateralization ratio
+   * beyond what attestation alone can achieve.
+   *
+   * Single PTB:
+   *   1. withdraw_all<IUSD>(bm, ctx) -> Coin<IUSD>
+   *   2. withdraw_all<USDC>(bm, ctx) -> Coin<USDC>
+   *   3. burn_and_redeem(treasury_cap, treasury, iusd_coin, clock, ctx)
+   *        -> burns the iUSD, reduces total_burned, emits Burned event,
+   *           transfers a RedeemRequest receipt to ultron (we ignore it)
+   *   4. transferObjects([usdc_coin], ultron)
+   *        -> recovered USDC lands in ultron's wallet for the next
+   *           attestation cycle to pick up
+   *
+   * Idempotent-ish: after running once, the BM balances are both 0
+   * and withdraw_all returns Coin<T> with value 0. Burn asserts amount
+   * > 0 so the second call would fail. That's fine — this method is
+   * called manually, not from the tick loop.
+   */
+  async recoverOwnedBalanceManager(): Promise<{
+    digest?: string;
+    iusdBurned?: string;
+    usdcRecovered?: string;
+    error?: string;
+  }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      const bm = tx.object(ULTRON_OWNED_BM);
+
+      // 1. Withdraw iUSD -> Coin<IUSD>
+      const iusdCoin = tx.moveCall({
+        target: `${DB_BM_PACKAGE}::balance_manager::withdraw_all`,
+        typeArguments: [IUSD_TYPE],
+        arguments: [bm],
+      });
+
+      // 2. Withdraw USDC -> Coin<USDC>
+      const usdcCoin = tx.moveCall({
+        target: `${DB_BM_PACKAGE}::balance_manager::withdraw_all`,
+        typeArguments: [USDC_TYPE],
+        arguments: [bm],
+      });
+
+      // 3. Burn the recovered iUSD — reduces total_burned on the Treasury.
+      tx.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'burn_and_redeem',
+        arguments: [
+          tx.object(IUSD_TREASURY_CAP),
+          tx.object(TreasuryAgents.IUSD_TREASURY),
+          iusdCoin,
+          tx.object('0x6'),
+        ],
+      });
+
+      // 4. Transfer recovered USDC to ultron.
+      tx.transferObjects([usdcCoin], tx.pure.address(ultronAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] Shuckle stage 2 recovery: ${digest}`);
+      return { digest };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents] recoverOwnedBalanceManager error:', msg);
+      return { error: msg };
+    }
+  }
+
+  /**
+   * Shuckle Lv.30 stage 2 (#117) — one-shot cleanup: write
+   * update_collateral('DUST', 0) to zero out the phantom DUST
+   * collateral record that the old broken sweepDust path has been
+   * accumulating for months. Call this ONCE after deploying the
+   * sweepDust code fix — after that the tick loop will only refresh
+   * real records (SUI, USDC) via attestLiveCollateral and DUST will
+   * stay at 0.
+   */
+  async zeroDustCollateralRecord(): Promise<{ digest?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      tx.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'update_collateral',
+        arguments: [
+          tx.object(TreasuryAgents.IUSD_TREASURY),
+          tx.pure.vector('u8', Array.from(new TextEncoder().encode('DUST'))),
+          tx.pure.vector('u8', Array.from(new TextEncoder().encode('sui'))),
+          tx.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+          tx.pure.u64(0n),
+          tx.pure.u8(0), // TRANCHE_SENIOR — must match existing record
+          tx.object('0x6'),
+        ],
+      });
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] Shuckle DUST zero-out: ${digest}`);
+      return { digest };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents] zeroDustCollateralRecord error:', msg);
+      return { error: msg };
+    }
+  }
+
   // ─── Yield Rotator ──────────────────────────────────────────────────
   //
   // t2000 farm agents prowl for the best yield across NAVI, Scallop, and
@@ -2234,75 +2394,24 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       tx.setSender(ultronAddr);
       let totalSuiExpected = 0n;
 
-      // USDC → SUI via DeepBook
-      if (usdcBal > 0n) {
-        const usdcCoinsRes = await transport.query({
-          query: `query { address(address: "${ultronAddr}") { coins(type: "${TreasuryAgents.USDC_TYPE}") { nodes { address version digest contents { json } } } } }`,
-        });
-        // Simplified: use the balance amount, swap all of it
-        const [usdcPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(0)]); // placeholder
-        // For now just log — proper coin fetching needs the object refs
-        console.log(`[TreasuryAgents] USDC dust: ${usdcBal} (${Number(usdcBal) / 1e6} USDC)`);
-        totalSuiExpected += usdcBal * 1_000n; // rough USDC→SUI estimate
-      }
-
-      if (deepBal > 0n) {
-        console.log(`[TreasuryAgents] DEEP dust: ${deepBal} (${Number(deepBal) / 1e6} DEEP)`);
-      }
-
-      // If we swept any dust to SUI, attest as collateral and mint iUSD
-      if (totalSuiExpected > 0n) {
-        // Attest the dust as collateral
-        const tx2 = new Transaction();
-        tx2.setSender(ultronAddr);
-        tx2.moveCall({
-          package: TreasuryAgents.IUSD_PKG,
-          module: 'iusd',
-          function: 'update_collateral',
-          arguments: [
-            tx2.object(TreasuryAgents.IUSD_TREASURY),
-            tx2.pure.vector('u8', Array.from(new TextEncoder().encode('DUST'))),
-            tx2.pure.vector('u8', Array.from(new TextEncoder().encode('sui'))),
-            tx2.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
-            tx2.pure.u64(totalSuiExpected),
-            tx2.pure.u8(0), // TRANCHE_SENIOR
-            tx2.object('0x6'),
-          ],
-        });
-        const txBytes2 = await tx2.build({ client: transport as never });
-        const sig2 = await keypair.signTransaction(txBytes2);
-        await this._submitTx(txBytes2, sig2.signature);
-
-        // Mint iUSD from dust collateral (steganographic tag: 999 = dust sweep)
-        const dustUsd = Number(usdcBal) / 1e6; // USDC is already USD
-        if (dustUsd > 0.01) {
-          const cents = Math.round(dustUsd * 100);
-          const iusdRaw = BigInt(cents) * 10_000_000n + 999n * 10_000n; // tag 999 = dust
-          const tx3 = new Transaction();
-          tx3.setSender(ultronAddr);
-          tx3.moveCall({
-            package: TreasuryAgents.IUSD_PKG,
-            module: 'iusd',
-            function: 'mint_and_transfer',
-            arguments: [
-              tx3.object(TreasuryAgents.IUSD_TREASURY_CAP),
-              tx3.object(TreasuryAgents.IUSD_TREASURY),
-              tx3.pure.u64(iusdRaw),
-              tx3.pure.address(ultronAddr),
-            ],
-          });
-          const txBytes3 = await tx3.build({ client: transport as never });
-          const sig3 = await keypair.signTransaction(txBytes3);
-          await this._submitTx(txBytes3, sig3.signature);
-          console.log(`[TreasuryAgents] Dust sweep: minted ${iusdRaw} iUSD (tag 999) from $${dustUsd.toFixed(2)} dust`);
-          const _sq: SquidStats = this.state.squids ?? { total: 0, by_chain: { sui: 0, btc: 0, eth: 0, sol: 0 }, iusd_minted: 0, geo: [] };
-          _sq.iusd_minted++;
-          this.setState({ ...this.state, squids: _sq });
-          return { swept: true, dustSui: String(totalSuiExpected), iusdMinted: String(iusdRaw) };
-        }
-      }
-
-      return { swept: true, dustSui: String(totalSuiExpected) };
+      // sweepDust historically tried to (1) swap USDC dust -> SUI, (2) attest
+      // the result as a 'DUST' collateral record, and (3) mint iUSD equal to
+      // the dust value. All three were broken:
+      //   - The swap used `pure.u64(0)` as a placeholder and never did the
+      //     real DeepBook swap, so no SUI ever accrued.
+      //   - The 'DUST' collateral write phantom-inflated senior_value_mist
+      //     by double-counting the same USDC balance that attestLiveCollateral
+      //     was attesting under the 'USDC' key.
+      //   - The mint call then silently failed with EInsufficientCollateral
+      //     because the ratio assertion has been blocking mints for a while.
+      // Shuckle stage 2 (#117) disables this dead path. attestLiveCollateral
+      // handles USDC + SUI attestation properly, and a standalone one-time
+      if (usdcBal > 0n) console.log(`[TreasuryAgents] USDC dust observed (not swept): ${usdcBal}`);
+      if (deepBal > 0n) console.log(`[TreasuryAgents] DEEP dust observed (not swept): ${deepBal}`);
+      // Consume unused locals to keep TypeScript happy without touching
+      // the tick-loop caller.
+      void tx; void totalSuiExpected;
+      return { swept: false };
     } catch (err) {
       console.error('[TreasuryAgents] Dust sweep error:', err);
       return { swept: false };
