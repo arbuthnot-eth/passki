@@ -287,6 +287,26 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
 
     // Shade — lock iUSD for grace-period name sniping
+    // Shuckle Lv.30 (#117) — manual attest trigger (also fires in tick loop).
+    if ((url.pathname.endsWith('/attest-collateral') || url.searchParams.has('attest-collateral')) && request.method === 'POST') {
+      try {
+        const result = await this.attestLiveCollateral();
+        return new Response(JSON.stringify(result), { status: result.error ? 400 : 200, headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Shuckle Lv.30 (#117) — manual sSUI unwind trigger.
+    if ((url.pathname.endsWith('/unwind-ssui') || url.searchParams.has('unwind-ssui')) && request.method === 'POST') {
+      try {
+        const result = await this.unwindAllScallopSui();
+        return new Response(JSON.stringify(result), { status: result.error ? 400 : 200, headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     if ((url.pathname.endsWith('/shade-create') || url.searchParams.has('shade-create')) && request.method === 'POST') {
       try {
         const body = await request.json() as {
@@ -1362,6 +1382,25 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // sweepExpiredIous helper — whichever fires first wins.
       await this._sweepExpiredIous();
 
+      // Shuckle Lv.30 (#117) — refresh iUSD Treasury collateral
+      // attestation from live ultron balances. 5-minute throttle.
+      // Idempotent — each call upserts the per-asset CollateralRecord.
+      // Runs AFTER _yieldRotate so any rebalancing is reflected in
+      // the next attestation pass.
+      const COLLATERAL_ATTEST_INTERVAL_MS = 5 * 60 * 1000;
+      const lastAttest = (this.state as any).last_collateral_attest_ms as number | undefined;
+      if (!lastAttest || now - lastAttest >= COLLATERAL_ATTEST_INTERVAL_MS) {
+        this.setState({ ...this.state, last_collateral_attest_ms: now } as any);
+        try {
+          const res = await this.attestLiveCollateral();
+          if (res.error && !/No assets above/i.test(res.error)) {
+            console.warn('[TreasuryAgents] Shuckle tick attest error:', res.error);
+          }
+        } catch (err) {
+          console.error('[TreasuryAgents] Shuckle tick attest threw:', err);
+        }
+      }
+
       // Every 15 min: sweep dust, rotate yield across NAVI/Scallop/DeepBook
       const YIELD_INTERVAL = 30 * 1000; // 30s for testing — restore to 15 * 60 * 1000
       if (now - this.state.last_sweep_ms > YIELD_INTERVAL) {
@@ -1821,6 +1860,176 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[TreasuryAgents] Scallop SUI lend error:', msg);
+      return { error: msg };
+    }
+  }
+
+  /**
+   * Shuckle Lv.30 (#117) — unwind ALL of ultron's sSUI (Scallop receipt
+   * token) back to liquid SUI. Two-step per sCoin coin:
+   *   sSUI -> MarketCoin<SUI> via s_coin_converter::burn_s_coin
+   *   MarketCoin<SUI> -> SUI via redeem::redeem_entry
+   *
+   * All sSUI coins are unwound in one PTB. Called once during the
+   * collateral-fix flow — ultron should not be holding an asset we
+   * don't understand, and the collateral attestation loop prefers to
+   * see everything in SUI / USDC where the price math is clean.
+   */
+  async unwindAllScallopSui(): Promise<{ digest?: string; sSuiIn?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const coins = await transport.listCoins({ owner: ultronAddr, coinType: SCALLOP.sSuiType });
+      if (!coins.objects.length) return { error: 'No sSUI coins to unwind' };
+      const totalIn = coins.objects.reduce((acc, c) => acc + BigInt(c.balance ?? '0'), 0n);
+      if (totalIn === 0n) return { error: 'sSUI coins all zero balance' };
+      console.log(`[TreasuryAgents] Unwinding ${coins.objects.length} sSUI coin(s), total raw ${totalIn}`);
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      // Merge all sSUI coins into one if needed
+      const first = tx.object(coins.objects[0].objectId);
+      if (coins.objects.length > 1) {
+        tx.mergeCoins(first, coins.objects.slice(1).map(c => tx.object(c.objectId)));
+      }
+      // Step 1: sSUI -> MarketCoin<SUI>
+      const marketCoin = tx.moveCall({
+        target: `${SCALLOP.sCoinPackage}::s_coin_converter::burn_s_coin`,
+        typeArguments: [SCALLOP.sSuiType, SUI_TYPE],
+        arguments: [
+          tx.object(SCALLOP.sSuiTreasury),
+          first,
+        ],
+      });
+      // Step 2: MarketCoin<SUI> -> SUI, transferred to ultron
+      tx.moveCall({
+        target: `${SCALLOP.package}::redeem::redeem_entry`,
+        typeArguments: [SUI_TYPE],
+        arguments: [
+          tx.object(SCALLOP.version),
+          tx.object(SCALLOP.market),
+          marketCoin,
+          tx.object('0x6'),
+        ],
+      });
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] sSUI unwound: ${digest}, total raw in: ${totalIn}`);
+      return { digest, sSuiIn: String(totalIn) };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents] unwindAllScallopSui error:', msg);
+      return { error: msg };
+    }
+  }
+
+  /**
+   * Shuckle Lv.30 (#117) — attest ultron's live liquid SUI + USDC
+   * balances to the iUSD Treasury via iusd::update_collateral. Uses
+   * Pyth Hermes for the SUI price (USDC hardcoded at $1).
+   *
+   * The Treasury's senior_value_mist field is a USD value in 9-decimal
+   * mist form. SUI balance is 9-decimal raw MIST → multiply by USD
+   * price to get USD-mist. USDC balance is 6-decimal raw → multiply
+   * by 1000 to get USD-mist (USDC peg is $1).
+   *
+   * Tranches:
+   *   SUI → SENIOR (it's native, always redeemable)
+   *   USDC → SENIOR (it's a stable)
+   *
+   * Both are upserts via the Move contract's dynamic-field pattern
+   * keyed on asset name, so running this twice is idempotent and
+   * simply refreshes the values to current balances + prices.
+   */
+  async attestLiveCollateral(): Promise<{
+    digest?: string;
+    attested?: Array<{ asset: string; usdMist: string; humanUsd: string }>;
+    error?: string;
+  }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      // 1. Read balances via GraphQL — sum of all coin objects per type.
+      const balQ = await transport.query({
+        query: `query {
+          address(address: "${ultronAddr}") {
+            sui: balance(coinType: "${SUI_TYPE}") { totalBalance }
+            usdc: balance(coinType: "${USDC_TYPE}") { totalBalance }
+          }
+        }`,
+      });
+      const addr = (balQ.data as any)?.address;
+      const suiRaw = BigInt(addr?.sui?.totalBalance ?? '0');
+      const usdcRaw = BigInt(addr?.usdc?.totalBalance ?? '0');
+
+      // 2. Fetch SUI price from Pyth Hermes (9-decimal price representation).
+      const PYTH_SUI = '0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744';
+      let suiPriceUsd = 0;
+      try {
+        const r = await fetch(`https://hermes.pyth.network/v2/updates/price/latest?ids[]=${PYTH_SUI}&parsed=true`, { signal: AbortSignal.timeout(PRICE_FEED_TIMEOUT_MS) });
+        const j = await r.json() as { parsed?: Array<{ price?: { price: string; expo: number } }> };
+        const p = j?.parsed?.[0]?.price;
+        if (p) suiPriceUsd = Number(p.price) * Math.pow(10, p.expo);
+      } catch { /* fall through — handled below */ }
+      if (suiPriceUsd <= 0) return { error: 'Pyth SUI price unavailable' };
+
+      // 3. Compute USD-mist (9-decimal) per asset.
+      // SUI: suiRaw (9-dec SUI) × price ($/SUI) = USD value. To get 9-dec USD-mist
+      //   we compute suiRaw × priceCents / 100 × 10 (scale cents to 9-dec).
+      //   Simpler: value_usd_9dec = suiRaw × priceCents / 100 / 1 (since suiRaw IS already 9-dec).
+      //   Even simpler and exact: round(suiRaw * suiPriceUsd) as BigInt of 9-dec USD mist.
+      const suiUsdMist = BigInt(Math.floor(Number(suiRaw) * suiPriceUsd));
+      // USDC: usdcRaw is 6-dec USDC = 6-dec USD. Scale up to 9-dec by ×1000.
+      const usdcUsdMist = usdcRaw * 1000n;
+
+      // 4. Skip assets below $0.10 to avoid noise txs.
+      const MIN_ATTEST_USD_MIST = 100_000_000n; // $0.10 in 9-dec
+      const toAttest: Array<{ asset: string; chain: string; valueMist: bigint }> = [];
+      if (suiUsdMist >= MIN_ATTEST_USD_MIST) {
+        toAttest.push({ asset: 'SUI', chain: 'sui', valueMist: suiUsdMist });
+      }
+      if (usdcUsdMist >= MIN_ATTEST_USD_MIST) {
+        toAttest.push({ asset: 'USDC', chain: 'sui', valueMist: usdcUsdMist });
+      }
+      if (toAttest.length === 0) return { error: 'No assets above $0.10 threshold' };
+
+      // 5. Build one PTB with N update_collateral calls.
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      for (const a of toAttest) {
+        tx.moveCall({
+          package: TreasuryAgents.IUSD_PKG,
+          module: 'iusd',
+          function: 'update_collateral',
+          arguments: [
+            tx.object(TreasuryAgents.IUSD_TREASURY),
+            tx.pure.vector('u8', Array.from(new TextEncoder().encode(a.asset))),
+            tx.pure.vector('u8', Array.from(new TextEncoder().encode(a.chain))),
+            tx.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+            tx.pure.u64(a.valueMist),
+            tx.pure.u8(0), // TRANCHE_SENIOR
+            tx.object('0x6'),
+          ],
+        });
+      }
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      const attested = toAttest.map(a => ({
+        asset: a.asset,
+        usdMist: String(a.valueMist),
+        humanUsd: `$${(Number(a.valueMist) / 1e9).toFixed(2)}`,
+      }));
+      console.log(`[TreasuryAgents] Shuckle attested:`, attested, `tx=${digest}`);
+      return { digest, attested };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents] attestLiveCollateral error:', msg);
       return { error: msg };
     }
   }
