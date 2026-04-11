@@ -11793,22 +11793,105 @@ function bindEvents() {
       const _attachBtn = _idleOverlay.querySelector('#ski-idle-thunder-attach') as HTMLButtonElement | null;
       const _attachFileInput = _idleOverlay.querySelector('#ski-idle-thunder-file-input') as HTMLInputElement | null;
 
+      /** Render the pending-attachment preview.
+       *
+       *  Primary surface: a draft bubble pinned to the bottom of the
+       *  storm convo so the user sees exactly how the message will
+       *  look when sent — text + attachments, mixed layout, inline
+       *  media previews — before they hit the send button. For
+       *  images, we reuse the existing File's object URL so the
+       *  thumbnail is instant (no decrypt roundtrip). For video /
+       *  audio we wire a local <video>/<audio> element to the same
+       *  URL so the creator can verify it plays before sending.
+       *
+       *  Fallback surface: the top chips row (#ski-idle-thunder-attach-chips)
+       *  for cases where the storm convo isn't open yet (e.g. the
+       *  user pasted before opening the convo). Same data, more
+       *  compact visual. Hidden otherwise.
+       */
       const _renderAttachChips = () => {
-        if (!_attachChips) return;
-        if (_pendingThunderFiles.length === 0) {
+        const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        const hasConvo = !!convoEl && !convoEl.hasAttribute('hidden');
+
+        // Hide the top chip row in either case — the draft bubble
+        // in the convo replaces it as the primary preview surface,
+        // and if the convo is closed we just don't paint anything
+        // (the paperclip icon in the action row already indicates
+        // pending files via the quick-action state).
+        if (_attachChips) {
           _attachChips.innerHTML = '';
           _attachChips.setAttribute('hidden', '');
-          return;
         }
-        _attachChips.removeAttribute('hidden');
-        _attachChips.innerHTML = _pendingThunderFiles.map((f, i) => {
-          const isImg = f.mimeType.startsWith('image/');
-          const thumb = isImg && f.previewUrl
-            ? `<img class="ski-idle-attach-thumb" src="${esc(f.previewUrl)}" alt="">`
-            : `<span class="ski-idle-attach-icon">\u{1F4CE}</span>`;
-          const sizeKb = (f.data.byteLength / 1024).toFixed(0);
-          return `<span class="ski-idle-attach-chip" data-idx="${i}" title="${esc(f.fileName)} \u00b7 ${sizeKb}KB">${thumb}<span class="ski-idle-attach-name">${esc(f.fileName)}</span><button class="ski-idle-attach-remove" type="button" data-idx="${i}" title="Remove">\u2715</button></span>`;
-        }).join('');
+
+        // Draft bubble inside the convo, pinned to the bottom.
+        if (hasConvo && convoEl) {
+          // Remove any existing draft; if no pending files, stop.
+          convoEl.querySelector('#ski-idle-thunder-draft')?.remove();
+          if (_pendingThunderFiles.length === 0) return;
+
+          // Live text from the input so the draft mirrors the
+          // current message body — not just the attachments.
+          const _liveText = (_idleThunderInput?.value || '').trim();
+          const _textLine = _liveText
+            ? `<span class="ski-idle-bubble-text">${esc(_liveText)}</span>`
+            : '';
+
+          const _rows = _pendingThunderFiles.map((f, i) => {
+            const sizeLabel = f.data.byteLength >= 1024 * 1024
+              ? `${(f.data.byteLength / (1024 * 1024)).toFixed(1)} MB`
+              : f.data.byteLength >= 1024
+                ? `${(f.data.byteLength / 1024).toFixed(0)} KB`
+                : `${f.data.byteLength} B`;
+            const isImg = f.mimeType.startsWith('image/');
+            const isVid = f.mimeType.startsWith('video/');
+            const isAud = f.mimeType.startsWith('audio/');
+            const icon = isImg ? '\u{1F5BC}\u{FE0F}'
+              : isVid ? '\u25B6\uFE0F'
+              : isAud ? '\u{1F3B5}'
+              : f.mimeType.includes('pdf') ? '\u{1F4D1}'
+              : '\u{1F4CE}';
+            // Images get an instant thumbnail via the existing
+            // previewUrl (set on file add). Video/audio get a ready
+            // inline player pointed at the same URL. Other types
+            // stay as the icon + meta row.
+            const _thumbOrIcon = isImg && f.previewUrl
+              ? `<img class="ski-idle-bubble-attach-thumb" src="${esc(f.previewUrl)}" alt="${esc(f.fileName)}">`
+              : icon;
+            const _playerOrNothing = (isVid || isAud) && f.previewUrl
+              ? `<${isVid ? 'video' : 'audio'} class="ski-idle-attach-player ski-idle-attach-player--${isVid ? 'video' : 'audio'}" controls preload="metadata" src="${esc(f.previewUrl)}" data-no-bubble-click="1"></${isVid ? 'video' : 'audio'}>`
+              : '';
+            const _rowCls = (isVid || isAud) && f.previewUrl
+              ? 'ski-idle-attach-row ski-idle-attach-row--loaded'
+              : 'ski-idle-attach-row';
+            if ((isVid || isAud) && f.previewUrl) {
+              // Loaded-style draft row: inline player + filename label.
+              return `<div class="${_rowCls}" data-draft-idx="${i}">${_playerOrNothing}<span class="ski-idle-attach-row-label">\u{1F512} ${esc(f.fileName)} \u00b7 ${sizeLabel}<button class="ski-idle-attach-remove" type="button" data-draft-remove="${i}" title="Remove">\u2715</button></span></div>`;
+            }
+            return `<div class="${_rowCls}" data-draft-idx="${i}"><span class="ski-idle-bubble-attach-icon">${_thumbOrIcon}</span><span class="ski-idle-bubble-attach-meta"><span class="ski-idle-bubble-attach-name">${esc(f.fileName)}</span><span class="ski-idle-bubble-attach-size">${sizeLabel}</span></span><span class="ski-idle-bubble-attach-seal" title="Will be Seal-encrypted on send">\u{1F512}</span><button class="ski-idle-attach-remove" type="button" data-draft-remove="${i}" title="Remove">\u2715</button></div>`;
+          }).join('');
+
+          const _draft = document.createElement('div');
+          _draft.id = 'ski-idle-thunder-draft';
+          _draft.className = 'ski-idle-bubble ski-idle-bubble--out ski-idle-bubble--mixed ski-idle-bubble--draft';
+          _draft.innerHTML = `${_textLine}${_rows}<span class="ski-idle-bubble-draft-hint">draft \u00b7 tap \u26a1 to send</span>`;
+          convoEl.appendChild(_draft);
+          convoEl.scrollTop = convoEl.scrollHeight;
+
+          // Wire the × remove buttons to drop files from the
+          // pending array and re-render.
+          _draft.querySelectorAll<HTMLButtonElement>('[data-draft-remove]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const idx = Number(btn.dataset.draftRemove);
+              if (Number.isFinite(idx) && _pendingThunderFiles[idx]) {
+                const f = _pendingThunderFiles[idx];
+                if (f.previewUrl) { try { URL.revokeObjectURL(f.previewUrl); } catch {} }
+                _pendingThunderFiles.splice(idx, 1);
+                _renderAttachChips();
+              }
+            });
+          });
+        }
       };
 
       const _clearPendingFiles = () => {
@@ -11831,7 +11914,13 @@ function bindEvents() {
         const buf = await file.arrayBuffer();
         const bytes = new Uint8Array(buf);
         const mimeType = file.type || 'application/octet-stream';
-        const previewUrl = mimeType.startsWith('image/') ? URL.createObjectURL(file) : undefined;
+        // Object-URL preview for anything the browser can natively
+        // render in the draft bubble: images for the thumbnail, video
+        // and audio for the inline player. Revoked on clear.
+        const canPreview = mimeType.startsWith('image/')
+          || mimeType.startsWith('video/')
+          || mimeType.startsWith('audio/');
+        const previewUrl = canPreview ? URL.createObjectURL(file) : undefined;
         _pendingThunderFiles.push({
           fileName: file.name || `paste-${Date.now()}`,
           mimeType,
@@ -14409,6 +14498,15 @@ export function initUI() {
         initThunderClient({
           address: ws.address,
           signPersonalMessage: async (msg: Uint8Array) => signPersonalMessage(msg),
+          // SDK paths that call signer.signAndExecuteTransaction
+          // (notably sendMessage with attachments) delegate through
+          // this passthrough to the connected wallet's standard
+          // sign+exec API, so attachments work on every wallet the
+          // rest of the app supports.
+          signAndExecuteTransaction: async (txOrBytes: unknown) => {
+            const r = await signAndExecuteTransaction(txOrBytes as never);
+            return { digest: r.digest, effects: r.effects };
+          },
         });
         warmThunderSession().catch(() => {});
       }).catch(() => {});

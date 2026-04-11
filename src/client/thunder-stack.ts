@@ -110,6 +110,11 @@ export interface ThunderMessage {
 export interface ThunderClientOptions {
   address: string;
   signPersonalMessage: SignPersonalMessageFn;
+  /** Wallet-standard signAndExecuteTransaction passthrough. Required
+   *  by the DappKitSigner so SDK paths that internally call
+   *  signer.signAndExecuteTransaction (notably sendMessage with
+   *  attachments) can route through the connected wallet. */
+  signAndExecuteTransaction?: (txBytesOrTx: unknown) => Promise<{ digest: string; effects?: unknown }>;
 }
 
 // ─── Client state ───────────────────────────────────────────────────
@@ -221,6 +226,7 @@ export function initThunderClient(opts: ThunderClientOptions) {
   _signer = new DappKitSigner({
     address: opts.address,
     signPersonalMessage: (args) => opts.signPersonalMessage(args.message),
+    signAndExecuteTransaction: opts.signAndExecuteTransaction,
   });
 
   const gqlClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
