@@ -941,6 +941,7 @@ export type ThunderStreamEvent =
   | { kind: 'edit'; message: any }
   | { kind: 'delete'; messageId: string }
   | { kind: 'purge'; purged: number }
+  | { kind: 'rotated'; keyVersion: string; digest: string }
   | { kind: 'error'; error: string };
 
 export interface ThunderStreamHandle {
@@ -985,7 +986,7 @@ export function subscribeThunderStream(opts: {
         if (!text || text[0] !== '{') return;
         const parsed = JSON.parse(text);
         if (!parsed || typeof parsed.kind !== 'string') return;
-        if (!['snapshot', 'thunder', 'edit', 'delete', 'purge', 'error'].includes(parsed.kind)) return;
+        if (!['snapshot', 'thunder', 'edit', 'delete', 'purge', 'rotated', 'error'].includes(parsed.kind)) return;
         opts.onEvent(parsed);
       } catch { /* ignore malformed frames */ }
     });
@@ -1150,7 +1151,21 @@ export async function rotateStormKey(opts: {
     } catch { /* DO propagation lag — retry */ }
     await new Promise(r => setTimeout(r, 500));
   }
-  if (keyVersion > 0n) setCachedKeyVersion(opts.uuid, keyVersion);
+  if (keyVersion > 0n) {
+    setCachedKeyVersion(opts.uuid, keyVersion);
+    // Broadcast to any peers subscribed to this storm's WebSocket
+    // so they refresh their local keyver cache + trigger a re-fetch
+    // under the new version. Best-effort — the DO endpoint is
+    // idempotent and the peer can also discover the bump via
+    // GraphQL on its next fetch.
+    try {
+      await fetch(`/api/timestream/${encodeURIComponent(opts.uuid)}/rotated`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ keyVersion: keyVersion.toString(), digest }),
+      });
+    } catch { /* best-effort broadcast */ }
+  }
   return { digest, keyVersion };
 }
 
@@ -1191,7 +1206,16 @@ export async function removeMemberFromStorm(opts: {
     } catch { /* propagation — retry */ }
     await new Promise(r => setTimeout(r, 500));
   }
-  if (keyVersion > 0n) setCachedKeyVersion(opts.uuid, keyVersion);
+  if (keyVersion > 0n) {
+    setCachedKeyVersion(opts.uuid, keyVersion);
+    try {
+      await fetch(`/api/timestream/${encodeURIComponent(opts.uuid)}/rotated`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ keyVersion: keyVersion.toString(), digest }),
+      });
+    } catch { /* best-effort */ }
+  }
   return { digest, keyVersion };
 }
 

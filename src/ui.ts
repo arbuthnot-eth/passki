@@ -12188,6 +12188,16 @@ function bindEvents() {
                 _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
                 try { localStorage.removeItem(_THUNDER_HIST_KEY(groupId)); } catch {}
                 try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+              } else if (ev.kind === 'rotated') {
+                // Storm DEK was rotated on-chain by another client.
+                // Bump the local keyver cache and re-fetch so any
+                // subsequent sends use the new version and the
+                // already-painted bubbles are re-verified against
+                // the new EncryptionHistoryRef.
+                import('./client/thunder.js').then(({ setCachedKeyVersion }) => {
+                  try { setCachedKeyVersion(groupId, BigInt(ev.keyVersion || '0')); } catch {}
+                }).catch(() => {});
+                _expandIdleConvo(bare);
               }
             },
           });
