@@ -1798,6 +1798,52 @@ app.get('/api/redeem/solana/status', async (c) => {
   }
 });
 
+// ── Shelgon Lv.45 scaffold (#104) — shadow-DKG provisioning ─────────
+//
+// Two endpoints forwarded to the TreasuryAgents DO.
+//
+// Stage 1 (this scaffold): returns a deterministic STUB pubkey for
+// any Sui recipient. The stub is INERT — it's not a valid Solana
+// address, sending funds to it will burn them. Gastly's /resolve
+// endpoint reads from the same DO state slot so the API contract is
+// real even though the dWallet isn't.
+//
+// Stage 2 (follow-up PR): replaces the stub with a real IKA-derived
+// Ed25519 dWallet via a keeper-runs-alone variant of buildProvisionTx.
+// Gated behind design review per the mainnet review gate.
+
+app.post('/api/shadow-dkg/provision', async (c) => {
+  try {
+    const body = await c.req.json() as { recipient: string };
+    if (!body.recipient) return c.json({ error: 'recipient required' }, 400);
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shadow-dkg-provision', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+app.get('/api/shadow-dkg/status', async (c) => {
+  try {
+    const recipient = c.req.query('recipient') || '';
+    if (!recipient) return c.json({ error: 'recipient query param required' }, 400);
+    const res = await authedTreasuryStub(c).fetch(new Request(`https://treasury-do/?shadow-dkg-status&recipient=${encodeURIComponent(recipient)}`, {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 app.get('/api/redeem/solana/list', async (c) => {
   try {
     const recipient = c.req.query('recipient') || '';

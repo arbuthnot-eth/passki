@@ -269,7 +269,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // All mutating requests from the Worker must include x-treasury-auth.
     // Read-only endpoints (status, squid-stats, shade-list, deposit-status,
     // deposit-addresses, quest-bounties) are exempt.
-    const readOnlyParams = ['cache-state', 'squid-stats', 'shade-list', 'deposit-status', 'deposit-addresses', 'quest-bounties', 'redeem-solana-status', 'redeem-solana-resolve', 'redeem-solana-list'];
+    const readOnlyParams = ['cache-state', 'squid-stats', 'shade-list', 'deposit-status', 'deposit-addresses', 'quest-bounties', 'redeem-solana-status', 'redeem-solana-resolve', 'redeem-solana-list', 'shadow-dkg-status'];
     const isReadOnly = readOnlyParams.some(p => url.searchParams.has(p));
     const isWebSocket = request.headers.get('upgrade') === 'websocket';
     if (!isReadOnly && !isWebSocket && !this.verifyInternalAuth(request)) {
@@ -346,21 +346,132 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // Gastly is pure bookkeeping + API surface so the UI (Haunter) and
     // execution layer (Gengar) can build on a stable contract.
 
-    // redeem-solana-resolve — pre-flight Roster lookup for a Sui recipient
-    // address. Returns whether a Solana dWallet exists for this recipient
-    // (shadow or user-owned). For Gastly, always returns `provisioned:
-    // false`. Shelgon wires the real lookup against the SUIAMI Roster.
+    // ── Shelgon Lv.45 scaffold (#104) — shadow-DKG provisioning ─────
+    //
+    // STAGE 1 (this commit): STUB — generates a deterministic stub
+    // Solana pubkey for any Sui recipient and writes it to the
+    // shadow_dwallets state slot. The stub is INERT: it is not a
+    // valid Solana address that can receive funds; it's a placeholder
+    // for API/UI wiring while the real IKA DKG flow is designed and
+    // reviewed.
+    //
+    // STAGE 2 (follow-up PR): replaces the stub pubkey with a real
+    // IKA dWallet provisioned via a keeper-runs-alone variant of
+    // buildProvisionTx (src/server/ika-provision.ts). Requires:
+    //   - ED25519 curve (Solana) — existing code uses SECP256K1 for BTC/ETH
+    //   - User share encrypted to recipient's Sui Ed25519 pubkey from
+    //     moment zero (noble-curves sealed_box or libsodium crypto_box_seal)
+    //   - DWalletCap gated on recipient sig OR (agent half + IKA network)
+    //
+    // Stage 2 is blocked behind design review per the mainnet review
+    // gate. DO NOT ship real DKG code in this scaffold.
+
+    // shadow-dkg-provision — create or fetch a shadow dWallet stub
+    // for a recipient Sui address. Idempotent: repeat calls return
+    // the existing record if one already exists.
+    if ((url.pathname.endsWith('/shadow-dkg-provision') || url.searchParams.has('shadow-dkg-provision')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { recipient: string };
+        if (!body.recipient) {
+          return new Response(JSON.stringify({ error: 'recipient required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+        const shadows = ((this.state as any).shadow_dwallets ?? []) as Array<Record<string, unknown>>;
+        const existing = shadows.find(s => s.recipient === body.recipient);
+        if (existing) {
+          return new Response(JSON.stringify({
+            recipient: body.recipient,
+            solPubkey: existing.solPubkey,
+            via: existing.via,
+            provisioned: true,
+            createdAt: existing.createdAt,
+            stage: existing.stage,
+            deduplicated: true,
+          }), { headers: { 'content-type': 'application/json' } });
+        }
+        // Stage-1 stub: derive a deterministic placeholder pubkey from
+        // sha256(recipient || 'shelgon-v1-stub'). Base58-encoded to look
+        // like a Solana pubkey in the UI. DOES NOT correspond to any
+        // real Solana keypair — sending funds to this address will burn
+        // them. Stage 2 replaces with a real IKA-derived Ed25519 pubkey.
+        const seedBytes = new TextEncoder().encode(body.recipient + ':shelgon-v1-stub');
+        const hashBuf = await crypto.subtle.digest('SHA-256', seedBytes);
+        const hashArr = Array.from(new Uint8Array(hashBuf));
+        // Simple base58 encoding (Bitcoin alphabet) — not production-grade
+        // but sufficient for the stub to look the part in the UI.
+        const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+        let num = 0n;
+        for (const b of hashArr) num = (num << 8n) | BigInt(b);
+        let encoded = '';
+        while (num > 0n) {
+          const rem = Number(num % 58n);
+          num = num / 58n;
+          encoded = alphabet[rem] + encoded;
+        }
+        const solPubkey = `SKIstub${encoded.slice(0, 37)}`;
+        const now = Date.now();
+        const record = {
+          recipient: body.recipient,
+          solPubkey,
+          via: 'shadow-stub' as const,
+          stage: 1,
+          createdAt: now,
+          updatedAt: now,
+          realDkgPending: true,
+        };
+        shadows.push(record);
+        this.setState({ ...this.state, shadow_dwallets: shadows } as any);
+        console.log(`[TreasuryAgents] Shelgon stub provisioned: ${body.recipient.slice(0, 10)}… → ${solPubkey} (stage 1 INERT)`);
+        return new Response(JSON.stringify({
+          recipient: body.recipient,
+          solPubkey,
+          via: 'shadow-stub',
+          provisioned: true,
+          stage: 1,
+          createdAt: now,
+          warning: 'Stage 1 stub — pubkey is a placeholder, not a valid Solana address. Sending funds here will burn them. Stage 2 (real IKA DKG) is pending design review.',
+        }), { status: 202, headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // shadow-dkg-status — lookup by recipient (read-only)
+    if ((url.pathname.endsWith('/shadow-dkg-status') || url.searchParams.has('shadow-dkg-status')) && request.method === 'GET') {
+      const recipient = url.searchParams.get('recipient') || '';
+      if (!recipient) return new Response(JSON.stringify({ error: 'recipient query param required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+      const shadows = ((this.state as any).shadow_dwallets ?? []) as Array<Record<string, unknown>>;
+      const record = shadows.find(s => s.recipient === recipient);
+      if (!record) {
+        return new Response(JSON.stringify({ recipient, provisioned: false, via: 'none' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ ...record, provisioned: true }), { headers: { 'content-type': 'application/json' } });
+    }
+
+    // redeem-solana-resolve — pre-flight lookup for a Sui recipient
+    // address. Reads the shadow_dwallets state slot populated by
+    // shadow-dkg-provision. Returns whether a Solana dWallet (stub or
+    // real) exists for this recipient.
     if ((url.pathname.endsWith('/redeem-solana-resolve') || url.searchParams.has('redeem-solana-resolve')) && request.method === 'GET') {
       const recipient = url.searchParams.get('recipient') || '';
       if (!recipient) return new Response(JSON.stringify({ error: 'recipient query param required' }), { status: 400, headers: { 'content-type': 'application/json' } });
-      // Scaffolding stub: Shelgon Lv.45 replaces this with a real lookup
-      // against ROSTER_PKG + sol@<recipient> key resolution.
+      const shadows = ((this.state as any).shadow_dwallets ?? []) as Array<Record<string, unknown>>;
+      const record = shadows.find(s => s.recipient === recipient);
+      if (!record) {
+        return new Response(JSON.stringify({
+          recipient,
+          provisioned: false,
+          solPubkey: null,
+          via: 'none',
+          hint: 'POST /api/shadow-dkg/provision with { recipient } to create a stub dWallet',
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       return new Response(JSON.stringify({
         recipient,
-        provisioned: false,
-        solPubkey: null,
-        via: 'none',
-        note: 'Gastly scaffold — Shelgon Lv.45 (#104) will add real Roster lookup and shadow-DKG provisioning',
+        provisioned: true,
+        solPubkey: record.solPubkey,
+        via: record.via,
+        stage: record.stage,
+        createdAt: record.createdAt,
       }), { headers: { 'content-type': 'application/json' } });
     }
 
