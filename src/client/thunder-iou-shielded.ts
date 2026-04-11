@@ -135,6 +135,74 @@ export async function buildShieldedDepositTx(opts: {
 }
 
 /**
+ * Dugtrio Lv.36 — build a PTB with N shielded deposits in one tx.
+ *
+ * One `splitCoins(gas, [a1, a2, ..., aN])` split emits N new
+ * Coin<SUI> results, each passed to its own
+ * `shielded::deposit` moveCall. Result: ONE gas fee amortized
+ * across N escrow creations, and ONE storm-note encryption
+ * round per slot only (the caller is responsible for having
+ * Seal-encrypted each sealedOpening against the right group).
+ *
+ * Use when multiple shielded sends can be bundled into a single
+ * signature — either multiple @recipients in one compose line,
+ * or a debounced queue of rapid-fire sends to the same storm.
+ *
+ * Caller must supply the same number of entries in each array
+ * of the `deposits` list. The function returns the built bytes
+ * AND the unbuilt Transaction so WaaP callers can pass the
+ * Transaction object directly per the WaaP Holy Grail pattern.
+ */
+export async function buildShieldedDepositManyTx(opts: {
+  sender: string;
+  deposits: Array<{
+    amountMist: bigint;
+    blinding: Uint8Array;
+    sealedOpening: Uint8Array;
+    ttlMs?: number;
+  }>;
+  gasPayment?: Array<{ objectId: string; version: string; digest: string }>;
+}): Promise<{ tx: Transaction; bytes: Uint8Array }> {
+  if (opts.deposits.length === 0) {
+    throw new Error('buildShieldedDepositManyTx: deposits must be non-empty');
+  }
+  const tx = new Transaction();
+  tx.setSender(normalizeSuiAddress(opts.sender));
+  if (opts.gasPayment?.length) {
+    tx.setGasPayment(opts.gasPayment.map(c => ({
+      objectId: c.objectId,
+      version: c.version,
+      digest: c.digest,
+    })));
+  }
+  // Single splitCoins call — one gas fee amortized across all
+  // deposit outputs. tx.splitCoins returns a tuple of results;
+  // Transaction's destructuring accessor semantics expose each
+  // by index even when there are more than 2.
+  const amounts = opts.deposits.map(d => tx.pure.u64(d.amountMist));
+  const splitResults = tx.splitCoins(tx.gas, amounts);
+  for (let i = 0; i < opts.deposits.length; i++) {
+    const d = opts.deposits[i];
+    const ttl = d.ttlMs ?? SHIELDED_DEFAULT_TTL_MS;
+    tx.moveCall({
+      target: `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::deposit`,
+      arguments: [
+        // splitResults is an array proxy; splitResults[i] gives the
+        // i-th nested result of the single splitCoins op.
+        (splitResults as unknown as Array<ReturnType<typeof tx.splitCoins>[0]>)[i],
+        tx.pure.vector('u8', Array.from(d.blinding)),
+        tx.pure.u64(BigInt(ttl)),
+        tx.pure.vector('u8', Array.from(d.sealedOpening)),
+        tx.object('0x6'),
+      ],
+    });
+  }
+  const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const bytes = await tx.build({ client: gql as never });
+  return { tx, bytes };
+}
+
+/**
  * Build the claim PTB. Recipient supplies the opening recovered from
  * the Seal-decrypted storm note and the shared vault object ref.
  */
