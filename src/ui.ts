@@ -12776,10 +12776,15 @@ function bindEvents() {
             // pill that populates the name input on click (same
             // behavior as the sender name badge). Everything else
             // is plain escaped text.
-            const _labelHtml = esc(_rawLabel).replace(/@([a-z0-9-]{3,63})/gi, (_m, name) => {
+            let _labelHtml = esc(_rawLabel).replace(/@([a-z0-9-]{3,63})/gi, (_m, name) => {
               const bare = String(name).toLowerCase();
               return `<span class="ski-idle-bubble-mention" data-populate-name="${esc(bare)}" data-no-bubble-click="1">@${esc(bare)}</span>`;
             });
+            // Wrap the $amount in a span so it can stay green even
+            // when the surrounding bubble goes gray on settlement.
+            // The amount is the one datum that should read as "value
+            // delivered" regardless of escrow state.
+            _labelHtml = _labelHtml.replace(/(\$\d+(?:\.\d{1,2})?)/, '<span class="ski-idle-bubble-amt">$1</span>');
             // Recipient-side only: sender name badge sits over the
             // top-left corner of the bubble as a little tag. Click
             // populates the name input instead of navigating.
