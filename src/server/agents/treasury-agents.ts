@@ -269,7 +269,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // All mutating requests from the Worker must include x-treasury-auth.
     // Read-only endpoints (status, squid-stats, shade-list, deposit-status,
     // deposit-addresses, quest-bounties) are exempt.
-    const readOnlyParams = ['cache-state', 'squid-stats', 'shade-list', 'deposit-status', 'deposit-addresses', 'quest-bounties'];
+    const readOnlyParams = ['cache-state', 'squid-stats', 'shade-list', 'deposit-status', 'deposit-addresses', 'quest-bounties', 'redeem-solana-status', 'redeem-solana-resolve', 'redeem-solana-list'];
     const isReadOnly = readOnlyParams.some(p => url.searchParams.has(p));
     const isWebSocket = request.headers.get('upgrade') === 'websocket';
     if (!isReadOnly && !isWebSocket && !this.verifyInternalAuth(request)) {
@@ -332,6 +332,111 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         deliberation: s.deliberation,
       }));
       return new Response(JSON.stringify({ shades: result }), { headers: { 'content-type': 'application/json' } });
+    }
+
+    // ── Gastly Lv.20 — Solana cross-chain redeem scaffold (#101) ────
+    //
+    // Server-only scaffolding. Tracks pending redeem intents + exposes
+    // a pre-flight resolver that Shelgon (#104) will replace with real
+    // SUIAMI Roster lookups and shadow-DKG provisioning. Haunter (#102)
+    // replaces the stub create endpoint with a real keeper pickup loop.
+    //
+    // NOTE: these endpoints are intentionally inert. They do NOT move
+    // funds, do NOT touch mainnet state, do NOT sign any transactions.
+    // Gastly is pure bookkeeping + API surface so the UI (Haunter) and
+    // execution layer (Gengar) can build on a stable contract.
+
+    // redeem-solana-resolve — pre-flight Roster lookup for a Sui recipient
+    // address. Returns whether a Solana dWallet exists for this recipient
+    // (shadow or user-owned). For Gastly, always returns `provisioned:
+    // false`. Shelgon wires the real lookup against the SUIAMI Roster.
+    if ((url.pathname.endsWith('/redeem-solana-resolve') || url.searchParams.has('redeem-solana-resolve')) && request.method === 'GET') {
+      const recipient = url.searchParams.get('recipient') || '';
+      if (!recipient) return new Response(JSON.stringify({ error: 'recipient query param required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+      // Scaffolding stub: Shelgon Lv.45 replaces this with a real lookup
+      // against ROSTER_PKG + sol@<recipient> key resolution.
+      return new Response(JSON.stringify({
+        recipient,
+        provisioned: false,
+        solPubkey: null,
+        via: 'none',
+        note: 'Gastly scaffold — Shelgon Lv.45 (#104) will add real Roster lookup and shadow-DKG provisioning',
+      }), { headers: { 'content-type': 'application/json' } });
+    }
+
+    // redeem-solana-create — accept an intent to redeem a Sui-side claim
+    // as an asset on Solana. Writes a tracking record and returns the id.
+    // Gastly records status='pending' and stops there; Haunter adds the
+    // keeper pickup loop that moves it through 'resolving' → 'submitting'
+    // → 'delivered'.
+    if ((url.pathname.endsWith('/redeem-solana-create') || url.searchParams.has('redeem-solana-create')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as {
+          claimTx: string;
+          recipientSui: string;
+          destPubkey: string;
+          amountUsdCents: number;
+          asset?: 'USDC-SPL' | 'SOL';
+        };
+        if (!body.claimTx || !body.recipientSui || !body.destPubkey || typeof body.amountUsdCents !== 'number') {
+          return new Response(JSON.stringify({ error: 'claimTx, recipientSui, destPubkey, amountUsdCents required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+        if (body.amountUsdCents <= 0) {
+          return new Response(JSON.stringify({ error: 'amountUsdCents must be positive' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+        const redeems = ((this.state as any).cross_chain_redeems ?? []) as Array<Record<string, unknown>>;
+        // Dedupe on claimTx — same Sui claim should never yield two
+        // cross-chain intents (that would double-spend on the Solana side).
+        const existing = redeems.find(r => r.claimTx === body.claimTx);
+        if (existing) {
+          return new Response(JSON.stringify({
+            trackingId: existing.trackingId,
+            status: existing.status,
+            deduplicated: true,
+          }), { headers: { 'content-type': 'application/json' } });
+        }
+        const trackingId = crypto.randomUUID();
+        const now = Date.now();
+        const record = {
+          trackingId,
+          claimTx: body.claimTx,
+          recipientSui: body.recipientSui,
+          destChain: 'solana' as const,
+          destPubkey: body.destPubkey,
+          asset: (body.asset ?? 'USDC-SPL') as 'USDC-SPL' | 'SOL',
+          amountUsdCents: body.amountUsdCents,
+          status: 'pending' as const,
+          createdAt: now,
+          updatedAt: now,
+        };
+        redeems.push(record);
+        this.setState({ ...this.state, cross_chain_redeems: redeems } as any);
+        console.log(`[TreasuryAgents] Gastly redeem intent: ${trackingId} ${body.recipientSui.slice(0, 10)}…→ sol:${body.destPubkey.slice(0, 8)}… $${(body.amountUsdCents / 100).toFixed(4)} ${record.asset}`);
+        return new Response(JSON.stringify({ trackingId, status: 'pending' }), { status: 202, headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // redeem-solana-status — poll status by tracking id
+    if ((url.pathname.endsWith('/redeem-solana-status') || url.searchParams.has('redeem-solana-status')) && request.method === 'GET') {
+      const trackingId = url.searchParams.get('id') || '';
+      if (!trackingId) return new Response(JSON.stringify({ error: 'id query param required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+      const redeems = ((this.state as any).cross_chain_redeems ?? []) as Array<Record<string, unknown>>;
+      const record = redeems.find(r => r.trackingId === trackingId);
+      if (!record) return new Response(JSON.stringify({ error: 'not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify(record), { headers: { 'content-type': 'application/json' } });
+    }
+
+    // redeem-solana-list — list recent redeem records (for debugging/demo
+    // inspection). Optionally filter by recipientSui.
+    if ((url.pathname.endsWith('/redeem-solana-list') || url.searchParams.has('redeem-solana-list')) && request.method === 'GET') {
+      const recipient = url.searchParams.get('recipient') || '';
+      const redeems = ((this.state as any).cross_chain_redeems ?? []) as Array<Record<string, unknown>>;
+      const filtered = recipient ? redeems.filter(r => r.recipientSui === recipient) : redeems;
+      // Most-recent first, cap at 50 for bounded responses
+      const sorted = [...filtered].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0)).slice(0, 50);
+      return new Response(JSON.stringify({ redeems: sorted }), { headers: { 'content-type': 'application/json' } });
     }
 
     // Quest Prism — client sends commitment + amount only, no domain ever leaves the client.
