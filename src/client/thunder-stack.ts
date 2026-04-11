@@ -692,14 +692,25 @@ export async function sendThunder(opts: {
       });
     }
 
-    // If there's no message text beyond the amount, we're done
-    if (hasTransfer) {
+    // Transfer is on-chain + noted. If there's no remaining text and
+    // no attachments, the send is complete — otherwise fall through
+    // to the attachment path (SDK sendMessage) or the plain Seal+DO
+    // path below with the $token-stripped text body.
+    if (hasTransfer && !hasFiles) {
       const textWithoutAmount = opts.text.replace(/@\S+\$\d+(?:\.\d{0,2})?/g, '').trim();
       if (!textWithoutAmount) {
         return { messageId: 'transfer' };
       }
     }
   }
+
+  // After a transfer, drop the `@name$amt` token from the text body
+  // before sending the follow-up message — otherwise the recipient
+  // sees "@ralph$1 hey" as plaintext on top of the transfer bubble.
+  // When there's no transfer, this regex is a no-op.
+  const _bodyText = hasTransfer
+    ? opts.text.replace(/@\S+\$\d+(?:\.\d{0,2})?/g, '').trim()
+    : opts.text;
 
   // ─── Attachment path — route through SDK's AttachmentsManager ───────
   // When files are attached, bypass the direct DO POST and use the SDK's
@@ -711,7 +722,7 @@ export async function sendThunder(opts: {
     const result = await client.messaging.sendMessage({
       signer: _signer as never,
       groupRef: opts.groupRef,
-      text: opts.text,
+      text: _bodyText,
       files: opts.files,
     });
     return { messageId: result.messageId };
@@ -720,7 +731,10 @@ export async function sendThunder(opts: {
   // ─── Seal-encrypt + send via Timestream DO (free, no on-chain tx) ───
   // NO plaintext fallback. If encryption fails, the send fails — we will
   // never store cleartext in the DO labeled as ciphertext.
-  const msgBytes = padPlaintext(new TextEncoder().encode(opts.text));
+  const msgBytes = padPlaintext(new TextEncoder().encode(_bodyText));
+  // hasTransfer && !hasFiles && no body left → the transfer note is
+  // the whole payload; don't post an empty Seal envelope.
+  if (hasTransfer && !_bodyText) return { messageId: 'transfer' };
   const envelope = await encryptWithRetry(groupId, msgBytes);
   await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
     method: 'POST',

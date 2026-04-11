@@ -11815,9 +11815,10 @@ function bindEvents() {
                 const amountMist = BigInt(Math.floor(suiAmount * 1e9));
                 const transfer = { recipientAddress: recipAddr, amountMist };
                 if (_cancelled) break;
+                const _hasTransferAttachments = _pendingThunderFiles.length > 0;
                 await sendThunder({
                   groupRef: { uuid: groupUuid },
-                  text: msgText,
+                  text: draft.raw || msgText,
                   recipientAddress: recipAddr,
                   senderName,
                   recipientName: recip,
@@ -11826,6 +11827,13 @@ function bindEvents() {
                   // note reflects exactly what they typed, not the
                   // slippage-inflated SUI equivalent.
                   intentUsd: transferAmtUsd,
+                  files: _hasTransferAttachments
+                    ? _pendingThunderFiles.map(f => ({
+                        fileName: f.fileName,
+                        mimeType: f.mimeType,
+                        data: f.data,
+                      }))
+                    : undefined,
                   signAndExecute: async (txOrBytes: any) => {
                     if (sendBtn) sendBtn.innerHTML = `\u26a1 $${transferAmtUsd}\u2026`;
                     showToast(`\u26a1 Sending $${transferAmtUsd} to ${recip}`);
