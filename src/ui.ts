@@ -12190,11 +12190,13 @@ function bindEvents() {
             const _digestMatch = m.text.match(/tx:([A-Za-z0-9]{40,60})/);
             const _digest = _digestMatch ? _digestMatch[1] : '';
             const _label = m.text.replace(/\s*\u00b7?\s*tx:[A-Za-z0-9]+\s*$/, '').trim();
-            // The transfer bubble is a clickable <div> — the click
-            // handler below resolves the IOU from the tx digest and
-            // routes to claim (recipient) or explorer (sender, or
-            // pre-TTL) or recall (sender, post-TTL).
-            const _inner = `${nameTag}${esc(_label)}`;
+            // Recipient-side only: render the sender's name as a
+            // white link to https://<name>.sui.ski, visible on the
+            // left of the green transfer bubble.
+            const _transferNameTag = !isOut
+              ? `<a class="ski-idle-bubble-sender" href="https://${encodeURIComponent(senderName)}.sui.ski" target="_blank" rel="noopener noreferrer" data-no-bubble-click="1">${esc(senderName)}</a> `
+              : '';
+            const _inner = `${_transferNameTag}${esc(_label)}`;
             const _role = isOut ? 'sender' : 'recipient';
             return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}" data-tx="${esc(_digest)}" data-iou-role="${_role}" title="${_digest ? 'Click to claim / recall / view on-chain' : 'On-chain record (legacy)'}">${_inner}</div>`;
           }
@@ -12286,6 +12288,13 @@ function bindEvents() {
             // after expiry). On failure of either, fall back to
             // opening the explorer view of the tx.
             if ((bubble as HTMLElement).classList.contains('ski-idle-bubble--transfer')) {
+              // If the click landed on the inner sender-name link,
+              // let it navigate normally (new tab to <name>.sui.ski)
+              // instead of triggering the claim/recall flow.
+              const _target = ev.target as HTMLElement | null;
+              if (_target && _target.closest('[data-no-bubble-click="1"]')) {
+                return;
+              }
               ev.preventDefault();
               const _bubEl = bubble as HTMLElement;
               const _txDigest = _bubEl.dataset.tx || '';

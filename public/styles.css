@@ -3681,6 +3681,40 @@ body {
   color: #4ade80 !important;
   text-align: center;
   text-decoration: none;
+  /* Flex so the inline sender-name link sits on the left of the
+   * transfer label instead of floating above it. Only relevant on
+   * the recipient side where a nameTag is prepended. */
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+/* Sender side — gold outline to signal "you locked these funds".
+ * The green fill stays (it's still a transfer) but the border and
+ * its glow shift to the storm palette so it reads as a sender's
+ * IOU rather than a received one. */
+.ski-idle-bubble--transfer[data-iou-role="sender"] {
+  border-color: rgba(255, 184, 0, 0.9) !important;
+  box-shadow: 0 0 0 1px rgba(255, 184, 0, 0.35),
+              0 0 10px rgba(255, 184, 0, 0.25);
+}
+/* Sender name link inside a recipient-side transfer bubble —
+ * readable white, visible on the left, opens name.sui.ski in a
+ * new tab. Overrides the default faded .ski-idle-bubble-sender. */
+.ski-idle-bubble--transfer .ski-idle-bubble-sender {
+  opacity: 1;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.82rem;
+  text-decoration: none;
+}
+.ski-idle-bubble--transfer a.ski-idle-bubble-sender {
+  cursor: pointer;
+  transition: color 0.12s, text-shadow 0.12s;
+}
+.ski-idle-bubble--transfer a.ski-idle-bubble-sender:hover {
+  color: #ffffff;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
+  text-decoration: underline;
 }
 a.ski-idle-bubble--transfer {
   cursor: pointer;
