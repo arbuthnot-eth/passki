@@ -892,6 +892,47 @@ export async function getThunders(opts: {
 // via a GraphQL effects lookup (see lookupIouFromDigest below), so
 // callers don't have to manage the object ref themselves.
 
+/**
+ * Look up the first ::iou::Iou OR ::shielded::ShieldedVault object
+ * created by a given tx digest. Returns which kind was found so the
+ * caller can dispatch to the right claim/recall helper.
+ */
+export async function lookupAnyVaultFromDigest(digest: string): Promise<{ objectId: string; initialSharedVersion: number; kind: 'legacy' | 'shielded' } | null> {
+  if (!digest) return null;
+  try {
+    const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    const query = `query($d: String!) {
+      transactionBlock(digest: $d) {
+        effects {
+          objectChanges { nodes { address idCreated outputState { asMoveObject { contents { type { repr } } } } } }
+        }
+      }
+    }`;
+    const res = await (gql as any).query({ query, variables: { d: digest } });
+    const nodes = res?.data?.transactionBlock?.effects?.objectChanges?.nodes || [];
+    for (const n of nodes) {
+      if (!n?.idCreated) continue;
+      const repr: string = n?.outputState?.asMoveObject?.contents?.type?.repr || '';
+      let kind: 'legacy' | 'shielded' | null = null;
+      if (repr.includes('::iou::Iou')) kind = 'legacy';
+      else if (repr.includes('::shielded::ShieldedVault')) kind = 'shielded';
+      if (!kind) continue;
+      const addr: string = n.address || '';
+      if (!addr) continue;
+      const obj = await (gql as any).query({
+        query: `query($a: SuiAddress!) { object(address: $a) { version } }`,
+        variables: { a: addr },
+      });
+      const version = Number(obj?.data?.object?.version || 0);
+      return { objectId: addr, initialSharedVersion: version, kind };
+    }
+    return null;
+  } catch (e) {
+    console.warn('[iou] lookupAnyVaultFromDigest failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
 /** Look up the first Thunder IOU object created by a given tx digest. */
 export async function lookupIouFromDigest(digest: string): Promise<{ objectId: string; initialSharedVersion: number } | null> {
   if (!digest) return null;

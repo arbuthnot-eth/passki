@@ -12405,24 +12405,63 @@ function bindEvents() {
                 if (_txDigest) window.open(`https://suivision.xyz/txblock/${_txDigest}`, '_blank', 'noopener,noreferrer');
               };
               if (!_txDigest) { _openExplorer(); return; }
-              // Look up the IOU shared object from the tx effects, then
-              // route the click based on role.
+              // Look up the vault from the tx effects, detect whether
+              // it's legacy iou::Iou or the new shielded::ShieldedVault,
+              // then dispatch to the right claim/recall helpers.
               (async () => {
                 try {
-                  const { lookupIouFromDigest, buildClaimIouTx, buildRecallIouTx } = await import('./client/thunder.js');
-                  const ref = await lookupIouFromDigest(_txDigest);
+                  const { lookupAnyVaultFromDigest, buildClaimIouTx, buildRecallIouTx } = await import('./client/thunder.js');
+                  const ref = await lookupAnyVaultFromDigest(_txDigest);
                   if (!ref) {
-                    // IOU already consumed (claimed or recalled) OR
-                    // lookup failed. Either way, the explorer still
-                    // shows the historical record.
-                    showToast('IOU already settled — opening explorer');
+                    showToast('Escrow already settled — opening explorer');
                     _openExplorer();
                     return;
                   }
+                  const _isShielded = ref.kind === 'shielded';
+
                   if (_role === 'recipient') {
-                    showToast('\u23f3 Claiming IOU\u2026');
+                    showToast(_isShielded ? '\u23f3 Claiming shielded\u2026' : '\u23f3 Claiming IOU\u2026');
                     try {
-                      const bytes = await buildClaimIouTx(ref.objectId, ref.initialSharedVersion);
+                      let bytes: Uint8Array;
+                      if (_isShielded) {
+                        // Shielded claim needs the opening (r, amount)
+                        // recovered from the Seal-encrypted blob stored
+                        // on the vault. Fetch the vault JSON, decrypt,
+                        // then build the claim PTB. For this MVP the
+                        // opening blob on the vault stores
+                        //   nonce(12) || ciphertext
+                        // which the SDK's decrypt path knows how to
+                        // unwrap; the opening itself is a 40-byte
+                        // fixed-layout blob we encoded client-side.
+                        const { getThunderClient } = await import('./client/thunder-stack.js');
+                        const { decodeOpening, buildShieldedClaimTx } = await import('./client/thunder-iou-shielded.js');
+                        const client = getThunderClient();
+                        const view = await (client as any).messaging.view.getObject({ objectId: ref.objectId });
+                        const sealed = view?.content?.fields?.sealed_opening ?? view?.fields?.sealed_opening ?? [];
+                        const sealedBytes = new Uint8Array(Array.isArray(sealed) ? sealed : []);
+                        if (sealedBytes.length < 12) throw new Error('Shielded vault missing sealed_opening');
+                        const nonce = sealedBytes.slice(0, 12);
+                        const ciphertext = sealedBytes.slice(12);
+                        const kv = await client.messaging.view.getCurrentKeyVersion({ uuid: groupId });
+                        const plaintext = await (client as any).messaging.encryption.decrypt({
+                          uuid: groupId,
+                          envelope: { ciphertext, nonce, keyVersion: BigInt(kv as any) },
+                        });
+                        // Strip the pad/length prefix and parse as base64 opening blob.
+                        const view2 = new DataView(plaintext.buffer, plaintext.byteOffset, plaintext.byteLength);
+                        const openingLen = view2.getUint32(0, true);
+                        const openingB64 = new TextDecoder().decode(plaintext.slice(4, 4 + openingLen));
+                        const { blinding, amountMist } = decodeOpening(openingB64);
+                        bytes = await buildShieldedClaimTx({
+                          sender: getState().address || '',
+                          vaultObjectId: ref.objectId,
+                          vaultInitialSharedVersion: ref.initialSharedVersion,
+                          blinding,
+                          amountMist,
+                        });
+                      } else {
+                        bytes = await buildClaimIouTx(ref.objectId, ref.initialSharedVersion);
+                      }
                       const r = await signAndExecuteTransaction(bytes);
                       const digest = (r as any)?.digest || '';
                       showToast(digest ? `\u2705 Claimed — ${digest.slice(0, 10)}\u2026` : '\u2705 Claimed');
@@ -12436,7 +12475,17 @@ function bindEvents() {
                     // TTL). On ENotExpired, fall through to the
                     // explorer so the sender can still inspect.
                     try {
-                      const bytes = await buildRecallIouTx(ref.objectId, ref.initialSharedVersion);
+                      let bytes: Uint8Array;
+                      if (_isShielded) {
+                        const { buildShieldedRecallTx } = await import('./client/thunder-iou-shielded.js');
+                        bytes = await buildShieldedRecallTx({
+                          sender: getState().address || '',
+                          vaultObjectId: ref.objectId,
+                          vaultInitialSharedVersion: ref.initialSharedVersion,
+                        });
+                      } else {
+                        bytes = await buildRecallIouTx(ref.objectId, ref.initialSharedVersion);
+                      }
                       const r = await signAndExecuteTransaction(bytes);
                       const digest = (r as any)?.digest || '';
                       showToast(digest ? `\u21a9\ufe0f Recalled — ${digest.slice(0, 10)}\u2026` : '\u21a9\ufe0f Recalled');

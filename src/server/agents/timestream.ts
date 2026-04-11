@@ -60,10 +60,18 @@ function normAddr(a: string): string {
   return (a || '').replace(/^0x/, '').toLowerCase().padStart(64, '0');
 }
 
-/** Round timestamp to 10s bucket + add ±5s uniform noise. Preserves order via the monotonic `order` field. */
+/**
+ * Round timestamp to 10s bucket + add ±5s uniform noise. Preserves
+ * order via the monotonic `order` field. Noise source is
+ * crypto.getRandomValues (not Math.random) so statistical analysis
+ * across many messages can't recover the true send times.
+ */
 function jitterTs(ms: number): number {
   const bucket = Math.floor(ms / 10_000) * 10_000;
-  const noise = Math.floor((Math.random() - 0.5) * 10_000);
+  const r = new Uint32Array(1);
+  crypto.getRandomValues(r);
+  // r[0] / 2^32 → uniform [0,1); shift to [-0.5, 0.5); scale to ±5000ms.
+  const noise = Math.floor((r[0] / 0x100000000 - 0.5) * 10_000);
   return bucket + noise;
 }
 
