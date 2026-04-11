@@ -27,6 +27,8 @@ export {
   type ThunderStreamHandle,
   lookupRecipientAddress,
   lookupRecipientAddressCached,
+  rememberTargetReverse,
+  getTargetReverseName,
   makeThunderGroupId,
   reverseLookupName,
   type ThunderMessage,

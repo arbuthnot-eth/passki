@@ -1442,13 +1442,17 @@ export async function lookupRecipientAddressCached(name: string): Promise<string
 
 export async function lookupRecipientAddress(name: string): Promise<string | null> {
   const fullName = name.replace(/\.sui$/i, '').toLowerCase() + '.sui';
+  const bare = fullName.replace(/\.sui$/, '');
   try {
     const { SuinsClient } = await import('@mysten/suins');
     const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
     const suinsClient = new SuinsClient({ client: gql as never, network: 'mainnet' });
     const record = await suinsClient.getNameRecord(fullName);
     // Target address is the preferred resolution
-    if (record?.targetAddress) return record.targetAddress;
+    if (record?.targetAddress) {
+      rememberTargetReverse(record.targetAddress, bare);
+      return record.targetAddress;
+    }
     // Fallback: NFT owner address (if target not set but name is owned)
     if (record?.nftId) {
       try {
@@ -1459,11 +1463,58 @@ export async function lookupRecipientAddress(name: string): Promise<string | nul
         });
         const data = await res.json() as any;
         const ownerAddr = data?.data?.object?.owner?.owner?.address;
-        if (ownerAddr) return ownerAddr;
+        if (ownerAddr) {
+          rememberTargetReverse(ownerAddr, bare);
+          return ownerAddr;
+        }
       } catch {}
     }
     return null;
   } catch { return null; }
+}
+
+/**
+ * Opportunistic target→name cache. SuiNS only exposes *primary*
+ * reverse lookup via `defaultNameRecord`, so any wallet that's the
+ * target of a name but hasn't run `set_default` shows as hex
+ * everywhere. We populate this cache whenever the client resolves
+ * `@name → address` for any reason (sending, receiving, profile
+ * loads). Persisted to localStorage so subsequent sessions can
+ * render the friendly name immediately.
+ *
+ * A single address can be the target of multiple names — we store
+ * a list, most-recently-seen first. `getTargetReverseName` returns
+ * the first entry for rendering, so whichever name the user touched
+ * last wins.
+ */
+const _TARGET_REVERSE_KEY = 'ski:target-reverse:v1';
+const _targetReverseCache: Record<string, string[]> = (() => {
+  try {
+    const raw = localStorage.getItem(_TARGET_REVERSE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+})();
+
+function _persistTargetReverse(): void {
+  try { localStorage.setItem(_TARGET_REVERSE_KEY, JSON.stringify(_targetReverseCache)); } catch {}
+}
+
+export function rememberTargetReverse(address: string, bareName: string): void {
+  if (!address || !bareName) return;
+  const key = address.toLowerCase();
+  const name = bareName.replace(/\.sui$/i, '').toLowerCase();
+  const current = _targetReverseCache[key] ?? [];
+  // Move-to-front: drop any existing entry then prepend
+  const filtered = current.filter(n => n !== name);
+  filtered.unshift(name);
+  _targetReverseCache[key] = filtered.slice(0, 8);
+  _persistTargetReverse();
+}
+
+export function getTargetReverseName(address: string): string | null {
+  if (!address) return null;
+  const entries = _targetReverseCache[address.toLowerCase()];
+  return entries && entries.length > 0 ? entries[0] : null;
 }
 
 /** Reverse lookup: address → primary SuiNS name (without .sui suffix). */

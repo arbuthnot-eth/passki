@@ -2689,9 +2689,23 @@ async function lookupSuiNS(address: string): Promise<string | null> {
       if (exp > 0 && exp < now) continue;
       candidates.push({ name: domain.endsWith('.sui') ? domain : `${domain}.sui`, expiry: exp || Infinity });
     }
-    if (candidates.length === 0) return null;
-    candidates.sort((a, b) => b.expiry - a.expiry);
-    return candidates[0].name;
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.expiry - a.expiry);
+      return candidates[0].name;
+    }
+
+    // Last-resort fallback: a client-populated cache of names that
+    // resolved to this address at some point in the session (or in a
+    // prior session via localStorage). Catches the "target of a name
+    // with no primary and no owned NFT" case — as long as somebody's
+    // client has ever resolved the name → address pair, we render the
+    // friendly name. See rememberTargetReverse in thunder-stack.ts.
+    try {
+      const { getTargetReverseName } = await import('./client/thunder.js');
+      const cached = getTargetReverseName(normalized);
+      if (cached) return `${cached}.sui`;
+    } catch {}
+    return null;
   } catch {
     return null;
   }
