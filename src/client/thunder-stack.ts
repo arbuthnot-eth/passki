@@ -457,6 +457,10 @@ export async function sendThunder(opts: {
   senderName?: string;
   recipientName?: string;
   transfer?: { recipientAddress: string; amountMist: bigint };
+  /** User's intended USD amount — used verbatim in the encrypted
+   *  transfer note so it reflects what the user typed, not the
+   *  slippage-inflated SUI equivalent. */
+  intentUsd?: number;
   /** Optional file attachments — Seal-encrypted per file, uploaded to Walrus
    *  via the configured HTTP publisher. Limits enforced by the SDK. */
   files?: AttachmentFile[];
@@ -595,9 +599,23 @@ export async function sendThunder(opts: {
     // info the on-chain tx doesn't already publish. The 💸 prefix is
     // the render-side marker that styles the bubble green.
     if (hasTransfer) {
-      const amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
+      // Prefer the user's stated intent (what they typed in the input)
+      // over anything derived from the SUI amountMist. If intent is
+      // missing, fall back to the text regex, then finally to the
+      // mist → SUI conversion as a last resort.
+      let amtLabel = '';
+      if (typeof opts.intentUsd === 'number' && opts.intentUsd > 0) {
+        // Strip trailing .00 so "$1" stays "$1" instead of "$1.00".
+        amtLabel = String(opts.intentUsd).replace(/\.00?$/, '');
+      } else {
+        amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
+      }
       const _recipTag = opts.recipientName ? ` \u2192 @${opts.recipientName}` : '';
-      const _digestSuffix = _txDigest ? ` \u00b7 tx:${_txDigest.slice(0, 6)}` : '';
+      // Store the FULL digest so the render layer can build a working
+      // explorer link. Privacy unchanged — the entire note is encrypted
+      // before it hits the DO, and the on-chain tx it points to is a
+      // standard public Sui tx either way.
+      const _digestSuffix = _txDigest ? ` \u00b7 tx:${_txDigest}` : '';
       const transferNote = `\u{1F4B8} $${amtLabel}${_recipTag}${_digestSuffix}`;
       const noteBytes = padPlaintext(new TextEncoder().encode(transferNote));
       const noteEnv = await encryptWithRetry(groupId, noteBytes);

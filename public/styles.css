@@ -3665,13 +3665,26 @@ body {
   color: #4da2ff;
 }
 /* Transfer-note bubbles (emitted by sendThunder when a $ amount is
- * included) override the regular outbound/inbound palette with a
- * green treatment to signal "money changed hands." The text itself
- * is still Seal-encrypted on the DO; the color is purely render-side. */
+ * included) are system-level notices — they represent a transaction
+ * both parties witnessed, so they render centered with a green palette
+ * regardless of sender/receiver. Clickable when the stored note has a
+ * tx:<digest> suffix (new format) — opens Suivision in a new tab. */
 .ski-idle-bubble--transfer {
+  align-self: center !important;
   background: rgba(10, 40, 20, 0.88) !important;
   border-color: rgba(34, 197, 94, 0.7) !important;
   color: #4ade80 !important;
+  text-align: center;
+  text-decoration: none;
+}
+a.ski-idle-bubble--transfer {
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.12s;
+}
+a.ski-idle-bubble--transfer:hover {
+  background: rgba(10, 60, 30, 0.95) !important;
+  border-color: rgba(34, 197, 94, 1) !important;
+  transform: translateY(-1px);
 }
 .ski-idle-bubble-sender {
   font-size: 0.7rem;

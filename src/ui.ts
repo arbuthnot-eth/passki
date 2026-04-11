@@ -11642,6 +11642,10 @@ function bindEvents() {
                   senderName,
                   recipientName: recip,
                   transfer,
+                  // Pass the user's intended USD amount so the transfer
+                  // note reflects exactly what they typed, not the
+                  // slippage-inflated SUI equivalent.
+                  intentUsd: transferAmtUsd,
                   signAndExecute: async (txOrBytes: any) => {
                     if (sendBtn) sendBtn.innerHTML = `\u26a1 $${transferAmtUsd}\u2026`;
                     showToast(`\u26a1 Sending $${transferAmtUsd} to ${recip}`);
@@ -12173,14 +12177,29 @@ function bindEvents() {
         const fetchedBubbles = entries.slice(-20).map(m => {
           const isOut = m.senderAddress.toLowerCase() === myAddr;
           const baseCls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
-          // Transfer-note thunders start with the 💸 marker emitted by
-          // sendThunder's hasTransfer branch. Match the prefix and add
-          // a --transfer class so CSS can paint them green.
-          const isTransfer = /^\u{1F4B8}\s*\$/u.test(m.text);
-          const cls = isTransfer ? `${baseCls} ski-idle-bubble--transfer` : baseCls;
+          // Transfer-note thunders: both the new 💸 format and the
+          // legacy "⚡ $X sent" format render centered + green. The
+          // bubble becomes a clickable explorer link when the note
+          // includes a tx:<digest> suffix (new format only).
+          const _isTransfer = /^[\u{1F4B8}\u26A1]\s*(?:\$|\u00A5|\u20AC)/u.test(m.text) || /^[\u{1F4B8}\u26A1].*\$\d+.*\bsent\b/iu.test(m.text);
           const senderName = _rlCache[m.senderAddress.toLowerCase()] || m.senderAddress.slice(0, 8);
           const nameTag = !isOut ? `<span class="ski-idle-bubble-sender">${esc(senderName)}</span> ` : '';
-          return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
+          if (_isTransfer) {
+            const cls = `ski-idle-bubble--transfer`;
+            // Extract tx digest if present (Sui digests are base58 ~44 chars).
+            const _digestMatch = m.text.match(/tx:([A-Za-z0-9]{40,60})/);
+            const _digest = _digestMatch ? _digestMatch[1] : '';
+            // Visible label: drop the tx:<digest> tail so the bubble
+            // stays compact. The link itself carries the digest.
+            const _label = m.text.replace(/\s*\u00b7?\s*tx:[A-Za-z0-9]+\s*$/, '').trim();
+            const _inner = `${nameTag}${esc(_label)}`;
+            if (_digest) {
+              return `<a class="ski-idle-bubble ${cls}" href="https://suivision.xyz/txblock/${esc(_digest)}" target="_blank" rel="noopener noreferrer" data-id="${esc(m.messageId)}" title="Open on Suivision \u2197">${_inner}</a>`;
+            }
+            // Legacy bubble (no digest stored) — render as a non-link div.
+            return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${_inner}</div>`;
+          }
+          return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
         }).join('');
         // If the fetch came back empty but we had optimistic bubbles, keep them.
         const bubbles = fetchedBubbles || existingBubbleHtml;
