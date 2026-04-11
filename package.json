@@ -1,6 +1,6 @@
 {
   "name": "sui.ski",
-  "version": "3.1.52",
+  "version": "3.1.53",
   "description": ".Sui Key-In — .SKI once, everywhere.",
   "type": "module",
   "main": "public/dist/ski.js",
