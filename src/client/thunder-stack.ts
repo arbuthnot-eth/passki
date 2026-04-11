@@ -238,9 +238,31 @@ export function getThunderClient(): MessagingClient {
 
 let _warmer: (() => Promise<SessionKey>) | null = null;
 
-export async function warmThunderSession(): Promise<void> {
-  if (!_client || !_address || !_warmer) return;
-  try { await _warmer(); } catch (e) { console.warn('[thunder] warm session failed:', e instanceof Error ? e.message : e); }
+/**
+ * Best-effort restore of a cached Seal session key. Does NOT mint a
+ * fresh key — that happens on-demand in the encrypt/decrypt path. This
+ * means warm-on-connect never prompts the wallet, so a broken wallet
+ * signing backend (e.g. WaaP upstream outage) cannot block page load.
+ */
+export async function warmThunderSession(opts?: { address?: string }): Promise<void> {
+  try {
+    const addr = (opts?.address || _address || '').toLowerCase();
+    if (!addr || !_client) return;
+    const raw = localStorage.getItem(SK_STORAGE_KEY(addr));
+    if (!raw) return;
+    const exported = JSON.parse(raw) as ExportedSessionKey;
+    if (exported?.address?.toLowerCase() !== addr) return;
+    const expiresAtMs = exported.creationTimeMs + exported.ttlMin * 60_000;
+    if (expiresAtMs <= Date.now() + 60_000) return;
+    // Import into a Promise and stash so _loadOrMintSessionKey picks
+    // it up without having to re-parse or re-prompt.
+    const restored = SessionKey.import(exported, _client as never);
+    if (restored.isExpired()) return;
+    _sessionKeyPromise = Promise.resolve(restored);
+    console.log('[thunder] warmed Seal session key from cache, expires in', Math.round((expiresAtMs - Date.now()) / 60_000), 'min');
+  } catch (e) {
+    console.warn('[thunder] warm session restore failed (silent, will mint lazily on next op):', e instanceof Error ? e.message : e);
+  }
 }
 
 export function resetThunderClient() {

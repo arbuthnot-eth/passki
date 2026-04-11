@@ -11825,7 +11825,13 @@ function bindEvents() {
       // Storm is top-priority UI. When a convo opens, close every
       // competing panel (squids addr row, roster, rumble provisioning
       // panel) so the user's attention isn't split across stacked UIs.
-      const _closeCompetingPanels = () => {
+      // Regular function declaration so it hoists alongside the async
+      // function _expandIdleConvo below. `const` arrow functions live
+      // in TDZ until the declaration line runs; if _renderThunderComposePreview
+      // fires during setup and calls _expandIdleConvo (via the auto-open
+      // path), we hit "Cannot access _closeCompetingPanels before
+      // initialization" because the const line hasn't executed yet.
+      function _closeCompetingPanels() {
         const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
         const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
         const rumblePanel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
@@ -11837,7 +11843,7 @@ function bindEvents() {
         if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
         if (rumblePanel && !rumblePanel.hasAttribute('hidden')) rumblePanel.setAttribute('hidden', '');
         squidBtn?.classList.remove('ski-idle-quick-btn--active');
-      };
+      }
       // ─── Thunder history stale-while-revalidate cache ────────────────
       // Decrypted messages are cached in localStorage (AES-GCM encrypted)
       // keyed by groupId so re-opening a storm paints instantly from the
