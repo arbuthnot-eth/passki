@@ -3712,10 +3712,15 @@ body {
   /* Relative so the absolute-positioned sender-name badge can sit
    * over the top-left edge of the bubble like a little tag. */
   position: relative;
-  /* Extra top margin so the badge (which pokes up ~10px) doesn't
-   * collide with the previous bubble. */
-  margin-top: 14px !important;
+  /* Tight gap — the sender-badge is only shown on incoming transfers,
+   * so outgoing transfers can sit right next to the previous bubble.
+   * .ski-idle-bubble--transfer:has(.ski-idle-bubble-sender) below
+   * restores the extra breathing room when a badge is present. */
+  margin-top: 4px !important;
   transition: background 0.3s, border-color 0.3s, color 0.3s, opacity 0.3s;
+}
+.ski-idle-bubble--transfer:has(.ski-idle-bubble-sender) {
+  margin-top: 14px !important;
 }
 /* Settled transfer — claimed by the recipient OR recalled by the
  * sender, either by a local click or a peer-side action picked up
