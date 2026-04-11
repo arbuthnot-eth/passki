@@ -3207,9 +3207,41 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           await this._forwardUsdcToTarget(coin, intent.suiAddress);
           break;
         }
+        case 2: { // QUEST — explicit quest-fill path.
+          // Still attest the collateral so the iUSD cache reflects
+          // the deposit, then fill the specific bounty if the intent
+          // carries a bountyId in params, else fall through to the
+          // auto-find-and-fill path used by iusd-cache.
+          const collateralMist = coin.balance * 1000n;
+          try {
+            const attestResult = await this.attestCollateral({ collateralValueMist: String(collateralMist) });
+            console.log(`[treasury/dispatch:quest] attest ${Number(coin.balance) / 1e6} USDC digest=${attestResult.digest || 'failed'}`);
+          } catch (e) {
+            console.error('[treasury/dispatch:quest] attest failed:', e);
+          }
+          const bountyId = (intent.params as Record<string, unknown> | null)?.bountyId as string | undefined;
+          if (bountyId) {
+            console.log(`[treasury/dispatch:quest] filling targeted bounty ${bountyId}`);
+            try { await this.fillQuestBounty(bountyId); } catch (e) {
+              console.error('[treasury/dispatch:quest] targeted fill failed:', e);
+            }
+          } else {
+            const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+            const open = bounties.find(b => b.recipient === intent.suiAddress && b.status === 'open');
+            if (open) {
+              console.log(`[treasury/dispatch:quest] filling discovered bounty ${open.id}`);
+              try { await this.fillQuestBounty(open.id); } catch (e) {
+                console.error('[treasury/dispatch:quest] auto fill failed:', e);
+              }
+            } else {
+              console.log(`[treasury/dispatch:quest] no open bounty for ${intent.suiAddress.slice(0, 10)}… — attested only`);
+            }
+          }
+          break;
+        }
         case 0: // IUSD_CACHE (default)
         default: {
-          if (route !== 0 && route !== 7) {
+          if (route !== 0 && route !== 2 && route !== 7) {
             console.warn(`[treasury/dispatch:${routeName_}] route not yet implemented — falling back to iusd-cache`);
           }
           // USDC is 1:1 stable — collateral MIST (9-decimal) = raw * 1000.
