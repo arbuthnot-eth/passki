@@ -9443,7 +9443,7 @@ function bindEvents() {
             </div>
             <div class="ski-idle-thunder-input-wrap">
               <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypted thunder">
-              <button class="ski-idle-thunder-clear" id="ski-idle-thunder-clear" type="button" title="Clear" style="display:none">\u2715</button>
+              <button class="ski-idle-thunder-clear" id="ski-idle-thunder-clear" type="button" title="Clear" style="display:none" hidden>\u2715</button>
               <div class="ski-idle-thunder-mirror" id="ski-idle-thunder-mirror" aria-hidden="true"></div>
               <div class="ski-idle-thunder-send-group">
                 <button class="ski-idle-quick-btn ski-idle-quick-btn--storm" id="ski-idle-thunder-send" type="button" title="">\u26c8\ufe0f</button>
@@ -10084,7 +10084,11 @@ function bindEvents() {
         const val = _idleThunderInputEl?.value ?? '';
         const active = _idleThunderInputEl === document.activeElement || !!val;
         _thunderRow?.classList.toggle('ski-idle-thunder-row--active', active);
-        if (_thunderClearBtn) _thunderClearBtn.style.display = val ? '' : 'none';
+        // Clear button hidden permanently — user wanted it out.
+        // The paperclip chip row + the name-input X cover the clear
+        // affordance elsewhere; keeping the thunder-input free of
+        // in-row dismiss buttons prevents accidental nukes mid-type.
+        if (_thunderClearBtn) _thunderClearBtn.style.display = 'none';
         // Icon swap:
         //   - valid amount AND not over budget → ▶ green play (send transfer)
         //   - text present (no amount) → ⚡ bolt (send thunder)
@@ -10098,7 +10102,14 @@ function bindEvents() {
         const hasAt = val.includes('@');
         const parsedAmt = hasAmount ? parseFloat((val.match(/\$(\d+(?:\.\d*)?)/) ?? [])[1] ?? '') : NaN;
         const overBudget = hasAmount && !isNaN(parsedAmt) && parsedAmt > (app.usd ?? 0);
-        const validAmount = hasAmount && !isNaN(parsedAmt) && parsedAmt > 0 && !overBudget;
+        // Green-ready state: any `$` in the input that isn't over
+        // budget flips the button green, matching the input
+        // border's --amount class. Intent is the trigger, not a
+        // fully-parsed amount — user can finish typing digits
+        // with the button already glowing at them. Partial amounts
+        // (just `@name$`) still fail at send time with a clean
+        // 'invalid amount' toast rather than a cryptic parse error.
+        const validAmount = hasAmount && !overBudget;
         if (_sendBtnEl && !_sendBtnEl.dataset.questMode && !_sendBtnEl.querySelector('.ski-idle-thunder-spinner')) {
           const _hasSendableText = val.replace(/@[a-z0-9-]+/gi, '').trim().length > 0;
           const _convoOpen = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
@@ -10114,7 +10125,9 @@ function bindEvents() {
           _sendBtnEl.classList.toggle('ski-idle-thunder-send--amount', validAmount);
           _sendBtnEl.classList.toggle('ski-idle-thunder-send--over', overBudget);
           if (validAmount) {
-            _sendBtnEl.title = `Send $${parsedAmt} · press Enter`;
+            _sendBtnEl.title = !isNaN(parsedAmt) && parsedAmt > 0
+              ? `Send $${parsedAmt} · press Enter`
+              : 'Type an amount · press Enter to send';
           }
         }
         // Color modes: green (valid amount), red (over budget), yellow (thunder only)
@@ -10144,7 +10157,18 @@ function bindEvents() {
         _updateThunderRowActive();
         _renderThunderComposePreview();
       });
-      _idleThunderInputEl?.addEventListener('focus', () => { _freezeGif(); _updateThunderRowActive(); });
+      _idleThunderInputEl?.addEventListener('focus', () => {
+        _freezeGif();
+        _updateThunderRowActive();
+        // Always cursor-to-end on focus. Prevents the native
+        // "select-all" focus behavior on tab-in and guarantees the
+        // user can keep typing from wherever they left off.
+        const el = _idleThunderInputEl;
+        if (el) {
+          const len = el.value.length;
+          try { el.setSelectionRange(len, len); } catch {}
+        }
+      });
       _idleThunderInputEl?.addEventListener('blur', () => {
         const val = _idleThunderInputEl?.value?.trim() ?? '';
         // Clear if only @mention with no actual message
@@ -10184,7 +10208,19 @@ function bindEvents() {
           try { el.setSelectionRange(Math.max(start, tag.len), Math.max(end, tag.len)); } catch {}
         }
       };
-      _idleThunderInputEl?.addEventListener('click', _clampCursorPastTag);
+      /** On focus/click into the input, always move the cursor to
+       *  the end of whatever's already typed. Prevents accidental
+       *  middle-of-word insertions and never clears the existing
+       *  content on click. The keydown handler further down still
+       *  enforces the @name tag boundary for cursor movement. */
+      const _focusAtEnd = () => {
+        const el = _idleThunderInputEl;
+        if (!el) return;
+        const len = el.value.length;
+        try { el.setSelectionRange(len, len); } catch {}
+      };
+      _idleThunderInputEl?.addEventListener('click', _focusAtEnd);
+      _idleThunderInputEl?.addEventListener('mouseup', _focusAtEnd);
       _idleThunderInputEl?.addEventListener('keyup', _clampCursorPastTag);
       _idleThunderInputEl?.addEventListener('select', _clampCursorPastTag);
       _idleThunderInputEl?.addEventListener('keydown', (ev) => {
