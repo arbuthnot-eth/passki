@@ -27,9 +27,12 @@ import { toBase64 } from '@mysten/sui/utils';
 
 import { raceExecuteTransaction, GQL_URL } from './rpc.js';
 
-// Must match client/thunder-stack.ts THUNDER_IOU_PACKAGE
+// Must match client/thunder-stack.ts THUNDER_IOU_PACKAGE /
+// THUNDER_IOU_SHIELDED_PACKAGE.
 const THUNDER_IOU_PACKAGE = '0x5a80b9753d6ccce11dc1f9a5039d9430d3e43a216f82f957ef11df9cb5c4dc79';
 const IOU_TYPE = `${THUNDER_IOU_PACKAGE}::iou::Iou`;
+const THUNDER_IOU_SHIELDED_PACKAGE = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782';
+const SHIELDED_TYPE = `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::ShieldedVault`;
 
 interface SweeperEnv {
   SHADE_KEEPER_PRIVATE_KEY?: string;
@@ -42,14 +45,15 @@ interface IouSnapshot {
   recipient: string;
   expiresMs: number;
   amountMist: string;
+  /** 'legacy' → thunder_iou::Iou, 'shielded' → thunder_iou_shielded::ShieldedVault */
+  kind: 'legacy' | 'shielded';
 }
 
-/** Fetch all live Thunder IOU shared objects. */
-async function fetchLiveIous(): Promise<IouSnapshot[]> {
+/** Fetch all live shared escrows of a given type. Generic over both
+ *  the legacy thunder_iou::Iou and the newer thunder_iou_shielded::
+ *  ShieldedVault so one helper can scan either pool. */
+async function fetchLiveVaults(type: string, kind: 'legacy' | 'shielded'): Promise<IouSnapshot[]> {
   const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-  // Paginate through all objects of the Iou type. In practice we
-  // expect < 1000 live IOUs at any given time; 200 per page with 5
-  // page max is plenty of headroom.
   const out: IouSnapshot[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < 5; page++) {
@@ -65,7 +69,7 @@ async function fetchLiveIous(): Promise<IouSnapshot[]> {
     }`;
     const res = await (gql as unknown as { query: (opts: { query: string; variables: Record<string, unknown> }) => Promise<{ data?: unknown }> }).query({
       query,
-      variables: { type: IOU_TYPE, cursor },
+      variables: { type, cursor },
     });
     type GqlNode = {
       address: string;
@@ -84,6 +88,7 @@ async function fetchLiveIous(): Promise<IouSnapshot[]> {
         recipient: String(json.recipient || ''),
         expiresMs: Number(json.expires_ms || 0),
         amountMist: String(json.balance || '0'),
+        kind,
       });
     }
     const pi = data?.objects?.pageInfo;
@@ -93,13 +98,27 @@ async function fetchLiveIous(): Promise<IouSnapshot[]> {
   return out;
 }
 
+/** Fetch all live escrows across both the legacy Iou and the shielded
+ *  ShieldedVault types. Union result, tagged per entry so the
+ *  recall builder can target the right move function. */
+async function fetchLiveIous(): Promise<IouSnapshot[]> {
+  const [legacy, shielded] = await Promise.all([
+    fetchLiveVaults(IOU_TYPE, 'legacy').catch(() => [] as IouSnapshot[]),
+    fetchLiveVaults(SHIELDED_TYPE, 'shielded').catch(() => [] as IouSnapshot[]),
+  ]);
+  return [...legacy, ...shielded];
+}
+
 /** Build + sign + submit a recall PTB for a single expired IOU. */
 async function recallOne(iou: IouSnapshot, keypair: Ed25519Keypair): Promise<{ ok: boolean; digest?: string; error?: string }> {
   try {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(keypair.toSuiAddress()));
+    const recallTarget = iou.kind === 'shielded'
+      ? `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::recall`
+      : `${THUNDER_IOU_PACKAGE}::iou::recall`;
     tx.moveCall({
-      target: `${THUNDER_IOU_PACKAGE}::iou::recall`,
+      target: recallTarget,
       arguments: [
         tx.sharedObjectRef({ objectId: iou.address, initialSharedVersion: iou.version, mutable: true }),
         tx.object('0x6'),
