@@ -735,9 +735,28 @@ export async function getThunders(opts: {
             envelope: { ciphertext, nonce, keyVersion: kv },
           });
           text = new TextDecoder().decode(unpadPlaintext(plaintext));
-        } catch {
-          // Fallback: treat as plaintext (legacy or unencrypted messages)
-          try { text = new TextDecoder().decode(ciphertext); } catch { text = m.encryptedText || ''; }
+        } catch (decryptErr) {
+          // Log the first decrypt failure per group so binary garbage
+          // doesn't silently land in the UI. Two legitimate fallbacks:
+          //   1. legacy unencrypted messages from pre-Seal days
+          //   2. plaintext system notifications from server agents
+          // Anything else is a real decrypt failure (missing perms,
+          // wrong key version) and should surface to devtools.
+          try { console.warn('[thunder] decrypt failed for', groupId, 'msg', m.messageId || m.order, ':', decryptErr instanceof Error ? decryptErr.message : decryptErr); } catch {}
+          // Heuristic: if the ciphertext bytes look like printable UTF-8
+          // plaintext, render them. Otherwise drop the message — binary
+          // garbage in chat bubbles is strictly worse than silence.
+          try {
+            const candidate = new TextDecoder('utf-8', { fatal: true }).decode(ciphertext);
+            // Printable-only check: no control chars except \n \t \r
+            if (/^[\x20-\x7E\u00A0-\uFFFF\n\r\t]+$/.test(candidate) && candidate.length < 4096) {
+              text = candidate;
+            } else {
+              text = '\u{1F512} [could not decrypt]';
+            }
+          } catch {
+            text = '\u{1F512} [could not decrypt]';
+          }
         }
         // P1.1 — prefer senderIndex → participants[] lookup, fall back to legacy senderAddress
         const resolvedSender = typeof m.senderIndex === 'number' && m.senderIndex >= 0 && m.senderIndex < participants.length
