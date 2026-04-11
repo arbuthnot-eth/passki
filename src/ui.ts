@@ -88,8 +88,10 @@ const ADDR_RESTORE_MS           = 1_200;    // address restore after DOM update
 const MODAL_REOPEN_MS           = 180;      // modal reopen after disconnect
 
 /** Sign a sponsored transaction: user signs, then fetch sponsor sig, submit both.
- *  Falls back to signAndExecuteTransaction for WaaP (signTransaction is broken). */
-async function signAndExecuteSponsoredTx(txBytes: Uint8Array): Promise<{ digest: string }> {
+ *  Falls back to signAndExecuteTransaction for WaaP (signTransaction is broken).
+ *  `skipSuinsGate`: pass true for permissionless ops (thunder vault claim/recall)
+ *  so zero-SUI recipients without a SuiNS name can still redeem. */
+async function signAndExecuteSponsoredTx(txBytes: Uint8Array, skipSuinsGate = false): Promise<{ digest: string }> {
   // WaaP: signTransaction is broken (iframe re-serialization), skip sponsorship
   const ws = getState();
   if (/waap/i.test(ws.walletName || '')) {
@@ -103,7 +105,12 @@ async function signAndExecuteSponsoredTx(txBytes: Uint8Array): Promise<{ digest:
   const res = await fetch('/api/sponsor-gas', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ txBytes: b64, senderAddress: getState().address }),
+    body: JSON.stringify({
+      txBytes: b64,
+      // Omit senderAddress to bypass SuiNS ownership check — used for
+      // permissionless claim/recall so anyone can redeem without SUI.
+      ...(skipSuinsGate ? {} : { senderAddress: getState().address }),
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Sponsor signing failed' })) as { error?: string };
@@ -12554,7 +12561,13 @@ function bindEvents() {
           // New format carries a tx:<digest> suffix so the UI can
           // look up the on-chain IOU escrow object and surface a
           // claim (recipient) / recall (sender, post-TTL) action.
-          const _isTransfer = /^[\u{1F4B8}\u26A1]\s*(?:\$|\u00A5|\u20AC)/u.test(m.text) || /^[\u{1F4B8}\u26A1].*\$\d+.*\bsent\b/iu.test(m.text);
+          // Accept three transfer-note shapes:
+          //   legacy "⚡ $X sent"
+          //   old    "💸 $1 → @ralph"
+          //   new    "@ralph ← 💸 $1" (recipient-first layout)
+          const _isTransfer = /^[\u{1F4B8}\u26A1]\s*(?:\$|\u00A5|\u20AC)/u.test(m.text)
+            || /^@[a-z0-9-]+\s*\u2190\s*[\u{1F4B8}\u26A1]\s*\$/iu.test(m.text)
+            || /^[\u{1F4B8}\u26A1].*\$\d+.*\bsent\b/iu.test(m.text);
           const senderName = _rlCache[m.senderAddress.toLowerCase()] || m.senderAddress.slice(0, 8);
           const nameTag = !isOut ? `<span class="ski-idle-bubble-sender">${esc(senderName)}</span> ` : '';
           if (_isTransfer) {
@@ -12754,8 +12767,13 @@ function bindEvents() {
               // then dispatch to the right claim/recall helpers.
               (async () => {
                 try {
-                  const { lookupAnyVaultFromDigest, buildClaimIouTx, buildRecallIouTx } = await import('./client/thunder.js');
+                  const { lookupAnyVaultFromDigest, buildClaimIouTx, buildRecallIouTx, fetchThunderSponsorInfo } = await import('./client/thunder.js');
                   const ref = await lookupAnyVaultFromDigest(_txDigest);
+                  // Non-WaaP wallets fetch sponsor info so recipients
+                  // with zero SUI can still claim via ultron gas.
+                  // WaaP stays on user-pays (broken signTransaction).
+                  const _isWaaPClaim = /waap/i.test(getState().walletName || '');
+                  const _claimSponsor = _isWaaPClaim ? null : await fetchThunderSponsorInfo();
                   if (!ref) {
                     showToast('Escrow already settled — opening explorer');
                     _openExplorer();
@@ -12802,11 +12820,14 @@ function bindEvents() {
                           vaultInitialSharedVersion: ref.initialSharedVersion,
                           blinding,
                           amountMist,
+                          sponsor: _claimSponsor ?? undefined,
                         });
                       } else {
-                        bytes = await buildClaimIouTx(ref.objectId, ref.initialSharedVersion);
+                        bytes = await buildClaimIouTx(ref.objectId, ref.initialSharedVersion, _claimSponsor ?? undefined);
                       }
-                      const r = await signAndExecuteTransaction(bytes);
+                      const r = _claimSponsor
+                        ? await signAndExecuteSponsoredTx(bytes, true)
+                        : await signAndExecuteTransaction(bytes);
                       const digest = (r as any)?.digest || '';
                       showToast(digest ? `\u2705 Claimed — ${digest.slice(0, 10)}\u2026` : '\u2705 Claimed');
                       // Paint the bubble as settled — escrow is closed.
@@ -12828,11 +12849,14 @@ function bindEvents() {
                           sender: getState().address || '',
                           vaultObjectId: ref.objectId,
                           vaultInitialSharedVersion: ref.initialSharedVersion,
+                          sponsor: _claimSponsor ?? undefined,
                         });
                       } else {
-                        bytes = await buildRecallIouTx(ref.objectId, ref.initialSharedVersion);
+                        bytes = await buildRecallIouTx(ref.objectId, ref.initialSharedVersion, _claimSponsor ?? undefined);
                       }
-                      const r = await signAndExecuteTransaction(bytes);
+                      const r = _claimSponsor
+                        ? await signAndExecuteSponsoredTx(bytes, true)
+                        : await signAndExecuteTransaction(bytes);
                       const digest = (r as any)?.digest || '';
                       showToast(digest ? `\u21a9\ufe0f Recalled — ${digest.slice(0, 10)}\u2026` : '\u21a9\ufe0f Recalled');
                       // Paint the bubble as settled — balance returned.
@@ -13570,7 +13594,10 @@ function bindEvents() {
           try {
             const cached = await _loadThunderHist(_purgeGid);
             if (cached) {
-              const keepers = cached.filter(m => /^[\u{1F4B8}\u26A1]\s*\$/u.test(m.text) || /^[\u{1F4B8}\u26A1].*\$\d+.*\bsent\b/iu.test(m.text));
+              const keepers = cached.filter(m =>
+                /^[\u{1F4B8}\u26A1]\s*\$/u.test(m.text)
+                || /^@[a-z0-9-]+\s*\u2190\s*[\u{1F4B8}\u26A1]\s*\$/iu.test(m.text)
+                || /^[\u{1F4B8}\u26A1].*\$\d+.*\bsent\b/iu.test(m.text));
               if (keepers.length > 0) await _saveThunderHist(_purgeGid, keepers);
               else try { localStorage.removeItem(_THUNDER_HIST_KEY(_purgeGid)); } catch {}
             }

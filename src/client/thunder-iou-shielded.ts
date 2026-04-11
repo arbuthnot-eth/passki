@@ -111,9 +111,21 @@ export async function buildShieldedClaimTx(opts: {
   vaultInitialSharedVersion: number;
   blinding: Uint8Array;
   amountMist: bigint;
+  sponsor?: {
+    sponsorAddress: string;
+    gasCoins: Array<{ objectId: string; version: string; digest: string }>;
+  };
 }): Promise<Uint8Array> {
   const tx = new Transaction();
   tx.setSender(normalizeSuiAddress(opts.sender));
+  if (opts.sponsor) {
+    tx.setGasOwner(opts.sponsor.sponsorAddress);
+    tx.setGasPayment(opts.sponsor.gasCoins.map(c => ({
+      objectId: c.objectId,
+      version: c.version,
+      digest: c.digest,
+    })));
+  }
   tx.moveCall({
     target: `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::claim`,
     arguments: [
@@ -136,9 +148,21 @@ export async function buildShieldedRecallTx(opts: {
   sender: string;
   vaultObjectId: string;
   vaultInitialSharedVersion: number;
+  sponsor?: {
+    sponsorAddress: string;
+    gasCoins: Array<{ objectId: string; version: string; digest: string }>;
+  };
 }): Promise<Uint8Array> {
   const tx = new Transaction();
   tx.setSender(normalizeSuiAddress(opts.sender));
+  if (opts.sponsor) {
+    tx.setGasOwner(opts.sponsor.sponsorAddress);
+    tx.setGasPayment(opts.sponsor.gasCoins.map(c => ({
+      objectId: c.objectId,
+      version: c.version,
+      digest: c.digest,
+    })));
+  }
   tx.moveCall({
     target: `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::recall`,
     arguments: [

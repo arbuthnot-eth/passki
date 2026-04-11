@@ -670,13 +670,17 @@ export async function sendThunder(opts: {
       } else {
         amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
       }
-      const _recipTag = opts.recipientName ? ` \u2192 @${opts.recipientName}` : '';
+      // Recipient-first layout: "@ralph ← 💸 $1 · tx:abcd"
+      // Recipient reads left-to-right as "I received $1" — the arrow
+      // visually points to the name on the left and the money sits on
+      // the right, matching the intuition of incoming value.
+      const _recipTag = opts.recipientName ? `@${opts.recipientName} \u2190 ` : '';
       // Store the FULL digest so the render layer can build a working
       // explorer link. Privacy unchanged — the entire note is encrypted
       // before it hits the DO, and the on-chain tx it points to is a
       // standard public Sui tx either way.
       const _digestSuffix = _txDigest ? ` \u00b7 tx:${_txDigest}` : '';
-      const transferNote = `\u{1F4B8} $${amtLabel}${_recipTag}${_digestSuffix}`;
+      const transferNote = `${_recipTag}\u{1F4B8} $${amtLabel}${_digestSuffix}`;
       const noteBytes = padPlaintext(new TextEncoder().encode(transferNote));
       const noteEnv = await encryptWithRetry(groupId, noteBytes);
       await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
@@ -1036,10 +1040,46 @@ export async function lookupIouFromDigest(digest: string): Promise<{ objectId: s
   }
 }
 
+/** Shared sponsor-gas shape passed to claim/recall builders. */
+export interface ThunderSponsor {
+  sponsorAddress: string;
+  gasCoins: Array<{ objectId: string; version: string; digest: string }>;
+}
+
+/** Apply sponsor gas-owner + gas-payment to a Transaction, no-op if
+ *  `sponsor` is falsy. Shared by all 4 claim/recall builders so a
+ *  recipient with zero SUI can still claim via ultron-sponsored gas. */
+function _applySponsor(tx: Transaction, sponsor?: ThunderSponsor): void {
+  if (!sponsor) return;
+  tx.setGasOwner(sponsor.sponsorAddress);
+  tx.setGasPayment(sponsor.gasCoins.map(c => ({
+    objectId: c.objectId,
+    version: c.version,
+    digest: c.digest,
+  })));
+}
+
+/** Fetch `/api/sponsor-info` — returns null on any failure (caller
+ *  falls through to user-paid gas). */
+export async function fetchThunderSponsorInfo(): Promise<ThunderSponsor | null> {
+  try {
+    const r = await fetch('/api/sponsor-info');
+    if (!r.ok) return null;
+    const j = await r.json() as { sponsorAddress?: string; gasCoins?: ThunderSponsor['gasCoins'] };
+    if (!j.sponsorAddress || !j.gasCoins?.length) return null;
+    return { sponsorAddress: j.sponsorAddress, gasCoins: j.gasCoins };
+  } catch { return null; }
+}
+
 /** Build a claim PTB for the given IOU shared object. Recipient only. */
-export async function buildClaimIouTx(iouObjectId: string, initialSharedVersion: number): Promise<Uint8Array> {
+export async function buildClaimIouTx(
+  iouObjectId: string,
+  initialSharedVersion: number,
+  sponsor?: ThunderSponsor,
+): Promise<Uint8Array> {
   const tx = new Transaction();
   tx.setSender(normalizeSuiAddress(_address));
+  _applySponsor(tx, sponsor);
   tx.moveCall({
     target: `${THUNDER_IOU_PACKAGE}::iou::claim`,
     arguments: [
@@ -1052,9 +1092,14 @@ export async function buildClaimIouTx(iouObjectId: string, initialSharedVersion:
 }
 
 /** Build a recall PTB. Permissionless after TTL expiry — balance goes to sender. */
-export async function buildRecallIouTx(iouObjectId: string, initialSharedVersion: number): Promise<Uint8Array> {
+export async function buildRecallIouTx(
+  iouObjectId: string,
+  initialSharedVersion: number,
+  sponsor?: ThunderSponsor,
+): Promise<Uint8Array> {
   const tx = new Transaction();
   tx.setSender(normalizeSuiAddress(_address));
+  _applySponsor(tx, sponsor);
   tx.moveCall({
     target: `${THUNDER_IOU_PACKAGE}::iou::recall`,
     arguments: [

@@ -20,6 +20,8 @@ export {
   isVaultLive,
   buildClaimIouTx,
   buildRecallIouTx,
+  fetchThunderSponsorInfo,
+  type ThunderSponsor,
   subscribeThunderStream,
   type ThunderStreamEvent,
   type ThunderStreamHandle,
