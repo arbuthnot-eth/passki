@@ -2844,14 +2844,25 @@ body {
   z-index: 1;
 }
 .ski-idle-ns-input-wrap {
-  flex: 1;
+  /* Claim ALL leftover horizontal space in the row so the name
+   * input visually extends from the status icon on the left right
+   * up to the Storm action button. flex-basis: 0 lets the wrap
+   * start from zero-width and grow entirely from the flex-grow
+   * share instead of a content-based baseline. */
+  flex: 1 1 0;
   position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
 }
 .ski-idle-ns-input {
+  /* Flex-grow to fill the wrap so the pill extends all the way to
+   * the .sui label on the right regardless of how short the typed
+   * name is. Without this, the input collapses to its intrinsic
+   * content width inside the flex wrap and leaves a gap. */
+  flex: 1 1 auto;
   width: 100%;
+  min-width: 0;
   background: rgba(10, 10, 15, 0.78);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
@@ -2980,8 +2991,10 @@ body {
 .ski-idle-storm-purge {
   all: unset;
   flex-shrink: 0;
-  /* Pin hard-right so it doesn't shift when the row content varies. */
-  margin-left: 4px;
+  /* Negative margin collapses the 6px row gap between Storm and ×
+   * down to just 2px — they should read as a paired cluster pinned
+   * to the right edge, not two separate affordances. */
+  margin-left: -4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
