@@ -25,10 +25,20 @@ const app = new Hono<{ Bindings: Env }>();
 // Sufficient for edge abuse prevention; not a substitute for CF Rate Limiting rules.
 const _rateCounters = new Map<string, { count: number; resetAt: number }>();
 const RATE_WINDOW_MS = 60_000; // 1 minute
-const RATE_LIMIT_DEFAULT = 60; // 60 req/min per IP
-const RATE_LIMIT_WRITE = 20;   // 20 req/min for mutating endpoints
+const RATE_LIMIT_DEFAULT = 240; // 240 req/min per IP (4/s steady)
+const RATE_LIMIT_WRITE = 120;   // 120 req/min for mutating endpoints
+// Timestream storm routes (thunder send/fetch/delete/purge-all) are
+// exempt from the write limiter entirely — they're pure user data
+// flowing through the DO which enforces its own per-participant auth,
+// and bulk operations like strike/purge can legitimately burst past
+// the generic write cap in a single user gesture.
+const RATE_LIMIT_EXEMPT_PREFIXES = ['/api/timestream/'];
 
 app.use('/api/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname;
+  if (RATE_LIMIT_EXEMPT_PREFIXES.some(p => path.startsWith(p))) {
+    return next();
+  }
   const ip = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown';
   const isWrite = c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'DELETE';
   const limit = isWrite ? RATE_LIMIT_WRITE : RATE_LIMIT_DEFAULT;
