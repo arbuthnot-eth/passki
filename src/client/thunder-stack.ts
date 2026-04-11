@@ -933,6 +933,25 @@ export async function lookupAnyVaultFromDigest(digest: string): Promise<{ object
   }
 }
 
+/**
+ * Check whether an escrow object is still live on-chain. Returns
+ * false when the object has been consumed (claim/recall destroyed
+ * the UID) so the UI can paint the bubble as "settled". Cheap —
+ * a single GraphQL lookup, no effects parsing.
+ */
+export async function isVaultLive(objectId: string): Promise<boolean> {
+  if (!objectId) return false;
+  try {
+    const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    const res = await (gql as any).query({
+      query: `query($a: SuiAddress!) { object(address: $a) { version } }`,
+      variables: { a: objectId },
+    });
+    const version = res?.data?.object?.version;
+    return version != null;
+  } catch { return false; }
+}
+
 /** Look up the first Thunder IOU object created by a given tx digest. */
 export async function lookupIouFromDigest(digest: string): Promise<{ objectId: string; initialSharedVersion: number } | null> {
   if (!digest) return null;

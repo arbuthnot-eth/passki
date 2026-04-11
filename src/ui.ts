@@ -12288,6 +12288,34 @@ function bindEvents() {
         // up the freshly painted bubbles (the button is gated on
         // convo-visible + at-least-one-bubble).
         _renderThunderComposePreview?.();
+        // Peer-side settlement detection: for every transfer bubble
+        // with a stored tx digest, look up the on-chain vault object
+        // and mark the bubble as settled if it's been consumed by a
+        // claim or recall. Runs concurrently in the background —
+        // doesn't block the render path.
+        (async () => {
+          try {
+            const { lookupAnyVaultFromDigest, isVaultLive } = await import('./client/thunder.js');
+            const _transferBubbles = Array.from(convoEl.querySelectorAll<HTMLElement>('.ski-idle-bubble--transfer[data-tx]'));
+            await Promise.all(_transferBubbles.map(async (b) => {
+              if (b.classList.contains('ski-idle-bubble--transfer-settled')) return;
+              const tx = b.dataset.tx || '';
+              if (!tx) return;
+              const ref = await lookupAnyVaultFromDigest(tx);
+              if (!ref) {
+                // Can't find the creation record anymore (indexer lag
+                // or old digest format) — leave the bubble live.
+                return;
+              }
+              const live = await isVaultLive(ref.objectId);
+              if (!live) {
+                b.classList.add('ski-idle-bubble--transfer-settled');
+              }
+            }));
+          } catch (e) {
+            console.warn('[iou] settlement poll failed:', e instanceof Error ? e.message : e);
+          }
+        })();
         // Wire the identity header: tap a party card → render a QR popover
         // encoding https://<name>.sui.ski. The popover is a sibling that lives
         // inside the convo container and traps clicks to dismiss itself.
@@ -12465,6 +12493,8 @@ function bindEvents() {
                       const r = await signAndExecuteTransaction(bytes);
                       const digest = (r as any)?.digest || '';
                       showToast(digest ? `\u2705 Claimed — ${digest.slice(0, 10)}\u2026` : '\u2705 Claimed');
+                      // Paint the bubble as settled — escrow is closed.
+                      _bubEl.classList.add('ski-idle-bubble--transfer-settled');
                     } catch (err) {
                       const msg = err instanceof Error ? err.message : String(err);
                       if (/reject|cancel/i.test(msg)) return;
@@ -12489,6 +12519,8 @@ function bindEvents() {
                       const r = await signAndExecuteTransaction(bytes);
                       const digest = (r as any)?.digest || '';
                       showToast(digest ? `\u21a9\ufe0f Recalled — ${digest.slice(0, 10)}\u2026` : '\u21a9\ufe0f Recalled');
+                      // Paint the bubble as settled — balance returned.
+                      _bubEl.classList.add('ski-idle-bubble--transfer-settled');
                     } catch (err) {
                       const msg = err instanceof Error ? err.message : String(err);
                       if (/reject|cancel/i.test(msg)) return;

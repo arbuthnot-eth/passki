@@ -3715,6 +3715,23 @@ body {
   /* Extra top margin so the badge (which pokes up ~10px) doesn't
    * collide with the previous bubble. */
   margin-top: 14px !important;
+  transition: background 0.3s, border-color 0.3s, color 0.3s, opacity 0.3s;
+}
+/* Settled transfer — claimed by the recipient OR recalled by the
+ * sender, either by a local click or a peer-side action picked up
+ * via the live vault-exists poll. Paints the bubble gray so the
+ * user can see at a glance that the escrow is closed. Click still
+ * opens the explorer link. */
+.ski-idle-bubble--transfer-settled {
+  background: rgba(30, 30, 36, 0.88) !important;
+  border-color: rgba(148, 163, 184, 0.5) !important;
+  color: #94a3b8 !important;
+  opacity: 0.75;
+}
+.ski-idle-bubble--transfer-settled .ski-idle-bubble-sender {
+  background: rgba(20, 20, 26, 0.95) !important;
+  border-color: rgba(148, 163, 184, 0.4) !important;
+  color: #cbd5e1 !important;
 }
 /* Sender side — gold outline to signal "you locked these funds".
  * The green fill stays (it's still a transfer) but the border and

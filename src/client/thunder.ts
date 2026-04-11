@@ -17,6 +17,7 @@ export {
   setCachedKeyVersion,
   lookupIouFromDigest,
   lookupAnyVaultFromDigest,
+  isVaultLive,
   buildClaimIouTx,
   buildRecallIouTx,
   subscribeThunderStream,
