@@ -13124,14 +13124,13 @@ function bindEvents() {
             const _transferNameTag = !isOut && _bareSender
               ? `<span class="ski-idle-bubble-sender" data-populate-name="${esc(_bareSender)}" data-no-bubble-click="1" title="Populate name input with @${esc(_bareSender)}">${esc(_bareSender)}</span>`
               : '';
-            // "collected" pill — attached under a settled bubble to
-            // make it unambiguous that the money is out of escrow.
-            // Renders below the label + settlement-tx pill, with a
-            // checkmark. Only shown when _isKnownSettled.
-            const _collectedPillHtml = _isKnownSettled
-              ? `<span class="ski-idle-bubble-collected" data-no-bubble-click="1">\u2713 collected</span>`
-              : '';
-            const _inner = `${_transferNameTag}${_labelHtml}${_settlementPillHtml}${_collectedPillHtml}`;
+            // "collected" label is rendered via a CSS ::after
+            // pseudo-element on .ski-idle-bubble--transfer-settled
+            // below. Pure-CSS means it auto-appears whenever the
+            // class is added (by initial render, background poll,
+            // or click handler), without needing the innerHTML
+            // render path to know about it at first paint.
+            const _inner = `${_transferNameTag}${_labelHtml}${_settlementPillHtml}`;
             const _role = isOut ? 'sender' : 'recipient';
             const _bubbleTitle = _isKnownSettled
               ? 'Collected'
