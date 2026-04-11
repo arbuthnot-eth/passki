@@ -1686,7 +1686,40 @@ app.post('/api/cache/rescan-deposits', async (c) => {
   }
 });
 
-export default app;
+// Manual sweep endpoint — useful for testing the sweeper without
+// waiting for the cron tick. No auth because the sweep itself is
+// permissionless (anyone can call iou::recall after TTL), so this
+// endpoint can't be abused to move funds anywhere other than back
+// to their original senders.
+app.post('/api/iou/sweep', async (c) => {
+  try {
+    const { sweepExpiredIous } = await import('./iou-sweeper.js');
+    const result = await sweepExpiredIous(c.env as unknown as { SHADE_KEEPER_PRIVATE_KEY?: string });
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Worker default export: Hono fetch + Cron Triggers scheduled().
+// The scheduled() handler is invoked by Cloudflare on the cron
+// schedule declared in wrangler.jsonc (every 10 minutes). It runs
+// the Thunder IOU sweeper so expired escrows get recalled without
+// requiring either the sender or the recipient to be online.
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil((async () => {
+      try {
+        const { sweepExpiredIous } = await import('./iou-sweeper.js');
+        const result = await sweepExpiredIous(env as unknown as { SHADE_KEEPER_PRIVATE_KEY?: string });
+        console.log('[cron] iou-sweeper:', JSON.stringify(result));
+      } catch (err) {
+        console.error('[cron] iou-sweeper threw:', err instanceof Error ? err.message : err);
+      }
+    })());
+  },
+} satisfies ExportedHandler<Env>;
 
 // Export Durable Object classes for Wrangler binding
 export { SessionAgent } from './agents/session.js';
