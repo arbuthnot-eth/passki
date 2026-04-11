@@ -661,11 +661,23 @@ import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
         const { getCachedKeyVersion } = await import('./client/thunder.js');
         return getCachedKeyVersion(uuid).toString();
       },
-      /** Transfer every NS coin in the connected wallet to ultron.
-       *  Ultron's alarm picks it up on the next tick and routes it
-       *  through _sweepNsToIusd → USDC → iUSD cache. Use this to
-       *  drain stranded quest-fill NS that never got consumed by a
-       *  registration tx. No-op if the wallet holds zero NS. */
+      /** Cache $X NS → cash the user's entire NS balance into iUSD
+       *  delivered back to their own wallet via a single atomic PTB:
+       *
+       *    merge NS coins
+       *    → DeepBook swap_exact_base_for_quote (NS → USDC)
+       *    → DeepBook swap_exact_base_for_quote (USDC → iUSD)
+       *    → transferObjects [iUSD, change coins] to sender
+       *
+       *  The user ends up with iUSD in their own wallet — NOT in
+       *  ultron's cache. iUSD is the system's cross-chain stable,
+       *  so from there it's redeemable via the existing Ignite
+       *  path to any chain's gas token or USDC equivalent.
+       *
+       *  Gas: sponsored path for non-WaaP (ultron is gas payer via
+       *  signTransaction + /api/sponsor-gas); drip-then-execute for
+       *  WaaP (because signTransaction is broken there).
+       */
       sweepNsToCache: async () => {
         const [{ Transaction }, { SuiGraphQLClient }, { normalizeSuiAddress }, wallet, sponsorInfo] = await Promise.all([
           import('@mysten/sui/transactions'),
@@ -702,8 +714,17 @@ import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
         if (coins.length === 0) { console.log('[.SKI] sweepNsToCache: no NS to sweep'); return { swept: 0, digest: null }; }
         const totalNs = coins.reduce((s, c) => s + BigInt(c.contents?.json?.balance ?? '0'), 0n);
 
-        // Build the NS → ultron transfer tx. Used by both the
-        // sponsored and the drip-fallback paths.
+        // DeepBook constants (mirror src/suins.ts).
+        const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
+        const DB_NS_USDC_POOL = '0x0c0fdd4008740d81a8a7d4281322aee71a1b62c449eb5b142656753d89ebc060';
+        const DB_NS_USDC_POOL_INITIAL_SHARED_VERSION = 414947421;
+        const DB_IUSD_USDC_POOL = '0x38df72f5d07607321d684ed98c9a6c411c0b8968e100a1cd90a996f912cd6ce1';
+        const DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 832866334;
+        const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+        const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+        const IUSD_TYPE = '0xa927a4c4e83ee902b81f05a0455a92c77b68f44ed0b48ac9d0a259f680b9573e::iusd::IUSD';
+
+        /** Build the cache PTB: NS → USDC → iUSD → sender. */
         const buildSweepTx = (opts: { gasOwner?: string; gasCoins?: Array<{ objectId: string; version: string; digest: string }> }) => {
           const tx = new Transaction();
           tx.setSender(normalizeSuiAddress(addr));
@@ -713,11 +734,61 @@ import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
               objectId: c.objectId, version: c.version, digest: c.digest,
             })));
           }
-          const primary = tx.objectRef({ objectId: coins[0].address, version: coins[0].version, digest: coins[0].digest });
+          // 1. Merge NS coins into one.
+          const nsPrimary = tx.objectRef({ objectId: coins[0].address, version: coins[0].version, digest: coins[0].digest });
           if (coins.length > 1) {
-            tx.mergeCoins(primary, coins.slice(1).map(c => tx.objectRef({ objectId: c.address, version: c.version, digest: c.digest })));
+            tx.mergeCoins(nsPrimary, coins.slice(1).map(c => tx.objectRef({ objectId: c.address, version: c.version, digest: c.digest })));
           }
-          tx.transferObjects([primary], tx.pure.address(normalizeSuiAddress(ultron)));
+          // 2. DeepBook swap NS → USDC.
+          const [zeroDeep1] = tx.moveCall({
+            target: '0x2::coin::zero',
+            typeArguments: [DB_DEEP_TYPE],
+          });
+          const [usdcOut, nsChange, deepChange1] = tx.moveCall({
+            target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+            typeArguments: [NS_TYPE, USDC_TYPE],
+            arguments: [
+              tx.sharedObjectRef({
+                objectId: DB_NS_USDC_POOL,
+                initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION,
+                mutable: true,
+              }),
+              nsPrimary,
+              zeroDeep1,
+              tx.pure.u64(0),          // min_quote_out — 0 = accept any
+              tx.object('0x6'),         // clock
+            ],
+          });
+          // 3. DeepBook swap USDC → iUSD (iUSD is base, USDC is quote).
+          //    Use swap_exact_quote_for_base: spend all USDC for as
+          //    much iUSD as we can get.
+          const [zeroDeep2] = tx.moveCall({
+            target: '0x2::coin::zero',
+            typeArguments: [DB_DEEP_TYPE],
+          });
+          const [iusdOut, usdcChange, deepChange2] = tx.moveCall({
+            target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+            typeArguments: [IUSD_TYPE, USDC_TYPE],
+            arguments: [
+              tx.sharedObjectRef({
+                objectId: DB_IUSD_USDC_POOL,
+                initialSharedVersion: DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION,
+                mutable: true,
+              }),
+              usdcOut,
+              zeroDeep2,
+              tx.pure.u64(0),
+              tx.object('0x6'),
+            ],
+          });
+          // 4. Transfer everything back to the sender. iUSD is the
+          //    win; the *change coins (NS/USDC/DEEP slivers) all
+          //    return to the user too so no dust stays stuck in
+          //    the PTB.
+          tx.transferObjects(
+            [iusdOut, nsChange, usdcChange, deepChange1, deepChange2],
+            tx.pure.address(normalizeSuiAddress(addr)),
+          );
           return tx;
         };
 

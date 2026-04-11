@@ -9432,7 +9432,7 @@ function bindEvents() {
               <button class="ski-idle-iusd-action ski-idle-iusd-action--ignite" id="ski-idle-iusd-ignite" type="button" title="Ignite \u2014 gas on any chain">\u26a1 Ignite</button>
             </div>
           </div>
-          <div class="ski-idle-ns-sweep" id="ski-idle-ns-sweep" hidden><button class="ski-idle-ns-sweep-btn" id="ski-idle-ns-sweep-btn" type="button" title="Sweep NS dust to iUSD cache"><span class="ski-idle-ns-sweep-icon">\u{1F9F9}</span><span class="ski-idle-ns-sweep-label">Sweep <span id="ski-idle-ns-sweep-amt">0</span> NS \u2192 cache</span></button></div>
+          <div class="ski-idle-ns-sweep" id="ski-idle-ns-sweep" hidden><button class="ski-idle-ns-sweep-btn" id="ski-idle-ns-sweep-btn" type="button" title="Swap NS to iUSD in your wallet"><span class="ski-idle-ns-sweep-icon">\u{1F9F9}</span><span class="ski-idle-ns-sweep-label">Cache $<span id="ski-idle-ns-sweep-amt">0</span> NS</span></button></div>
           <div class="ski-idle-thunder-row">
             <div class="ski-idle-quick-actions" id="ski-idle-quick-actions">
               <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#22c55e" stroke="white" stroke-width="1.5"/></svg></button>
@@ -9499,10 +9499,12 @@ function bindEvents() {
         }).catch(() => {});
       };
 
-      // NS sweep banner: show whenever the user holds non-dust NS.
-      // The user doesn't want to hold NS — tapping the banner runs
-      // ski.sweepNsToCache() which transfers all NS to ultron, where
-      // _sweepNsToIusd routes it through DeepBook → iUSD cache.
+      // NS cache banner: show whenever the user holds non-dust NS.
+      // Label reads "Cache $X.XX NS" where $X.XX is the live USD
+      // value of their NS holdings (nsBalance × nsPriceUsd). Tapping
+      // the banner runs ski.sweepNsToCache() which atomically swaps
+      // NS → iUSD and sends the iUSD right back to the user's own
+      // wallet (not ultron's cache — the user is the cache).
       const _updateNsSweepBanner = () => {
         const banner = _idleOverlay?.querySelector('#ski-idle-ns-sweep') as HTMLElement | null;
         const amtEl = _idleOverlay?.querySelector('#ski-idle-ns-sweep-amt') as HTMLElement | null;
@@ -9513,7 +9515,10 @@ function bindEvents() {
           banner.setAttribute('hidden', '');
           return;
         }
-        amtEl.textContent = ns < 1 ? ns.toFixed(3) : ns.toFixed(2);
+        const nsPrice = nsPriceUsd ?? 0;
+        const usd = ns * nsPrice;
+        // Sub-dollar → show two decimals ("0.05"), ≥ $1 → no decimals.
+        amtEl.textContent = usd >= 1 ? Math.round(usd).toLocaleString() : usd.toFixed(2);
         banner.removeAttribute('hidden');
       };
 
