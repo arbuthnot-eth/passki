@@ -3833,12 +3833,23 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
 
   const mentions: string[] = [];
   let parsedAmount: number | undefined;
-  // Match @name with optional $amount attached (e.g. @storm$5, @brando$10.50)
-  const mentionPattern = /(^|[^a-z0-9_-])@([a-z0-9-]{3,63})(?:\$(\d+(?:\.\d{0,2})?))?(?![a-z0-9-])/gi;
+  // Match @name with optional $amount attached. Accepts micropayments:
+  //   @brando$5        → $5
+  //   @brando$10.50    → $10.50
+  //   @brando$.0001    → $0.0001 (sub-cent — dot-first form)
+  //   @brando$0.0001   → $0.0001 (leading-zero form)
+  // Regex: $ followed by (digits+optional-decimal-fraction) OR (dot+digits).
+  // Allows up to 8 decimal places for true micropayments; amounts with
+  // more precision get truncated at parseFloat time.
+  const mentionPattern = /(^|[^a-z0-9_-])@([a-z0-9-]{3,63})(?:\$(\d+(?:\.\d{1,8})?|\.\d{1,8}))?(?![a-z0-9-])/gi;
   let cleaned = trimmed.replace(mentionPattern, (_match, prefix: string, name: string, amt: string | undefined) => {
     mentions.push(name.toLowerCase());
     if (amt !== undefined && amt !== '') {
-      const val = parseFloat(amt);
+      // Normalize ".0001" → "0.0001" so parseFloat handles it
+      // uniformly (parseFloat already accepts both, but be
+      // explicit for downstream comparisons/serialization).
+      const normalized = amt.startsWith('.') ? `0${amt}` : amt;
+      const val = parseFloat(normalized);
       if (!isNaN(val) && val > 0) parsedAmount = val;
     }
     return prefix ?? ' ';
@@ -10100,7 +10111,8 @@ function bindEvents() {
         // color mirror below share the same parse.
         const hasAmount = val.includes('$');
         const hasAt = val.includes('@');
-        const parsedAmt = hasAmount ? parseFloat((val.match(/\$(\d+(?:\.\d*)?)/) ?? [])[1] ?? '') : NaN;
+        const _amtMatch = hasAmount ? val.match(/\$(\d+(?:\.\d*)?|\.\d+)/) : null;
+        const parsedAmt = _amtMatch ? parseFloat(_amtMatch[1].startsWith('.') ? `0${_amtMatch[1]}` : _amtMatch[1]) : NaN;
         const overBudget = hasAmount && !isNaN(parsedAmt) && parsedAmt > (app.usd ?? 0);
         // Green-ready state: any `$` in the input that isn't over
         // budget flips the button green, matching the input
@@ -10140,7 +10152,7 @@ function bindEvents() {
         const amtColor = overBudget ? '#ef4444' : '#22c55e';
         if (_thunderMirror) {
           if (needsMirror) {
-            _thunderMirror.innerHTML = val.replace(/(@)([a-z0-9-]*)|(\$\d*(?:\.\d*)?)|(\$)/g, (m, atSign, nameBody, amt, dollar) => {
+            _thunderMirror.innerHTML = val.replace(/(@)([a-z0-9-]*)|(\$\d*(?:\.\d*)?|\$\.\d+)|(\$)/g, (m, atSign, nameBody, amt, dollar) => {
               if (atSign !== undefined) return `<span style="color:${atColor}">${esc(atSign)}</span><span style="color:#fff">${esc(nameBody || '')}</span>`;
               if (amt) return `<span style="color:${amtColor}">${esc(amt)}</span>`;
               if (dollar) return `<span style="color:${amtColor}">${esc(dollar)}</span>`;
@@ -12430,7 +12442,7 @@ function bindEvents() {
               failBubble.addEventListener('click', () => {
                 failBubble.remove();
                 // Strip any $amount tokens from the composed raw text.
-                const stripped = raw.replace(/\$\d+(?:\.\d{0,2})?/g, '').replace(/\s+/g, ' ').trim();
+                const stripped = raw.replace(/\$(?:\d+(?:\.\d+)?|\.\d+)/g, '').replace(/\s+/g, ' ').trim();
                 if (_idleThunderInput) _idleThunderInput.value = stripped;
                 _thunderComposeConfirmedRaw = stripped;
                 _thunderComposeStage = 'confirmed';

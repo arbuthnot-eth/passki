@@ -674,7 +674,8 @@ export async function sendThunder(opts: {
         // Strip trailing .00 so "$1" stays "$1" instead of "$1.00".
         amtLabel = String(opts.intentUsd).replace(/\.00?$/, '');
       } else {
-        amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
+        const _m = opts.text.match(/\$(\d+(?:\.\d+)?|\.\d+)/);
+        amtLabel = _m ? (_m[1].startsWith('.') ? `0${_m[1]}` : _m[1]) : (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
       }
       // Recipient-first layout: "@ralph ← 💸 $1 · tx:abcd"
       // Recipient reads left-to-right as "I received $1" — the arrow
@@ -707,7 +708,7 @@ export async function sendThunder(opts: {
     // to the attachment path (SDK sendMessage) or the plain Seal+DO
     // path below with the $token-stripped text body.
     if (hasTransfer && !hasFiles) {
-      const textWithoutAmount = opts.text.replace(/@\S+\$\d+(?:\.\d{0,2})?/g, '').trim();
+      const textWithoutAmount = opts.text.replace(/@\S+\$(?:\d+(?:\.\d+)?|\.\d+)/g, '').trim();
       if (!textWithoutAmount) {
         return { messageId: 'transfer' };
       }
@@ -719,7 +720,7 @@ export async function sendThunder(opts: {
   // sees "@ralph$1 hey" as plaintext on top of the transfer bubble.
   // When there's no transfer, this regex is a no-op.
   const _bodyText = hasTransfer
-    ? opts.text.replace(/@\S+\$\d+(?:\.\d{0,2})?/g, '').trim()
+    ? opts.text.replace(/@\S+\$(?:\d+(?:\.\d+)?|\.\d+)/g, '').trim()
     : opts.text;
 
   // ─── Attachment path — route through SDK's AttachmentsManager ───────
