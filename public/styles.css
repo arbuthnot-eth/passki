@@ -3902,6 +3902,18 @@ a.ski-idle-bubble-name:hover {
   background: rgba(236, 72, 153, 0.3);
   border-color: rgba(236, 72, 153, 0.6);
 }
+.ski-idle-quick-btn--attach {
+  background: rgba(0, 0, 0, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  color: #94a3b8;
+  font-size: 1.1rem;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ski-idle-quick-btn--attach:hover { background: rgba(148, 163, 184, 0.2); }
+.ski-idle-quick-btn--attach.ski-idle-quick-btn--active {
+  background: rgba(148, 163, 184, 0.3);
+  border-color: rgba(148, 163, 184, 0.6);
+}
 .ski-idle-quick-btn--storm {
   background: rgba(0, 0, 0, 0.8);
   border: 1px solid rgba(255, 184, 0, 0.4);
