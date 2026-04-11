@@ -2840,7 +2840,10 @@ body {
 }
 .ski-idle-ns-input-wrap .wk-ns-dot-sui {
   position: absolute;
-  right: 2px;
+  /* 8px inset so there's visible pill edge to the right of the
+   * .sui label — the label reads as "inside the chip" instead
+   * of "the chip is cut off where the label ends". */
+  right: 8px;
   pointer-events: none;
   z-index: 1;
 }
@@ -2874,10 +2877,10 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
   font-weight: 600;
-  /* Tight right-padding (20px instead of 30) leaves more rendering
-   * room for the typed name before the .sui label overlaps. The
-   * label is absolutely positioned 6px from the right edge. */
-  padding: 5px 20px 5px 8px;
+  /* Right padding reserves space for the .sui label so the typed
+   * name doesn't render under it. Label is absolute at right: 8px
+   * inside the wrap; 30px of padding keeps the name clear of it. */
+  padding: 5px 30px 5px 8px;
   box-sizing: border-box;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
