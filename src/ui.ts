@@ -12214,13 +12214,17 @@ function bindEvents() {
           const { lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
           const _myAddrForSend = getState().address || '';
 
-          // WaaP pre-flight: drip 0.02 SUI from ultron if the sender
-          // is low on gas. The sponsor flow can't work under WaaP
-          // (broken signTransaction), so funding the user directly is
-          // the only way they can sign on-chain thunder ops at all.
-          // /api/fund-gas no-ops if already funded or within cooldown.
+          // Universal gas pre-flight: ultron drips 0.02 SUI if the
+          // sender is low on gas, regardless of wallet type. This
+          // unlocks **true micropayments** — a user with $0.03 total
+          // no longer has to reserve dollars of their own SUI for
+          // gas, they can spend their full balance as thunder value.
+          // /api/fund-gas no-ops if the wallet already has ≥ 0.015
+          // SUI and is SuiNS-gated so only real users get the drip.
+          // 60s cooldown protects against spam.
           const _sendIsWaaP = /waap/i.test(getState().walletName || '');
-          if (_sendIsWaaP && _myAddrForSend) {
+          void _sendIsWaaP;
+          if (_myAddrForSend) {
             try {
               const dripRes = await fetch('/api/fund-gas', {
                 method: 'POST',
@@ -12257,7 +12261,13 @@ function bindEvents() {
                 const suiPrice = suiPriceCache?.price ?? 0;
                 if (suiPrice <= 0) { showToast('Cannot determine SUI price'); continue; }
                 const suiAmount = (transferAmtUsd / suiPrice) * 1.05;
-                const amountMist = BigInt(Math.floor(suiAmount * 1e9));
+                // Use ceil so micropayments (e.g. \$0.001) round UP
+                // to at least 1 lamport instead of floor-ing to 0.
+                // Enforce a 1k-mist floor so the shielded vault
+                // deposit never hits EZeroAmount and the recipient
+                // always gets something non-dust.
+                let amountMist = BigInt(Math.ceil(suiAmount * 1e9));
+                if (amountMist < 1000n) amountMist = 1000n;
                 const transfer = { recipientAddress: recipAddr, amountMist };
                 if (_cancelled) break;
                 const _hasTransferAttachments = _pendingThunderFiles.length > 0;

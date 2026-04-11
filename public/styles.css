@@ -4380,11 +4380,19 @@ a.ski-idle-bubble-name:hover {
   transition: background 0.15s, border-color 0.15s;
 }
 .ski-idle-thunder-send:hover { background: rgba(255, 184, 0, 0.2); }
+/* Convo-open state: keep the dark --storm background, just nudge
+ * the border + add a subtle glow so the user knows a storm is
+ * live without the button looking "pressed" at rest. */
 .ski-idle-thunder-send--convo-open {
-  background: rgba(255, 184, 0, 0.55);
-  border-color: rgba(255, 184, 0, 0.9);
-  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45), 0 0 10px rgba(255, 184, 0, 0.35);
-  color: #1a1a1a;
+  border-color: rgba(255, 184, 0, 0.9) !important;
+  box-shadow: 0 0 8px rgba(255, 184, 0, 0.3) !important;
+}
+/* Active (pressed) state: briefly flash full yellow so the
+ * user feels the tap. Applies to all quick-btns. */
+.ski-idle-quick-btn:active { transform: scale(0.97); }
+.ski-idle-quick-btn--storm:active {
+  background: rgba(255, 184, 0, 0.55) !important;
+  color: #1a1a1a !important;
 }
 .ski-idle-thunder-send--quest {
   background: rgba(77, 162, 255, 0.2);
