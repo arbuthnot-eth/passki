@@ -2039,11 +2039,14 @@ app.post('/api/cache/create-iusd-sol-mint', async (c) => {
 
 app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
   try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key configured' }, 500);
     const body = await c.req.json() as { recipientSolAddress: string; amount: string };
+    const kp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const callerAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, callerAddress }),
     }));
     const text = await res.text();
     try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }

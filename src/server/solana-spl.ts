@@ -5,6 +5,7 @@
  * Used by OpenCLOB to mint iUSD natively on Solana via BAM attestation.
  * TODO: migrate to P-tokens for 95% CU savings once stable.
  */
+import { ed25519 } from '@noble/curves/ed25519.js';
 
 // ── Program IDs (base58) ──────────────────────────────────────────────
 // SPL Token (legacy) program. The previous constant here was a typo
@@ -135,6 +136,11 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
 }
 
 // ── PDA derivation ────────────────────────────────────────────────────
+// A PDA is a 32-byte hash that is NOT a valid point on the ed25519 curve.
+// The earlier check used WebCrypto's raw-importKey, which accepts any 32
+// bytes without curve validation — so every bump succeeded and the loop
+// fell off the end with "Could not find PDA". Use noble's point decoder
+// as the authoritative curve check (decompression throws iff off-curve).
 export async function findProgramAddress(
   seeds: Uint8Array[],
   programId: Uint8Array,
@@ -143,13 +149,9 @@ export async function findProgramAddress(
     const seedsWithBump = [...seeds, new Uint8Array([bump])];
     const data = concat(...seedsWithBump, programId, new TextEncoder().encode('ProgramDerivedAddress'));
     const hash = await sha256(data);
-    // Check if the hash is NOT on the ed25519 curve (valid PDA)
-    // A point is on the curve if it can be decompressed — we use a simplified check
-    // For practical purposes, most hashes are valid PDAs
     try {
-      // Try importing as ed25519 point — if it fails, it's a valid PDA
-      await crypto.subtle.importKey('raw', hash, { name: 'Ed25519' }, false, ['verify']);
-      continue; // On curve — not a valid PDA
+      ed25519.Point.fromBytes(hash);
+      continue; // On curve — not a valid PDA, try the next bump
     } catch {
       return [hash, bump]; // Off curve — valid PDA
     }
