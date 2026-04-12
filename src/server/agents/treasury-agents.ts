@@ -721,6 +721,117 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    // Cancel a StableShadeOrder<iUSD> — ultron signs cancel_stable<T>
+    // which refunds the entire deposit (no 10% fee like execute) to
+    // the owner. Only valid when called by ultron for an order whose
+    // salt is lost (i.e., cannot execute the intended happy path).
+    if ((url.pathname.endsWith('/shade-cancel-stable') || url.searchParams.has('shade-cancel-stable')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { objectId: string };
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
+        const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+        // Look up initialSharedVersion + verify ownership + coinType.
+        const j = await transport.query({
+          query: `query($a:SuiAddress!){ object(address:$a){ owner { __typename ... on Shared { initialSharedVersion } } asMoveObject { contents { type { repr } json } } } }`,
+          variables: { a: body.objectId },
+        });
+        const obj = (j.data as any)?.object;
+        if (!obj) return new Response(JSON.stringify({ error: `Object ${body.objectId} not found` }), { status: 404, headers: { 'content-type': 'application/json' } });
+        const isv = Number(obj?.owner?.initialSharedVersion ?? 0);
+        if (!isv) return new Response(JSON.stringify({ error: 'not a shared object' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        const typeRepr = obj?.asMoveObject?.contents?.type?.repr ?? '';
+        const json = obj?.asMoveObject?.contents?.json ?? {};
+        if (!typeRepr.includes('::shade::StableShadeOrder')) return new Response(JSON.stringify({ error: `Not a StableShadeOrder: ${typeRepr}` }), { status: 400, headers: { 'content-type': 'application/json' } });
+        if (String(json.owner ?? '').toLowerCase() !== ultronAddr.toLowerCase()) {
+          return new Response(JSON.stringify({ error: `Order owner ${json.owner} ≠ ultron ${ultronAddr} — cancel_stable is owner-only` }), { status: 403, headers: { 'content-type': 'application/json' } });
+        }
+        // Extract T from "...::StableShadeOrder<TYPE>"
+        const tMatch = typeRepr.match(/StableShadeOrder<([^>]+)>/);
+        const coinType = tMatch?.[1] || IUSD_TYPE;
+
+        const SHADE_V5_PKG = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
+        const tx = new Transaction();
+        tx.setSender(ultronAddr);
+        tx.moveCall({
+          target: `${SHADE_V5_PKG}::shade::cancel_stable`,
+          typeArguments: [coinType],
+          arguments: [
+            tx.sharedObjectRef({ objectId: body.objectId, initialSharedVersion: isv, mutable: true }),
+          ],
+        });
+        const txBytes = await tx.build({ client: transport as never });
+        const { signature } = await keypair.signTransaction(txBytes);
+        const digest = await this._submitTx(txBytes, signature);
+        console.log(`[shade-cancel-stable] ${body.objectId.slice(0,10)}… → digest ${digest}`);
+
+        // Prune the shade from state so the deliberation loop stops
+        // tracking it.
+        const shades = ((this.state as any).shades ?? []).map((s: any) =>
+          s.objectId === body.objectId ? { ...s, status: 'cancelled', deliberation: `cancel_stable via ${digest.slice(0, 10)}…` } : s,
+        );
+        this.setState({ ...this.state, shades } as any);
+
+        return new Response(JSON.stringify({ digest, refundedTo: ultronAddr, coinType }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Reschedule a previously-created stable shade order by pushing
+    // its state record into the ShadeExecutorAgent DO. Used to recover
+    // orders that were created before the schedule-stable dispatch was
+    // wired in the shade-proxy (so their DO entry is either missing or
+    // classified as legacy). Requires internal auth — the caller must
+    // derive ultron's address from the keeper key.
+    if ((url.pathname.endsWith('/shade-reschedule') || url.searchParams.has('shade-reschedule')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { objectId: string; initialSharedVersion?: number };
+        const shades = ((this.state as any).shades ?? []) as Array<Record<string, any>>;
+        const shade = shades.find((s) => s.objectId === body.objectId);
+        if (!shade) return new Response(JSON.stringify({ error: `No shade in state for ${body.objectId}` }), { status: 404, headers: { 'content-type': 'application/json' } });
+        if (!shade.salt) return new Response(JSON.stringify({ error: `Shade ${body.objectId} has no salt in state — unrecoverable without client-side preimage`, shade }), { status: 410, headers: { 'content-type': 'application/json' } });
+
+        // Look up initialSharedVersion on-chain if not provided.
+        let isv = body.initialSharedVersion;
+        if (!isv) {
+          const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+          const j = await transport.query({
+            query: `query($a:SuiAddress!){ object(address:$a){ owner { __typename ... on Shared { initialSharedVersion } } } }`,
+            variables: { a: body.objectId },
+          });
+          isv = Number((j.data as any)?.object?.owner?.initialSharedVersion ?? 0);
+        }
+        if (!isv) return new Response(JSON.stringify({ error: `Could not resolve initialSharedVersion for ${body.objectId}` }), { status: 500, headers: { 'content-type': 'application/json' } });
+
+        // Push to ShadeExecutorAgent keyed on holder address.
+        const shadeStub = this.env.ShadeExecutorAgent?.get(this.env.ShadeExecutorAgent.idFromName(shade.holder));
+        if (!shadeStub) return new Response(JSON.stringify({ error: 'ShadeExecutorAgent unavailable' }), { status: 500, headers: { 'content-type': 'application/json' } });
+        const scheduleRes = await shadeStub.fetch(new Request('https://shade-do/?schedule-stable', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            objectId: shade.objectId,
+            domain: shade.domain,
+            executeAfterMs: shade.graceEndMs,
+            targetAddress: shade.holder,
+            salt: shade.salt,
+            ownerAddress: shade.holder,
+            depositMist: shade.depositMist || '0',
+            initialSharedVersion: isv,
+            coinType: IUSD_TYPE,
+          }),
+        }));
+        const text = await scheduleRes.text();
+        try { return new Response(text, { status: scheduleRes.status, headers: { 'content-type': 'application/json' } }); }
+        catch { return new Response(JSON.stringify({ error: text }), { status: 500, headers: { 'content-type': 'application/json' } }); }
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     // Shade list — get active shades for a holder
     if ((url.pathname.endsWith('/shade-list') || url.searchParams.has('shade-list')) && request.method === 'GET') {
       const holder = url.searchParams.get('holder') || '';
@@ -7303,21 +7414,29 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const sig = await keypair.signTransaction(txBytes);
       const digest = await this._submitTx(txBytes, sig.signature);
 
-      // Look up the created shade order object (retry twice for indexing lag)
+      // Look up the created shade order object (retry twice for indexing lag).
+      // Match either the legacy ShadeOrder (SUI-denominated) or the new
+      // StableShadeOrder<T> (iUSD-denominated) — both come out of this flow.
+      const wasStable = iusdTotal >= iusdDepositMist && iusdCoins.length > 0;
       let orderId = '';
+      let orderInitialSharedVersion = 0;
       for (let attempt = 0; attempt < 2 && !orderId; attempt++) {
         await new Promise(r => setTimeout(r, attempt === 0 ? TX_INDEX_WAIT_MS : 3000));
         try {
           const fxRes = await transport.query({
-            query: `query($d: String!) { transaction(digest: $d) { effects { objectChanges { nodes { address idCreated outputState { asMoveObject { contents { type { repr } } } } } } } } }`,
+            query: `query($d: String!) { transaction(digest: $d) { effects { objectChanges { nodes { address idCreated outputState { version owner { __typename ... on Shared { initialSharedVersion } } asMoveObject { contents { type { repr } } } } } } } } }`,
             variables: { d: digest },
           });
           const nodes = ((fxRes.data as any)?.transaction?.effects?.objectChanges?.nodes ?? []) as any[];
           for (const n of nodes) {
-            if (n?.idCreated && (n.outputState?.asMoveObject?.contents?.type?.repr ?? '').includes('shade::ShadeOrder')) {
-              orderId = n.address;
-              break;
-            }
+            if (!n?.idCreated) continue;
+            const typeRepr = n.outputState?.asMoveObject?.contents?.type?.repr ?? '';
+            const isShadeType = typeRepr.includes('::shade::ShadeOrder') || typeRepr.includes('::shade::StableShadeOrder');
+            if (!isShadeType) continue;
+            orderId = n.address;
+            const isv = n.outputState?.owner?.initialSharedVersion;
+            if (isv !== undefined) orderInitialSharedVersion = Number(isv);
+            break;
           }
         } catch {}
       }
@@ -7325,27 +7444,53 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // this as an on-chain order and skips balance-based liquidation.
       if (!orderId) orderId = `digest:${digest}`;
 
-      // Schedule with ShadeExecutorAgent (keyed by target user address)
+      // Schedule with ShadeExecutorAgent (keyed by target user address).
+      // Stable orders must use /?schedule-stable so the executor knows
+      // to use execute_stable + iUSD→USDC→NS swap instead of the legacy
+      // SUI-only execute path.
       const normalTarget = normalizeSuiAddress(targetAddress);
-      if (orderId) {
+      if (orderId && !orderId.startsWith('digest:')) {
         try {
           const shadeStub = this.env.ShadeExecutorAgent?.get(
             this.env.ShadeExecutorAgent.idFromName(normalTarget),
           );
           if (shadeStub) {
-            await shadeStub.fetch(new Request('https://shade-do/?schedule', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                objectId: orderId,
-                domain: label,
-                executeAfterMs: graceEndMs,
-                targetAddress: normalTarget,
-                salt: saltHex,
-                ownerAddress: normalTarget,
-                depositMist: iusdDepositMist.toString(),
-              }),
-            }));
+            if (wasStable) {
+              if (!orderInitialSharedVersion) {
+                console.warn('[shade-proxy] stable order missing initialSharedVersion — skipping schedule');
+              } else {
+                await shadeStub.fetch(new Request('https://shade-do/?schedule-stable', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    objectId: orderId,
+                    domain: label,
+                    executeAfterMs: graceEndMs,
+                    targetAddress: normalTarget,
+                    salt: saltHex,
+                    ownerAddress: normalTarget,
+                    depositMist: iusdDepositMist.toString(),
+                    initialSharedVersion: orderInitialSharedVersion,
+                    coinType: IUSD_TYPE,
+                  }),
+                }));
+                console.log(`[shade-proxy] scheduled STABLE order ${orderId.slice(0,10)}… isv=${orderInitialSharedVersion}`);
+              }
+            } else {
+              await shadeStub.fetch(new Request('https://shade-do/?schedule', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  objectId: orderId,
+                  domain: label,
+                  executeAfterMs: graceEndMs,
+                  targetAddress: normalTarget,
+                  salt: saltHex,
+                  ownerAddress: normalTarget,
+                  depositMist: iusdDepositMist.toString(),
+                }),
+              }));
+            }
           }
         } catch (e) {
           console.warn('[shade-proxy] schedule failed:', e);

@@ -1994,6 +1994,48 @@ app.post('/api/cache/quest-bounty', async (c) => {
   }
 });
 
+// ── Shade: cancel a StableShadeOrder whose salt is lost ──
+// Owner-only (ultron). Refunds the full deposit back to ultron.
+// Used when the preimage is unrecoverable and the order can't
+// execute through the happy path.
+app.post('/api/cache/shade-cancel-stable', async (c) => {
+  try {
+    const body = await c.req.json() as { objectId: string };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-cancel-stable', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, res.status as any); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Shade: reschedule a stable order that slipped through ──
+// One-shot recovery path for StableShadeOrder objects that were
+// created before the schedule-stable dispatch was wired in the
+// shade-proxy. Calls the TreasuryAgents DO which verifies the
+// salt is in state, resolves initialSharedVersion on-chain, and
+// pushes scheduleStable() to the ShadeExecutorAgent.
+app.post('/api/cache/shade-reschedule', async (c) => {
+  try {
+    const body = await c.req.json() as { objectId: string; initialSharedVersion?: number };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-reschedule', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, res.status as any); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── OpenCLOB: iUSD SPL on Solana ────────────────────────────────────
 // Public read: returns the mainnet iUSD SPL mint address so the browser
 // can fetch cross-chain iUSD balances against the user's Solana dWallet.
