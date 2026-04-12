@@ -220,8 +220,11 @@ export function createZkLoginApp(): Hono<{ Bindings: ZkLoginEnv }> {
     });
   });
 
+  // Health endpoint intentionally does NOT leak the upstream prover URL.
+  // Mainnet will use a self-hosted prover behind this proxy, and exposing
+  // its URL would let attackers bypass the Worker's rate limits / allowlist.
   app.get('/health', (c) => {
-    return c.json({ ok: true, prover: resolveProverUrl(c.env) });
+    return c.json({ ok: true });
   });
 
   return app;

@@ -113,7 +113,8 @@ export interface ZkLoginSession {
 }
 
 interface SerializedEphemeralSession {
-  secretKey: string; // base64 of ephemeral secret
+  /** Bech32 `suiprivkey1...` string from Ed25519Keypair.getSecretKey() */
+  secretKey: string;
   randomness: string;
   nonce: string;
   maxEpoch: number;
@@ -168,7 +169,9 @@ export async function generateEphemeralSession(): Promise<EphemeralSession> {
 function persistEphemeralSession(session: EphemeralSession): void {
   try {
     const serialized: SerializedEphemeralSession = {
-      secretKey: toBase64(new TextEncoder().encode(session.keypair.getSecretKey())),
+      // getSecretKey() returns a Bech32 suiprivkey1... string — store directly.
+      // No encode/decode dance: fromSecretKey() accepts the same Bech32 string.
+      secretKey: session.keypair.getSecretKey(),
       randomness: session.randomness,
       nonce: session.nonce,
       maxEpoch: session.maxEpoch,
@@ -187,8 +190,7 @@ export function restoreEphemeralSession(): EphemeralSession | null {
     const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
     if (!raw) return null;
     const s = JSON.parse(raw) as SerializedEphemeralSession;
-    const secretKeyString = new TextDecoder().decode(fromBase64(s.secretKey));
-    const keypair = Ed25519Keypair.fromSecretKey(secretKeyString);
+    const keypair = Ed25519Keypair.fromSecretKey(s.secretKey);
     return {
       keypair,
       randomness: s.randomness,
@@ -274,6 +276,25 @@ export function handleOAuthCallback(): string | null {
 }
 
 /**
+ * Extract the `nonce` claim from a JWT without verifying the signature.
+ * decodeJwt() from @mysten/sui/zklogin strips non-Sui claims, so we parse
+ * the middle base64url segment directly for nonce validation.
+ */
+export function extractJwtNonce(jwt: string): string | null {
+  try {
+    const [, payload] = jwt.split('.');
+    if (!payload) return null;
+    // base64url → base64
+    const b64 = payload.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((payload.length + 3) % 4);
+    const json = atob(b64);
+    const claims = JSON.parse(json) as { nonce?: string };
+    return typeof claims.nonce === 'string' ? claims.nonce : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Detect the OAuth provider from a JWT's issuer claim.
  */
 export function detectProvider(jwt: string): OAuthProvider {
@@ -290,38 +311,51 @@ export function detectProvider(jwt: string): OAuthProvider {
 // ─── Salt Derivation (HKDF, no external server) ────────────────────
 
 /**
- * Derive a deterministic salt from device fingerprint + JWT claims via HKDF.
- * Salt = HKDF(ikm=visitorId, salt=iss||aud, info=sub), truncated to < 2^128.
+ * Derive a deterministic salt from JWT claims via HKDF.
+ * Salt = HKDF(ikm=sub, salt=iss||aud, info="ski-zklogin-salt-v1").
  *
- * Uses WebCrypto — available in all modern browsers.
- * No external salt server dependency.
+ * **Critical design note**: Do NOT include device-derived material (fingerprint,
+ * user agent, etc.) in the salt — the zkLogin address is a pure function of
+ * (iss, aud, sub, salt), so any change to salt re-maps the user to a new address
+ * with no recovery path. Browser fingerprints change on updates, privacy mode,
+ * cleared data — if the salt depended on them, returning users would silently
+ * lose access to their existing address and any on-chain state.
+ *
+ * By deriving from JWT claims only:
+ * - Same OAuth account → same Sui address, always, on every device
+ * - No external salt server required
+ * - Privacy: the OAuth provider already knows (iss, aud, sub); deriving the
+ *   salt from the same inputs reveals nothing they don't already see
+ *
+ * 128-bit output is well within the BN254 field element bound zkLogin requires.
  */
-export async function deriveSalt(visitorId: string, jwt: string): Promise<string> {
+export async function deriveSalt(jwt: string): Promise<string> {
   const decoded = decodeJwt(jwt);
   const enc = new TextEncoder();
 
-  // Import the device fingerprint as HKDF input key material
+  const aud = Array.isArray(decoded.aud) ? decoded.aud[0] ?? '' : decoded.aud ?? '';
+  if (!decoded.sub || !decoded.iss || !aud) {
+    throw new Error('deriveSalt: JWT missing sub/iss/aud claim');
+  }
+
+  // IKM = sub (user-specific). Not a secret but binds the salt to the user.
   const ikm = await crypto.subtle.importKey(
     'raw',
-    enc.encode(visitorId),
+    enc.encode(decoded.sub),
     'HKDF',
     false,
     ['deriveBits'],
   );
 
-  // salt = iss || '|' || aud (binds to specific provider + app)
-  const hkdfSalt = enc.encode(`${decoded.iss}|${decoded.aud}`);
-  // info = sub (binds to specific user)
-  const info = enc.encode(decoded.sub);
+  const hkdfSalt = enc.encode(`${decoded.iss}|${aud}`);
+  const info = enc.encode('ski-zklogin-salt-v1');
 
-  // Derive 128 bits (16 bytes) — must be < 2^128 for zkLogin
   const bits = await crypto.subtle.deriveBits(
     { name: 'HKDF', hash: 'SHA-256', salt: hkdfSalt, info },
     ikm,
     128,
   );
 
-  // Convert to BigInt and return as decimal string (zkLogin expects this)
   const bytes = new Uint8Array(bits);
   let hex = '';
   for (const b of bytes) hex += b.toString(16).padStart(2, '0');
@@ -521,8 +555,18 @@ export async function completeZkLogin(): Promise<ZkLoginSession | null> {
     return null;
   }
 
+  // Critical: validate nonce binding before calling the prover. The Mysten
+  // prover validates this too, but failing it locally costs ~0ms vs ~3s at the
+  // prover and avoids leaking JWTs to the upstream on replay attempts.
+  // decodeJwt's return type omits `nonce`, so we decode the payload ourselves.
+  const decoded = decodeJwt(jwt);
+  const jwtNonce = extractJwtNonce(jwt);
+  if (jwtNonce !== session.nonce) {
+    throw new Error('[.SKI zkLogin] JWT nonce mismatch — possible replay or injection');
+  }
+
   const { visitorId } = await getDeviceId();
-  const salt = await deriveSalt(visitorId, jwt);
+  const salt = await deriveSalt(jwt);
   const address = jwtToAddress(jwt, salt, false);
 
   const ephemeralPublicKey = getExtendedEphemeralPublicKey(session.keypair.getPublicKey());
@@ -534,8 +578,8 @@ export async function completeZkLogin(): Promise<ZkLoginSession | null> {
     salt,
   );
 
-  const decoded = decodeJwt(jwt);
-  const addressSeed = genAddressSeed(salt, 'sub', decoded.sub, decoded.aud).toString();
+  const aud = Array.isArray(decoded.aud) ? decoded.aud[0] ?? '' : decoded.aud ?? '';
+  const addressSeed = genAddressSeed(salt, 'sub', decoded.sub, aud).toString();
   const provider = detectProvider(jwt);
 
   const zkSession: ZkLoginSession = {
