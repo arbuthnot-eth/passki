@@ -41,7 +41,11 @@ interface SweeperEnv {
 
 interface IouSnapshot {
   address: string;
+  /** Current on-chain version — present on every object. */
   version: number;
+  /** Initial shared version, captured from the Shared owner. Required
+   *  to reference the object as `sharedObjectRef` in a PTB. */
+  initialSharedVersion: number;
   sender: string;
   recipient: string;
   expiresMs: number;
@@ -52,39 +56,62 @@ interface IouSnapshot {
 
 /** Fetch all live shared escrows of a given type. Generic over both
  *  the legacy thunder_iou::Iou and the newer thunder_iou_shielded::
- *  ShieldedVault so one helper can scan either pool. */
+ *  ShieldedVault so one helper can scan either pool.
+ *
+ *  Uses a direct fetch() instead of SuiGraphQLClient.query() — the SDK
+ *  wrapper was silently dropping the response for object-type filters
+ *  (likely a variables-binding bug), leaving the sweeper with zero live
+ *  vaults and nothing to recall. Probing the endpoint by hand works. */
 async function fetchLiveVaults(type: string, kind: 'legacy' | 'shielded'): Promise<IouSnapshot[]> {
-  const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
   const out: IouSnapshot[] = [];
   let cursor: string | null = null;
-  for (let page = 0; page < 5; page++) {
+  for (let page = 0; page < 8; page++) {
     const query = `query($type: String!, $cursor: String) {
-      objects(filter: { type: $type }, first: 200, after: $cursor) {
+      objects(filter: { type: $type }, first: 50, after: $cursor) {
         nodes {
           address
           version
+          owner { __typename ... on Shared { initialSharedVersion } }
           asMoveObject { contents { json } }
         }
         pageInfo { hasNextPage endCursor }
       }
     }`;
-    const res = await (gql as unknown as { query: (opts: { query: string; variables: Record<string, unknown> }) => Promise<{ data?: unknown }> }).query({
-      query,
-      variables: { type, cursor },
-    });
+    let data: unknown;
+    try {
+      const r = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query, variables: { type, cursor } }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const body = await r.json() as { data?: unknown; errors?: Array<{ message: string }> };
+      if (body.errors) {
+        console.warn(`[iou-sweeper] gql errors for ${kind}:`, body.errors.map((e) => e.message).join('; '));
+        break;
+      }
+      data = body.data;
+    } catch (err) {
+      console.warn(`[iou-sweeper] gql fetch failed for ${kind}:`, err instanceof Error ? err.message : err);
+      break;
+    }
     type GqlNode = {
       address: string;
       version: string | number;
+      owner?: { __typename?: string; initialSharedVersion?: string | number };
       asMoveObject?: { contents?: { json?: { sender?: string; recipient?: string; expires_ms?: string | number; balance?: string | number } } };
     };
-    const data = res?.data as { objects?: { nodes?: GqlNode[]; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } } } | undefined;
-    const nodes = data?.objects?.nodes ?? [];
+    const root = data as { objects?: { nodes?: GqlNode[]; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } } } | undefined;
+    const nodes = root?.objects?.nodes ?? [];
     for (const n of nodes) {
       const json = n.asMoveObject?.contents?.json;
       if (!json) continue;
+      const isv = n.owner?.initialSharedVersion;
+      if (isv === undefined) continue; // not a shared object — skip
       out.push({
         address: n.address,
         version: Number(n.version),
+        initialSharedVersion: Number(isv),
         sender: String(json.sender || ''),
         recipient: String(json.recipient || ''),
         expiresMs: Number(json.expires_ms || 0),
@@ -92,7 +119,7 @@ async function fetchLiveVaults(type: string, kind: 'legacy' | 'shielded'): Promi
         kind,
       });
     }
-    const pi = data?.objects?.pageInfo;
+    const pi = root?.objects?.pageInfo;
     if (!pi?.hasNextPage || !pi.endCursor) break;
     cursor = pi.endCursor;
   }
@@ -121,7 +148,7 @@ async function recallOne(iou: IouSnapshot, keypair: Ed25519Keypair): Promise<{ o
     tx.moveCall({
       target: recallTarget,
       arguments: [
-        tx.sharedObjectRef({ objectId: iou.address, initialSharedVersion: iou.version, mutable: true }),
+        tx.sharedObjectRef({ objectId: iou.address, initialSharedVersion: iou.initialSharedVersion, mutable: true }),
         tx.object('0x6'),
       ],
     });
