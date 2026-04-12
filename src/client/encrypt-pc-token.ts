@@ -44,15 +44,21 @@ export const STUB_NETWORK_KEY_MARKER = 'U1RVQl9ORVRXT1JLX0tFWV9CNjQ=';
 
 /**
  * Check whether the current runtime is hitting the stubbed devnet proxy.
- * Returns true if EITHER:
- *   - `location.hostname` matches `dotski-devnet.*.workers.dev`, OR
- *   - the fetched network key (base64) equals {@link STUB_NETWORK_KEY_MARKER}
+ * Returns:
+ *   - 'stub'    — definitely on devnet stub (hostname or marker match)
+ *   - 'live'    — network key came back as a non-stub value
+ *   - 'unknown' — could not determine (network failure, non-browser context)
  *
- * Safe to call in non-browser contexts — falls back to fetching the key.
+ * Callers that gate real on-chain actions should treat 'unknown' as a hard
+ * stop, NOT degrade it to either side. Transient network errors must never
+ * silently flip the mode — that would either tell live users they're in
+ * stub mode or tell stub users they can broadcast real transactions.
  */
+export type EncryptMode = 'stub' | 'live' | 'unknown';
+
 export async function detectEncryptMode(
   client?: EncryptClient,
-): Promise<'stub' | 'live'> {
+): Promise<EncryptMode> {
   // Host sniff first — cheap, no network call.
   try {
     if (typeof location !== 'undefined' && location.hostname) {
@@ -68,12 +74,11 @@ export async function detectEncryptMode(
     const c = client ?? getEncryptClient();
     const nk = await c.getNetworkKey();
     if (nk.key === STUB_NETWORK_KEY_MARKER) return 'stub';
+    return 'live';
   } catch {
-    /* if we can't even fetch the key, assume stub */
-    return 'stub';
+    // Do NOT silently return 'stub' — callers gate real flows on this.
+    return 'unknown';
   }
-
-  return 'live';
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +117,7 @@ export interface ConfidentialTransferInstruction {
 export interface BuildConfidentialTransferResult {
   instructions: ConfidentialTransferInstruction[];
   ciphertexts: { amount: EUint64 };
-  mode: 'stub' | 'live';
+  mode: EncryptMode;
   note: string;
 }
 
@@ -188,7 +193,9 @@ export async function buildConfidentialTransferTx(
   const note =
     mode === 'stub'
       ? 'STUB MODE: ciphertext ID is a fake value from the dotski-devnet proxy. No Solana transaction is submitted. Shape matches what the future PC-Token confidential_transfer instruction will consume.'
-      : 'LIVE MODE: ciphertext ID came from the Encrypt network, but PC-Token program interface is not finalized — instruction is still returned as a plain object, not a @solana/web3.js Transaction.';
+      : mode === 'live'
+        ? 'LIVE MODE: ciphertext ID came from the Encrypt network, but PC-Token program interface is not finalized — instruction is still returned as a plain object, not a @solana/web3.js Transaction.'
+        : 'UNKNOWN MODE: could not determine whether upstream is stub or live. Transient network error fetching network_key. Callers gating real on-chain actions should treat this as a hard stop and retry detectEncryptMode().';
 
   return {
     instructions: [instruction],

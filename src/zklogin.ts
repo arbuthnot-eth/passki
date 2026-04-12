@@ -315,9 +315,14 @@ export function extractJwtNonce(jwt: string): string | null {
   try {
     const [, payload] = jwt.split('.');
     if (!payload) return null;
-    // base64url → base64 (pad to length multiple of 4)
+    // base64url → base64. Pad to length multiple of 4:
+    //   len % 4 === 0 → 0 pads
+    //   len % 4 === 2 → 2 pads
+    //   len % 4 === 3 → 1 pad
+    // (residue 1 is not a valid base64 length and will fail atob naturally)
     const b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = b64 + '===='.slice(b64.length % 4);
+    const padCount = (4 - (b64.length % 4)) % 4;
+    const padded = b64 + '='.repeat(padCount);
     const json = atob(padded);
     const claims = JSON.parse(json) as { nonce?: string };
     return typeof claims.nonce === 'string' ? claims.nonce : null;
