@@ -2014,10 +2014,21 @@ app.get('/api/cache/iusd-sol-mint', async (c) => {
 
 app.post('/api/cache/create-iusd-sol-mint', async (c) => {
   try {
+    // Self-derive ultron from the worker's own keeper key — the DO expects
+    // callerAddress to equal its own ultron, and only the worker can compute
+    // it. The DO method is idempotent (returns existing mint if already
+    // created), so the endpoint is safe to leave public: worst case, a
+    // caller races us for the one-time creation, and we wanted it anyway.
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) {
+      return c.json({ error: 'No keeper key configured' }, 500);
+    }
+    const kp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
+
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?create-iusd-sol-mint', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
-      body: '{}',
+      body: JSON.stringify({ callerAddress: ultronAddress }),
     }));
     const text = await res.text();
     try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }

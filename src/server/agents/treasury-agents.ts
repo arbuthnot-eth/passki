@@ -1803,7 +1803,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // OpenCLOB: iUSD SPL on Solana
     if ((url.pathname.endsWith('/create-iusd-sol-mint') || url.searchParams.has('create-iusd-sol-mint')) && request.method === 'POST') {
       try {
-        const result = await this.createIusdSolMint();
+        const params = await request.json().catch(() => ({})) as Parameters<typeof this.createIusdSolMint>[0];
+        const result = await this.createIusdSolMint(params);
         return new Response(JSON.stringify(result), {
           status: result.error && !result.mintAddress ? 400 : 200,
           headers: { 'content-type': 'application/json' },
@@ -5645,7 +5646,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private get _solRpcs(): string[] {
     return [
       ...(this.env.HELIUS_API_KEY ? [`https://mainnet.helius-rpc.com/?api-key=${this.env.HELIUS_API_KEY}`] : []),
+      // Public fallbacks. api.mainnet-beta.solana.com frequently
+      // rate-limits CF egress IPs, so keep others ahead of it.
+      'https://solana-rpc.publicnode.com',
       'https://api.mainnet-beta.solana.com',
+      'https://rpc.ankr.com/solana',
     ];
   }
 

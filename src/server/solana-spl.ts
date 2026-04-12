@@ -7,46 +7,96 @@
  */
 
 // ── Program IDs (base58) ──────────────────────────────────────────────
-const TOKEN_PROGRAM = 'TokenkegQfeZyiNwGJzqcg9bXRcwH6moLxHqRcbXBomN';
+// SPL Token (legacy) program. The previous constant here was a typo
+// ('Jzqcg9bXRcwH6moLxHqRcbXBomN' instead of 'AJbNbGKPFXCWuBvf9Ss623VQ5DA')
+// that decoded to 33 bytes, overrunning the 32-byte pubkey slot and
+// corrupting every tx message we built.
+const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 const SYSTEM_PROGRAM = '11111111111111111111111111111111';
 
 // ── Base58 ────────────────────────────────────────────────────────────
+// Canonical Bitcoin-style Base58, verified to round-trip the Solana
+// SystemProgram (32 zeros), TokenProgram, ATokenProgram pubkeys. An
+// earlier hand-rolled version mis-counted leading-zero digits and
+// mis-sized the big-endian buffer, producing 33-byte decodes for real
+// 32-byte pubkeys and corrupting every tx message we built.
 const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const B58_MAP = (() => {
+  const m = new Int8Array(128).fill(-1);
+  for (let i = 0; i < B58.length; i++) m[B58.charCodeAt(i)] = i;
+  return m;
+})();
 
 export function b58encode(bytes: Uint8Array): string {
-  const digits = [0];
-  for (const byte of bytes) {
-    let carry = byte;
-    for (let j = 0; j < digits.length; j++) {
-      carry += digits[j] << 8;
-      digits[j] = carry % 58;
+  if (bytes.length === 0) return '';
+  // Leading zero bytes become leading '1's, not digits.
+  let zeros = 0;
+  while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
+
+  // Size upper-bound: ceil(len * log(256) / log(58)) + 1 (≈ 1.366).
+  const size = ((bytes.length - zeros) * 138 / 100 | 0) + 1;
+  const b58buf = new Uint8Array(size);
+  let length = 0;
+
+  for (let i = zeros; i < bytes.length; i++) {
+    let carry = bytes[i];
+    let j = 0;
+    for (let k = size - 1; (carry !== 0 || j < length) && k >= 0; k--, j++) {
+      carry += (b58buf[k] << 8);
+      b58buf[k] = carry % 58;
       carry = (carry / 58) | 0;
     }
-    while (carry > 0) { digits.push(carry % 58); carry = (carry / 58) | 0; }
+    if (carry !== 0) throw new Error('b58encode: non-zero carry');
+    length = j;
   }
+
+  // Skip leading zeros in b58buf (unused high bytes).
+  let it = size - length;
+  while (it < size && b58buf[it] === 0) it++;
+
   let str = '';
-  for (const b of bytes) { if (b === 0) str += '1'; else break; }
-  for (let i = digits.length - 1; i >= 0; i--) str += B58[digits[i]];
+  for (let i = 0; i < zeros; i++) str += '1';
+  for (; it < size; it++) str += B58[b58buf[it]];
   return str;
 }
 
 export function b58decode(str: string): Uint8Array {
-  const bytes: number[] = [];
-  for (const c of str) {
-    const idx = B58.indexOf(c);
-    if (idx < 0) throw new Error(`Invalid base58 char: ${c}`);
-    let carry = idx;
-    for (let j = 0; j < bytes.length; j++) {
-      carry += bytes[j] * 58;
-      bytes[j] = carry & 0xff;
+  if (str.length === 0) return new Uint8Array(0);
+  // Leading '1's map to leading zero bytes; skip them when computing
+  // the big-endian portion, then prepend back at the end.
+  let zeros = 0;
+  while (zeros < str.length && str.charCodeAt(zeros) === 49 /* '1' */) zeros++;
+
+  // Upper bound: ceil(len * log(58) / log(256)) + 1 (≈ 0.733).
+  const size = ((str.length - zeros) * 733 / 1000 | 0) + 1;
+  const b256 = new Uint8Array(size);
+  let length = 0;
+
+  for (let i = zeros; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    const val = code < 128 ? B58_MAP[code] : -1;
+    if (val < 0) throw new Error(`Invalid base58 char: ${str[i]}`);
+    let carry = val;
+    let j = 0;
+    for (let k = size - 1; (carry !== 0 || j < length) && k >= 0; k--, j++) {
+      carry += 58 * b256[k];
+      b256[k] = carry & 0xff;
       carry >>= 8;
     }
-    while (carry > 0) { bytes.push(carry & 0xff); carry >>= 8; }
+    if (carry !== 0) throw new Error('b58decode: non-zero carry');
+    length = j;
   }
-  // Leading '1's → leading zeros
-  for (const c of str) { if (c === '1') bytes.push(0); else break; }
-  return new Uint8Array(bytes.reverse());
+
+  // Trim leading zeros in b256 after the decoded big-endian value.
+  let it = size - length;
+  while (it < size && b256[it] === 0) it++;
+
+  const out = new Uint8Array(zeros + (size - it));
+  // Leading '1's → zero bytes.
+  for (let i = 0; i < zeros; i++) out[i] = 0;
+  for (let i = 0; it < size; i++, it++) out[zeros + i] = b256[it];
+  return out;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -275,7 +325,9 @@ export interface SolanaRpcConfig {
 }
 
 async function rpcCall(config: SolanaRpcConfig, method: string, params: any[]): Promise<any> {
+  const failures: string[] = [];
   for (const rpc of config.rpcs) {
+    const tag = rpc.replace(/^https?:\/\//, '').split('/')[0];
     try {
       const r = await fetch(rpc, {
         method: 'POST',
@@ -283,12 +335,25 @@ async function rpcCall(config: SolanaRpcConfig, method: string, params: any[]): 
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
         signal: AbortSignal.timeout(config.timeout || 15000),
       });
+      if (!r.ok) {
+        const reason = `${r.status} ${r.statusText}`;
+        failures.push(`${tag}: ${reason}`);
+        console.warn(`[solana-spl] ${rpc} ${method}: HTTP ${reason}`);
+        continue;
+      }
       const d = await r.json() as any;
       if (d.result !== undefined) return d.result;
-      if (d.error) console.warn(`[solana-spl] ${rpc}: ${d.error.message}`);
-    } catch { /* next */ }
+      if (d.error) {
+        failures.push(`${tag}: ${d.error.message}`);
+        console.warn(`[solana-spl] ${rpc} ${method}: ${d.error.message}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      failures.push(`${tag}: ${msg}`);
+      console.warn(`[solana-spl] ${rpc} ${method}: ${msg}`);
+    }
   }
-  throw new Error(`RPC call ${method} failed on all endpoints`);
+  throw new Error(`RPC call ${method} failed on all endpoints — ${failures.join(' | ')}`);
 }
 
 /** Get recent blockhash for transaction construction */
@@ -318,12 +383,10 @@ export async function createSplMint(
   decimals: number,
   config: SolanaRpcConfig,
 ): Promise<{ mintAddress: string; signature: string }> {
-  // Generate ephemeral keypair for mint account
-  const mintKeypair = crypto.getRandomValues(new Uint8Array(32));
-  // Derive pubkey from the private key using Ed25519
-  const mintKeyObj = await crypto.subtle.importKey('raw', mintKeypair, { name: 'Ed25519' }, false, ['sign']);
-  // We need the public key — extract it via PKCS8 or generate a keypair
-  const kp = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+  // Generate ephemeral keypair for the mint account. WebCrypto's
+  // Ed25519 raw-importKey only accepts public keys with 'verify' usage,
+  // so we use generateKey and pull the raw public bytes out of that.
+  const kp = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']) as CryptoKeyPair;
   const mintPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
   const mintSignFn = async (msg: Uint8Array) => {
     const sig = await crypto.subtle.sign('Ed25519', kp.privateKey, msg);
