@@ -14452,6 +14452,34 @@ function bindEvents() {
         // Recompute on next frame in case layout hasn't settled (fonts, QR svg).
         requestAnimationFrame(_syncProgress);
 
+        // Aggressive auto-claim: when a recipient loads a storm, fire the
+        // existing per-bubble click flow for every unsettled transfer
+        // addressed to them. The click handler below already handles the
+        // full Seal-decrypt + buildShieldedClaimTx + sign + submit path,
+        // plus the settled-paint update — we just dispatch the clicks so
+        // the user doesn't have to.
+        //
+        // Rate-limited: 800ms stagger between claims so we don't flood
+        // the wallet with concurrent sign prompts. Skips anything
+        // already settled, already recall-armed, or expired (those go
+        // through the server sweeper instead).
+        setTimeout(() => {
+          const claimable = Array.from(convoEl.querySelectorAll<HTMLElement>(
+            '.ski-idle-bubble--transfer[data-iou-role="recipient"]:not(.ski-idle-bubble--transfer-settled):not(.ski-idle-bubble--recall-armed)',
+          ));
+          if (claimable.length === 0) return;
+          try { console.log(`[thunder] auto-claiming ${claimable.length} incoming transfer(s)`); } catch {}
+          let delay = 0;
+          for (const b of claimable) {
+            setTimeout(() => {
+              try {
+                b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              } catch {}
+            }, delay);
+            delay += 800;
+          }
+        }, 400);
+
         // Double-click an out-bubble to edit the text. Transfer bubbles,
         // attachment-mixed bubbles, and incoming bubbles are skipped —
         // only the plain text the sender wrote is mutable. Delegates
