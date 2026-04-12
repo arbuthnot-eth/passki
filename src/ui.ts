@@ -4154,18 +4154,49 @@ async function fetchAndShowNsPrice(label: string) {
     nsExpirationMs = sr?.expirationMs ?? 0;
     nsTargetAddress = sr?.targetAddress ?? null;
     nsNftOwner = sr?.nftOwner ?? null;
-    // If domain is owned by connected wallet, override 'taken' → 'owned'
+    // If domain is owned by connected wallet, override 'taken' → 'owned'.
+    // Race GraphQL nftOwner against JSON-RPC resolveNameServiceNames to
+    // resolve stale GraphQL indexing (e.g. after transferring a name).
     if (nsAvail === 'taken') {
       const bareLabel = (nsPriceFetchFor ?? '').toLowerCase();
       const inRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);
       const ws = getState();
       const ownerMatch = sr?.nftOwner && ws.address && normalizeSuiAddress(sr.nftOwner) === normalizeSuiAddress(ws.address);
       if (inRoster || ownerMatch) nsAvail = 'owned';
+      // Cross-check: if GraphQL says we own it, verify via JSON-RPC
+      // (faster indexing, authoritative for ownership after transfers)
+      if (nsAvail === 'owned' && ownerMatch && !inRoster && ws.address) {
+        fetch('https://sui-rpc.publicnode.com', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_resolveNameServiceNames', params: [ws.address] }),
+        }).then(r => r.json()).then((d: any) => {
+          const ownedNames: string[] = d?.result?.data ?? [];
+          const stillOwns = ownedNames.some(n => n.replace(/\.sui$/, '').toLowerCase() === bareLabel);
+          if (!stillOwns && nsAvail === 'owned' && (nsPriceFetchFor ?? '').toLowerCase() === bareLabel) {
+            nsAvail = 'taken';
+            nsNftOwner = null;
+            // Remove from local roster if stale
+            const staleIdx = nsOwnedDomains.findIndex(od => od.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);
+            if (staleIdx >= 0) nsOwnedDomains.splice(staleIdx, 1);
+            // Clear cached resolution so reload doesn't restore stale 'owned'
+            try { sessionStorage.removeItem('ski:ns-resolve'); } catch {}
+            try {
+              const _owKey = `ski:ns-owned:${ws.address}`;
+              const _owRaw = localStorage.getItem(_owKey);
+              if (_owRaw) {
+                const _owData = JSON.parse(_owRaw) as any[];
+                const _filtered = _owData.filter((d: any) => (d.name || '').replace(/\.sui$/, '').toLowerCase() !== bareLabel);
+                localStorage.setItem(_owKey, JSON.stringify(_filtered));
+              }
+            } catch {}
+            _patchNsStatus();
+            _patchNsPrice();
+            _patchNsRoute();
+            _patchNsOwnedList();
+          }
+        }).catch(() => {});
+      }
       // Not in the local roster yet — force a fresh owned-domains fetch
-      // (kiosk-held names may not have been scanned on initial login).
-      // _fetchOwnedDomains has its own self-heal at the bottom that
-      // promotes 'taken' → 'owned' when the fresh list contains the
-      // current label, so we don't need a second recheck here.
       if (nsAvail === 'taken' && !inRoster && ws.address) {
         nsOwnedFetchedFor = '';
         void _fetchOwnedDomains();
@@ -5294,6 +5325,27 @@ function _patchNsStatus() {
             depositMist: doMatch.depositMist,
           };
         }
+      }
+
+      // Fallback: check Treasury DO shade-list for proxy-created shades
+      // (not in localStorage or ShadeExecutorAgent state)
+      if (!nsShadeOrder && addr) {
+        fetch(`/api/cache/shade-list?holder=${encodeURIComponent(addr)}`).then(r => r.json()).then((d: any) => {
+          const match = (d?.shades ?? []).find((s: any) => s.domain === nsLabel.trim() && s.status === 'active');
+          if (match && !nsShadeOrder) {
+            const recovered: ShadeOrderInfo = {
+              objectId: match.objectId || match.id,
+              domain: match.domain,
+              executeAfterMs: match.graceEndMs,
+              targetAddress: addr!,
+              salt: match.salt || '',
+              depositMist: BigInt(match.depositMist || Math.ceil(match.thresholdUsd * 1e9)),
+            };
+            addShadeOrder(addr!, recovered);
+            nsShadeOrder = recovered;
+            _patchNsStatus();
+          }
+        }).catch(() => {});
       }
 
       if (!nsShadeOrder) {
@@ -8096,8 +8148,8 @@ function renderSkiMenu() {
 
       const label = nsLabel.trim();
       const domain = label.endsWith('.sui') ? label : `${label}.sui`;
-      const txBytes = await buildTransferNftTx(ws2.address, domain, addr);
-      await signAndExecuteTransaction(txBytes);
+      const { tx: transferTx } = await buildTransferNftTx(ws2.address, domain, addr);
+      await signAndExecuteTransaction(transferTx);
 
       const short = addr.slice(0, 6) + '\u2026' + addr.slice(-4);
       showToast(`Transferred ${domain} to ${short} \u2713`);
@@ -8270,8 +8322,8 @@ function renderSkiMenu() {
     if (icon) icon.style.opacity = '0.4';
     try {
       if (icon) icon.style.opacity = '0.1';
-      const txBytes = await buildSetDefaultNsTx(ws2.address, domain);
-      const result = await signAndExecuteTransaction(txBytes);
+      const { tx: setDefaultTx } = await buildSetDefaultNsTx(ws2.address, domain);
+      const result = await signAndExecuteTransaction(setDefaultTx);
       // Verify the tx actually landed
       if (!result.digest) throw new Error('Transaction returned no digest');
       const eff = result.effects as Record<string, unknown> | undefined;
@@ -9506,13 +9558,11 @@ function bindEvents() {
 
       _idleOverlay = document.createElement('div');
       _idleOverlay.className = 'ski-idle-overlay';
-      // Set data-bg from localStorage IMMEDIATELY at overlay
-      // creation — before _loadIdleBg (async) fires — so the
-      // CSS layout matches the intended bg from the first paint.
-      try {
-        const _savedBg = localStorage.getItem('ski:idle-bg') || 'ski-idle';
-        _idleOverlay.dataset.bg = _savedBg;
-      } catch { _idleOverlay.dataset.bg = 'ski-idle'; }
+      // Always start with 'ski-idle' layout — the poster is
+      // ski-idle.gif, so CSS must match until the real video loads.
+      // _loadIdleBg defers data-bg for non-default backgrounds
+      // until the video's canplay event fires.
+      _idleOverlay.dataset.bg = 'ski-idle';
       const _headerEl = document.querySelector('.ski-header') as HTMLElement;
       const headerBox = _headerEl?.getBoundingClientRect();
       const width = headerRect.width;
@@ -9555,10 +9605,10 @@ function bindEvents() {
             <span class="wk-ns-status" id="ski-idle-status" title="Set as default / show addresses" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
             <div class="ski-idle-ns-input-wrap">
               <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63" title="Search SuiNS names">
-              <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}" title="Clear">\u2715</button>
               <span class="wk-ns-dot-sui" title=".sui namespace">.sui</span>
             </div>
             <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
+            <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}" title="Clear">\u2715</button>
             <button class="ski-idle-storm-purge" id="ski-idle-storm-purge" type="button" title="Clear all messages in this storm" hidden>\u2715</button>
           </div>
           <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
@@ -9797,13 +9847,22 @@ function bindEvents() {
             _showSolQr(_mintCost);
           }
         } else if (nsAvail === 'grace') {
-          _idleActionBtn.textContent = 'Shade';
-          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--shade';
-          _idleActionBtn.title = `Shade ${label}.sui \u2014 lock funds for grace expiry`;
-          _idleActionBtn.disabled = false;
-          // Show SOL QR for shade funding — route=3 (shade)
-          const _shadeCostUsd = Math.ceil((nsPriceUsd ?? 7.77) * 1.10 * 100) / 100;
-          _showSolQr(_shadeCostUsd, label, 3);
+          if (nsShadeOrder) {
+            // Shade already placed — show confirmation, not payment QR
+            _idleActionBtn.textContent = 'Shaded';
+            _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--shade';
+            _idleActionBtn.title = `${label}.sui shade confirmed \u2014 fires at grace expiry`;
+            _idleActionBtn.disabled = true;
+            _showShadeConfirmation(label);
+          } else {
+            _idleActionBtn.textContent = 'Shade';
+            _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--shade';
+            _idleActionBtn.title = `Shade ${label}.sui \u2014 lock funds for grace expiry`;
+            _idleActionBtn.disabled = false;
+            // Show SOL QR for shade funding — route=3 (shade)
+            const _shadeCostUsd = Math.ceil((nsPriceUsd ?? 7.77) * 1.10 * 100) / 100;
+            _showSolQr(_shadeCostUsd, label, 3);
+          }
         } else if (nsAvail === 'taken' && !isOwned) {
           // Check if Storm exists for this conversation. Group ID is
           // address-keyed (nsTargetAddress resolved during the NS lookup);
@@ -9892,8 +9951,145 @@ function bindEvents() {
             priceText.textContent = `$${Math.round(nsPriceUsd)}`;
             priceRow.hidden = false;
           } else if (isOwned) {
+            const _icon = priceRow.querySelector('.ski-idle-context-icon') as HTMLElement | null;
             priceText.textContent = 'Owned';
             priceRow.hidden = false;
+            priceRow.style.cursor = 'pointer';
+            priceRow.dataset.mode = 'owned';
+            // Hover: morph to green "Transfer" pill
+            priceRow.onmouseenter = () => {
+              if (priceRow.dataset.mode === 'transfer-input') return;
+              priceText.textContent = 'Transfer';
+              priceText.style.color = '#fff';
+              priceRow.style.background = 'rgba(34,197,94,0.25)';
+              priceRow.style.padding = '2px 10px';
+              priceRow.style.borderRadius = '10px';
+              priceRow.style.border = '1px solid rgba(34,197,94,0.5)';
+              if (_icon) _icon.style.display = 'none';
+            };
+            priceRow.onmouseleave = () => {
+              if (priceRow.dataset.mode === 'transfer-input') return;
+              priceText.textContent = 'Owned';
+              priceText.style.color = '';
+              priceRow.style.background = '';
+              priceRow.style.padding = '';
+              priceRow.style.borderRadius = '';
+              priceRow.style.border = '';
+              if (_icon) _icon.style.display = '';
+            };
+            priceRow.onclick = (ev) => {
+              ev.stopPropagation();
+              if (priceRow.dataset.mode === 'transfer-input') return;
+              priceRow.dataset.mode = 'transfer-input';
+              priceRow.onmouseenter = null;
+              priceRow.onmouseleave = null;
+              const _blueSquareSvg = `<svg viewBox="0 0 16 16" width="12" height="12" style="flex-shrink:0"><rect x="1" y="1" width="14" height="14" rx="2" fill="#4da2ff" stroke="#fff" stroke-width="1.2"/></svg>`;
+              const _blackDiamondSvg = `<svg viewBox="0 0 16 16" width="12" height="12" style="flex-shrink:0"><polygon points="8,1 15,8 8,15 1,8" fill="#1e1e2e" stroke="#fff" stroke-width="1.2"/></svg>`;
+              const _emptySvg = `<svg viewBox="0 0 16 16" width="12" height="12" style="flex-shrink:0;opacity:0.3"><circle cx="8" cy="8" r="6" fill="none" stroke="#64748b" stroke-width="1.2" stroke-dasharray="3 2"/></svg>`;
+              // Show transfer input row in the context area
+              priceRow.style.background = 'rgba(10,10,15,0.85)';
+              priceRow.style.padding = '3px 6px';
+              priceRow.style.borderRadius = '8px';
+              priceRow.style.border = '1px solid rgba(34,197,94,0.3)';
+              priceRow.innerHTML = `<span id="ski-transfer-shape">${_emptySvg}</span><input id="ski-transfer-target" type="text" placeholder="name.sui or 0x..." spellcheck="false" autocomplete="off" style="all:unset;flex:1;font-size:0.7rem;color:#fff;min-width:0"><button id="ski-transfer-cancel" type="button" style="all:unset;cursor:pointer;color:rgba(255,255,255,0.35);font-size:0.55rem;padding:0 2px">\u2715</button>`;
+              const _tInp = priceRow.querySelector('#ski-transfer-target') as HTMLInputElement;
+              const _shape = priceRow.querySelector('#ski-transfer-shape') as HTMLElement;
+              _tInp?.addEventListener('click', (e) => e.stopPropagation());
+              // Morph SUIAMI → disabled Transfer button
+              if (_idleActionBtn) {
+                _idleActionBtn.textContent = 'Transfer';
+                _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
+                _idleActionBtn.style.background = 'rgba(34,197,94,0.2)';
+                _idleActionBtn.style.borderColor = 'rgba(34,197,94,0.5)';
+                _idleActionBtn.style.color = '#4ade80';
+                _idleActionBtn.disabled = true;
+              }
+              // Update shape + enable Transfer as user types
+              _tInp?.addEventListener('input', (e) => {
+                e.stopPropagation();
+                const v = (_tInp.value || '').trim();
+                if (v.startsWith('0x') && v.length >= 42) {
+                  _shape.innerHTML = _blackDiamondSvg;
+                  if (_idleActionBtn) _idleActionBtn.disabled = false;
+                } else if (v.length >= 3 && !v.startsWith('0x')) {
+                  _shape.innerHTML = _blueSquareSvg;
+                  if (_idleActionBtn) _idleActionBtn.disabled = false;
+                } else {
+                  _shape.innerHTML = _emptySvg;
+                  if (_idleActionBtn) _idleActionBtn.disabled = true;
+                }
+              });
+              _tInp?.focus();
+              // Restore function
+              const _restoreInput = () => {
+                priceRow.dataset.mode = 'owned';
+                priceRow.style.background = '';
+                priceRow.style.padding = '';
+                priceRow.style.borderRadius = '';
+                priceRow.style.border = '';
+                priceRow.innerHTML = `<svg class="ski-idle-context-icon" viewBox="0 0 16 16" width="14" height="14"><rect x="1" y="1" width="14" height="14" rx="2" fill="#4da2ff" stroke="#fff" stroke-width="1.2"/></svg><span class="ski-idle-context-text" id="ski-idle-price-text">Owned</span>`;
+                if (_idleActionBtn) {
+                  _idleActionBtn.style.background = '';
+                  _idleActionBtn.style.borderColor = '';
+                  _idleActionBtn.style.color = '';
+                  _idleActionBtn.onclick = null;
+                }
+                _updateIdleStatus();
+              };
+              // Cancel
+              priceRow.querySelector('#ski-transfer-cancel')?.addEventListener('click', (ce) => { ce.stopPropagation(); _restoreInput(); });
+              // Keyboard
+              _tInp?.addEventListener('keydown', (ke) => {
+                ke.stopPropagation();
+                if (ke.key === 'Escape') { _restoreInput(); return; }
+                if (ke.key === 'Enter') { ke.preventDefault(); _doTransfer(_restoreInput); }
+              });
+              // Transfer button click
+              if (_idleActionBtn) {
+                _idleActionBtn.onclick = (be) => { be.stopPropagation(); _doTransfer(_restoreInput); };
+              }
+              // Transfer
+              const _doTransfer = async (restore: () => void) => {
+                const target = (priceRow.querySelector('#ski-transfer-target') as HTMLInputElement)?.value?.trim() || '';
+                if (!target) return;
+                if (_idleActionBtn) { _idleActionBtn.disabled = true; _idleActionBtn.textContent = '\u2026'; }
+                try {
+                  const ws = getState();
+                  if (!ws.address) throw new Error('No wallet');
+                  let targetAddr = target;
+                  if (!target.startsWith('0x')) {
+                    const bare = target.replace(/\.sui$/, '');
+                    const resolveRes = await fetch('https://sui-rpc.publicnode.com', {
+                      method: 'POST', headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_resolveNameServiceAddress', params: [`${bare}.sui`] }),
+                    });
+                    const resolveData = await resolveRes.json() as { result?: string };
+                    if (!resolveData.result) throw new Error(`${bare}.sui not found`);
+                    targetAddr = resolveData.result;
+                  }
+                  const { tx: transferTx } = await buildTransferNftTx(ws.address, label, targetAddr);
+                  const result = await signAndExecuteTransaction(transferTx);
+                  if (!result.digest) throw new Error('No digest');
+                  showToast(`${label}.sui transferred to ${target} \u2713`);
+                  const _transferredIdx = nsOwnedDomains.findIndex(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
+                  if (_transferredIdx >= 0) nsOwnedDomains.splice(_transferredIdx, 1);
+                  nsAvail = 'taken';
+                  nsNftOwner = targetAddr;
+                  nsTargetAddress = targetAddr;
+                  restore();
+                  priceRow.hidden = true;
+                  priceRow.onmouseenter = null;
+                  priceRow.onmouseleave = null;
+                  priceRow.onclick = null;
+                  _updateIdleCard(label);
+                  setTimeout(() => refreshPortfolio(true), 2000);
+                } catch (err) {
+                  const msg = err instanceof Error ? err.message : 'Transfer failed';
+                  if (!msg.toLowerCase().includes('reject')) showToast(msg);
+                  if (_idleActionBtn) { _idleActionBtn.disabled = false; _idleActionBtn.textContent = 'Transfer'; }
+                }
+              };
+            };
           } else {
             priceRow.hidden = true;
           }
@@ -9921,8 +10117,11 @@ function bindEvents() {
         if (_idleStormPurgeBtn) {
           const _convoOpenForPurge = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
           const _hasBubblesForPurge = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo .ski-idle-bubble'));
-          if (_convoOpenForPurge && _hasBubblesForPurge) _idleStormPurgeBtn.removeAttribute('hidden');
+          const _showPurge = _convoOpenForPurge && _hasBubblesForPurge;
+          if (_showPurge) _idleStormPurgeBtn.removeAttribute('hidden');
           else _idleStormPurgeBtn.setAttribute('hidden', '');
+          // Hide clear button when purge is visible to avoid duplicate ×
+          if (_idleClearBtn) _idleClearBtn.style.display = _showPurge ? 'none' : '';
         }
 
         if (!raw || !draft) {
@@ -10664,6 +10863,8 @@ function bindEvents() {
         _populateRoster(rosterPanel, targetNames, targetAddr);
       };
       _idleNsInput?.addEventListener('input', () => {
+        // Skip NS lookup when in transfer mode — input is a recipient, not a name search
+        if (_idleNsInput!.dataset.transferMode === '1') return;
         const val = (_idleNsInput!.value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
         _idleNsInput!.value = val;
         // Typing a new name is an intentional switch — any "user closed"
@@ -11431,23 +11632,38 @@ function bindEvents() {
           // Close roster
           const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
           if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
-          // Clear NS input
-          if (_idleNsInput) { _idleNsInput.value = ''; _idleNsInput.dispatchEvent(new Event('input')); }
-          nsLabel = '';
-          try { localStorage.removeItem('ski:ns-label'); } catch {}
+          // Hide SOL QR / shade card
+          _hideSolQr();
+          // Restore to primary SuiNS name
+          const _primaryName = (app.suinsName || '').replace(/\.sui$/, '');
+          if (_primaryName && _idleNsInput) {
+            _idleNsInput.value = _primaryName;
+            nsLabel = _primaryName;
+            try { localStorage.setItem('ski:ns-label', _primaryName); } catch {}
+            nsPriceFetchFor = '';
+            _cardCacheKey = '';
+            nsAvail = null; nsTargetAddress = null; nsNftOwner = null;
+            nsKioskListing = null; nsTradeportListing = null;
+            fetchAndShowNsPrice(_primaryName).then(() => {
+              _updateIdleStatus();
+              _updateIdleCard(_primaryName);
+              _expandIdleConvo(_primaryName);
+            });
+          } else {
+            // No primary name — just clear
+            if (_idleNsInput) { _idleNsInput.value = ''; _idleNsInput.dispatchEvent(new Event('input')); }
+            nsLabel = '';
+            try { localStorage.removeItem('ski:ns-label'); } catch {}
+            nsAvail = null; nsTargetAddress = null; nsNftOwner = null;
+            nsKioskListing = null; nsTradeportListing = null;
+            _cardCacheKey = '';
+            _updateIdleStatus();
+            _updateIdleCard('');
+          }
           const clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
-          if (clearBtn) clearBtn.style.display = 'none';
-          // Clear thunder input
-          if (_idleThunderInputEl) { _idleThunderInputEl.value = ''; }
+          if (clearBtn) clearBtn.style.display = _primaryName ? '' : 'none';
           _updateThunderRowActive();
           _renderThunderComposePreview();
-          // Reset state
-          nsAvail = null; nsTargetAddress = null; nsNftOwner = null;
-          nsKioskListing = null; nsTradeportListing = null;
-          _cardCacheKey = '';
-          // Restore primary card
-          _updateIdleStatus();
-          _updateIdleCard('');
           _unfreezeGif();
           return;
         }
@@ -11757,8 +11973,9 @@ function bindEvents() {
         const ws = getState();
         if (!ws.address) return;
         const viewingName = _idleNsInput?.value?.trim().toLowerCase() || '';
-        if (!viewingName) return;
         const ownName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+
+        if (!viewingName) return;
         const isOwnName = nsAvail === 'owned' || nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === viewingName);
 
         // Red hexagon / orange triangle = taken or grace period.
@@ -11785,8 +12002,8 @@ function bindEvents() {
         const statusEl = _idleOverlay?.querySelector('#ski-idle-status') as HTMLElement | null;
         if (statusEl) statusEl.style.opacity = '0.3';
         try {
-          const txBytes = await buildSetDefaultNsTx(ws.address, domain);
-          const result = await signAndExecuteTransaction(txBytes);
+          const { tx: setDefaultTx } = await buildSetDefaultNsTx(ws.address, domain);
+          const result = await signAndExecuteTransaction(setDefaultTx);
           if (!result.digest) throw new Error('Transaction returned no digest');
           const eff = result.effects as Record<string, unknown> | undefined;
           const st = eff?.status as { status?: string; error?: string } | undefined;
@@ -13094,6 +13311,30 @@ function bindEvents() {
         if (!qrEl) return;
         const ws = getState();
         if (!ws.address) { qrEl.setAttribute('hidden', ''); return; }
+        // Shade route: check Treasury DO for an existing active shade before
+        // showing the payment QR. If one exists, show confirmation instead.
+        if (route === 3 && label && !nsShadeOrder) {
+          try {
+            const slRes = await fetch(`/api/cache/shade-list?holder=${encodeURIComponent(ws.address)}`);
+            const slData = await slRes.json() as { shades?: Array<{ domain?: string; status?: string; objectId?: string; id?: string; graceEndMs?: number; salt?: string; depositMist?: string; thresholdUsd?: number }> };
+            const match = (slData?.shades ?? []).find(s => s.domain === label && s.status === 'active');
+            if (match) {
+              nsShadeOrder = {
+                objectId: match.objectId || match.id || '',
+                domain: match.domain!,
+                executeAfterMs: match.graceEndMs ?? 0,
+                targetAddress: ws.address!,
+                salt: match.salt || '',
+                depositMist: BigInt(match.depositMist || Math.ceil((match.thresholdUsd ?? 0) * 1e9)),
+              };
+              addShadeOrder(ws.address!, nsShadeOrder);
+              _showShadeConfirmation(label);
+              _idleActionBtn!.textContent = 'Shaded';
+              _idleActionBtn!.disabled = true;
+              return;
+            }
+          } catch {}
+        }
         const cacheKey = `${ws.address}:${amountUsd}:${label || ''}:${route ?? 0}`;
         if (_solQrShown === cacheKey) { qrEl.removeAttribute('hidden'); return; }
         try {
@@ -13116,6 +13357,13 @@ function bindEvents() {
           const solAddr = d.solAddress || '7iVxCjQpLEhsYTLCUVJkPBZvnTXgtLKmNLKVDMrctv3U';
           const solAmt = d.solAmount ? d.solAmount.toFixed(3) : '?';
           const shadeLabel = label ? `shade ${label}.sui` : 'fund';
+          // Grace-period countdown pill — show days/hours left for shade orders
+          let gracePill = '';
+          if (route === 3 && nsGraceEndMs > 0) {
+            const countdown = _graceCountdown();
+            const graceDate = _graceEndDate();
+            gracePill = `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:rgba(153,69,255,0.25);color:#c084fc;font-size:0.7rem;font-weight:700;margin-top:2px">${countdown} left${graceDate ? ` \u00b7 ${graceDate}` : ''}</span>`;
+          }
           const solLogo = `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:36px;height:36px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 0 8px rgba(0,0,0,0.4)"><svg viewBox="0 0 397 311" width="22" height="17"><defs><linearGradient id="sg" x1="0" y1="311" x2="397" y2="0" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs><path d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7zM64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8zM333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z" fill="url(#sg)"/></svg></div>`;
           qrEl.innerHTML = `
             <div class="ski-idle-sol-qr-inner" style="padding:14px 16px 10px">
@@ -13127,11 +13375,128 @@ function bindEvents() {
                 <span style="color:#9945FF;font-weight:800;font-size:0.85rem">${esc(shadeLabel)}</span>
                 <span style="color:#94a3b8;font-size:0.7rem">$${amountUsd.toFixed(2)} \u2192 sol@ultron</span>
                 <span style="color:#64748b;font-size:0.6rem;word-break:break-all">${solAddr.slice(0, 8)}\u2026${solAddr.slice(-6)}</span>
+                ${gracePill}
               </div>
             </div>
           `;
           qrEl.removeAttribute('hidden');
         } catch {}
+      }
+      function _showShadeConfirmation(label: string) {
+        const qrEl = _idleOverlay?.querySelector('#ski-idle-sol-qr') as HTMLElement | null;
+        if (!qrEl) return;
+        const depositUsd = nsShadeOrder ? `$${(Number(nsShadeOrder.depositMist) / 1e9).toFixed(2)}` : '?';
+        const objId = nsShadeOrder?.objectId ?? '';
+        const shadeLink = objId && !objId.startsWith('proxy:')
+          ? `<a href="https://suiscan.xyz/mainnet/object/${esc(objId)}" target="_blank" rel="noopener" style="color:#c084fc;text-decoration:underline">shade</a>`
+          : 'shade';
+        // Days-left pill, color-coded by urgency
+        let daysLeft = 0;
+        let daysColor = '#4ade80'; // green
+        let daysBg = 'rgba(74,222,128,0.15)';
+        if (nsGraceEndMs > 0) {
+          daysLeft = Math.max(0, Math.ceil((nsGraceEndMs - Date.now()) / 86_400_000));
+          if (daysLeft <= 3) { daysColor = '#f87171'; daysBg = 'rgba(248,113,113,0.15)'; }
+          else if (daysLeft <= 7) { daysColor = '#fbbf24'; daysBg = 'rgba(251,191,36,0.15)'; }
+          else if (daysLeft <= 14) { daysColor = '#a78bfa'; daysBg = 'rgba(167,139,250,0.15)'; }
+        }
+        const daysPill = `<span style="display:inline-block;padding:3px 10px;border-radius:10px;background:${daysBg};color:${daysColor};font-size:0.75rem;font-weight:700">${daysLeft}d</span>`;
+        const _myName = esc(app.suinsName?.replace(/\.sui$/, '') || 'you');
+        qrEl.innerHTML = `
+          <div class="ski-idle-sol-qr-inner" style="padding:16px 20px 12px;max-width:240px;position:relative">
+            <button type="button" id="ski-shade-cancel" style="position:absolute;top:8px;right:10px;width:20px;height:20px;padding:0;border-radius:50%;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);color:#f87171;font-size:0.7rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all 0.2s;overflow:hidden;white-space:nowrap">\u2715</button>
+            <div style="position:relative;display:inline-block">
+              <img src="/assets/iusd-256.png" width="120" height="120" alt="" style="border-radius:50%;filter:brightness(1.15)">
+              <span style="position:absolute;bottom:-2px;left:-4px;font-size:1.3rem;line-height:1;filter:drop-shadow(0 1px 3px rgba(0,0,0,0.6))">\u{1F6E1}\ufe0f</span>
+            </div>
+            <div style="color:#fff;font-weight:800;font-size:0.9rem;margin:6px 0 8px">${esc(label)}</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span id="ski-shade-check" style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:rgba(34,197,94,0.2);border:1px solid rgba(34,197,94,0.4);color:#4ade80;font-size:0.7rem;font-weight:700;flex-shrink:0;cursor:pointer;transition:all 0.15s">\u2713</span>
+              <span style="color:#c084fc;font-weight:800;font-size:0.9rem">${shadeLink} confirmed</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+              ${daysPill}
+              <span style="color:#fff;font-weight:700;font-size:0.8rem">${depositUsd}</span>
+              <span style="color:#64748b;font-size:0.65rem">sol@${_myName}</span>
+            </div>
+          </div>
+        `;
+        qrEl.removeAttribute('hidden');
+        // Checkmark hover → red X (unshade affordance)
+        const _checkEl = qrEl.querySelector('#ski-shade-check') as HTMLElement | null;
+        if (_checkEl) {
+          _checkEl.addEventListener('mouseenter', () => {
+            _checkEl.textContent = '\u2715';
+            _checkEl.style.background = 'rgba(239,68,68,0.2)';
+            _checkEl.style.borderColor = 'rgba(239,68,68,0.4)';
+            _checkEl.style.color = '#f87171';
+          });
+          _checkEl.addEventListener('mouseleave', () => {
+            _checkEl.textContent = '\u2713';
+            _checkEl.style.background = 'rgba(34,197,94,0.2)';
+            _checkEl.style.borderColor = 'rgba(34,197,94,0.4)';
+            _checkEl.style.color = '#4ade80';
+          });
+          _checkEl.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            qrEl.querySelector<HTMLButtonElement>('#ski-shade-cancel')?.click();
+          });
+        }
+        // Unshade button: X → expands to "Unshade" on hover
+        const _cancelBtn = qrEl.querySelector('#ski-shade-cancel') as HTMLButtonElement | null;
+        if (_cancelBtn) {
+          _cancelBtn.addEventListener('mouseenter', () => {
+            _cancelBtn.style.width = 'auto';
+            _cancelBtn.style.borderRadius = '10px';
+            _cancelBtn.style.padding = '0 10px';
+            _cancelBtn.style.fontSize = '0.6rem';
+            _cancelBtn.textContent = 'Unshade';
+          });
+          _cancelBtn.addEventListener('mouseleave', () => {
+            _cancelBtn.style.width = '20px';
+            _cancelBtn.style.borderRadius = '50%';
+            _cancelBtn.style.padding = '0';
+            _cancelBtn.style.fontSize = '0.7rem';
+            _cancelBtn.textContent = '\u2715';
+          });
+        }
+        // Cancel handler
+        const _doUnshade = async (btn: HTMLButtonElement) => {
+          btn.disabled = true;
+          btn.textContent = 'Unshading\u2026';
+          try {
+            const ws = getState();
+            if (!ws.address || !nsShadeOrder) throw new Error('No shade to cancel');
+            // Cancel in ShadeExecutorAgent DO
+            await fetch('/api/shade/poke/' + encodeURIComponent(ws.address)).catch(() => {});
+            // Cancel on-chain + in Treasury DO shade-list
+            const cancelRes = await fetch('/api/cache/shade-cancel', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ domain: label, holder: ws.address }),
+            });
+            const cancelData = await cancelRes.json().catch(() => ({})) as { ok?: boolean; cancelDigest?: string; iusdRecovered?: string; bamMintSig?: string };
+            removeShadeOrder(ws.address, nsShadeOrder.objectId);
+            const recovered = cancelData.iusdRecovered ? `$${(Number(cancelData.iusdRecovered) / 1e9).toFixed(2)}` : '';
+            nsShadeOrder = null;
+            showToast(cancelData.bamMintSig
+              ? `${label}.sui unshaded \u2014 ${recovered} iUSD minted on Solana`
+              : cancelData.cancelDigest
+                ? `${label}.sui unshaded \u2014 ${recovered} iUSD returned to cache`
+                : `${label}.sui shade cancelled`);
+            _hideSolQr();
+            _updateIdleStatus();
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Cancel failed';
+            showToast(msg);
+            btn.disabled = false;
+            btn.textContent = 'Unshade';
+          }
+        };
+        qrEl.querySelector('#ski-shade-cancel')?.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          _doUnshade(ev.target as HTMLButtonElement);
+        });
       }
       function _hideSolQr() {
         const qrEl = _idleOverlay?.querySelector('#ski-idle-sol-qr') as HTMLElement | null;
@@ -13685,6 +14050,7 @@ function bindEvents() {
         let _settledInUsd = 0;
         let _settledCount = 0;
         const _settledIdxs = new Set<number>();
+        let _lastSettledDigest = '';
         _recentEntries.forEach((m, i) => {
           if (!_isTransferNote(m.text)) return;
           const dMatch = m.text.match(/tx:([A-Za-z0-9]{40,60})/);
@@ -13695,6 +14061,7 @@ function bindEvents() {
           if (isOut) _settledOutUsd += amt; else _settledInUsd += amt;
           _settledCount++;
           _settledIdxs.add(i);
+          _lastSettledDigest = dig;
         });
 
         const fetchedBubbles = _recentEntries.map((m, idx) => {
@@ -13707,10 +14074,15 @@ function bindEvents() {
             const _isFirstSettled = idx === Math.min(..._settledIdxs);
             if (_isFirstSettled && _settledCount > 0) {
               const _parts: string[] = [];
-              if (_settledOutUsd > 0) _parts.push(`\u2191 $${_settledOutUsd % 1 === 0 ? _settledOutUsd : _settledOutUsd.toFixed(2)} sent`);
-              if (_settledInUsd > 0) _parts.push(`\u2193 $${_settledInUsd % 1 === 0 ? _settledInUsd : _settledInUsd.toFixed(2)} received`);
+              const _netOut = _settledOutUsd > _settledInUsd;
+              if (_settledOutUsd > 0) _parts.push(`<span style="color:#ef4444">\u2191$</span>${_settledOutUsd % 1 === 0 ? _settledOutUsd : _settledOutUsd.toFixed(2)} sent`);
+              if (_settledInUsd > 0) _parts.push(`<span style="color:#4ade80">\u2193$</span>${_settledInUsd % 1 === 0 ? _settledInUsd : _settledInUsd.toFixed(2)} received`);
               _parts.push(`${_settledCount} tx${_settledCount > 1 ? 's' : ''}`);
-              return `<div class="ski-idle-bubble ski-idle-bubble--summary" title="${_settledCount} settled transfer${_settledCount > 1 ? 's' : ''}">${_parts.join(' \u00b7 ')}</div>`;
+              const _summaryContent = _parts.join(' \u00b7 ');
+              const _explorerUrl = _lastSettledDigest ? `https://suiscan.xyz/mainnet/tx/${_lastSettledDigest}` : '';
+              return _explorerUrl
+                ? `<a href="${_explorerUrl}" target="_blank" rel="noopener" class="ski-idle-bubble ski-idle-bubble--summary" title="${_settledCount} settled transfer${_settledCount > 1 ? 's' : ''}" style="text-decoration:none">${_summaryContent}</a>`
+                : `<div class="ski-idle-bubble ski-idle-bubble--summary" title="${_settledCount} settled transfer${_settledCount > 1 ? 's' : ''}">${_summaryContent}</div>`;
             }
             return '';
           }
@@ -14826,15 +15198,23 @@ function bindEvents() {
         { id: 'basmr',    webm: '/assets/basmr.webm',    mp4: '/assets/basmr.mp4',    label: 'BASMR' },
         { id: 'ski-idle', webm: '/assets/ski-idle.webm', mp4: '/assets/ski-idle.mp4', label: 'SKI Idle' },
       ];
+      let _bgLoadGen = 0;
       const _loadIdleBg = async (bg: typeof IDLE_BACKGROUNDS[number]) => {
         if (!_idleVideo) return;
-        // Set data-bg IMMEDIATELY so CSS layout matches the
-        // intended background from the first paint. The actual
-        // video content loads async below — without this, the
-        // poster (ski-idle.gif) shows while data-bg is still
-        // "basmr" from a previous session, applying basmr's
-        // raised name-row (top: 8%) on top of the ski scene.
-        if (_idleOverlay) _idleOverlay.dataset.bg = bg.id;
+        const gen = ++_bgLoadGen;
+        // ski-idle: set data-bg immediately (matches poster).
+        // Other backgrounds: defer until canplay so the poster
+        // (ski-idle.gif) doesn't show with the wrong CSS layout.
+        // Generation counter prevents stale listeners from firing.
+        if (bg.id === 'ski-idle') {
+          if (_idleOverlay) _idleOverlay.dataset.bg = 'ski-idle';
+        } else {
+          const _onCanPlay = () => {
+            if (gen === _bgLoadGen && _idleOverlay) _idleOverlay.dataset.bg = bg.id;
+            _idleVideo.removeEventListener('canplay', _onCanPlay);
+          };
+          _idleVideo.addEventListener('canplay', _onCanPlay);
+        }
         try { localStorage.setItem('ski:idle-bg', bg.id); } catch {}
         if ('caches' in self) {
           try {

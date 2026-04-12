@@ -50,6 +50,8 @@ export const ROUTES = {
   SATELLITE: 6,
   /** Straight transfer to the target Sui address. */
   PAY: 7,
+  /** Deposit on one chain triggers iUSD SPL mint on another chain. */
+  CROSS_CHAIN_MINT: 8,
   /** Reserved for future routes. Reject unknown on match. */
   RESERVED: 9,
 } as const;
@@ -66,6 +68,7 @@ export const ROUTE_NAMES: Record<number, string> = {
   5: 'storm',
   6: 'satellite',
   7: 'pay',
+  8: 'cross-chain-mint',
   9: 'reserved',
 };
 
@@ -250,7 +253,7 @@ export async function deriveNonceFromAddress(address: string, width: TagWidth): 
 export function parseIncomingTag(
   balance: bigint,
   decimals: number,
-  recognizedRoutes: ReadonlySet<number> = new Set([0, 1, 2, 3, 4, 5, 6, 7]),
+  recognizedRoutes: ReadonlySet<number> = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8]),
 ): DecodedTag | null {
   // 8-digit attempt — only meaningful if the coin has at least 8
   // decimal digits of tag room (i.e. decimals >= 8).

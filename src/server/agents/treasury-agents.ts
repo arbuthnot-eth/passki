@@ -47,6 +47,7 @@ const ULTRON_OWNED_BM = '0x2261d2bad4c716d2f542c9ef3db3a7f2cab9188439dc4d81d5aae
 // iUSD TreasuryCap owned by ultron (minter). Required for burn_and_redeem.
 const IUSD_TREASURY_CAP = '0x0c7873b52c69f409f3c9772e85d927b509a133a42e9c134c826121bb6595e543';
 const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+const SUIAMI_ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
 
 // ─── Scallop Protocol constants ──────────────────────────────────────
@@ -589,11 +590,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       try {
         const body = await request.json() as {
           domain: string; holder: string; thresholdUsd: number; graceEndMs: number; commitment: string;
+          objectId?: string; depositMist?: string; salt?: string;
         };
         const shades = ((this.state as any).shades ?? []) as ShadeOrder[];
         // Deduplicate by domain+holder
         const existing = shades.findIndex(s => s.domain === body.domain && s.holder === body.holder);
-        const shade: ShadeOrder = {
+        const shade: ShadeOrder & { objectId?: string; depositMist?: string; salt?: string } = {
           id: crypto.randomUUID(),
           domain: body.domain,
           holder: body.holder,
@@ -603,12 +605,117 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           status: 'active',
           created: Date.now(),
           lastChecked: 0,
+          ...(body.objectId ? { objectId: body.objectId } : {}),
+          ...(body.depositMist ? { depositMist: body.depositMist } : {}),
+          ...(body.salt ? { salt: body.salt } : {}),
         };
         if (existing >= 0) shades[existing] = shade;
         else shades.push(shade);
         this.setState({ ...this.state, shades } as any);
         console.log(`[TreasuryAgents] Shade created: ${body.domain}.sui, threshold: $${body.thresholdUsd}, grace ends: ${new Date(body.graceEndMs).toISOString()}`);
         return new Response(JSON.stringify({ id: shade.id, status: 'active' }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Shade cancel — user-initiated unshade (on-chain cancel + iUSD recovery)
+    if ((url.pathname.endsWith('/shade-cancel') || url.searchParams.has('shade-cancel')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { domain: string; holder: string };
+        const shades = ((this.state as any).shades ?? []) as ShadeOrder[];
+        const idx = shades.findIndex(s => s.domain === body.domain && s.holder === body.holder && s.status === 'active');
+        if (idx < 0) {
+          return new Response(JSON.stringify({ ok: false, error: 'No active shade found' }), { headers: { 'content-type': 'application/json' } });
+        }
+        const shade = shades[idx] as any;
+        const objectId = shade.objectId as string | undefined;
+        let cancelDigest = '';
+        let iusdRecovered = '0';
+
+        // Cancel on-chain if we have the objectId
+        if (objectId && this.env.SHADE_KEEPER_PRIVATE_KEY) {
+          try {
+            const SHADE_V5_PKG = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
+            const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+            const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+            const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+            const tx = new Transaction();
+            tx.setSender(ultronAddr);
+            tx.moveCall({
+              target: `${SHADE_V5_PKG}::shade::cancel_stable`,
+              typeArguments: [IUSD_TYPE],
+              arguments: [tx.object(objectId)],
+            });
+            const txBytes = await tx.build({ client: transport as never });
+            const sig = await keypair.signTransaction(txBytes);
+            cancelDigest = await this._submitTx(txBytes, sig.signature);
+            iusdRecovered = shade.depositMist || '0';
+            console.log(`[shade-cancel] on-chain cancel ${objectId} → ${cancelDigest}, recovered ${Number(iusdRecovered) / 1e9} iUSD`);
+          } catch (e) {
+            console.error('[shade-cancel] on-chain cancel failed:', e instanceof Error ? e.message : e);
+            // Still mark as cancelled in DO even if on-chain fails
+          }
+        }
+
+        // BAM mint iUSD SPL on Solana → user's Solana address
+        let bamMintSig: string | undefined;
+        if (cancelDigest && iusdRecovered !== '0') {
+          try {
+            const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+            // For now, use ultron's own SOL address as recipient (user claims later)
+            // TODO: resolve sol@holder via IKA dWallet / SUIAMI roster
+            const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+
+            const mintAddress = (this.state as any).iusd_sol_mint as string | undefined;
+            if (mintAddress) {
+              const result = await this.bamMintIusdSol({
+                recipientSolAddress: solAddr,
+                amount: iusdRecovered,
+                callerAddress: this.getUltronAddress(),
+              });
+              if (result.signature) {
+                bamMintSig = result.signature;
+                console.log(`[shade-cancel] BAM minted ${Number(iusdRecovered) / 1e9} iUSD SPL on Solana: ${result.signature}`);
+              }
+            } else {
+              console.log('[shade-cancel] No iUSD SOL mint configured — iUSD stays on Sui');
+            }
+          } catch (e) {
+            console.warn('[shade-cancel] BAM mint failed (iUSD stays on Sui):', e instanceof Error ? e.message : e);
+          }
+        }
+
+        shades[idx].status = 'cancelled';
+        shades[idx].deliberation = `user-initiated unshade${cancelDigest ? ` — on-chain cancel ${cancelDigest.slice(0, 10)}…` : ''}${bamMintSig ? ` — BAM minted on Solana ${bamMintSig.slice(0, 10)}…` : ''}`;
+        this.setState({ ...this.state, shades } as any);
+        console.log(`[TreasuryAgents] Shade ${body.domain}.sui cancelled by ${body.holder.slice(0, 10)}…`);
+        return new Response(JSON.stringify({
+          ok: true,
+          cancelDigest: cancelDigest || undefined,
+          iusdRecovered,
+          bamMintSig,
+        }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Shade purge-stale — remove all non-active shades for a given holder+domain
+    if ((url.pathname.endsWith('/shade-purge-stale') || url.searchParams.has('shade-purge-stale')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { domain: string; holder: string };
+        if (!body.domain || !body.holder) {
+          return new Response(JSON.stringify({ error: 'domain and holder required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+        const shades = ((this.state as any).shades ?? []) as ShadeOrder[];
+        const before = shades.length;
+        const kept = shades.filter(s => !(s.domain === body.domain && s.holder === body.holder && s.status !== 'active'));
+        const purged = before - kept.length;
+        this.setState({ ...this.state, shades: kept } as any);
+        console.log(`[TreasuryAgents] Shade purge-stale: removed ${purged} non-active entries for ${body.domain}.sui / ${body.holder.slice(0, 10)}…`);
+        return new Response(JSON.stringify({ ok: true, purged, remaining: kept.filter(s => s.domain === body.domain && s.holder === body.holder).length }), { headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
       }
@@ -628,6 +735,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         graceEndMs: s.graceEndMs,
         status: s.status,
         deliberation: s.deliberation,
+        objectId: (s as any).objectId,
+        depositMist: (s as any).depositMist,
+        salt: holder ? (s as any).salt : undefined,
       }));
       return new Response(JSON.stringify({ shades: result }), { headers: { 'content-type': 'application/json' } });
     }
@@ -1688,6 +1798,26 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    // Chansey v3 deposit-mint — attest cross-chain collateral + mint iUSD
+    if ((url.pathname.endsWith('/mint-iusd-deposit') || url.searchParams.has('mint-iusd-deposit')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as {
+          recipient: string; depositedUsdMist: string;
+          assetKey: string; chainKey: string;
+        };
+        const result = await this.mintIusdForDeposit({
+          ...params,
+          callerAddress: this.getUltronAddress(),
+        });
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     if ((url.pathname.endsWith('/set-thunder-fee') || url.searchParams.has('set-thunder-fee')) && request.method === 'POST') {
       try {
         const params = await request.json() as Parameters<typeof this.setThunderFee>[0];
@@ -1800,6 +1930,70 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    // ─── Jupiter SOL→USDC swap on Solana ──────────────────────────────
+    if ((url.pathname.endsWith('/jupiter-swap') || url.searchParams.has('jupiter-swap')) && request.method === 'POST') {
+      try {
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 503, headers: { 'content-type': 'application/json' } });
+        const body = await request.json().catch(() => ({})) as { lamports?: string; slippageBps?: number };
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        // Decode the private key properly. getSecretKey() may
+        // return a bech32 string or typed array depending on
+        // SDK version. Use decodeSuiPrivateKey if available,
+        // otherwise fall back to raw export.
+        let seedBytes: Uint8Array;
+        try {
+          const { decodeSuiPrivateKey } = await import('@mysten/sui/cryptography');
+          const decoded = decodeSuiPrivateKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+          seedBytes = decoded.secretKey;
+        } catch {
+          // Fallback: export keypair and decode
+          const raw = keypair.getSecretKey();
+          if (raw instanceof Uint8Array) {
+            seedBytes = raw.length > 32 ? raw.slice(raw.length - 32) : raw;
+          } else {
+            // String — might be bech32 or base64
+            const bytes = Uint8Array.from(atob(String(raw)), c => c.charCodeAt(0));
+            seedBytes = bytes.length > 32 ? bytes.slice(bytes.length - 32) : bytes;
+          }
+        }
+        if (seedBytes.length !== 32) throw new Error(`Seed extraction failed: got ${seedBytes.length} bytes`);
+        const secretHex = Array.from(seedBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        // Default: swap ALL SOL minus 0.01 for rent
+        let lamports = BigInt(body.lamports || '0');
+        if (lamports <= 0n) {
+          const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+          const solRpc = this.env.HELIUS_API_KEY
+            ? `https://mainnet.helius-rpc.com/?api-key=${this.env.HELIUS_API_KEY}`
+            : 'https://api.mainnet-beta.solana.com';
+          const balRes = await fetch(solRpc, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [solAddr] }),
+          });
+          const balJson = await balRes.json() as { result?: { value?: number } };
+          const totalLamports = BigInt(balJson?.result?.value ?? 0);
+          lamports = totalLamports - 10_000_000n; // keep 0.01 SOL for rent
+          if (lamports <= 0n) {
+            return new Response(JSON.stringify({ error: `Insufficient SOL on ${solAddr}: ${Number(totalLamports) / 1e9} SOL` }), { status: 400, headers: { 'content-type': 'application/json' } });
+          }
+        }
+
+        const { swapSolToUsdc } = await import('../jupiter-swap.js');
+        // Always use Helius for tx submission — public Solana RPC
+        // rejects sendTransaction from CF Workers ("Unauthorized").
+        const heliusUrl = this.env.HELIUS_API_KEY
+          ? `https://mainnet.helius-rpc.com/?api-key=${this.env.HELIUS_API_KEY}`
+          : 'https://api.mainnet-beta.solana.com';
+        const result = await swapSolToUsdc(secretHex, lamports, body.slippageBps ?? 150, heliusUrl);
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     // ─── Recover iUSD from shared BM → send to recipient ──────────────
     if ((url.pathname.endsWith('/recover-shared-bm') || url.searchParams.has('recover-shared-bm')) && request.method === 'POST') {
       try {
@@ -1856,7 +2050,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     try {
       // Every tick: scan for arb + run t2000 missions + retry open Quests + deliberate Shades + sweep NS
-      // SOL deposits handled by Helius webhook (POST /api/sol-webhook), not polling
+      // SOL deposits: primary path is Helius webhook, but poll as
+      // fallback in case the webhook didn't fire (key expired, outage).
+      await this._watchSolDeposits();
       await this._scanArb();
       await this._runT2000Missions();
       await this._retryOpenQuests();
@@ -4578,6 +4774,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       : route === 5 ? 'storm'
       : route === 6 ? 'satellite'
       : route === 7 ? 'pay'
+      : route === 8 ? 'cross-chain-mint'
       : `unknown(${route})`);
 
     // iUSD has 9 decimals; collateral value in MIST = usd * 1e9.
@@ -4739,9 +4936,48 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           }
           break;
         }
+        case 8: { // CROSS_CHAIN_MINT
+          const targetChain = (intent.params as Record<string, unknown> | null)?.targetChain as string | undefined ?? 'sol';
+          const hintAddress = (intent.params as Record<string, unknown> | null)?.recipientChainAddress as string | undefined;
+          if (targetChain !== 'sol') {
+            console.warn(`[treasury/dispatch:cross-chain-mint] chain ${targetChain} not yet supported, falling back to iusd-cache`);
+            await attestAndMint('cross-chain-mint-fallback');
+            break;
+          }
+          const solAddr = await this._resolveRecipientSolAddress(intent.suiAddress, hintAddress);
+          if (!solAddr) {
+            console.warn(`[treasury/dispatch:cross-chain-mint] could not resolve sol@ for ${intent.suiAddress.slice(0, 10)}…, falling back to iusd-cache`);
+            await attestAndMint('cross-chain-mint-fallback');
+            break;
+          }
+          // Attest collateral (no Sui-side iUSD mint — goes directly to target chain)
+          try {
+            if (deposit.sourceChain === 'sol') {
+              await this.attestSolCollateral({ valueUsdCents: Math.floor(deposit.usdValue * 100) });
+            } else {
+              await this.attestCollateral({ collateralValueMist: String(usdMist) });
+            }
+          } catch (e) {
+            console.error('[treasury/dispatch:cross-chain-mint] attest failed:', e instanceof Error ? e.message : e);
+          }
+          // Mint iUSD SPL directly to recipient on Solana
+          const mintResult = await this.crossChainMintSol({
+            recipientSolAddress: solAddr,
+            amount: String(usdMist),
+            sourceDigest: deposit.sourceDigest,
+            recipientSuiAddress: intent.suiAddress,
+          });
+          if (mintResult.error) {
+            console.error(`[treasury/dispatch:cross-chain-mint] mint failed: ${mintResult.error}, falling back to iusd-cache`);
+            await attestAndMint('cross-chain-mint-fallback');
+          } else {
+            console.log(`[treasury/dispatch:cross-chain-mint] ${deposit.usdValue} iUSD SPL → ${solAddr.slice(0, 10)}… sig=${mintResult.signature?.slice(0, 12)}…`);
+          }
+          break;
+        }
         case 0: // IUSD_CACHE (default)
         default: {
-          if (route !== 0 && route !== 2 && route !== 7 && route !== 3) {
+          if (route !== 0 && route !== 2 && route !== 7 && route !== 3 && route !== 8) {
             console.warn(`[treasury/dispatch:${routeName_}] route not yet implemented — falling back to iusd-cache`);
           }
           await attestAndMint('iusd-cache');
@@ -4753,6 +4989,67 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       console.error(`[treasury/dispatch:${routeName_}] threw:`, e instanceof Error ? e.message : e);
     }
     void action;
+  }
+
+  /** Resolve a Sui address to its Solana address via the SUIAMI roster. */
+  private async _resolveRecipientSolAddress(
+    recipientSuiAddress: string,
+    hintSolAddress?: string,
+  ): Promise<string | null> {
+    // Client-provided hint takes priority (Seal-encrypted addresses resolved client-side)
+    if (hintSolAddress && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(hintSolAddress)) return hintSolAddress;
+    // Read cleartext chains from SUIAMI roster
+    try {
+      const addr = normalizeSuiAddress(recipientSuiAddress);
+      const hex = addr.replace(/^0x/, '');
+      const raw = new Uint8Array(32);
+      for (let i = 0; i < 32; i++) raw[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      const addrB64 = btoa(String.fromCharCode(...raw));
+      const res = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `{ object(address: "${SUIAMI_ROSTER_OBJ}") { dynamicField(name: { type: "address", bcs: "${addrB64}" }) { value { ... on MoveValue { json } } } } }`,
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const gql = await res.json() as any;
+      const record = gql?.data?.object?.dynamicField?.value?.json;
+      if (!record?.chains?.contents) return null;
+      for (const { key, value } of record.chains.contents) {
+        if (key === 'sol' && value) return value;
+      }
+    } catch {}
+    return null;
+  }
+
+  /** Mint iUSD SPL tokens on Solana for a cross-chain mint intent. */
+  async crossChainMintSol(params: {
+    recipientSolAddress: string;
+    amount: string;
+    sourceDigest: string;
+    recipientSuiAddress: string;
+  }): Promise<{ signature?: string; ata?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    const mintAddress = (this.state as any).iusd_sol_mint as string | undefined;
+    if (!mintAddress) return { error: 'iUSD SOL mint not created yet' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const pubRaw = keypair.getPublicKey().toRawBytes();
+      const mintPub = b58decode(mintAddress);
+      const recipPub = b58decode(params.recipientSolAddress);
+      const amount = BigInt(params.amount);
+      // IKA-ready sign function: presign vector path will replace this
+      const signFn = async (msg: Uint8Array) => {
+        // Future: consume presign from DO state, compute partial, submit to IKA
+        return await keypair.sign(msg);
+      };
+      const result = await mintSplTokens(signFn, pubRaw, mintPub, recipPub, amount, this._solRpcConfig);
+      console.log(`[crossChainMintSol] minted ${params.amount} iUSD SPL to ${params.recipientSolAddress} sig=${result.signature}`);
+      return result;
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   /** PAY route handler — ultron signs a USDC transfer from its own
@@ -5137,6 +5434,26 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       if (now - shade.lastChecked < 60_000) continue;
       shade.lastChecked = now;
       changed = true;
+
+      // On-chain orders (have objectId) are already funded — skip
+      // balance-based deliberation. Only check name-registered + grace expiry.
+      if ((shade as any).objectId) {
+        try {
+          const nameCheck = await raceJsonRpc<string | null>('suix_resolveNameServiceAddress', [`${shade.domain}.sui`]).catch(() => null);
+          if (nameCheck) {
+            shade.status = 'cancelled';
+            shade.deliberation = `${shade.domain}.sui already registered (${String(nameCheck).slice(0, 10)}…) — on-chain order can be cancelled`;
+            continue;
+          }
+        } catch {}
+        if (now >= shade.graceEndMs) {
+          shade.status = 'executed';
+          shade.deliberation = 'grace expired — ShadeExecutorAgent handles registration';
+          continue;
+        }
+        shade.deliberation = `on-chain order ${String((shade as any).objectId).slice(0, 10)}… — funded, awaiting grace expiry`;
+        continue;
+      }
 
       // TTL — stale Shades expire and return iUSD
       if (now - shade.created > SHADE_TTL && now < shade.graceEndMs - 86_400_000) {
@@ -6685,23 +7002,32 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const { keccak_256 } = await import('@noble/hashes/sha3.js');
       const commitment = keccak_256(preimage);
 
-      // Pre-check: does ultron have enough SUI for the deposit + gas?
+      // Pre-check: does ultron have enough for the deposit?
+      // iUSD path needs only gas SUI; SUI path needs deposit + gas.
       const gasBudget = 50_000_000n; // 0.05 SUI
-      const totalNeeded = depositMist + gasBudget;
       const ultronBalRes = await transport.query({
-        query: `query($a:SuiAddress!){ address(address:$a){ balance(coinType:"0x2::sui::SUI"){ totalBalance } } }`,
+        query: `query($a:SuiAddress!){ address(address:$a){ suiBal: balance(coinType:"0x2::sui::SUI"){ totalBalance } iusdBal: balance(coinType:"${IUSD_TYPE}"){ totalBalance } } }`,
         variables: { a: ultronAddr },
       });
-      const ultronSuiBal = BigInt((ultronBalRes.data as any)?.address?.balance?.totalBalance ?? '0');
-      if (ultronSuiBal < totalNeeded) {
-        const haveUsd = (Number(ultronSuiBal) / 1e9 * suiPrice).toFixed(2);
+      const ultronSuiBal = BigInt((ultronBalRes.data as any)?.address?.suiBal?.totalBalance ?? '0');
+      const ultronIusdBal = BigInt((ultronBalRes.data as any)?.address?.iusdBal?.totalBalance ?? '0');
+      const iusdDepositMist = BigInt(Math.ceil(depositUsd * 1.10 * 1e9));
+      const hasEnoughIusd = ultronIusdBal >= iusdDepositMist;
+      const hasEnoughSui = ultronSuiBal >= (depositMist + gasBudget);
+      if (!hasEnoughIusd && !hasEnoughSui) {
+        const haveIusd = (Number(ultronIusdBal) / 1e9).toFixed(2);
+        const haveSui = (Number(ultronSuiBal) / 1e9 * suiPrice).toFixed(2);
         const needUsd = depositUsd.toFixed(2);
-        return { error: `Cache has $${haveUsd} SUI, shade needs $${needUsd}. Top up ultron or try a 5+ char name (~$8).` };
+        return { error: `Cache has $${haveIusd} iUSD + $${haveSui} SUI, shade needs $${needUsd}. Top up ultron or try a 5+ char name (~$8).` };
+      }
+      // Gas check — even iUSD path needs SUI for gas
+      if (ultronSuiBal < gasBudget) {
+        return { error: `Ultron needs gas SUI (has ${(Number(ultronSuiBal) / 1e9).toFixed(4)} SUI, needs 0.05)` };
       }
 
       // Build PTB — use iUSD deposit via create_stable<IUSD>.
       // If ultron has enough iUSD, deposit iUSD directly (no
-      // SUI needed). Fall back to SUI create() if no iUSD.
+      // SUI needed for deposit). Fall back to SUI create() if no iUSD.
       const SHADE_PKG = '0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203';
       const SHADE_V5_PKG = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
 
@@ -6715,9 +7041,6 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         .filter((c: any) => c.balance > 0n)
         .sort((a: any, b: any) => (a.balance > b.balance ? -1 : 1));
       const iusdTotal = iusdCoins.reduce((s: bigint, c: any) => s + c.balance, 0n);
-
-      // iUSD deposit amount: same USD value but in iUSD mist (9 decimals, 1:1 peg)
-      const iusdDepositMist = BigInt(Math.ceil(depositUsd * 1.10 * 1e9));
 
       const tx = new Transaction();
       tx.setSender(ultronAddr);
@@ -6756,28 +7079,34 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const sig = await keypair.signTransaction(txBytes);
       const digest = await this._submitTx(txBytes, sig.signature);
 
-      // Look up the created shade order object
-      await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
+      // Look up the created shade order object (retry twice for indexing lag)
       let orderId = '';
-      try {
-        const fxRes = await transport.query({
-          query: `query($d: String!) { transactionBlock(digest: $d) { effects { objectChanges { nodes { address idCreated outputState { asMoveObject { contents { type { repr } } } } } } } } }`,
-          variables: { d: digest },
-        });
-        const nodes = ((fxRes.data as any)?.transactionBlock?.effects?.objectChanges?.nodes ?? []) as any[];
-        for (const n of nodes) {
-          if (n?.idCreated && (n.outputState?.asMoveObject?.contents?.type?.repr ?? '').includes('shade::ShadeOrder')) {
-            orderId = n.address;
-            break;
+      for (let attempt = 0; attempt < 2 && !orderId; attempt++) {
+        await new Promise(r => setTimeout(r, attempt === 0 ? TX_INDEX_WAIT_MS : 3000));
+        try {
+          const fxRes = await transport.query({
+            query: `query($d: String!) { transaction(digest: $d) { effects { objectChanges { nodes { address idCreated outputState { asMoveObject { contents { type { repr } } } } } } } } }`,
+            variables: { d: digest },
+          });
+          const nodes = ((fxRes.data as any)?.transaction?.effects?.objectChanges?.nodes ?? []) as any[];
+          for (const n of nodes) {
+            if (n?.idCreated && (n.outputState?.asMoveObject?.contents?.type?.repr ?? '').includes('shade::ShadeOrder')) {
+              orderId = n.address;
+              break;
+            }
           }
-        }
-      } catch {}
+        } catch {}
+      }
+      // Fallback: use digest-prefixed ID so deliberation still recognizes
+      // this as an on-chain order and skips balance-based liquidation.
+      if (!orderId) orderId = `digest:${digest}`;
 
-      // Schedule with ShadeExecutorAgent
+      // Schedule with ShadeExecutorAgent (keyed by target user address)
+      const normalTarget = normalizeSuiAddress(targetAddress);
       if (orderId) {
         try {
           const shadeStub = this.env.ShadeExecutorAgent?.get(
-            this.env.ShadeExecutorAgent.idFromName('shade-executor'),
+            this.env.ShadeExecutorAgent.idFromName(normalTarget),
           );
           if (shadeStub) {
             await shadeStub.fetch(new Request('https://shade-do/?schedule', {
@@ -6787,9 +7116,10 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
                 objectId: orderId,
                 domain: label,
                 executeAfterMs: graceEndMs,
-                targetAddress: normalizeSuiAddress(targetAddress),
+                targetAddress: normalTarget,
                 salt: saltHex,
-                depositMist: depositMist.toString(),
+                ownerAddress: normalTarget,
+                depositMist: iusdDepositMist.toString(),
               }),
             }));
           }
@@ -6798,8 +7128,27 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         }
       }
 
-      console.log(`[shade-proxy] ${label}.sui shaded → ${targetAddress}, deposit=${Number(depositMist)/1e9} SUI, orderId=${orderId}, digest=${digest}`);
-      return { digest, orderId, depositMist: depositMist.toString(), depositUsd };
+      // Store in Treasury DO shades array for deliberation + client visibility
+      const shades = ((this.state as any).shades ?? []) as any[];
+      const { keccak_256: k2 } = await import('@noble/hashes/sha3.js');
+      const commitHex = Array.from(commitment, (b: number) => b.toString(16).padStart(2, '0')).join('');
+      shades.push({
+        id: orderId || crypto.randomUUID(),
+        domain: label,
+        commitment: commitHex,
+        holder: normalTarget,
+        thresholdUsd: depositUsd,
+        graceEndMs,
+        status: 'active',
+        objectId: orderId,
+        salt: saltHex,
+        depositMist: iusdDepositMist.toString(),
+        created: Date.now(),
+      });
+      this.setState({ ...this.state, shades } as any);
+
+      console.log(`[shade-proxy] ${label}.sui shaded → ${targetAddress}, deposit=${Number(iusdDepositMist)/1e9} iUSD, orderId=${orderId}, digest=${digest}`);
+      return { digest, orderId, depositMist: iusdDepositMist.toString(), depositUsd };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[shade-proxy] error:', msg);

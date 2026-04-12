@@ -2481,6 +2481,12 @@ body {
 .ski-idle-overlay[data-bg="basmr"] .ski-idle-iusd-btn {
   display: none !important;
 }
+/* QR follows the name-row: on BASMR the row is at 8% so the
+ * QR sits higher; on ski-idle (default) the row is at 27% so
+ * the QR shifts down to avoid covering the input. */
+.ski-idle-overlay[data-bg="basmr"] .ski-idle-sol-qr {
+  top: calc(8% + 32px);
+}
 /* SKI-IDLE — default positions (27% for ns-row, inherited
  * for convo). iUSD button visible. Explicit selector so a
  * missing data-bg (async load gap) still gets the right
@@ -2957,13 +2963,11 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: calc(100% - 32px);
+  width: calc(100% - 10px);
   position: absolute;
   top: 27%;
-  left: 12px;
+  left: 6px;
   z-index: 2;
-  /* Right padding is zero so the × purge button can sit flush
-   * against the overlay's right edge without trailing whitespace. */
   padding: 4px 0 4px 8px;
   /* Row itself is transparent — the input and the Storm action button
    * carry their own backgrounds, the space between them stays clear. */
@@ -3034,11 +3038,13 @@ body {
 .ski-idle-ns-clear {
   all: unset;
   cursor: pointer;
-  color: rgba(255, 255, 255, 0.4);
-  font-size: 0.65rem;
-  margin-left: -42px;
-  margin-right: 4px;
-  z-index: 1;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 0.6rem;
+  flex-shrink: 0;
+  padding: 2px 1px;
+  margin-left: -4px;
+  background: transparent;
+  line-height: 1;
 }
 .ski-idle-ns-clear:hover { color: #fff; }
 .ski-idle-ns-action {
@@ -3047,11 +3053,7 @@ body {
   flex-shrink: 0;
   padding: 5px 6px;
   border-radius: 6px;
-  /* NO margin-left: auto here. In flexbox, auto margins absorb
-   * free space BEFORE flex-grow distribution — so setting auto
-   * would starve the input-wrap's flex: 1 0 0 growth and leave
-   * the .sui label short of the Storm button. Position is driven
-   * purely by the wrap's flex-grow consuming all available slack. */
+  margin-left: auto;
   box-sizing: border-box;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
@@ -3079,20 +3081,23 @@ body {
 .ski-idle-version:hover {
   text-shadow: 0 0 8px rgba(255, 255, 255, 0.8), 0 0 16px rgba(77, 162, 255, 0.5);
 }
-/* Ski Context — price/status right under the action button */
+/* Ski Context — owned/price badge above the name input row */
 .ski-idle-context {
   display: flex;
   align-items: center;
   gap: 4px;
   position: absolute;
-  top: calc(27% + 34px);
-  right: 20px;
+  top: calc(27% - 16px);
+  left: 14px;
   z-index: 2;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: #fff;
   filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+}
+.ski-idle-overlay[data-bg="basmr"] .ski-idle-context {
+  top: calc(8% - 16px);
 }
 .ski-idle-context[hidden] { display: none; }
 .ski-idle-context-icon { flex-shrink: 0; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5)); }
@@ -3151,30 +3156,17 @@ body {
 .ski-idle-storm-purge {
   all: unset;
   flex-shrink: 0;
-  /* Pull left to cancel the row's 6px gap — Storm ends flush
-   * against × with ~0px between them. margin-right: 0 is fine
-   * now that the row's right padding is zero; × sits at the
-   * literal right edge of the row. */
-  margin-left: -6px;
-  margin-right: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  font-size: 0.75rem;
-  font-weight: 800;
-  line-height: 1;
-  color: rgba(255, 255, 255, 0.6);
-  background: rgba(10, 10, 15, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.15);
   cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 0.6rem;
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  line-height: 1;
+  transition: color 0.12s;
 }
 .ski-idle-storm-purge:hover {
   color: rgba(239, 68, 68, 0.9);
-  border-color: rgba(239, 68, 68, 0.5);
 }
 .ski-idle-storm-purge--armed {
   color: #fff;
@@ -3904,16 +3896,22 @@ body {
 /* Collapsed summary of settled transfers — one gray line
  * replacing N individual transfer bubbles in the storm. */
 .ski-idle-bubble--summary {
-  background: rgba(30, 30, 36, 0.75);
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  border-radius: 10px;
-  color: #94a3b8;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
   font-size: 0.68rem;
   font-weight: 600;
-  padding: 4px 12px;
-  text-align: center;
-  opacity: 0.8;
+  padding: 3px 8px;
+  text-align: left;
   letter-spacing: 0.01em;
+  align-self: flex-start;
+  width: fit-content;
+  margin-top: -11px;
+  margin-left: 29px;
+  position: relative;
+  z-index: 3;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.8));
 }
 /* Settled transfer: flip the @mention pill green so the recipient
  * can see at a glance that the claim landed on their name. */
@@ -4884,9 +4882,12 @@ a.ski-idle-bubble-name:hover {
 /* Inline SOL QR on idle overlay */
 .ski-idle-sol-qr {
   position: absolute;
-  inset: 0;
+  top: calc(27% + 32px);
+  left: 0;
+  right: 0;
+  bottom: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   z-index: 10;
   pointer-events: auto;

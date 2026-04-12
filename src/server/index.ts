@@ -75,7 +75,7 @@ app.use('/api/*', async (c, next) => {
 // User-facing routes (/api/sponsor-gas, /api/iusd/swap, /api/infer, etc.) are NOT gated.
 const ADMIN_ROUTES = [
   '/api/cache/start', '/api/cache/yield-rotate', '/api/cache/sweep-fees', '/api/cache/refill-sui',
-  '/api/iusd/attest', '/api/iusd/mint',
+  '/api/iusd/attest', '/api/iusd/mint', '/api/iusd/mint-deposit',
   '/api/thunder/set-fee', '/api/swap-sui-for-deep', '/api/rumble-ultron',
   '/api/create-iusd-pool', '/api/seed-iusd-pool',
   '/api/create-iusd-sol-mint', '/api/bam-mint-iusd-sol',
@@ -1099,6 +1099,27 @@ app.post('/api/iusd/mint', async (c) => {
   }
 });
 
+// Chansey v3 deposit-mint — attest cross-chain collateral + mint iUSD
+app.post('/api/iusd/mint-deposit', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      recipient: string; depositedUsdMist: string;
+      assetKey: string; chainKey: string;
+    };
+    if (!body.recipient || !body.depositedUsdMist) return c.json({ error: 'Missing params' }, 400);
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?mint-iusd-deposit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text || 'Unknown DO error' }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── iUSD swap — burn iUSD, get SUI or USDC ──────────────────────────
 // Ultron pre-sends SUI/USDC to user, returns TX for user to send iUSD back
 app.post('/api/iusd/swap', async (c) => {
@@ -1662,6 +1683,22 @@ app.post('/api/recall-vaults', async (c) => {
       totalSui,
       description: `Recall ${vaultInfos.length} vault${vaultInfos.length > 1 ? 's' : ''} (${totalSui.toFixed(4)} SUI)`,
     });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Jupiter SOL→USDC swap on Solana (ultron signs)
+app.post('/api/cache/jupiter-swap', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({})) as { lamports?: string; slippageBps?: number };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?jupiter-swap', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }
@@ -2251,6 +2288,39 @@ app.post('/api/cache/unwind-ssui', async (c) => {
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?unwind-ssui', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Cancel a shade in Treasury DO state (user-initiated unshade)
+app.post('/api/cache/shade-cancel', async (c) => {
+  try {
+    const body = await c.req.json() as { domain: string; holder: string };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-cancel', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+app.post('/api/cache/shade-purge-stale', async (c) => {
+  try {
+    const body = await c.req.json() as { domain: string; holder: string };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-purge-stale', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
     }));
     const text = await res.text();
     try { return c.json(JSON.parse(text), res.status as any); }

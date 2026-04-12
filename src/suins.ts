@@ -795,9 +795,9 @@ export async function lookupNftOwner(domain: string): Promise<string | null> {
 }
 
 /** Build a PTB that sets `domain` as the wallet's default reverse-lookup name.
- *  Returns the Transaction object (not pre-built bytes) so WaaP can resolve
- *  gas/objects using its own bundled SDK version, avoiding serialization mismatches. */
-export async function buildSetDefaultNsTx(rawAddress: string, domain: string): Promise<Uint8Array> {
+ *  Returns { bytes, tx } — pass `tx` (unbuilt Transaction) to WaaP so it
+ *  builds server-side with its own v1 SDK. Non-WaaP wallets use `bytes`. */
+export async function buildSetDefaultNsTx(rawAddress: string, domain: string): Promise<{ bytes: Uint8Array; tx: InstanceType<typeof Transaction> }> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const fullDomain = domain.endsWith('.sui') ? domain : `${domain}.sui`;
   const transport = gqlClient;
@@ -824,7 +824,9 @@ export async function buildSetDefaultNsTx(rawAddress: string, domain: string): P
       tx.pure.string(fullDomain),
     ],
   });
-  return buildWithTx(tx, transport);
+  maybeAppendRoster(tx);
+  const bytes = await tx.build({ client: transport as never });
+  return { bytes, tx };
 }
 
 /** Execute a pre-signed transaction via our own gRPC transport (bypasses WaaP execution bugs). */
@@ -3319,7 +3321,7 @@ export async function buildTransferNftTx(
   senderAddress: string,
   domain: string,
   recipientAddress: string,
-): Promise<Uint8Array> {
+): Promise<{ bytes: Uint8Array; tx: InstanceType<typeof Transaction> }> {
   const sender = normalizeSuiAddress(senderAddress);
   const recipient = normalizeSuiAddress(recipientAddress);
   if (sender === recipient) throw new Error('Recipient matches sender — cannot transfer to self');
@@ -3338,5 +3340,7 @@ export async function buildTransferNftTx(
     tx.pure.address(recipient),
   );
 
-  return buildWithTx(tx, gqlClient);
+  maybeAppendRoster(tx);
+  const bytes = await tx.build({ client: gqlClient as never });
+  return { bytes, tx };
 }
