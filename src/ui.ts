@@ -2811,7 +2811,7 @@ function _renderNetworkSelect() {
 const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold', IKA: 'ika', SOL: 'solana' };
 // Conservative default prices so dust filtering works before live prices arrive.
 // These are intentionally LOW — better to undervalue and filter dust than overvalue and show it.
-const _DEFAULT_TOKEN_PRICES: Record<string, number> = { NS: 0.018, WAL: 0.069, DEEP: 0.026, XAUM: 4492, IKA: 0.003, SOL: 82 };
+const _DEFAULT_TOKEN_PRICES: Record<string, number> = { SUI: 0.9, NS: 0.018, WAL: 0.069, DEEP: 0.026, XAUM: 4492, IKA: 0.003, SOL: 82 };
 let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() => {
   try {
     const raw = localStorage.getItem('ski:token-prices');
@@ -2830,6 +2830,10 @@ let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() 
 
 function getTokenPrice(symbol: string): number | null { return tokenPriceCache[symbol]?.price ?? _DEFAULT_TOKEN_PRICES[symbol] ?? null; }
 function getNsTokenPrice(): number | null { return getTokenPrice('NS'); }
+/** SUI/USD with a sane fallback chain: live cache → static default → 0.
+ *  Used anywhere a card or aggregator would otherwise zero out SUI
+ *  value on a fresh render before suiPriceCache finishes seeding. */
+function getSuiPriceWithFallback(): number { return suiPriceCache?.price || _DEFAULT_TOKEN_PRICES.SUI || 0; }
 
 /** Fetch prices for all non-SUI, non-stable tokens via CoinGecko + DexScreener fallback. */
 async function fetchTokenPrices(): Promise<void> {
@@ -4785,7 +4789,7 @@ async function _fetchCardBalance(addr: string): Promise<{ suiUsd: number; stable
     });
     const data = await res.json() as { data?: { address?: { balances?: { nodes?: Array<{ coinType: { repr: string }; totalBalance: string }> } } } };
     const nodes = data?.data?.address?.balances?.nodes ?? [];
-    const suiPrice = suiPriceCache?.price ?? 0;
+    const suiPrice = getSuiPriceWithFallback();
     let suiBal = 0;
     let stableUsd = 0;
     for (const n of nodes) {
@@ -10305,7 +10309,10 @@ function bindEvents() {
       let _activeStormCounterpartyAddr = '';
       const _CARD_BAL_TTL = 60_000; // 1 min in-memory cache
       const _CARD_BAL_PERSIST_TTL = 30 * 60 * 1000; // 30 min localStorage cache
-      const _CARD_BAL_KEY = (label: string) => `ski:card-bal:v1:${label.toLowerCase()}`;
+      // v2 bump: v1 entries baked with the SUI-price=0 bug need to be
+      // invalidated so recalled funds reappear without waiting for the
+      // 30-min persist TTL.
+      const _CARD_BAL_KEY = (label: string) => `ski:card-bal:v2:${label.toLowerCase()}`;
       const _loadCardBalPersisted = (label: string): { usd: number; addr: string } | null => {
         try {
           const raw = localStorage.getItem(_CARD_BAL_KEY(label));
@@ -10434,7 +10441,7 @@ function bindEvents() {
             });
             const gql2 = await r2.json() as any;
             let totalUsd = 0;
-            const price = suiPriceCache?.price ?? 0.87;
+            const price = getSuiPriceWithFallback();
             const SUI_CT = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
             const USDC_CT = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
             const IUSD_CT = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
