@@ -58,7 +58,11 @@ const THUNDER_IOU_SHIELDED_PACKAGE = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd3
 // (or a keeper bot) can sweep the balance back. Short enough that
 // unredeemed funds don't sit forever; long enough for anyone on a
 // vacation to catch up.
-const IOU_DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// 10 minutes — short enough that unclaimed vaults auto-expire
+// quickly and ultron's sweep picks them up. The old 7-day TTL
+// locked funds for a week if the recipient didn't claim (and
+// WaaP wallets can't recall due to dry-run sender mismatch).
+const IOU_DEFAULT_TTL_MS = 10 * 60 * 1000;
 
 // Diglett Lv.18 — dust threshold. Below this mist amount, a shielded
 // deposit's BLS12-381 Pedersen commitment + shared-object rent
@@ -496,6 +500,17 @@ export async function sendThunder(opts: {
   senderName?: string;
   recipientName?: string;
   transfer?: { recipientAddress: string; amountMist: bigint };
+  /** iUSD-native transfer path. Used when the sender has no SUI
+   *  (or not enough SUI to cover a SUI-denominated split). Splits
+   *  `amountMist` (iUSD, 9 decimals, 1:1 USD) from the provided
+   *  primary coin and transfers it directly to `recipientAddress`.
+   *  Gas MUST be sponsored by ultron — the sender has no SUI. */
+  iusdTransfer?: {
+    recipientAddress: string;
+    amountMist: bigint;
+    primaryCoinId: string;
+    mergeCoinIds?: string[];
+  };
   /** User's intended USD amount — used verbatim in the encrypted
    *  transfer note so it reflects what the user typed, not the
    *  slippage-inflated SUI equivalent. */
@@ -520,6 +535,7 @@ export async function sendThunder(opts: {
 
   const client = getThunderClient();
   const hasTransfer = opts.transfer && opts.transfer.amountMist > 0n && opts.signAndExecute;
+  const hasIusdTransfer = opts.iusdTransfer && opts.iusdTransfer.amountMist > 0n && opts.signAndExecute;
   const hasFiles = Array.isArray(opts.files) && opts.files.length > 0;
 
   // Check if Storm exists
@@ -534,7 +550,7 @@ export async function sendThunder(opts: {
 
   // ─── Build single PTB: transfer + Storm + SUIAMI roster ──────
   // One signature covers everything
-  if ((hasTransfer || needsStorm) && opts.signAndExecute) {
+  if ((hasTransfer || hasIusdTransfer || needsStorm) && opts.signAndExecute) {
 
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
@@ -548,6 +564,12 @@ export async function sendThunder(opts: {
     // coins from tx.gas, which would become ultron's coins under a
     // sponsor, making ultron foot the transfer amount. Sponsored
     // transfers need a separate owned-coin path that we don't build here.
+    // Sponsor branch: the caller opts in via `sponsored: true`.
+    // iUSD transfers can't use tx.gas for the transfer amount, so
+    // sponsorship is compatible — but it breaks on WaaP (iframe
+    // re-serializes bytes, invalidating the sponsor signature).
+    // The UI decides per-wallet whether to sponsor or to pin a
+    // pre-dripped SUI coin via gasPayment.
     const doSponsor = !!opts.sponsored && !hasTransfer;
     if (doSponsor) {
       try {
@@ -646,6 +668,24 @@ export async function sendThunder(opts: {
       }
     }
 
+    // 1b. iUSD-native transfer (no SUI needed). Splits from a user-
+    // owned iUSD coin and transferObjects to the recipient. Gas is
+    // covered by the sponsor branch above (doSponsor === true).
+    // Privacy is sacrificed vs. the shielded SUI path — amount +
+    // recipient land in the on-chain event stream — but it's the
+    // ONLY viable route for a wallet with zero SUI. The storm note
+    // still carries the encrypted $ label so the recipient sees the
+    // transfer context in the Storm even without scanning chain.
+    if (hasIusdTransfer) {
+      const t = opts.iusdTransfer!;
+      const primary = tx.object(t.primaryCoinId);
+      if (t.mergeCoinIds && t.mergeCoinIds.length > 0) {
+        tx.mergeCoins(primary, t.mergeCoinIds.map(id => tx.object(id)));
+      }
+      const [iusdOut] = tx.splitCoins(primary, [tx.pure.u64(t.amountMist)]);
+      tx.transferObjects([iusdOut], tx.pure.address(t.recipientAddress));
+    }
+
     // 2. Storm creation (if no on-chain Storm exists)
     if (needsStorm) {
       const members = opts.recipientAddress ? [opts.recipientAddress] : [];
@@ -717,18 +757,24 @@ export async function sendThunder(opts: {
     // verify the on-chain record via that suffix without leaking any
     // info the on-chain tx doesn't already publish. The 💸 prefix is
     // the render-side marker that styles the bubble green.
-    if (hasTransfer) {
+    if (hasTransfer || hasIusdTransfer) {
       // Prefer the user's stated intent (what they typed in the input)
-      // over anything derived from the SUI amountMist. If intent is
+      // over anything derived from the mist amount. If intent is
       // missing, fall back to the text regex, then finally to the
-      // mist → SUI conversion as a last resort.
+      // mist → USD conversion as a last resort. iUSD is 1:1 USD at
+      // 9 decimals, so its mist / 1e9 already gives a USD figure.
       let amtLabel = '';
       if (typeof opts.intentUsd === 'number' && opts.intentUsd > 0) {
-        // Strip trailing .00 so "$1" stays "$1" instead of "$1.00".
         amtLabel = String(opts.intentUsd).replace(/\.00?$/, '');
       } else {
         const _m = opts.text.match(/\$(\d+(?:\.\d+)?|\.\d+)/);
-        amtLabel = _m ? (_m[1].startsWith('.') ? `0${_m[1]}` : _m[1]) : (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
+        if (_m) {
+          amtLabel = _m[1].startsWith('.') ? `0${_m[1]}` : _m[1];
+        } else if (hasIusdTransfer) {
+          amtLabel = (Number(opts.iusdTransfer!.amountMist) / 1e9).toFixed(2);
+        } else {
+          amtLabel = (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
+        }
       }
       // Recipient-first layout: "@ralph ← 💸 $1 · tx:abcd"
       // Recipient reads left-to-right as "I received $1" — the arrow
@@ -760,7 +806,7 @@ export async function sendThunder(opts: {
     // no attachments, the send is complete — otherwise fall through
     // to the attachment path (SDK sendMessage) or the plain Seal+DO
     // path below with the $token-stripped text body.
-    if (hasTransfer && !hasFiles) {
+    if ((hasTransfer || hasIusdTransfer) && !hasFiles) {
       const textWithoutAmount = opts.text.replace(/@\S+\$(?:\d+(?:\.\d+)?|\.\d+)/g, '').trim();
       if (!textWithoutAmount) {
         return { messageId: 'transfer' };
@@ -772,7 +818,7 @@ export async function sendThunder(opts: {
   // before sending the follow-up message — otherwise the recipient
   // sees "@ralph$1 hey" as plaintext on top of the transfer bubble.
   // When there's no transfer, this regex is a no-op.
-  const _bodyText = hasTransfer
+  const _bodyText = (hasTransfer || hasIusdTransfer)
     ? opts.text.replace(/@\S+\$(?:\d+(?:\.\d+)?|\.\d+)/g, '').trim()
     : opts.text;
 
@@ -1726,12 +1772,15 @@ export function humanizeThunderError(err: unknown): HumanizedError {
   }
 
   // ── Storm / object not found (fresh-Storm propagation race) ─────
-  const objNotFound = /object\s+0x[a-f0-9]+\s+not found/i.test(raw);
+  const objIdMatch = raw.match(/object\s+(0x[a-f0-9]+)\s+not found/i);
+  const objNotFound = !!objIdMatch;
   if (objNotFound && lower.includes('storm')) {
     return { kind: 'storm-not-found', message: 'Storm not yet live on-chain. Wait a few seconds and retry.', silent: false };
   }
   if (objNotFound) {
-    return { kind: 'object-not-found', message: 'On-chain object not found. The network may be lagging — retry in a moment.', silent: false };
+    const idFull = objIdMatch![1];
+    const idLabel = idFull.length > 18 ? `${idFull.slice(0, 12)}…${idFull.slice(-6)}` : idFull;
+    return { kind: 'object-not-found', message: `Object ${idLabel} not found. Indexer lag — retry.`, silent: false };
   }
 
   // ── Wallet sequence drift ───────────────────────────────────────

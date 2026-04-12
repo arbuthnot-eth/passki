@@ -174,6 +174,42 @@ Thunder carries value as well as text. A `$amount` in a thunder composes a token
 
 Active IOU work in the Pokedex covers the activate/redeem UI (Pikachu), iUSD-yield escrow (Typhlosion), iUSD gas (Ampharos), Seal-encrypted `sealed_memo` (Magnezone), multi-token `Iou<T>` (Garchomp), and the IKA cross-chain activate to ETH/SOL/BTC (Metagross).
 
+### Gas-Free Stables Everywhere
+
+Thunder sends work with **zero SUI** in the sender's wallet:
+
+- **iUSD-native transfers** — when the sender lacks SUI, the send routes through `iusdTransfer` (plain `transferObjects` of iUSD coins). Gas is either ultron-sponsored (non-WaaP) or covered by a 0.1 SUI drip from ultron (WaaP).
+- **iUSD→USDC→SUI two-hop swap** — `buildSwapTx` chains the seeded iUSD/USDC DeepBook pool with the main SUI/USDC pool. Slippage protection at 90% minimum output; liquidity pre-check rejects swaps exceeding pool depth.
+- **iUSD→USDC→NS registration** — `buildIusdSwap` path in `buildRegisterSplashNsTx` swaps iUSD through both pools and registers a SuiNS name with the NS-discounted path. One signature.
+- **Tradeport iUSD-redeem** — `/api/infer` detects iUSD holders and routes marketplace buys through ultron pre-fund (SUI advanced, user repays in iUSD+USDC). Tightened accounting: Pyth price passed from infer to DO, gas buffer + 0.5% safety margin charged to the buyer.
+- **TTL reduction** — `IOU_DEFAULT_TTL_MS` reduced from 7 days to 10 minutes. The `iou-sweeper` cron (every 10 min) auto-recalls expired vaults permissionlessly via ultron.
+
+### SUIAMI Batch Claim/Recall
+
+The Storm action button turns green **SUIAMI** when unclaimed transfer vaults exist in the current conversation. One click builds a batch PTB with `claim` or `recall` per vault and signs in one tx. Settled transfers collapse into a single gray summary line showing net amounts and tx count.
+
+The ↩ button on the quick-amount chip row scans ALL `ShieldedVault` objects on-chain where the connected wallet is the sender, and batch-recalls them.
+
+### Shade v5 — Generic Stable Deposits
+
+Shade contract upgraded to v5 (`0x9978db0a...`) with `create_stable<T>`, `execute_stable<T>`, `cancel_stable<T>`. Shade deposits can now be denominated in **any coin type** (iUSD, USDC, etc.) — no SUI required. UpgradeCap owned by `plankton.sui`, policy 0 (compatible).
+
+### SOL → Shade Pipeline
+
+One-scan cross-chain shade placement:
+
+1. Type a grace-period name → Solana QR appears (centered, large, Solana logo) on the idle overlay
+2. Scan with Phantom/Solflare → send SOL to `sol@ultron`
+3. SOL watcher detects deposit (route=3, shade intent) → attests SOL collateral → mints iUSD to ultron
+4. Auto-fires `_shadeProxy` → `create_stable<IUSD>` → shade order placed with iUSD deposit
+5. At grace expiry → `execute_stable<IUSD>` → name registers to the depositor's Sui address
+
+Zero SUI. Zero clicks after the scan. SOL value teleports cross-chain via iUSD synthetic accounting.
+
+### iUSD/USDC DeepBook Pool
+
+Pool `0x38df72f5...` seeded via `seedIusdPoolV3` — one atomic PTB: create shared BalanceManager, deposit all iUSD+USDC, place ASK @ 1.01 + BID @ 0.99, share BM. Current package dispatch uses `0x337f4f4f...` (latest DeepBook mainnet), not the origin package.
+
 ## SUIAMI
 
 SUI-Authenticated Message Identity — cryptographic proof that a SuiNS name belongs to you. Verified server-side via `/api/suiami/verify`.

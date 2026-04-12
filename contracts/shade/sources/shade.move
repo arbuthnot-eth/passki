@@ -133,24 +133,17 @@ public fun execute(
     execute_after_ms: u64,
     target_address: address,
     salt: vector<u8>,
-    treasury: address,
     clock: &Clock,
     ctx: &mut TxContext,
 ): Coin<SUI> {
-    // Verify clock gate
     assert!(clock.timestamp_ms() >= execute_after_ms, ETooEarly);
-
-    // Reconstruct and verify commitment
     let mut preimage = domain;
     preimage.append(bcs::to_bytes(&execute_after_ms));
     preimage.append(bcs::to_bytes(&target_address));
     preimage.append(salt);
     let hash = keccak256(&preimage);
     assert!(hash == order.commitment, EInvalidCommitment);
-
     let deposit_amount = order.deposit.value();
-
-    // Emit before consuming
     event::emit(OrderExecuted {
         order_id: object::id(&order),
         executor: ctx.sender(),
@@ -158,19 +151,9 @@ public fun execute(
         target_address,
         deposit: deposit_amount,
     });
-
-    // Consume order
     let ShadeOrder { id, owner: _, deposit, commitment: _, sealed_payload: _ } = order;
     id.delete();
-
-    // Split 10% to iUSD treasury, return 90% for registration
-    let fee_amount = deposit_amount / 10;
-    let mut deposit_balance = deposit;
-    let fee_balance = deposit_balance.split(fee_amount);
-    let fee_coin = coin::from_balance(fee_balance, ctx);
-    transfer::public_transfer(fee_coin, treasury);
-
-    coin::from_balance(deposit_balance, ctx)
+    coin::from_balance(deposit, ctx)
 }
 
 // ─── Cancel ──────────────────────────────────────────────────────────
@@ -229,6 +212,130 @@ entry fun top_up(order: &mut ShadeOrder, coin: Coin<SUI>, ctx: &TxContext) {
         added,
         new_total: order.deposit.value(),
     });
+}
+
+// ─── Generic stable shade (accepts any coin type) ───────────────────
+// Enables SOL → iUSD → shade without needing SUI. The deposit is held
+// in whatever coin the user provides (iUSD, USDC, etc.). Execute
+// returns the same coin type for composing with registration swaps.
+
+public struct StableShadeOrder<phantom T> has key {
+    id: UID,
+    owner: address,
+    deposit: Balance<T>,
+    commitment: vector<u8>,
+    sealed_payload: vector<u8>,
+}
+
+public struct StableOrderCreated has copy, drop {
+    order_id: ID,
+    owner: address,
+    deposit: u64,
+}
+
+public struct StableOrderExecuted has copy, drop {
+    order_id: ID,
+    executor: address,
+    domain: vector<u8>,
+    target_address: address,
+    deposit: u64,
+}
+
+public struct StableOrderCancelled has copy, drop {
+    order_id: ID,
+    owner: address,
+    deposit: u64,
+}
+
+entry fun create_stable<T>(
+    coin: Coin<T>,
+    commitment: vector<u8>,
+    sealed_payload: vector<u8>,
+    ctx: &mut TxContext,
+) {
+    assert!(coin.value() > 0, EZeroDeposit);
+    let order = StableShadeOrder<T> {
+        id: object::new(ctx),
+        owner: ctx.sender(),
+        deposit: coin.into_balance(),
+        commitment,
+        sealed_payload,
+    };
+    event::emit(StableOrderCreated {
+        order_id: object::id(&order),
+        owner: order.owner,
+        deposit: order.deposit.value(),
+    });
+    transfer::share_object(order);
+}
+
+public fun execute_stable<T>(
+    order: StableShadeOrder<T>,
+    domain: vector<u8>,
+    execute_after_ms: u64,
+    target_address: address,
+    salt: vector<u8>,
+    treasury: address,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): Coin<T> {
+    assert!(clock.timestamp_ms() >= execute_after_ms, ETooEarly);
+    let mut preimage = domain;
+    preimage.append(bcs::to_bytes(&execute_after_ms));
+    preimage.append(bcs::to_bytes(&target_address));
+    preimage.append(salt);
+    let hash = keccak256(&preimage);
+    assert!(hash == order.commitment, EInvalidCommitment);
+    let deposit_amount = order.deposit.value();
+    event::emit(StableOrderExecuted {
+        order_id: object::id(&order),
+        executor: ctx.sender(),
+        domain,
+        target_address,
+        deposit: deposit_amount,
+    });
+    let StableShadeOrder { id, owner: _, deposit, commitment: _, sealed_payload: _ } = order;
+    id.delete();
+    let fee_amount = deposit_amount / 10;
+    let mut deposit_balance = deposit;
+    let fee_balance = deposit_balance.split(fee_amount);
+    let fee_coin = coin::from_balance(fee_balance, ctx);
+    transfer::public_transfer(fee_coin, treasury);
+    coin::from_balance(deposit_balance, ctx)
+}
+
+entry fun cancel_stable<T>(order: StableShadeOrder<T>, ctx: &mut TxContext) {
+    assert!(ctx.sender() == order.owner, ENotOwner);
+    event::emit(StableOrderCancelled {
+        order_id: object::id(&order),
+        owner: order.owner,
+        deposit: order.deposit.value(),
+    });
+    let StableShadeOrder { id, owner: _, deposit, commitment: _, sealed_payload: _ } = order;
+    id.delete();
+    let coin = coin::from_balance(deposit, ctx);
+    transfer::public_transfer(coin, ctx.sender());
+}
+
+entry fun cancel_refund_stable<T>(order: &mut StableShadeOrder<T>, ctx: &mut TxContext) {
+    assert!(ctx.sender() == order.owner, ENotOwner);
+    let refund = order.deposit.value();
+    assert!(refund > 0, EAlreadyRefunded);
+    let coin = coin::take(&mut order.deposit, refund, ctx);
+    transfer::public_transfer(coin, order.owner);
+    event::emit(StableOrderCancelled {
+        order_id: object::id(order),
+        owner: order.owner,
+        deposit: refund,
+    });
+}
+
+entry fun reap_cancelled_stable<T>(order: StableShadeOrder<T>, ctx: &mut TxContext) {
+    assert!(order.deposit.value() == 0, ENonZeroDeposit);
+    let StableShadeOrder { id, owner: _, deposit, commitment: _, sealed_payload: _ } = order;
+    id.delete();
+    let zero = coin::from_balance(deposit, ctx);
+    coin::destroy_zero(zero);
 }
 
 // ─── Seal access policy ──────────────────────────────────────────────

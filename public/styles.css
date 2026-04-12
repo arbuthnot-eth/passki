@@ -2433,6 +2433,115 @@ body {
   display: none;
 }
 
+/* Collapsed identity card: show only the domain row +
+ * quick-amount buttons + dismiss. Hides the sub-link, expiry
+ * date, and balance line; shrinks the QR. Click anywhere
+ * (except the quick buttons) on the card to expand. */
+.ski-nft-card--collapsed .ski-nft-link,
+.ski-nft-card--collapsed .ski-nft-expiry,
+.ski-nft-card--collapsed .ski-nft-bal {
+  display: none !important;
+}
+.ski-nft-card--collapsed {
+  min-height: 44px;
+  padding: 6px 10px;
+  gap: 8px;
+}
+.ski-nft-card--collapsed .ski-nft-qr {
+  width: 32px;
+  height: 32px;
+}
+
+/* Floating quick-amount chip row — overlays the idle
+ * overlay just above the thunder input, "right where the
+ * cursor is". Absolute-positioned so it doesn't occupy any
+ * layout room and always sits on top of the media rather
+ * than pushing into the side margin.
+ *
+ * .ski-idle-media already establishes position: relative as
+ * the containing block, so bottom/right anchor to the media
+ * rect itself. */
+/* BASMR clip — the Paris street scene frames the action in
+ * the lower-third of the video. Push the name row + storm
+ * convo toward the top of the overlay so they don't cover
+ * the subjects (building/pedestrians) in frame. Other
+ * backgrounds (the original ski-idle clip) keep the default
+ * ~27% offset which reads better over a ski-centered frame. */
+/* BASMR (Paris street) — raise the name row + storm convo
+ * toward the top so they don't cover street subjects; hide
+ * the iUSD swap circle (only relevant on the ski-idle clip
+ * where the circular button reads clearly against the snow
+ * background). */
+.ski-idle-overlay[data-bg="basmr"] .ski-idle-ns-row {
+  top: 8%;
+}
+.ski-idle-overlay[data-bg="basmr"] .ski-idle-thunder-convo {
+  top: calc(8% + 36px);
+}
+.ski-idle-overlay[data-bg="basmr"] .ski-idle-iusd-btn {
+  display: none !important;
+}
+/* SKI-IDLE — default positions (27% for ns-row, inherited
+ * for convo). iUSD button visible. Explicit selector so a
+ * missing data-bg (async load gap) still gets the right
+ * layout — only BASMR overrides, everything else defaults. */
+
+.ski-idle-thunder-quick-amts {
+  position: absolute;
+  right: 8px;
+  bottom: 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  align-items: flex-end;
+  pointer-events: auto;
+  z-index: 5;
+  opacity: 0.88;
+  transition: opacity 0.15s;
+}
+.ski-idle-thunder-quick-amts:hover {
+  opacity: 1;
+}
+/* Top row: $1 and $7.50 side by side */
+.ski-idle-thunder-quick-amts-top {
+  display: flex;
+  gap: 4px;
+}
+/* Bottom row: $0.01 and ↩ recall side by side */
+.ski-idle-thunder-quick-amts-bottom {
+  display: flex;
+  gap: 4px;
+}
+.ski-idle-thunder-quick-amt--recall {
+  border-color: rgba(96, 165, 250, 0.5) !important;
+  background: rgba(20, 30, 50, 0.82) !important;
+  color: #60a5fa !important;
+}
+.ski-idle-thunder-quick-amt {
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  background: rgba(18, 40, 24, 0.82);
+  color: #22c55e;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  letter-spacing: 0.01em;
+  backdrop-filter: blur(4px);
+  min-width: 40px;
+  text-align: center;
+}
+.ski-idle-thunder-quick-amt:hover {
+  background: rgba(34, 197, 94, 0.3);
+  transform: translateY(-1px);
+}
+.ski-idle-thunder-quick-amt:active {
+  transform: translateY(0);
+}
+
 .ski-nft-domain {
   font-size: 0.85rem;
   font-weight: 700;
@@ -2769,6 +2878,28 @@ body {
 /* Audio toggle — matches the .ski-idle-quick-btn family (32x32, black fill,
    colored border + icon, hover fills with accent). Sits top-left of the
    idle overlay on top of the background video. */
+.ski-idle-bg-toggle {
+  all: unset;
+  position: absolute;
+  top: 8px;
+  left: 44px;
+  z-index: 6;
+  width: 28px;
+  height: 28px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.ski-idle-bg-toggle:hover { opacity: 1; }
 .ski-idle-audio-toggle {
   all: unset;
   position: absolute;
@@ -2987,9 +3118,11 @@ body {
   color: #93c5fd;
 }
 .ski-idle-ns-action--shade {
-  background: linear-gradient(135deg, rgba(220, 38, 38, 0.25), rgba(180, 30, 60, 0.2));
-  border: 1px solid rgba(220, 38, 38, 0.5);
-  color: #fca5a5;
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.7), rgba(180, 30, 60, 0.65));
+  border: 1px solid rgba(220, 38, 38, 0.9);
+  color: #fff;
+  font-weight: 700;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 .ski-idle-ns-action--thunder {
   background: rgba(10, 10, 15, 0.85);
@@ -3000,6 +3133,16 @@ body {
   background: rgba(10, 10, 15, 0.85);
   border: 1px solid rgba(129, 140, 248, 0.55);
   color: #818cf8;
+}
+.ski-idle-ns-action--suiami {
+  background: rgba(20, 45, 28, 0.9);
+  border: 1px solid rgba(34, 197, 94, 0.9);
+  color: #22c55e;
+  font-weight: 800;
+  animation: suiami-pulse 2s ease-in-out infinite;
+}
+.ski-idle-ns-action--suiami:hover {
+  background: rgba(34, 197, 94, 0.35);
 }
 /* X clear button — sits on the far right edge of the name row,
  * immediately after the Storm action button. First click arms the
@@ -3441,6 +3584,20 @@ body {
   font-size: 1.1rem;
   margin-right: 1px;
 }
+.ski-idle-card-recall {
+  all: unset;
+  margin-left: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.ski-idle-card-recall:hover {
+  opacity: 1;
+  background: rgba(255,255,255,0.08);
+}
 .ski-idle-card-bal-whole {
   color: #fff;
   font-weight: 700;
@@ -3744,6 +3901,20 @@ body {
   color: #94a3b8 !important;
   opacity: 0.75;
 }
+/* Collapsed summary of settled transfers — one gray line
+ * replacing N individual transfer bubbles in the storm. */
+.ski-idle-bubble--summary {
+  background: rgba(30, 30, 36, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 10px;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 4px 12px;
+  text-align: center;
+  opacity: 0.8;
+  letter-spacing: 0.01em;
+}
 /* Settled transfer: flip the @mention pill green so the recipient
  * can see at a glance that the claim landed on their name. */
 .ski-idle-bubble--transfer-settled .ski-idle-bubble-mention {
@@ -3817,31 +3988,19 @@ body {
   overflow: hidden;
   transition: transform 0.28s ease-in, opacity 0.28s ease-in, max-height 0.28s ease-in, margin 0.28s ease-in, padding 0.28s ease-in, border-width 0.28s ease-in;
 }
-/* "✓ collected" pill auto-renders as a ::after pseudo-element on
- * every settled transfer bubble, so it appears whenever the
- * --transfer-settled class lands — at initial render, via the
- * background poll, or after a click-handler success. No innerHTML
- * dependency.
- *
- * The bubble's own display: inline-flex + align-items: baseline
- * lays out inline children horizontally; flex-basis: 100% on the
- * pseudo-element wraps it to a new line below the label. */
+/* Settled checkmark: a ✓ to the left of the bubble via
+ * ::before. Compact single-line instead of the old
+ * "✓ collected" pill that wrapped below the label. */
 .ski-idle-bubble--transfer-settled {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
-.ski-idle-bubble--transfer-settled::after {
-  content: '\2713 collected';
-  flex-basis: 100%;
-  display: block;
-  margin: 4px auto 0;
-  width: fit-content;
-  padding: 1px 8px;
-  background: rgba(34, 197, 94, 0.15);
-  border: 1px solid rgba(34, 197, 94, 0.55);
-  border-radius: 10px;
+.ski-idle-bubble--transfer-settled::before {
+  content: '\2713';
+  flex-shrink: 0;
+  margin-right: 6px;
   color: #22c55e;
-  font-size: 0.64rem;
-  font-weight: 700;
+  font-size: 0.8rem;
+  font-weight: 800;
   letter-spacing: 0.03em;
   text-transform: lowercase;
   pointer-events: none;
@@ -4020,7 +4179,7 @@ body {
 .ski-idle-bubble--transfer .ski-idle-bubble-sender {
   position: absolute;
   top: -10px;
-  left: 10px;
+  right: 10px;
   padding: 1px 8px;
   background: rgba(10, 10, 15, 0.95);
   border: 1px solid rgba(34, 197, 94, 0.65);
@@ -4470,6 +4629,25 @@ a.ski-idle-bubble-name:hover {
  * so the user knows the amount parsed AND is within budget, ready
  * to fire on Enter. Takes precedence over --convo-open when both
  * are set (amount → transfer intent wins over storm-open hint). */
+/* SUIAMI batch claim/recall — green button, pulsing glow */
+.ski-idle-thunder-send--suiami {
+  background: rgba(34, 197, 94, 0.4) !important;
+  border-color: rgba(34, 197, 94, 1) !important;
+  color: #22c55e !important;
+  font-weight: 800 !important;
+  font-size: 0.7rem !important;
+  letter-spacing: 0.03em;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3), 0 0 16px rgba(34, 197, 94, 0.6) !important;
+  animation: suiami-pulse 2s ease-in-out infinite;
+}
+@keyframes suiami-pulse {
+  0%, 100% { box-shadow: inset 0 2px 6px rgba(0,0,0,0.3), 0 0 8px rgba(34,197,94,0.4) !important; }
+  50% { box-shadow: inset 0 2px 6px rgba(0,0,0,0.3), 0 0 20px rgba(34,197,94,0.75) !important; }
+}
+.ski-idle-thunder-send--suiami:hover {
+  background: rgba(34, 197, 94, 0.55) !important;
+}
+
 .ski-idle-thunder-send--amount {
   background: rgba(34, 197, 94, 0.35) !important;
   border-color: rgba(34, 197, 94, 0.95) !important;
@@ -4706,8 +4884,10 @@ a.ski-idle-bubble-name:hover {
 /* Inline SOL QR on idle overlay */
 .ski-idle-sol-qr {
   position: absolute;
-  bottom: 44px;
-  right: 8px;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   z-index: 10;
   pointer-events: auto;
 }
@@ -4717,7 +4897,7 @@ a.ski-idle-bubble-name:hover {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  background: rgba(10, 10, 15, 0.75);
+  background: rgba(10, 10, 15, 0.85);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid rgba(0, 255, 163, 0.2);
@@ -4731,6 +4911,14 @@ a.ski-idle-bubble-name:hover {
   transition: opacity 0.2s, transform 0.2s;
 }
 .ski-idle-sol-qr-img:hover { opacity: 1; transform: scale(1.04); }
+.ski-idle-sol-qr-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  font-size: 0.7rem;
+  line-height: 1.3;
+}
 .ski-idle-sol-qr-amt {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;

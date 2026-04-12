@@ -1227,7 +1227,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
         // ── Prism: commitment-based privacy ──────────────────────────────
         // Hash tag + address into commitment — only the commitment is stored in state
-        const { keccak_256 } = await import('@noble/hashes/sha3');
+        const { keccak_256 } = await import('@noble/hashes/sha3.js');
         const commitPreimage = new TextEncoder().encode(`${tag}:${body.suiAddress}:${body.amountUsd}:${strategy}`);
         const commitment = Array.from(keccak_256(commitPreimage));
 
@@ -1547,6 +1547,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const params = await request.json() as {
           buyer: string; nftTokenId: string; priceMist: string; route: string;
           suiBal: string; usdcBal: string; iusdBal: string;
+          suiPriceUsd?: number;
         };
         const result = await this._buildTradeForBuyer(params);
         return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
@@ -1776,6 +1777,49 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       try {
         const result = await this.seedIusdPool();
         return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // ─── Chansey v3: clean one-PTB pool seeder ───────────────────────
+    if ((url.pathname.endsWith('/seed-iusd-pool-v3') || url.searchParams.has('seed-iusd-pool-v3')) && request.method === 'POST') {
+      try {
+        const body = await request.json().catch(() => ({})) as { iusdQtyMist?: string };
+        const iusdQtyMist = body.iusdQtyMist ?? '10000000000'; // default $10 iUSD
+        const result = await this.seedIusdPoolV3({ iusdQtyMist });
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // ─── Recover iUSD from shared BM → send to recipient ──────────────
+    if ((url.pathname.endsWith('/recover-shared-bm') || url.searchParams.has('recover-shared-bm')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { recipient: string; bmId?: string };
+        const result = await this._recoverSharedBm(body);
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // ─── Shade proxy: ultron fronts the SUI deposit ───────────────────
+    if ((url.pathname.endsWith('/shade-proxy') || url.searchParams.has('shade-proxy')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { label: string; targetAddress: string; graceEndMs?: number };
+        const result = await this._shadeProxy(body);
+        return new Response(JSON.stringify(result, (_k, v) => typeof v === 'bigint' ? v.toString() : v), {
           status: result.error ? 400 : 200,
           headers: { 'content-type': 'application/json' },
         });
@@ -3662,6 +3706,236 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   }
 
   /**
+   * Chansey v3 (#23) — clean rewrite of seedIusdPool.
+   *
+   * Writes one atomic PTB that:
+   *   1. Creates a fresh BalanceManager (owned by tx until step 8)
+   *   2. Splits iUSD + USDC from ultron's coins
+   *   3. Deposits both into the new BM
+   *   4. Generates a trade proof (owner-only)
+   *   5. Places an ASK: sell iUSD @ price 1.01 USDC/iUSD
+   *   6. Places a BID: buy iUSD @ price 0.99 USDC/iUSD
+   *   7. Shares the BM so ultron can place more orders via future txs
+   *
+   * Uses gRPC/GraphQL only (no legacy JSON-RPC). Replaces the old
+   * seedIusdPool method which used raceJsonRpc + unsafe_moveCall and
+   * referenced an owned BM that's now empty.
+   *
+   * DeepBook v3 price format for iUSD(9-dec)/USDC(6-dec):
+   *   price_scaled = human_price * 10^(9 - base_dec + quote_dec)
+   *                = human_price * 10^(9 - 9 + 6)
+   *                = human_price * 10^6
+   * So 1.0 USDC per iUSD → price = 1_000_000
+   * Quantity is in base coin raw units (iUSD 9-dec).
+   *
+   * Locked liquidity per call:
+   *   ASK side: iusdQty iUSD (pure iUSD, locked until filled)
+   *   BID side: iusdQty * 0.99 USDC (locked until filled)
+   *
+   * Caller params:
+   *   iusdQtyMist — amount of iUSD to post on ASK side (and bid-equivalent on BID side)
+   *
+   * Returns:
+   *   { digest, balanceManagerId } on success
+   *   { error } with concrete reason on failure
+   */
+  async seedIusdPoolV3(params: { iusdQtyMist: string }): Promise<{
+    digest?: string;
+    balanceManagerId?: string;
+    error?: string;
+  }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'no keeper' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const iusdQty = BigInt(params.iusdQtyMist);
+      if (iusdQty <= 0n) return { error: 'iusdQtyMist must be positive' };
+
+      // BID side needs ~0.99x iUSD worth of USDC.
+      // iusd 9-dec → usdc 6-dec: divide by 1000.
+      // Then take 99% so the BID posts at 0.99 price.
+      const bidUsdcNeeded = (iusdQty * 99n) / (100n * 1000n);
+
+      // Read ultron's iUSD + USDC coins
+      const coinsQ = await transport.query({
+        query: `query {
+          ultron: address(address: "${ultronAddr}") {
+            iusd: objects(filter: { type: "0x2::coin::Coin<${IUSD_TYPE}>" }, first: 50) {
+              nodes { address version digest contents { json } }
+            }
+            usdc: objects(filter: { type: "0x2::coin::Coin<${USDC_TYPE}>" }, first: 50) {
+              nodes { address version digest contents { json } }
+            }
+          }
+        }`,
+      });
+      const iusdNodes = ((coinsQ.data as any)?.ultron?.iusd?.nodes ?? []) as Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }>;
+      const usdcNodes = ((coinsQ.data as any)?.ultron?.usdc?.nodes ?? []) as Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }>;
+      const iusdTotal = iusdNodes.reduce((a, c) => a + BigInt(c.contents?.json?.balance ?? '0'), 0n);
+      const usdcTotal = usdcNodes.reduce((a, c) => a + BigInt(c.contents?.json?.balance ?? '0'), 0n);
+      if (iusdTotal < iusdQty) {
+        return { error: `insufficient iUSD on ultron: have $${Number(iusdTotal) / 1e9}, need $${Number(iusdQty) / 1e9}. Send iUSD to ultron first (0xa84c...b3c3).` };
+      }
+      if (usdcTotal < bidUsdcNeeded) {
+        return { error: `insufficient USDC on ultron: have $${Number(usdcTotal) / 1e6}, need $${Number(bidUsdcNeeded) / 1e6}. Send USDC to ultron first.` };
+      }
+
+      // Pool + BM package constants. Types live at the origin
+      // package (where `BalanceManager` / `Pool` are defined), but
+      // entrypoints must be dispatched through the LATEST mainnet
+      // package — `@mysten/deepbook-v3/utils/constants` keeps this
+      // up-to-date (`mainnetPackageIds.DEEPBOOK_PACKAGE_ID`).
+      // Calling pool::place_limit_order on the origin package
+      // against the newer pool triggers a silent version-mismatch
+      // abort (pool inner is Versioned v6).
+      const BM_PKG = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809'; // origin (type id)
+      const POOL_PKG = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497'; // current mainnet
+      const IUSD_USDC_POOL = '0x38df72f5d07607321d684ed98c9a6c411c0b8968e100a1cd90a996f912cd6ce1';
+      const IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 832866334;
+
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+
+      // Merge all iUSD into one coin and deposit the WHOLE thing.
+      // DeepBook reserves maker fee on top of the notional order
+      // size, so depositing exactly `iusdQty` triggers
+      // EBalanceManagerBalanceTooLow (abort 3) during place_limit_order.
+      // Depositing all of ultron's iUSD gives the pool room to take
+      // fees without the caller needing to know the exact fee rate.
+      const iusdFirst = tx.objectRef({ objectId: iusdNodes[0].address, version: iusdNodes[0].version, digest: iusdNodes[0].digest });
+      if (iusdNodes.length > 1) {
+        tx.mergeCoins(iusdFirst, iusdNodes.slice(1).map(c => tx.objectRef({ objectId: c.address, version: c.version, digest: c.digest })));
+      }
+
+      // Same treatment for USDC — merge all, deposit whole, let
+      // the BID lock what it needs plus fee headroom.
+      const usdcFirst = tx.objectRef({ objectId: usdcNodes[0].address, version: usdcNodes[0].version, digest: usdcNodes[0].digest });
+      if (usdcNodes.length > 1) {
+        tx.mergeCoins(usdcFirst, usdcNodes.slice(1).map(c => tx.objectRef({ objectId: c.address, version: c.version, digest: c.digest })));
+      }
+
+      // 1. Create fresh BalanceManager — by-value, owned by tx
+      const [bm] = tx.moveCall({
+        target: `${BM_PKG}::balance_manager::new`,
+        arguments: [],
+      });
+
+      // 2. Deposit iUSD into BM (whole merged coin — see above)
+      tx.moveCall({
+        target: `${BM_PKG}::balance_manager::deposit`,
+        typeArguments: [IUSD_TYPE],
+        arguments: [bm, iusdFirst],
+      });
+
+      // 3. Deposit USDC into BM (whole merged coin)
+      tx.moveCall({
+        target: `${BM_PKG}::balance_manager::deposit`,
+        typeArguments: [USDC_TYPE],
+        arguments: [bm, usdcFirst],
+      });
+
+      // 4. Generate owner trade proof
+      const [proof] = tx.moveCall({
+        target: `${BM_PKG}::balance_manager::generate_proof_as_owner`,
+        arguments: [bm],
+      });
+
+      // 5. Place ASK — sell iUSD at 1.01 USDC/iUSD
+      // price format: quote_raw_per_base_raw * 1e9 / (base_scaling/quote_scaling)
+      // For iUSD(9dec)/USDC(6dec) at human 1.01: price = 1_010_000
+      const ASK_PRICE = 1_010_000n;
+      const BID_PRICE = 990_000n;
+      const NO_RESTRICTION_ORDER_TYPE = 0; // u8
+      const SELF_MATCHING_ALLOWED = 0; // u8
+      const EXPIRE_NEVER = BigInt('18446744073709551615'); // u64 max (no expiry)
+      const CLOCK = '0x0000000000000000000000000000000000000000000000000000000000000006';
+      const poolRef = tx.sharedObjectRef({
+        objectId: IUSD_USDC_POOL,
+        initialSharedVersion: IUSD_USDC_POOL_INITIAL_SHARED_VERSION,
+        mutable: true,
+      });
+      tx.moveCall({
+        target: `${POOL_PKG}::pool::place_limit_order`,
+        typeArguments: [IUSD_TYPE, USDC_TYPE],
+        arguments: [
+          poolRef,
+          bm,
+          proof,
+          tx.pure.u64(1n), // client_order_id
+          tx.pure.u8(NO_RESTRICTION_ORDER_TYPE),
+          tx.pure.u8(SELF_MATCHING_ALLOWED),
+          tx.pure.u64(ASK_PRICE),
+          tx.pure.u64(iusdQty),
+          tx.pure.bool(false), // is_bid = false (ASK)
+          tx.pure.bool(false), // pay_with_deep = false
+          tx.pure.u64(EXPIRE_NEVER),
+          tx.object(CLOCK),
+        ],
+      });
+
+      // 6. Place BID — buy iUSD at 0.99 USDC/iUSD
+      tx.moveCall({
+        target: `${POOL_PKG}::pool::place_limit_order`,
+        typeArguments: [IUSD_TYPE, USDC_TYPE],
+        arguments: [
+          poolRef,
+          bm,
+          proof,
+          tx.pure.u64(2n), // client_order_id
+          tx.pure.u8(NO_RESTRICTION_ORDER_TYPE),
+          tx.pure.u8(SELF_MATCHING_ALLOWED),
+          tx.pure.u64(BID_PRICE),
+          tx.pure.u64(iusdQty),
+          tx.pure.bool(true), // is_bid = true (BID)
+          tx.pure.bool(false),
+          tx.pure.u64(EXPIRE_NEVER),
+          tx.object(CLOCK),
+        ],
+      });
+
+      // 7. Share the BM so future txs can reference it
+      tx.moveCall({
+        target: '0x2::transfer::public_share_object',
+        typeArguments: [`${BM_PKG}::balance_manager::BalanceManager`],
+        arguments: [bm],
+      });
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+
+      // Look up the new BM id from tx effects (GraphQL)
+      let balanceManagerId: string | undefined;
+      try {
+        const fxQ = await transport.query({
+          query: `query($d: String!) {
+            transactionBlock(digest: $d) {
+              effects { objectChanges { nodes { address idCreated outputState { asMoveObject { contents { type { repr } } } } } } }
+            }
+          }`,
+          variables: { d: digest },
+        });
+        const nodes = ((fxQ.data as any)?.transactionBlock?.effects?.objectChanges?.nodes ?? []) as Array<Record<string, unknown>>;
+        for (const n of nodes) {
+          if (!n?.idCreated) continue;
+          const repr: string = ((n.outputState as any)?.asMoveObject?.contents?.type?.repr) ?? '';
+          if (repr.includes('balance_manager::BalanceManager')) {
+            balanceManagerId = n.address as string;
+            break;
+          }
+        }
+      } catch { /* best-effort lookup */ }
+      console.log(`[TreasuryAgents] Chansey v3 seedIusdPoolV3 tx=${digest} bm=${balanceManagerId ?? '?'}`);
+      return { digest, balanceManagerId };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents] seedIusdPoolV3 error:', msg);
+      return { error: msg };
+    }
+  }
+
+  /**
    * Attest SOL-chain collateral under the 'SOL' asset key (not 'SUI').
    * Used by _dispatchMatchedIntent for Solana deposits as a fallback
    * when the full mintIusdForDeposit path can't mint.
@@ -4415,9 +4689,59 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           }
           break;
         }
+        case 3: { // SHADE — attest + mint iUSD to ULTRON + auto-fire shade
+          const shadeDomain = (intent.params as Record<string, unknown> | null)?.shadeDomain as string | undefined;
+          if (!shadeDomain) {
+            console.warn('[treasury/dispatch:shade] no shadeDomain in params, falling back to iusd-cache');
+            await attestAndMint('shade-fallback');
+            break;
+          }
+          // Mint iUSD to ULTRON (not the depositor) so shade-proxy
+          // can use it for create_stable<IUSD>.
+          const keys = chainToAssetKey[deposit.sourceChain] ?? { assetKey: 'SUI', chainKey: 'sui' };
+          try {
+            const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY!);
+            const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+            const r = await this.mintIusdForDeposit({
+              recipient: ultronAddr, // mint to ULTRON, not depositor
+              depositedUsdMist: String(usdMist),
+              assetKey: keys.assetKey,
+              chainKey: keys.chainKey,
+            });
+            if (r.error) throw new Error(r.error);
+            console.log(`[treasury/dispatch:shade] minted ${r.mintedUsd} iUSD to ultron for shade ${shadeDomain}`);
+          } catch (e) {
+            console.error('[treasury/dispatch:shade] mint to ultron failed:', e);
+            break;
+          }
+          // Wait for mint tx to propagate
+          await new Promise(r => setTimeout(r, 3000));
+          // Auto-fire shade-proxy
+          try {
+            const shadeResult = await this._shadeProxy({
+              label: shadeDomain,
+              targetAddress: intent.suiAddress, // name registers to the depositor
+            });
+            if (shadeResult.error) {
+              console.error(`[treasury/dispatch:shade] shade-proxy failed: ${shadeResult.error}`);
+            } else {
+              console.log(`[treasury/dispatch:shade] shade placed for ${shadeDomain}.sui → ${intent.suiAddress.slice(0, 10)}… digest=${shadeResult.digest}`);
+              // Update intent with shade info
+              const ints = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+              const ii = ints.findIndex(i => i.suiAddress === intent.suiAddress);
+              if (ii >= 0) {
+                ints[ii] = { ...ints[ii], shadeDigest: shadeResult.digest, shadeOrderId: shadeResult.orderId };
+                this.setState({ ...this.state, deposit_intents: ints } as any);
+              }
+            }
+          } catch (e) {
+            console.error('[treasury/dispatch:shade] auto-shade failed:', e);
+          }
+          break;
+        }
         case 0: // IUSD_CACHE (default)
         default: {
-          if (route !== 0 && route !== 2 && route !== 7) {
+          if (route !== 0 && route !== 2 && route !== 7 && route !== 3) {
             console.warn(`[treasury/dispatch:${routeName_}] route not yet implemented — falling back to iusd-cache`);
           }
           await attestAndMint('iusd-cache');
@@ -6094,7 +6418,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       const bare = name.replace(/\.sui$/i, '').toLowerCase();
       const bareBytes = new TextEncoder().encode(bare);
-      const { keccak_256 } = await import('@noble/hashes/sha3');
+      const { keccak_256 } = await import('@noble/hashes/sha3.js');
       const nh = Array.from(keccak_256(bareBytes));
 
       // Build chains array: user's sui address + ultron's cross-chain addresses
@@ -6238,11 +6562,257 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   // Server-side TX builder that reads REAL coin objects and builds the
   // correct payment route. No stale client cache. No guessing.
 
+  // ─── Recover iUSD from shared BM → send to recipient ─────────────
+  private async _recoverSharedBm(params: {
+    recipient: string;
+    bmId?: string;
+  }): Promise<{ digest?: string; iusdRecovered?: string; usdcRecovered?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+    const SHARED_BM = params.bmId || '0x8be5690bd1335e5f7b4f7cd46dd6ae9bebeba7f325b93abe6cd4d386d78cc765';
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const recipientAddr = normalizeSuiAddress(params.recipient);
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      const bm = tx.object(SHARED_BM);
+
+      const [iusdCoin] = tx.moveCall({
+        target: `${DB_BM_PACKAGE}::balance_manager::withdraw_all`,
+        typeArguments: [IUSD_TYPE],
+        arguments: [bm],
+      });
+      const [usdcCoin] = tx.moveCall({
+        target: `${DB_BM_PACKAGE}::balance_manager::withdraw_all`,
+        typeArguments: [USDC_TYPE],
+        arguments: [bm],
+      });
+
+      tx.transferObjects([iusdCoin, usdcCoin], tx.pure.address(recipientAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[recover-shared-bm] Recovered from ${SHARED_BM} → ${recipientAddr}, digest=${digest}`);
+      return { digest };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[recover-shared-bm] error:', msg);
+      return { error: msg };
+    }
+  }
+
+  // ─── Shade proxy: ultron fronts the SUI deposit ──────────────────
+  // User never needs SUI. Ultron builds + signs the shade::create
+  // commitment using its own SUI. The commitment targets the USER's
+  // address so the name registers to them at grace expiry. The
+  // ShadeExecutorAgent alarm fires the execute() call server-side.
+  private async _shadeProxy(params: {
+    label: string;
+    targetAddress: string;
+    graceEndMs?: number;
+  }): Promise<{ digest?: string; orderId?: string; depositMist?: string; depositUsd?: number; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'Cache offline' };
+    const { label, targetAddress } = params;
+    if (!label || !targetAddress) return { error: 'Missing label or targetAddress' };
+
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const { SuinsClient } = await import('@mysten/suins');
+
+      // SUI price
+      let suiPrice = 0;
+      try {
+        const pr = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744&parsed=true');
+        const pj = await pr.json() as any;
+        suiPrice = Number(pj?.parsed?.[0]?.price?.price ?? 0) * Math.pow(10, Number(pj?.parsed?.[0]?.price?.expo ?? 0));
+      } catch {}
+      if (suiPrice <= 0) return { error: 'SUI price unavailable' };
+
+      // Calculate deposit
+      const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+      const domain = `${label}.sui`;
+      const [rawPrice, discountMap] = await Promise.all([
+        suinsClient.calculatePrice({ name: domain, years: 1 }),
+        suinsClient.getCoinTypeDiscount(),
+      ]);
+      const { mainPackage } = await import('@mysten/suins');
+      const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
+      const discountPct = discountMap.get(nsKey) ?? 0;
+      const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
+      const depositMist = BigInt(Math.ceil(discountedUsd / suiPrice * 1.10 * 1e9));
+      const depositUsd = Number(depositMist) / 1e9 * suiPrice;
+
+      // Grace end — if caller didn't provide, query the name's
+      // expiration and add the 30-day grace window.
+      let graceEndMs = params.graceEndMs ?? 0;
+      if (!graceEndMs) {
+        try {
+          const nameRes = await transport.query({
+            query: `query { nameRecord: resolveSuiNsAddress(domain: "${domain}") }`,
+          });
+          // If the name is expired, grace = expiry + 30 days.
+          // Use current time + 30 days as safe default.
+          graceEndMs = Date.now() + 30 * 24 * 60 * 60 * 1000;
+        } catch {
+          graceEndMs = Date.now() + 30 * 24 * 60 * 60 * 1000;
+        }
+      }
+
+      // Generate salt + commitment
+      const saltBytes = crypto.getRandomValues(new Uint8Array(32));
+      const saltHex = Array.from(saltBytes, b => b.toString(16).padStart(2, '0')).join('');
+
+      // Build commitment: keccak256(domain_bytes || bcs_u64(graceEndMs) || bcs_address(target) || salt)
+      const domainBytes = new TextEncoder().encode(label);
+      const msBytes = new Uint8Array(8);
+      new DataView(msBytes.buffer).setBigUint64(0, BigInt(graceEndMs), true);
+      const addrHex = normalizeSuiAddress(targetAddress).replace(/^0x/, '');
+      const addrBytes = new Uint8Array(addrHex.length / 2);
+      for (let i = 0; i < addrBytes.length; i++) addrBytes[i] = parseInt(addrHex.slice(i * 2, i * 2 + 2), 16);
+
+      const preimage = new Uint8Array(domainBytes.length + msBytes.length + addrBytes.length + saltBytes.length);
+      let off = 0;
+      preimage.set(domainBytes, off); off += domainBytes.length;
+      preimage.set(msBytes, off); off += msBytes.length;
+      preimage.set(addrBytes, off); off += addrBytes.length;
+      preimage.set(saltBytes, off);
+
+      const { keccak_256 } = await import('@noble/hashes/sha3.js');
+      const commitment = keccak_256(preimage);
+
+      // Pre-check: does ultron have enough SUI for the deposit + gas?
+      const gasBudget = 50_000_000n; // 0.05 SUI
+      const totalNeeded = depositMist + gasBudget;
+      const ultronBalRes = await transport.query({
+        query: `query($a:SuiAddress!){ address(address:$a){ balance(coinType:"0x2::sui::SUI"){ totalBalance } } }`,
+        variables: { a: ultronAddr },
+      });
+      const ultronSuiBal = BigInt((ultronBalRes.data as any)?.address?.balance?.totalBalance ?? '0');
+      if (ultronSuiBal < totalNeeded) {
+        const haveUsd = (Number(ultronSuiBal) / 1e9 * suiPrice).toFixed(2);
+        const needUsd = depositUsd.toFixed(2);
+        return { error: `Cache has $${haveUsd} SUI, shade needs $${needUsd}. Top up ultron or try a 5+ char name (~$8).` };
+      }
+
+      // Build PTB — use iUSD deposit via create_stable<IUSD>.
+      // If ultron has enough iUSD, deposit iUSD directly (no
+      // SUI needed). Fall back to SUI create() if no iUSD.
+      const SHADE_PKG = '0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203';
+      const SHADE_V5_PKG = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
+
+      // Check ultron's iUSD balance — prefer iUSD deposit
+      const iusdBalRes = await transport.query({
+        query: `query($a:SuiAddress!){ address(address:$a){ objects(filter:{type:"0x2::coin::Coin<${IUSD_TYPE}>"}, first:10){ nodes{ address version digest contents{json} } } } }`,
+        variables: { a: ultronAddr },
+      });
+      const iusdCoins = ((iusdBalRes.data as any)?.address?.objects?.nodes ?? [])
+        .map((n: any) => ({ objectId: n.address, version: String(n.version), digest: n.digest, balance: BigInt(n.contents?.json?.balance ?? '0') }))
+        .filter((c: any) => c.balance > 0n)
+        .sort((a: any, b: any) => (a.balance > b.balance ? -1 : 1));
+      const iusdTotal = iusdCoins.reduce((s: bigint, c: any) => s + c.balance, 0n);
+
+      // iUSD deposit amount: same USD value but in iUSD mist (9 decimals, 1:1 peg)
+      const iusdDepositMist = BigInt(Math.ceil(depositUsd * 1.10 * 1e9));
+
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+
+      if (iusdTotal >= iusdDepositMist && iusdCoins.length > 0) {
+        // iUSD path — zero SUI needed for deposit
+        const iusdCoin = tx.objectRef({ objectId: iusdCoins[0].objectId, version: iusdCoins[0].version, digest: iusdCoins[0].digest });
+        if (iusdCoins.length > 1) {
+          tx.mergeCoins(iusdCoin, iusdCoins.slice(1).map((c: any) => tx.objectRef({ objectId: c.objectId, version: c.version, digest: c.digest })));
+        }
+        const [iusdForDeposit] = tx.splitCoins(iusdCoin, [tx.pure.u64(iusdDepositMist)]);
+        tx.moveCall({
+          target: `${SHADE_V5_PKG}::shade::create_stable`,
+          typeArguments: [IUSD_TYPE],
+          arguments: [
+            iusdForDeposit,
+            tx.pure.vector('u8', Array.from(commitment)),
+            tx.pure.vector('u8', []),
+          ],
+        });
+        tx.transferObjects([iusdCoin], tx.pure.address(ultronAddr));
+      } else {
+        // SUI fallback
+        const [depositCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(depositMist)]);
+        tx.moveCall({
+          target: `${SHADE_PKG}::shade::create`,
+          arguments: [
+            depositCoin,
+            tx.pure.vector('u8', Array.from(commitment)),
+            tx.pure.vector('u8', []),
+          ],
+        });
+      }
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+
+      // Look up the created shade order object
+      await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
+      let orderId = '';
+      try {
+        const fxRes = await transport.query({
+          query: `query($d: String!) { transactionBlock(digest: $d) { effects { objectChanges { nodes { address idCreated outputState { asMoveObject { contents { type { repr } } } } } } } } }`,
+          variables: { d: digest },
+        });
+        const nodes = ((fxRes.data as any)?.transactionBlock?.effects?.objectChanges?.nodes ?? []) as any[];
+        for (const n of nodes) {
+          if (n?.idCreated && (n.outputState?.asMoveObject?.contents?.type?.repr ?? '').includes('shade::ShadeOrder')) {
+            orderId = n.address;
+            break;
+          }
+        }
+      } catch {}
+
+      // Schedule with ShadeExecutorAgent
+      if (orderId) {
+        try {
+          const shadeStub = this.env.ShadeExecutorAgent?.get(
+            this.env.ShadeExecutorAgent.idFromName('shade-executor'),
+          );
+          if (shadeStub) {
+            await shadeStub.fetch(new Request('https://shade-do/?schedule', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                objectId: orderId,
+                domain: label,
+                executeAfterMs: graceEndMs,
+                targetAddress: normalizeSuiAddress(targetAddress),
+                salt: saltHex,
+                depositMist: depositMist.toString(),
+              }),
+            }));
+          }
+        } catch (e) {
+          console.warn('[shade-proxy] schedule failed:', e);
+        }
+      }
+
+      console.log(`[shade-proxy] ${label}.sui shaded → ${targetAddress}, deposit=${Number(depositMist)/1e9} SUI, orderId=${orderId}, digest=${digest}`);
+      return { digest, orderId, depositMist: depositMist.toString(), depositUsd };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[shade-proxy] error:', msg);
+      return { error: msg };
+    }
+  }
+
   private async _buildTradeForBuyer(params: {
     buyer: string; nftTokenId: string; priceMist: string; route: string;
     suiBal: string; usdcBal: string; iusdBal: string;
+    suiPriceUsd?: number;
   }): Promise<{ txBase64?: string; description?: string; error?: string }> {
-    const { buyer, nftTokenId, priceMist, route } = params;
+    const { buyer, nftTokenId, priceMist, route, suiPriceUsd } = params;
     const buyerAddr = normalizeSuiAddress(buyer);
     const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -6304,8 +6874,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const gasBuf = 50_000_000n; // 0.05 SUI gas
     const availSui = realSuiBal > gasBuf ? realSuiBal - gasBuf : 0n;
 
-    // Always prefer SUI direct if buyer has enough — regardless of what infer picked
-    if (availSui >= totalNeeded) {
+    // Always prefer SUI direct if buyer has enough — regardless
+    // of what infer picked. Exception: when route is explicitly
+    // 'iusd-redeem', honor it so ultron gets repaid in stables
+    // (otherwise a pre-funded buyer would buy with "free" SUI
+    // and leave the cache out-of-pocket).
+    if (availSui >= totalNeeded && route !== 'iusd-redeem') {
       // Simple: split from gas, buy — try v1 then v2
       for (const v2 of [false, true]) {
         try {
@@ -6326,8 +6900,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
 
     if (route === 'usdc-swap' || route === 'iusd-redeem') {
-      // Need USDC→SUI swap to cover the shortfall
-      const shortfall = totalNeeded - availSui;
+      // Need USDC→SUI swap to cover the shortfall. When the
+      // buyer already has enough SUI (e.g. from a previous
+      // pre-fund), shortfall goes non-positive — floor it at
+      // zero so downstream math doesn't produce negative u64s.
+      const shortfall = totalNeeded > availSui ? totalNeeded - availSui : 0n;
       // Fetch live SUI price from CoinGecko
       let suiPrice = 0.87;
       try {
@@ -6344,13 +6921,22 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const usdcCoins = (usdcCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
       const realUsdcBal = usdcCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
 
-      if ((realUsdcBal < usdcNeeded || usdcCoins.length === 0) && (route === 'iusd-redeem' || route === 'usdc-swap')) {
+      // For iusd-redeem, always enter the iUSD-payment branch —
+      // even when the buyer already has enough SUI, we still
+      // want to take iUSD (+ USDC) as payment so the cache
+      // recoups the SUI it previously advanced. For usdc-swap,
+      // enter only when USDC alone can't cover the swap.
+      const forceIusdBranch = route === 'iusd-redeem';
+      if (forceIusdBranch || (realUsdcBal < usdcNeeded || usdcCoins.length === 0)) {
         // Buyer has iUSD but not enough SUI/USDC — ultron pre-funds SUI, buyer sends iUSD back + purchases
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'Cache offline' };
 
-        // Check buyer's iUSD
+        // Check buyer's iUSD. Query by ORIGIN coin type, not the
+        // latest dispatch package — Sui coins are typed by the
+        // package that defined the struct, so `suix_getCoins`
+        // against the upgraded package returns zero.
         const iusdCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
-          'suix_getCoins', [buyerAddr, `${TreasuryAgents.IUSD_PKG}::iusd::IUSD`],
+          'suix_getCoins', [buyerAddr, IUSD_TYPE],
         );
         const iusdCoins = (iusdCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
         const realIusdBal = iusdCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
@@ -6359,48 +6945,117 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           return { error: `No iUSD, SUI, or USDC. Nothing to trade with.` };
         }
 
-        // Step 1: Ultron sends SUI to buyer (covers listing + fee + gas buffer)
-        const suiToSend = totalNeeded + 50_000_000n; // + 0.05 SUI gas buffer
-        const prefund = await this._ultronSendsSwapSui(buyerAddr, suiToSend, transport);
-        if (prefund.error) return { error: prefund.error };
+        // Step 1: Ultron pre-funds SUI IF the buyer doesn't
+        // already have enough. Idempotent: repeated /api/infer
+        // calls won't double-send. A prior attempt may have
+        // already landed the pre-fund on-chain, in which case
+        // we reuse it.
+        let prefundDigest = '(already funded)';
+        if (availSui < totalNeeded) {
+          const suiToSend = totalNeeded + 50_000_000n; // + 0.05 SUI gas buffer
+          const prefund = await this._ultronSendsSwapSui(buyerAddr, suiToSend, transport);
+          if (prefund.error) return { error: prefund.error };
+          prefundDigest = prefund.digest ?? '(no digest)';
+          await new Promise(r => setTimeout(r, CHAIN_PROPAGATION_MS));
+        }
 
-        // Wait briefly for chain propagation
-        await new Promise(r => setTimeout(r, CHAIN_PROPAGATION_MS));
-
-        // Step 2: Build user TX — send iUSD to ultron + purchase from Tradeport
-        // iUSD amount = listing price in USD * 1e9 (iUSD has 9 decimals, pegged $1)
-        let suiPrice = 0.87;
-        try { const p = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd'); suiPrice = ((await p.json()) as any)?.sui?.usd ?? 0.87; } catch {}
-        const listingUsd = Number(totalNeeded) / 1e9 * suiPrice;
-        const iusdToSend = BigInt(Math.ceil(listingUsd * 1e9)); // iUSD amount at $1 peg
+        // Step 2: Build user TX — send iUSD (+ USDC top-up when
+        // iUSD alone is short) to ultron + purchase from Tradeport.
+        // The total value user sends MUST equal the listing USD
+        // value + gas buffer so ultron doesn't eat the spread on
+        // the pre-fund.
+        //
+        // SUI price comes from /api/infer (which uses Pyth). We
+        // only fall back to CoinGecko if the caller didn't pass
+        // a number — avoids the stale-price drift that left
+        // ultron short by ~$2.74 on earlier test runs.
+        let suiPrice = suiPriceUsd ?? 0;
+        if (!(suiPrice > 0)) {
+          try { const p = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd'); suiPrice = ((await p.json()) as any)?.sui?.usd ?? 0.87; } catch { suiPrice = 0.87; }
+        }
+        // Charge the buyer against the FULL SUI value ultron
+        // forwarded — listing price + the 0.05 SUI gas buffer.
+        // Otherwise the buyer pays for the listing but leaves
+        // ultron holding the gas.
+        const prefundSui = totalNeeded + 50_000_000n;
+        const prefundUsd = Number(prefundSui) / 1e9 * suiPrice;
+        // 0.5% safety margin so small SUI-price oscillations
+        // between /api/infer and execution don't underpay.
+        const listingUsdCharge = prefundUsd * 1.005;
+        const iusdToSend = BigInt(Math.ceil(listingUsdCharge * 1e9)); // iUSD amount at $1 peg
         const iusdCapped = iusdToSend < realIusdBal ? iusdToSend : realIusdBal;
+
+        // If iUSD alone can't cover, compute USDC top-up from the
+        // buyer's USDC balance. iusdCapped is in 9-dec iUSD mist;
+        // iUSD is $1-pegged, so iusdUsdCovered = iusdCapped / 1e9.
+        // USDC mist is 6 decimals; pay the remaining USD in USDC.
+        const iusdUsdCovered = Number(iusdCapped) / 1e9;
+        let usdcTopUpMist = 0n;
+        if (iusdUsdCovered < listingUsdCharge) {
+          const usdcTopUpUsd = listingUsdCharge - iusdUsdCovered;
+          usdcTopUpMist = BigInt(Math.ceil(usdcTopUpUsd * 1e6));
+          if (usdcTopUpMist > realUsdcBal) {
+            const shortUsd = Number(usdcTopUpMist - realUsdcBal) / 1e6;
+            return { error: `Short $${shortUsd.toFixed(2)} after iUSD+USDC. Add $${shortUsd.toFixed(2)} more.` };
+          }
+        }
 
         const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY!);
         const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
-        const userTx = new Transaction();
-        userTx.setSender(buyerAddr);
+        const payLabel = usdcTopUpMist > 0n
+          ? `${Number(iusdCapped) / 1e9} iUSD + ${Number(usdcTopUpMist) / 1e6} USDC`
+          : `${Number(iusdCapped) / 1e9} iUSD`;
 
-        // Send iUSD to ultron
-        const iusdCoin = userTx.objectRef({ objectId: iusdCoins[0].coinObjectId, version: String(iusdCoins[0].version), digest: iusdCoins[0].digest });
-        if (iusdCoins.length > 1) {
-          userTx.mergeCoins(iusdCoin, iusdCoins.slice(1).map(c =>
-            userTx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest }),
-          ));
+        // Build iUSD+USDC payment + Tradeport buy. Listing/store
+        // layouts differ between v1 and v2 and we can't tell
+        // which one from the listing row alone — try v1 first,
+        // fall back to v2 on MoveAbort. A fresh Transaction per
+        // attempt avoids mutating the same handle twice.
+        let lastErr: unknown = null;
+        for (const v2 of [false, true]) {
+          try {
+            const userTx = new Transaction();
+            userTx.setSender(buyerAddr);
+
+            // Send iUSD to ultron
+            const iusdCoinRef = userTx.objectRef({ objectId: iusdCoins[0].coinObjectId, version: String(iusdCoins[0].version), digest: iusdCoins[0].digest });
+            if (iusdCoins.length > 1) {
+              userTx.mergeCoins(iusdCoinRef, iusdCoins.slice(1).map(c =>
+                userTx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest }),
+              ));
+            }
+            const [iusdPayment] = userTx.splitCoins(iusdCoinRef, [userTx.pure.u64(iusdCapped.toString())]);
+            userTx.transferObjects([iusdPayment], userTx.pure.address(ultronAddr));
+            userTx.transferObjects([iusdCoinRef], userTx.pure.address(buyerAddr));
+
+            if (usdcTopUpMist > 0n && usdcCoins.length > 0) {
+              const usdcPrimary = userTx.objectRef({ objectId: usdcCoins[0].coinObjectId, version: String(usdcCoins[0].version), digest: usdcCoins[0].digest });
+              if (usdcCoins.length > 1) {
+                userTx.mergeCoins(usdcPrimary, usdcCoins.slice(1).map(c =>
+                  userTx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest }),
+                ));
+              }
+              const [usdcPayment] = userTx.splitCoins(usdcPrimary, [userTx.pure.u64(usdcTopUpMist.toString())]);
+              userTx.transferObjects([usdcPayment], userTx.pure.address(ultronAddr));
+              userTx.transferObjects([usdcPrimary], userTx.pure.address(buyerAddr));
+            }
+
+            const payment = userTx.splitCoins(userTx.gas, [userTx.pure.u64(totalNeeded.toString())]);
+            addTradeportBuy(userTx, buyId, payment, v2);
+
+            const txBytes = await userTx.build({ client: transport as never });
+            return {
+              txBase64: uint8ToBase64(txBytes),
+              description: `Send ${payLabel} to cache + buy ${Number(price) / 1e9} SUI listing via Tradeport ${v2 ? 'v2' : 'v1'} (pre-funded by ultron: ${prefundDigest})`,
+            };
+          } catch (err) {
+            lastErr = err;
+            if (v2 || !String(err).includes('MoveAbort')) break;
+            console.warn('[Tradeport-iusd] v1 failed, retrying v2:', err instanceof Error ? err.message : err);
+          }
         }
-        const [iusdPayment] = userTx.splitCoins(iusdCoin, [userTx.pure.u64(iusdCapped.toString())]);
-        userTx.transferObjects([iusdPayment], userTx.pure.address(ultronAddr));
-        userTx.transferObjects([iusdCoin], userTx.pure.address(buyerAddr)); // return change
-
-        // Purchase from Tradeport (buyer now has SUI from ultron pre-fund)
-        const payment = userTx.splitCoins(userTx.gas, [userTx.pure.u64(totalNeeded.toString())]);
-        addTradeportBuy(userTx, buyId, payment);
-
-        const txBytes = await userTx.build({ client: transport as never });
-        return {
-          txBase64: uint8ToBase64(txBytes),
-          description: `Send ${Number(iusdCapped) / 1e9} iUSD to cache + buy ${Number(price) / 1e9} SUI listing (pre-funded by ultron: ${prefund.digest})`,
-        };
+        return { error: `Tradeport build failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}` };
       }
 
       if (usdcCoins.length === 0 || realUsdcBal === 0n) {

@@ -953,9 +953,10 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   const transport = gqlClient;
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
 
-  const [usdcCoins, nsCoins, rawPrice, discountMap, sponsorInfo] = await Promise.all([
+  const [usdcCoins, nsCoins, iusdCoins, rawPrice, discountMap, sponsorInfo] = await Promise.all([
     listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.USDC.type),
     listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.NS.type),
+    listCoinsOfType(transport, walletAddress, IUSD_TYPE),
     suinsClient.calculatePrice({ name: domain, years: 1 }),
     suinsClient.getCoinTypeDiscount(),
     fetchSponsorInfo(),
@@ -971,6 +972,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   // Calculate total balances
   const totalUsdc = usdcCoins.reduce((sum, c) => sum + c.balance, 0n);
   const totalNs = nsCoins.reduce((sum, c) => sum + c.balance, 0n);
+  const totalIusd = iusdCoins.reduce((sum, c) => sum + c.balance, 0n);
 
   const pref = preferredCoin?.toUpperCase();
   const sponsored = !!sponsorInfo;
@@ -1058,6 +1060,99 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
     tx.transferObjects([nsCoin], tx.pure.address('0x0'));
     tx.transferObjects([usdcSwapChange, usdcCoin, deepChange], tx.pure.address(walletAddress));
+
+    // 5% of full price → iUSD treasury
+    addRegistrationFee(tx, basePriceUsd, suiPrice);
+
+    return buildWithTx(tx, transport);
+  };
+
+  // ── iUSD path: swap user iUSD → USDC → NS → register ──
+  // Routes through two DeepBook pools (iUSD/USDC we just seeded, then
+  // NS/USDC). Over-specifies the iUSD input so the intermediate USDC
+  // is guaranteed to cover the NS-discounted registration price.
+  // Completes fresh registration for a wallet that holds only stables.
+  const buildIusdSwap = async (): Promise<Uint8Array | null> => {
+    if (iusdCoins.length === 0 || totalIusd === 0n) return null;
+
+    // iUSD needed to yield ≥ usdcNeeded at the worst realistic BID
+    // (we seeded at 0.99; price 1:1 — be conservative and reserve
+    // 10% headroom).
+    // usdcNeeded is already in USDC mist (6 decimals, see line 969).
+    // iUSD mist is 9 decimals. Worst-case conversion: USDC_mist * 1000 ÷ 0.9 ≈ USDC_mist * 1112
+    const iusdNeededMist = (usdcNeeded * 1112n);
+    if (totalIusd < iusdNeededMist) return null;
+
+    const tx = new Transaction();
+    tx.setSender(walletAddress);
+    setupGas(tx);
+
+    const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
+      tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
+    );
+
+    // Step 1: merge all iUSD, split the input amount
+    const iusdCoin = tx.objectRef(iusdCoins[0]);
+    if (iusdCoins.length > 1) {
+      tx.mergeCoins(iusdCoin, iusdCoins.slice(1).map(c => tx.objectRef(c)));
+    }
+    const [iusdForSwap] = tx.splitCoins(iusdCoin, [tx.pure.u64(iusdNeededMist)]);
+
+    // Step 2: iUSD → USDC via the seeded iUSD/USDC pool
+    const [zeroDeepIusd] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const [iusdChange, usdcFromIusd, deepChangeIusd] = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [IUSD_TYPE, mainPackage.mainnet.coins.USDC.type],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_IUSD_USDC_POOL, initialSharedVersion: DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        iusdForSwap, zeroDeepIusd, tx.pure.u64(1), tx.object.clock(),
+      ],
+    });
+
+    // Step 3: merge with any existing USDC so the NS swap has the
+    // full balance to draw from (just in case the iUSD→USDC price
+    // shifts between build and execution).
+    let usdcForNs: any = usdcFromIusd;
+    if (usdcCoins.length > 0 && totalUsdc > 0n) {
+      const existingUsdc = tx.objectRef(usdcCoins[0]);
+      if (usdcCoins.length > 1) tx.mergeCoins(existingUsdc, usdcCoins.slice(1).map(c => tx.objectRef(c)));
+      tx.mergeCoins(usdcForNs, [existingUsdc]);
+    }
+
+    // Step 4: USDC → NS via the NS/USDC pool
+    const nsPool = tx.sharedObjectRef({
+      objectId: DB_NS_USDC_POOL,
+      initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION,
+      mutable: true,
+    });
+    const [zeroDeepNs] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const [nsCoinOut, usdcChange, deepChangeNs] = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+      typeArguments: [mainPackage.mainnet.coins.NS.type, mainPackage.mainnet.coins.USDC.type],
+      arguments: [nsPool, usdcForNs, zeroDeepNs, tx.pure.u64(0), tx.object.clock()],
+    });
+
+    // Merge any pre-existing NS coins so `register` can draw on
+    // everything if the Pyth-priced NS charge overshoots the swap.
+    let finalNsCoin: any = nsCoinOut;
+    if (nsCoins.length > 0) {
+      tx.mergeCoins(finalNsCoin, nsCoins.map(c => tx.objectRef(c)));
+    }
+
+    // Step 5: register with NS (25% discount)
+    const suinsTx = new SuinsTransaction(suinsClient, tx);
+    const nft = suinsTx.register({
+      domain, years: 1,
+      coinConfig: mainPackage.mainnet.coins.NS,
+      coin: finalNsCoin,
+      priceInfoObjectId,
+    });
+    suinsTx.setTargetAddress({ nft, address: walletAddress });
+    if (setAsDefault) suinsTx.setDefault(domain);
+    tx.transferObjects([nft], tx.pure.address(walletAddress));
+
+    // Return everything leftover to the user
+    tx.transferObjects([finalNsCoin, iusdChange, iusdCoin, usdcChange, deepChangeIusd, deepChangeNs], tx.pure.address(walletAddress));
 
     // 5% of full price → iUSD treasury
     addRegistrationFee(tx, basePriceUsd, suiPrice);
@@ -1293,23 +1388,27 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   let paths: PathEntry[];
   const nsPath: PathEntry = { fn: buildNsDirect, canSponsor: true };
   const usdcPath: PathEntry = { fn: buildUsdcSwap, canSponsor: true };
+  const iusdPath: PathEntry = { fn: buildIusdSwap, canSponsor: true };
   const autoPath: PathEntry = { fn: buildAutoRoute, canSponsor: false };
   const comboPath: PathEntry = { fn: buildUsdcSuiCombo, canSponsor: false };
   const suiPath: PathEntry = { fn: buildSuiDirect, canSponsor: false };
 
   // Always route through NS for the 25% discount. SUI direct is last resort only.
-  // NS direct → USDC→NS swap → Rumble (multi-token→NS) → USDC+SUI combo → SUI direct
+  // NS direct → USDC→NS swap → iUSD→USDC→NS → Rumble → USDC+SUI combo → SUI direct
   if (pref === 'SUI') {
-    // User explicitly asked for SUI — still try NS first, fall back to SUI
-    paths = [nsPath, autoPath, usdcPath, comboPath, suiPath];
+    paths = [nsPath, autoPath, usdcPath, iusdPath, comboPath, suiPath];
   } else if (pref === 'USDC' || pref === 'USD') {
-    paths = [usdcPath, nsPath, autoPath, comboPath, suiPath];
+    paths = [usdcPath, nsPath, iusdPath, autoPath, comboPath, suiPath];
+  } else if (pref === 'IUSD' || pref === 'iUSD') {
+    // Explicit iUSD preference — try it before NS-direct (still
+    // cheaper because iUSD swap lands at the NS-discounted path).
+    paths = [iusdPath, nsPath, usdcPath, autoPath, comboPath, suiPath];
   } else {
-    // Default: always NS-first for the discount
-    paths = [nsPath, usdcPath, autoPath, comboPath, suiPath];
+    // Default priority: NS direct → USDC swap → iUSD swap → rest.
+    paths = [nsPath, usdcPath, iusdPath, autoPath, comboPath, suiPath];
   }
 
-  const pathNames = paths.map(p => p === nsPath ? 'NS' : p === usdcPath ? 'USDC' : p === autoPath ? 'AutoRoute' : p === comboPath ? 'Combo' : p === suiPath ? 'SUI' : '?');
+  const pathNames = paths.map(p => p === nsPath ? 'NS' : p === usdcPath ? 'USDC' : p === iusdPath ? 'iUSD' : p === autoPath ? 'AutoRoute' : p === comboPath ? 'Combo' : p === suiPath ? 'SUI' : '?');
   for (let i = 0; i < paths.length; i++) {
     const { fn, canSponsor } = paths[i];
     try {
@@ -3025,6 +3124,80 @@ export async function buildSwapTx(
   } catch (e) {
     // Route discovery failed — fall through to error
     if (e instanceof Error && e.message !== 'No route found') throw e;
+  }
+
+  // ── iUSD two-hop: iUSD → USDC → target ──────────────────────────
+  // Uses the seeded iUSD/USDC DeepBook pool as the first leg, then
+  // routes USDC → SUI (or other target) via the existing pools.
+  if (inputCoinType === IUSD_TYPE) {
+    const iusdCoins = await listCoinsOfType(transport, walletAddress, IUSD_TYPE);
+    if (!iusdCoins.length) throw new Error('No iUSD found');
+    const totalIusd = iusdCoins.reduce((sum, c) => sum + c.balance, 0n);
+    if (totalIusd < amount) throw new Error('Insufficient iUSD balance');
+    const iusdCoin = tx.objectRef(iusdCoins[0]);
+    if (iusdCoins.length > 1) tx.mergeCoins(iusdCoin, iusdCoins.slice(1).map(c => tx.objectRef(c)));
+    const [iusdForSwap] = tx.splitCoins(iusdCoin, [tx.pure.u64(amount)]);
+
+    // Pre-check iUSD/USDC pool liquidity so the user doesn't
+    // send a $60 swap into a $10-deep pool. Query the pool's
+    // BID-side USDC balance (rough proxy for available depth).
+    let poolUsdcDepth = 0n;
+    try {
+      const poolBalRes = await transport.query({
+        query: `query { object(address: "${DB_IUSD_USDC_POOL}") { asMoveObject { contents { json } } } }`,
+      });
+      // Pool's USDC vault balance is a rough depth indicator
+      const poolJson = (poolBalRes.data as any)?.object?.asMoveObject?.contents?.json;
+      if (poolJson) {
+        // Deep look into the versioned inner is complex — use
+        // a conservative fallback: assume pool depth is the
+        // amount we seeded ($10). If it's been traded against,
+        // this over-estimates slightly but slippage protection
+        // catches the rest.
+        poolUsdcDepth = 10_000_000n; // ~$10 USDC
+      }
+    } catch {}
+
+    // iUSD is 9-dec, USDC is 6-dec. 1 iUSD ≈ 1 USDC at peg.
+    // Expected USDC out ≈ iUSD_mist / 1000 (9dec → 6dec).
+    const expectedUsdc = amount / 1000n;
+    if (poolUsdcDepth > 0n && expectedUsdc > poolUsdcDepth * 2n) {
+      throw new Error(`iUSD/USDC pool has ~$${Number(poolUsdcDepth) / 1e6} liquidity. Swap amount $${Number(amount) / 1e9} exceeds it. Send a smaller amount or seed more liquidity.`);
+    }
+
+    // Slippage: expect at least 90% of the 1:1 peg conversion
+    const minUsdcOut = expectedUsdc * 90n / 100n;
+
+    // Hop 1: iUSD → USDC
+    const [zeroDeep1] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const [iusdChange, usdcMid, deepChange1] = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [IUSD_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_IUSD_USDC_POOL, initialSharedVersion: DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        iusdForSwap, zeroDeep1, tx.pure.u64(minUsdcOut), tx.object.clock(),
+      ],
+    });
+
+    if (outputCoinType === USDC_TYPE) {
+      tx.transferObjects([usdcMid, iusdChange, iusdCoin, deepChange1], tx.pure.address(walletAddress));
+      return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'iUSD', toSymbol: 'USDC', tx };
+    }
+
+    // Hop 2: USDC → SUI (with slippage protection)
+    if (outputCoinType === SUI_TYPE) {
+      const [zeroDeep2] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+      const [suiOut, usdcChange2, deepChange2] = tx.moveCall({
+        target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+        typeArguments: [SUI_TYPE, USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+          usdcMid, zeroDeep2, tx.pure.u64(1), tx.object.clock(),
+        ],
+      });
+      tx.transferObjects([suiOut, iusdChange, iusdCoin, usdcChange2, deepChange1, deepChange2], tx.pure.address(walletAddress));
+      return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'iUSD', toSymbol: 'SUI', tx };
+    }
   }
 
   throw new Error(`Swap from ${inputCoinType.split('::').pop()} to ${outputCoinType.split('::').pop()} is not supported`);

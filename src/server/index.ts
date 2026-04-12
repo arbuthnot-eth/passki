@@ -390,7 +390,11 @@ app.get('/api/sponsor-info', async (c) => {
     const keypair = Ed25519Keypair.fromSecretKey(key);
     const sponsorAddress = keypair.toSuiAddress();
 
-    // Fetch gas coins via GraphQL
+    // Fetch gas coins via GraphQL. The `coins` field on Address
+    // doesn't exist in current mainnet GraphQL schema — use
+    // `objects` filtered by Coin<SUI> type instead. Previous
+    // version silently returned an empty list, breaking every
+    // sponsored thunder send.
     const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
     const res = await fetch(GQL_URL, {
       method: 'POST',
@@ -398,7 +402,7 @@ app.get('/api/sponsor-info', async (c) => {
       body: JSON.stringify({
         query: `query($a:SuiAddress!){
           address(address:$a){
-            coins(type:"0x2::sui::SUI",first:5){
+            objects(filter:{type:"0x2::coin::Coin<0x2::sui::SUI>"}, first:5){
               nodes{ address version digest contents { json } }
             }
           }
@@ -407,10 +411,16 @@ app.get('/api/sponsor-info', async (c) => {
       }),
     });
     const json = await res.json() as {
-      data?: { address?: { coins?: { nodes?: Array<{ address: string; version: number; digest: string }> } } };
+      data?: { address?: { objects?: { nodes?: Array<{ address: string; version: number | string; digest: string; contents?: { json?: { balance?: string } } }> } } };
     };
-    const nodes = json?.data?.address?.coins?.nodes ?? [];
-    const gasCoins = nodes.map((n) => ({
+    const nodes = json?.data?.address?.objects?.nodes ?? [];
+    // Sort by balance desc so the largest coin is first — matches
+    // what tx.setGasPayment wants as primary.
+    const sortedNodes = nodes
+      .map(n => ({ n, bal: BigInt(n.contents?.json?.balance ?? '0') }))
+      .sort((a, b) => (a.bal > b.bal ? -1 : 1))
+      .map(({ n }) => n);
+    const gasCoins = sortedNodes.map((n) => ({
       objectId: n.address,
       version: String(n.version),
       digest: n.digest,
@@ -436,8 +446,8 @@ const IKA_FUND_AMOUNT = 5_000_000_000n; // 5 IKA (9 decimals)
 // SUI to the user so they can pay gas themselves via signAndExecute.
 // Gate: only drip if the user has < DRIP_MIN_MIST SUI, and only once
 // per MIN_INTERVAL_MS per address. Fixed amount per drip.
-const GAS_DRIP_MIST     = 20_000_000n; // 0.02 SUI ≈ 160 claim txs worth
-const GAS_DRIP_MIN_MIST = 15_000_000n; // drip only if below this
+const GAS_DRIP_MIST     = 100_000_000n; // 0.1 SUI — covers ~20 standard txs incl. 0.04 iUSD-transfer PTB
+const GAS_DRIP_MIN_MIST = 60_000_000n;  // drip only if below 0.06 SUI
 // 60 s is enough to prevent drip spam but short enough that
 // legitimate retries (sweep attempts, failed gas estimates) don't
 // get stuck behind a cooldown wall. Was 60 min which left users
@@ -1378,13 +1388,22 @@ app.post('/api/infer', async (c) => {
       const totalCostSui = listingPriceSui + fee;
       const totalCostUsd = totalCostSui * suiPrice;
 
-      // Can we afford it?
-      if (suiUsd >= totalCostUsd * 1.05) {
-        actions.push({ action: 'TRADE', confidence: 0.95, reason: `SUI direct — ${totalCostSui.toFixed(2)} SUI`, route: 'sui-direct' });
+      // Preference order favors stables: if the buyer holds
+      // meaningful iUSD (>$5), route through iusd-redeem so the
+      // cache recaptures USDC/iUSD in exchange for the SUI it
+      // advances. Only fall back to SUI-direct when the buyer
+      // has no stables worth mentioning.
+      const hasMeaningfulIusd = iusdUsd >= 5;
+      const canAffordWithStables = iusdUsd + usdcUsd + suiUsd >= totalCostUsd;
+
+      if (hasMeaningfulIusd && canAffordWithStables) {
+        actions.push({ action: 'TRADE', confidence: 0.95, reason: `iUSD + USDC → cache + SUI listing`, route: 'iusd-redeem' });
+      } else if (suiUsd >= totalCostUsd * 1.05) {
+        actions.push({ action: 'TRADE', confidence: 0.90, reason: `SUI direct — ${totalCostSui.toFixed(2)} SUI`, route: 'sui-direct' });
       } else if (suiUsd + usdcUsd >= totalCostUsd * 1.02) {
-        actions.push({ action: 'TRADE', confidence: 0.90, reason: `USDC→SUI swap + purchase`, route: 'usdc-swap' });
-      } else if (suiUsd + usdcUsd + iusdUsd >= totalCostUsd) {
-        actions.push({ action: 'TRADE', confidence: 0.85, reason: `iUSD redeem→USDC→SUI + purchase`, route: 'iusd-redeem' });
+        actions.push({ action: 'TRADE', confidence: 0.85, reason: `USDC→SUI swap + purchase`, route: 'usdc-swap' });
+      } else if (canAffordWithStables) {
+        actions.push({ action: 'TRADE', confidence: 0.80, reason: `iUSD redeem→USDC→SUI + purchase`, route: 'iusd-redeem' });
       } else {
         actions.push({ action: 'TRADE', confidence: 0.10, reason: `Insufficient balance ($${totalUsd.toFixed(2)} < $${totalCostUsd.toFixed(2)})`, route: 'blocked' });
       }
@@ -1420,6 +1439,11 @@ app.post('/api/infer', async (c) => {
           suiBal: String(suiBal),
           usdcBal: String(usdcBal),
           iusdBal: String(iusdBal),
+          // Pass the Pyth SUI price so the DO bills the user
+          // against the same number /api/infer saw. CoinGecko
+          // fallback inside the DO would otherwise drift and
+          // leave ultron out-of-pocket on the pre-fund spread.
+          suiPriceUsd: suiPrice,
         }),
       }));
       const doJson = await doRes.json() as any;
@@ -1579,6 +1603,110 @@ app.post('/api/cache/seed-iusd-pool', async (c) => {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify({}),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Scan + batch-recall all ShieldedVaults where the caller is sender
+app.post('/api/recall-vaults', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Not configured' }, 503);
+  try {
+    const { address } = await c.req.json<{ address: string }>();
+    if (!address) return c.json({ error: 'Missing address' }, 400);
+
+    const SHIELDED_TYPE = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782::shielded::ShieldedVault';
+    const GQL = 'https://graphql.mainnet.sui.io/graphql';
+
+    // Query ALL ShieldedVault objects on-chain (they're shared, so
+    // we query by type). Filter client-side for sender == address.
+    const res = await fetch(GQL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ objects(filter: { type: "${SHIELDED_TYPE}" }, first: 50) {
+          nodes { address version digest owner { ... on Shared { initialSharedVersion } } asMoveObject { contents { json } } }
+        } }`,
+      }),
+    });
+    const gql = await res.json() as any;
+    const nodes = gql?.data?.objects?.nodes ?? [];
+    const addrLower = address.toLowerCase();
+    const myVaults = nodes.filter((n: any) =>
+      (n.asMoveObject?.contents?.json?.sender || '').toLowerCase() === addrLower
+    );
+
+    if (myVaults.length === 0) {
+      return c.json({ vaults: [], count: 0, message: `No recallable vaults found (scanned ${nodes.length} total)` });
+    }
+
+    // Return ALL vaults with ISV + version + digest so the
+    // client can build with explicit sharedObjectRef (skips
+    // the GraphQL resolver's dry-run which breaks on recall's
+    // ctx.sender() check).
+    const vaultInfos: Array<{ objectId: string; balance: string; balanceSui: number; isv: number; version: string; digest: string }> = [];
+    for (const v of myVaults) {
+      const bal = v.asMoveObject?.contents?.json?.balance || '0';
+      const isv = Number(v.owner?.initialSharedVersion || v.version);
+      vaultInfos.push({ objectId: v.address, balance: bal, balanceSui: Number(bal) / 1e9, isv, version: String(v.version), digest: v.digest || '' });
+    }
+
+    const totalSui = vaultInfos.reduce((s, v) => s + v.balanceSui, 0);
+    return c.json({
+      vaults: vaultInfos,
+      count: vaultInfos.length,
+      totalSui,
+      description: `Recall ${vaultInfos.length} vault${vaultInfos.length > 1 ? 's' : ''} (${totalSui.toFixed(4)} SUI)`,
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Recover iUSD/USDC from shared BM → send to recipient
+app.post('/api/cache/recover-shared-bm', async (c) => {
+  try {
+    const body = await c.req.json() as { recipient: string; bmId?: string };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?recover-shared-bm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Shade proxy — ultron fronts the SUI deposit so user never needs SUI
+app.post('/api/cache/shade-proxy', async (c) => {
+  try {
+    const body = await c.req.json() as { label: string; targetAddress: string; graceEndMs?: number };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-proxy', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Chansey v3 clean seeder — atomic one-PTB BalanceManager + ASK + BID + share
+app.post('/api/cache/seed-iusd-pool-v3', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({})) as { iusdQtyMist?: string };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?seed-iusd-pool-v3', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
     }));
     const text = await res.text();
     try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }

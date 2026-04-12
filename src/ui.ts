@@ -2441,16 +2441,15 @@ function coinShortName(coinType: string): string {
 // iUSD needed to flow through STABLE_TYPES + the decimals cache
 // needed to pick up iUSD's 9-decimal entry.
 try {
-  if (!localStorage.getItem('ski:dec:v5')) {
+  if (!localStorage.getItem('ski:dec:v6')) {
     localStorage.removeItem('ski:decimals');
     localStorage.removeItem('ski:coin-meta');
     localStorage.removeItem('ski:token-prices');
-    // Also purge any per-address balance caches
     for (const k of Object.keys(localStorage)) {
-      if (k.startsWith('ski:balances:')) localStorage.removeItem(k);
+      if (k.startsWith('ski:balances:') || k.startsWith('ski:card-bal:')) localStorage.removeItem(k);
     }
-    localStorage.setItem('ski:dec:v5', '1');
-    localStorage.removeItem('ski:dec:v4');
+    localStorage.setItem('ski:dec:v6', '1');
+    localStorage.removeItem('ski:dec:v5');
   }
 } catch {}
 const _decimalsCache: Record<string, number> = {
@@ -4639,6 +4638,11 @@ function _attachOwnedGridWheel() {
 let _nftPopover: HTMLElement | null = null;
 let _nftPopoverHideTimer: ReturnType<typeof setTimeout> | null = null;
 let _nftPopoverPinned = false;
+// Default-collapsed per-session so the card shows just the
+// domain row on load. Users can expand it by clicking the
+// card. Prevents low-signal / slow / sometimes-wrong balance
+// lookups from dominating the first impression of a name.
+let _nftCardExpanded = (() => { try { return sessionStorage.getItem('ski:nft-card-expanded') === '1'; } catch { return false; } })();
 let _lastNftCardDomain: string = (() => { try { return sessionStorage.getItem('ski:nft-card-domain') ?? ''; } catch { return ''; } })();
 
 function _ensureNftPopover(): HTMLElement {
@@ -4696,9 +4700,14 @@ async function _fetchCardBalance(addr: string): Promise<{ suiUsd: number; stable
     for (const n of nodes) {
       const ct = n.coinType.repr;
       const bal = BigInt(n.totalBalance);
-      if (ct === '0x2::sui::SUI') {
+      if (ct === '0x2::sui::SUI' || ct.endsWith('::sui::SUI')) {
         suiBal = Number(bal) / 1e9;
-      } else if (ct.includes('::usdc::USDC') || ct.includes('::iusd::IUSD') || ct.toLowerCase().includes('usdt')) {
+      } else if (ct.includes('::iusd::IUSD')) {
+        // iUSD is 9-decimal (1e9), same as SUI. USDC/USDT are 6.
+        // Prior version divided iUSD by 1e6 and inflated the
+        // card by 1000× (e.g. $30 iUSD rendered as $30,001).
+        stableUsd += Number(bal) / 1e9;
+      } else if (ct.includes('::usdc::USDC') || ct.toLowerCase().includes('usdt')) {
         stableUsd += Number(bal) / 1e6;
       }
     }
@@ -4755,8 +4764,9 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
     ? `$${_balCached.totalUsd.toFixed(2)}`
     : '\u2014';
 
+  const collapsedCls = _nftCardExpanded ? '' : ' ski-nft-card--collapsed';
   popover.innerHTML = `
-    <div class="ski-nft-card ski-nft-card--inline${thunderCardCls}">
+    <div class="ski-nft-card ski-nft-card--inline${thunderCardCls}${collapsedCls}" id="ski-nft-card">
       <a class="ski-nft-qr" id="ski-nft-qr-slot" href="${esc(suiSkiUrl)}" target="_blank" rel="noopener" title="${esc(domainBare)}.sui.ski"></a>
       <div class="ski-nft-info">
         ${thunderBadgeHtml ? (() => {
@@ -4772,6 +4782,49 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
       <div class="ski-nft-owner">${ownerBadge}</div>
       <button class="ski-nft-dismiss" id="ski-nft-dismiss" type="button" title="Clear">\u2715</button>
     </div>`;
+
+  // Click-to-expand: tapping the card toggles the collapsed
+  // state. Dismiss button, explorer link, and quick-amount
+  // buttons stay click-through.
+  const cardEl = popover.querySelector('#ski-nft-card') as HTMLElement | null;
+  if (cardEl) {
+    cardEl.addEventListener('click', (ev) => {
+      const target = ev.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('#ski-nft-dismiss, .ski-nft-link, .ski-nft-qr, .ski-nft-quick-amt')) return;
+      _nftCardExpanded = !_nftCardExpanded;
+      try { sessionStorage.setItem('ski:nft-card-expanded', _nftCardExpanded ? '1' : '0'); } catch {}
+      cardEl.classList.toggle('ski-nft-card--collapsed', !_nftCardExpanded);
+    });
+  }
+
+  // Quick-amount buttons: populate the thunder input with
+  // `@{name}$amount` (or `@{name}$` for the "type a value"
+  // variant) and park the cursor AFTER the `$` so the user can
+  // either hit send immediately or type digits to override.
+  popover.querySelectorAll<HTMLButtonElement>('.ski-nft-quick-amt').forEach((btn) => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const amt = btn.dataset.amt ?? '';
+      const fullValue = amt ? `@${domainBare}$${amt}` : `@${domainBare}$`;
+      const setter = (_idleOverlay as any)?._setThunderInputWithCursorAtEnd as
+        ((s: string) => void) | undefined;
+      if (setter) {
+        setter(fullValue);
+        return;
+      }
+      // Fallback: directly drive the input if the helper isn't
+      // available (e.g. card rendered before the idle overlay
+      // wired up its handlers).
+      const el = document.getElementById('ski-idle-thunder') as HTMLInputElement | null;
+      if (!el) return;
+      el.value = fullValue;
+      el.focus();
+      const len = el.value.length;
+      try { el.setSelectionRange(len, len); } catch {}
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  });
 
   popover.removeAttribute('hidden');
 
@@ -8332,14 +8385,65 @@ function renderSkiMenu() {
     return { display: raw, full: raw };
   }
 
-  /** Create a shade order. Optional executeAfterMs overrides nsGraceEndMs (for testing with available domains). */
+  // Listen for shade-create requests from the idle overlay
+  // (which lives in a different closure and can't call
+  // _shadeCreate directly).
+  window.addEventListener('ski:shade-create', ((ev: CustomEvent<{ address: string; label: string }>) => {
+    const { address, label } = ev.detail;
+    if (address && label) _shadeCreate(address, label);
+  }) as EventListener);
+
+  /** Create a shade order. Tries user-signed first; if they
+   *  lack SUI for the deposit, falls back to ultron-fronted
+   *  proxy (no user signature needed — ultron pays the SUI
+   *  deposit and the ShadeExecutorAgent alarm handles the
+   *  rest). */
   async function _shadeCreate(address: string, label: string, btn?: HTMLButtonElement | null, executeAfterMs?: number) {
     const price = suiPriceCache?.price;
     if (!price || price <= 0) { showToast('SUI price unavailable \u2014 try again'); return; }
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
     const effectiveMs = executeAfterMs ?? nsGraceEndMs;
     try {
-      const { txBytes, orderInfo } = await buildCreateShadeOrderTx(address, label, effectiveMs, price);
+      let txBytes: Uint8Array;
+      let orderInfo: Omit<ShadeOrderInfo, 'objectId'>;
+      try {
+        const result = await buildCreateShadeOrderTx(address, label, effectiveMs, price);
+        txBytes = result.txBytes;
+        orderInfo = result.orderInfo;
+      } catch (buildErr) {
+        const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
+        if (msg.includes('Insufficient') || msg.includes('insufficient') || msg.includes('GasBalanceTooLow')) {
+          // User can't afford the SUI deposit — proxy via ultron
+          showToast(`\u26a1 Ultron fronting shade deposit for ${label}.sui\u2026`);
+          const proxyRes = await fetch('/api/cache/shade-proxy', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ label, targetAddress: address, graceEndMs: effectiveMs || undefined }),
+          });
+          const proxyJson = await proxyRes.json() as { digest?: string; orderId?: string; depositMist?: string; depositUsd?: number; error?: string };
+          if (proxyJson.error) throw new Error(proxyJson.error);
+          const proxyOrder: ShadeOrderInfo = {
+            objectId: proxyJson.orderId || `proxy:${proxyJson.digest}`,
+            domain: label,
+            owner: address,
+            depositMist: BigInt(proxyJson.depositMist || '0'),
+            executeAfterMs: effectiveMs,
+            targetAddress: address,
+            salt: '',
+          };
+          addShadeOrder(address, proxyOrder);
+          nsShadeOrder = proxyOrder;
+          nsShadeOrders.push({ ...proxyOrder });
+          _patchNsStatus();
+          _patchNsPrice();
+          _patchNsRoute();
+          _patchNsOwnedList();
+          showToast(`${label}.sui shaded via cache \u2713 (ultron deposit: $${(proxyJson.depositUsd ?? 0).toFixed(2)})`);
+          if (btn) { btn.disabled = false; btn.textContent = 'Shade'; }
+          return;
+        }
+        throw buildErr;
+      }
       if (btn) btn.textContent = '\u270f';
       const { digest, effects } = await signAndExecuteTransaction(txBytes);
       let orderId = extractShadeOrderIdFromEffects(effects);
@@ -9402,6 +9506,13 @@ function bindEvents() {
 
       _idleOverlay = document.createElement('div');
       _idleOverlay.className = 'ski-idle-overlay';
+      // Set data-bg from localStorage IMMEDIATELY at overlay
+      // creation — before _loadIdleBg (async) fires — so the
+      // CSS layout matches the intended bg from the first paint.
+      try {
+        const _savedBg = localStorage.getItem('ski:idle-bg') || 'ski-idle';
+        _idleOverlay.dataset.bg = _savedBg;
+      } catch { _idleOverlay.dataset.bg = 'ski-idle'; }
       const _headerEl = document.querySelector('.ski-header') as HTMLElement;
       const headerBox = _headerEl?.getBoundingClientRect();
       const width = headerRect.width;
@@ -9471,6 +9582,16 @@ function bindEvents() {
             </div>
           </div>
           <div class="ski-idle-ns-sweep" id="ski-idle-ns-sweep" hidden><button class="ski-idle-ns-sweep-btn" id="ski-idle-ns-sweep-btn" type="button" title="Swap NS to iUSD in your wallet"><span class="ski-idle-ns-sweep-icon">\u{1F9F9}</span><span class="ski-idle-ns-sweep-label">Cache $<span id="ski-idle-ns-sweep-amt">0</span> NS</span></button></div>
+          <div class="ski-idle-thunder-quick-amts" id="ski-idle-thunder-quick-amts">
+            <div class="ski-idle-thunder-quick-amts-top">
+              <button class="ski-idle-thunder-quick-amt" data-amt="1" type="button" title="Send $1">$1</button>
+              <button class="ski-idle-thunder-quick-amt" data-amt="7.5" type="button" title="Send $7.50">$7.50</button>
+            </div>
+            <div class="ski-idle-thunder-quick-amts-bottom">
+              <button class="ski-idle-thunder-quick-amt" data-amt="0.01" type="button" title="Send $0.01">$0.01</button>
+              <button class="ski-idle-thunder-quick-amt ski-idle-thunder-quick-amt--recall" id="ski-idle-recall-btn" type="button" title="Recall all unclaimed vaults">\u21A9</button>
+            </div>
+          </div>
           <div class="ski-idle-thunder-row">
             <div class="ski-idle-quick-actions" id="ski-idle-quick-actions">
               <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#22c55e" stroke="white" stroke-width="1.5"/></svg></button>
@@ -9680,6 +9801,9 @@ function bindEvents() {
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--shade';
           _idleActionBtn.title = `Shade ${label}.sui \u2014 lock funds for grace expiry`;
           _idleActionBtn.disabled = false;
+          // Show SOL QR for shade funding — route=3 (shade)
+          const _shadeCostUsd = Math.ceil((nsPriceUsd ?? 7.77) * 1.10 * 100) / 100;
+          _showSolQr(_shadeCostUsd, label, 3);
         } else if (nsAvail === 'taken' && !isOwned) {
           // Check if Storm exists for this conversation. Group ID is
           // address-keyed (nsTargetAddress resolved during the NS lookup);
@@ -9905,6 +10029,16 @@ function bindEvents() {
       let _cardCacheKey = ''; // tracks what's currently rendered to avoid redundant updates
       let _cardBalCache: { addr: string; usd: number; ts: number } | null = null;
       let _cardCurrentName = ''; // tracks which name the card is showing
+      // When a storm conversation is actively open, this holds the
+      // counterparty's bare name. The card uses it as the authority
+      // so the wallet/balance displayed match who the user is
+      // messaging — NOT the user's own primary name. Cleared when
+      // the storm is closed / dismissed.
+      let _activeStormCounterparty = '';
+      // And their resolved 0x address (from SuiNS target) so the
+      // card's balance fetch hits the right wallet even when
+      // nsTargetAddress / nsNftOwner point at an unrelated name.
+      let _activeStormCounterpartyAddr = '';
       const _CARD_BAL_TTL = 60_000; // 1 min in-memory cache
       const _CARD_BAL_PERSIST_TTL = 30 * 60 * 1000; // 30 min localStorage cache
       const _CARD_BAL_KEY = (label: string) => `ski:card-bal:v1:${label.toLowerCase()}`;
@@ -9924,13 +10058,27 @@ function bindEvents() {
       const _updateIdleCard = (name: string) => {
         const card = _idleOverlay?.querySelector('#ski-idle-card') as HTMLElement | null;
         if (!card) return;
+        // Active storm override: when the user is in an open
+        // conversation, the card ALWAYS shows the counterparty so
+        // the SUIAMI balance / identity matches who they're
+        // messaging — not the wallet owner. This legitimately
+        // diverges from `name` / `nsLabel`, which might point at
+        // the user's own primary after a focus change.
+        if (_activeStormCounterparty) {
+          name = _activeStormCounterparty;
+        }
         if (!name && !app.suinsName) { if (_cardCacheKey !== '') { card.innerHTML = ''; _cardCacheKey = ''; _cardCurrentName = ''; } return; }
         // Show primary name card when: name matches connected wallet's primary, or no active search
-        const isOwnName = name.toLowerCase() === (app.suinsName?.replace(/\.sui$/, '') || '').toLowerCase();
-        // Determine effective display name and collapse roster if it changed
-        const _effectiveName = (isOwnName || nsAvail === 'available' || (!nsAvail && !name))
-          ? (app.suinsName?.replace(/\.sui$/, '') || '').toLowerCase()
-          : name.toLowerCase();
+        const isOwnName = !_activeStormCounterparty && name.toLowerCase() === (app.suinsName?.replace(/\.sui$/, '') || '').toLowerCase();
+        // Determine effective display name and collapse roster if it changed.
+        // When a storm is open, the counterparty ALWAYS wins — don't
+        // fall back to the user's own primary even if nsAvail says
+        // 'available' (which can happen mid-search).
+        const _effectiveName = _activeStormCounterparty
+          ? _activeStormCounterparty.toLowerCase()
+          : ((isOwnName || nsAvail === 'available' || (!nsAvail && !name))
+              ? (app.suinsName?.replace(/\.sui$/, '') || '').toLowerCase()
+              : name.toLowerCase());
         if (_effectiveName && _effectiveName !== _cardCurrentName) {
           _cardCurrentName = _effectiveName;
           _rosterCache = null;
@@ -9942,7 +10090,7 @@ function bindEvents() {
           // from the typed label used to key the storm. Mismatching those
           // two was nuking the convo milliseconds after it opened.
         }
-        if (isOwnName || nsAvail === 'available' || (!nsAvail && !name)) {
+        if (!_activeStormCounterparty && (isOwnName || nsAvail === 'available' || (!nsAvail && !name))) {
           const primaryName = app.suinsName?.replace(/\.sui$/, '') || '';
           if (!primaryName) { if (_cardCacheKey !== '') { card.innerHTML = ''; _cardCacheKey = ''; } return; }
           const totalUsd = app.usd ?? 0;
@@ -9963,7 +10111,8 @@ function bindEvents() {
           const balHtml = `<span class="ski-idle-card-bal"><span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_balLabel}</span></span> `;
           const iusdBadge = _suiamiVerifyHtml ? ' <img src="/assets/iusd.svg" class="ski-idle-card-iusd" width="16" height="16" alt="iUSD">' : '';
           const _atBtn = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
-          card.innerHTML = `${_atBtn}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${balHtml}${iusdBadge}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
+          const _recallBtn = `<button class="ski-idle-card-recall" id="ski-idle-recall-vaults" type="button" title="Recall all unclaimed vaults">\u21A9</button>`;
+          card.innerHTML = `${_atBtn}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${balHtml}${iusdBadge}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${_recallBtn}`;
           return;
         }
         // Persist as authoritative domain
@@ -10006,7 +10155,13 @@ function bindEvents() {
         (async () => {
           try {
             const _listing = _nsListing();
-            let addr = _listing?.seller || nsTargetAddress || nsNftOwner;
+            // Prefer the active storm counterparty address so the
+            // balance matches who the user is actually messaging,
+            // even when the globals (nsTargetAddress / nsNftOwner)
+            // still point at the last search bar resolution.
+            let addr = (_activeStormCounterparty && _activeStormCounterpartyAddr)
+              ? _activeStormCounterpartyAddr
+              : (_listing?.seller || nsTargetAddress || nsNftOwner);
             if (!addr) return;
             const r2 = await fetch('https://graphql.mainnet.sui.io/graphql', {
               method: 'POST',
@@ -10067,16 +10222,66 @@ function bindEvents() {
         nsAvail = null;
         nsTargetAddress = null;
         nsNftOwner = null;
+        _activeStormCounterparty = '';
+        _activeStormCounterpartyAddr = '';
         _updateIdleStatus();
         _updateIdleCard('');
       });
 
-      // Click card → populate name input OR open roster (blue square)
-      _idleOverlay.querySelector('#ski-idle-card')?.addEventListener('click', (e) => {
+      // Click card → populate name input OR open roster (blue square) OR recall vaults
+      _idleOverlay.querySelector('#ski-idle-card')?.addEventListener('click', async (e) => {
         e.stopPropagation();
         // Blue square → toggle roster
         if ((e.target as HTMLElement).closest('#ski-idle-thunder-at')) {
           _toggleRoster();
+          return;
+        }
+        // Recall button → scan + batch-recall all user's vaults
+        if ((e.target as HTMLElement).closest('#ski-idle-recall-vaults')) {
+          const ws = getState();
+          if (!ws.address) { showToast('Connect wallet first'); return; }
+          const btn = (e.target as HTMLElement).closest('#ski-idle-recall-vaults') as HTMLButtonElement;
+          btn.disabled = true;
+          btn.textContent = '\u2026';
+          try {
+            showToast('\u{1F50D} Scanning for recallable vaults\u2026');
+            const res = await fetch('/api/recall-vaults', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ address: ws.address }),
+            });
+            const data = await res.json() as { vaults?: any[]; count?: number; totalSui?: number; description?: string; error?: string; message?: string };
+            if (data.error) { showToast(data.error); return; }
+            if (!data.count || !data.vaults?.length) { showToast(data.message || 'No vaults to recall'); return; }
+            showToast(`\u21A9 ${data.description}`);
+            const { Transaction: Tx } = await import('@mysten/sui/transactions');
+            const { SuiGraphQLClient: Gql } = await import('@mysten/sui/graphql');
+            const { normalizeSuiAddress: norm } = await import('@mysten/sui/utils');
+            const _PKG = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782';
+            const _CLOCK = '0x0000000000000000000000000000000000000000000000000000000000000006';
+            const _g = new Gql({ url: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+            const _tx = new Tx();
+            _tx.setSender(norm(ws.address));
+            for (const v of data.vaults!) {
+              _tx.moveCall({ target: `${_PKG}::shielded::recall`, arguments: [_tx.sharedObjectRef({ objectId: v.objectId, initialSharedVersion: v.isv, mutable: true }), _tx.sharedObjectRef({ objectId: _CLOCK, initialSharedVersion: 1, mutable: false })] });
+            }
+            const _gpR = await _g.query({ query: '{ epoch { referenceGasPrice } }' });
+            _tx.setGasPrice(Number((_gpR.data as any)?.epoch?.referenceGasPrice ?? 750));
+            _tx.setGasBudget(50_000_000);
+            const _scR = await fetch('https://graphql.mainnet.sui.io/graphql', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: `query($a:SuiAddress!){ address(address:$a){ objects(filter:{type:"0x2::coin::Coin<0x2::sui::SUI>"}, first:3){ nodes{ address version digest } } } }`, variables: { a: ws.address } }) });
+            const _sc2 = (await _scR.json() as any)?.data?.address?.objects?.nodes ?? [];
+            if (_sc2.length > 0) _tx.setGasPayment([{ objectId: _sc2[0].address, version: String(_sc2[0].version), digest: _sc2[0].digest }]);
+            const _bytes = await _tx.build();
+            const { digest } = await signAndExecuteTransaction(_bytes);
+            showToast(`\u2713 ${data.count} vault${(data.count ?? 0) > 1 ? 's' : ''} recalled (${(data.totalSui ?? 0).toFixed(2)} SUI)`);
+            setTimeout(() => refreshPortfolio(true), 3000);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!msg.toLowerCase().includes('reject')) showToast(msg.slice(0, 200));
+          } finally {
+            btn.disabled = false;
+            btn.textContent = '\u21A9';
+          }
           return;
         }
         const nameEl = _idleOverlay?.querySelector('.ski-idle-card-name') as HTMLElement | null;
@@ -10168,6 +10373,17 @@ function bindEvents() {
               ? `Send $${parsedAmt} · press Enter`
               : 'Type an amount · press Enter to send';
           }
+        }
+        // Quick-amount chip row: ALWAYS visible. Target name
+        // is resolved at click time from the card / NS bar /
+        // active storm counterparty — no show/hide logic.
+        const _quickAmtRow = _idleOverlay?.querySelector('#ski-idle-thunder-quick-amts') as HTMLElement | null;
+        if (_quickAmtRow) {
+          const _cardOrInputName = _cardCurrentName
+            || _activeStormCounterparty
+            || nsLabel.trim().toLowerCase()
+            || (app.suinsName?.replace(/\.sui$/, '') || '');
+          _quickAmtRow.dataset.targetName = _cardOrInputName;
         }
         // Color modes: green (valid amount), red (over budget), yellow (thunder only)
         const needsMirror = hasAmount || hasAt;
@@ -10454,6 +10670,22 @@ function bindEvents() {
         // flag from a previous target shouldn't carry over. Clear on
         // label change so the auto-opener fires for the new storm.
         if (val !== nsLabel) _userClosedStorms.clear();
+        // If the typed name doesn't match the currently-open storm
+        // counterparty, close that storm: clear the override so the
+        // card snaps to the new name, and hide the decrypted convo
+        // so messages from the old conversation don't bleed into
+        // the new context.
+        if (_activeStormCounterparty && val !== _activeStormCounterparty) {
+          _activeStormCounterparty = '';
+          _activeStormCounterpartyAddr = '';
+          const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+          if (convoEl) {
+            convoEl.setAttribute('hidden', '');
+            convoEl.innerHTML = '';
+          }
+          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+          _cardCacheKey = '';
+        }
         nsLabel = val;
         try { localStorage.setItem('ski:ns-label', val); } catch {}
         if (_idleClearBtn) _idleClearBtn.style.display = val ? '' : 'none';
@@ -10493,30 +10725,19 @@ function bindEvents() {
                   if (owner) { _addr = owner; nsNftOwner = owner; }
                 } catch {}
               }
-              let cardName = val;
-              if (_addr && _rosterCache?.addr === _addr) {
-                const primary = _rosterCache.names.find(n => n.primary);
-                if (primary) cardName = primary.name;
-              } else if (_addr) {
-                try {
-                  const r = await fetch('https://graphql.mainnet.sui.io/graphql', {
-                    method: 'POST',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ query: `query($a:SuiAddress!){ address(address:$a){ defaultNameRecord{domain} } }`, variables: { a: _addr } }),
-                  });
-                  const g = await r.json() as any;
-                  const prim = (g?.data?.address?.defaultNameRecord?.domain ?? '').replace(/\.sui$/, '').toLowerCase();
-                  if (prim) cardName = prim;
-                } catch {}
-              }
-              _updateIdleCard(cardName);
+              // Always show the name the user typed — NOT the
+              // reverse-resolved primary of the target address.
+              // "usd1" should stay "usd1", not flip to "usd"
+              // just because the target wallet's primary is
+              // different. The typed name IS the intent.
+              _updateIdleCard(val);
               _renderThunderComposePreview();
               _expandIdleConvo(val);
-              // Re-poll after 3s if input unchanged — catches balance updates, ownership changes
+              // Re-poll after 3s if input unchanged
               setTimeout(() => {
                 if (nsLabel.trim().toLowerCase() === val) {
-                  _cardCacheKey = ''; // force card refresh
-                  _updateIdleCard(cardName);
+                  _cardCacheKey = '';
+                  _updateIdleCard(val);
                 }
               }, 3000);
             });
@@ -10543,6 +10764,76 @@ function bindEvents() {
         e.stopPropagation();
         const label = nsLabel.trim();
         const btnText = _idleActionBtn!.textContent || '';
+
+        // ── SUIAMI batch claim/recall (green action button) ────
+        // Fires when the settlement poll found live vaults in the
+        // current storm and flipped the button class. Only acts
+        // on vaults from THIS storm's convo bubbles.
+        if (_idleActionBtn!.classList.contains('ski-idle-ns-action--suiami')) {
+          const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+          if (!convoEl) return;
+          _idleActionBtn!.disabled = true;
+          _idleActionBtn!.textContent = '\u2026';
+          try {
+            const { fetchThunderSponsorInfo } = await import('./client/thunder.js');
+            const { Transaction } = await import('@mysten/sui/transactions');
+            const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+            const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+            const ws = getState();
+            if (!ws.address) throw new Error('Connect wallet');
+            const THUNDER_IOU_PKG = '0x5a80b9753d6ccce11dc1f9a5039d9430d3e43a216f82f957ef11df9cb5c4dc79';
+            const THUNDER_SHIELDED_PKG = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782';
+            const liveBubs = Array.from(convoEl.querySelectorAll<HTMLElement>(
+              '.ski-idle-bubble--transfer[data-vault-id]:not(.ski-idle-bubble--transfer-settled)',
+            ));
+            if (liveBubs.length === 0) { showToast('Nothing to claim'); return; }
+            const tx = new Transaction();
+            tx.setSender(normalizeSuiAddress(ws.address));
+            const sponsor = await fetchThunderSponsorInfo();
+            if (sponsor) {
+              tx.setGasOwner(sponsor.sponsorAddress);
+              tx.setGasPayment(sponsor.gasCoins.map(c => ({ objectId: c.objectId, version: c.version, digest: c.digest })));
+            }
+            let claimCount = 0;
+            for (const b of liveBubs) {
+              const vaultId = b.dataset.vaultId || '';
+              const vaultIsv = Number(b.dataset.vaultIsv || '0');
+              const vaultKind = b.dataset.vaultKind || 'legacy';
+              const role = b.dataset.iouRole || 'recipient';
+              if (!vaultId || !vaultIsv) continue;
+              const ref = tx.sharedObjectRef({ objectId: vaultId, initialSharedVersion: vaultIsv, mutable: true });
+              const pkg = vaultKind === 'shielded' ? THUNDER_SHIELDED_PKG : THUNDER_IOU_PKG;
+              const mod = vaultKind === 'shielded' ? 'shielded' : 'iou';
+              const fn = role === 'sender' ? 'recall' : 'claim';
+              tx.moveCall({ target: `${pkg}::${mod}::${fn}`, arguments: [ref, tx.object('0x6')] });
+              claimCount++;
+            }
+            if (claimCount === 0) { showToast('No vaults found'); return; }
+            showToast(`\u26a1 Claiming ${claimCount} transfer${claimCount > 1 ? 's' : ''}\u2026`);
+            const buildClient = new SuiGraphQLClient({ url: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+            const txBytes = await tx.build({ client: buildClient as never });
+            const _isWaaP = /waap/i.test(ws.walletName || '');
+            const { digest } = (!_isWaaP && sponsor)
+              ? await signAndExecuteSponsoredTx(txBytes)
+              : await signAndExecuteTransaction(txBytes);
+            for (const b of liveBubs) {
+              b.classList.add('ski-idle-bubble--transfer-settled');
+              const txd = b.dataset.tx || '';
+              if (txd) _markSettled(txd);
+            }
+            showToast(`\u2713 ${claimCount} transfer${claimCount > 1 ? 's' : ''} claimed`);
+            _idleActionBtn!.className = 'ski-idle-ns-action ski-idle-ns-action--storm';
+            _idleActionBtn!.textContent = 'Storm';
+            setTimeout(() => refreshPortfolio(true), 3000);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!msg.toLowerCase().includes('reject')) showToast(msg.slice(0, 200));
+          } finally {
+            _idleActionBtn!.disabled = false;
+          }
+          return;
+        }
+
         if (btnText === 'SUIAMI') {
           const name = label || (app.suinsName?.replace(/\.sui$/, '') || '');
           if (!name) return;
@@ -10591,6 +10882,40 @@ function bindEvents() {
               showToast(`${label}.sui purchased \u2713`);
               _updateIdleStatus();
               setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
+            } else if (infer.nameStatus === 'available' && label) {
+              // Fresh registration — /api/infer doesn't yet build
+              // register PTBs. Fall through to the client builder,
+              // which now supports an iUSD → USDC → NS route via
+              // the seeded iUSD/USDC pool so a wallet holding only
+              // stables can still register a name in one sig.
+              _idleActionBtn!.textContent = '\u270f';
+              showToast(`\u26a1 Registering ${label}.sui`);
+              const freshPrice = await fetchSuiPrice() ?? suiPriceCache?.price;
+              const preferred = (() => {
+                const iusdUsd = infer.balances?.iusd?.usd ?? 0;
+                const usdcUsd = infer.balances?.usdc?.usd ?? 0;
+                const suiUsd  = infer.balances?.sui?.usd  ?? 0;
+                // Pick the asset the user has the most of, biased
+                // towards stables so gas-free paths win.
+                if (iusdUsd >= 7.75 && iusdUsd >= usdcUsd) return 'iUSD';
+                if (usdcUsd >= 7.75) return 'USDC';
+                if (suiUsd > 0) return 'SUI';
+                return 'iUSD';
+              })();
+              const regResult = await buildRegisterSplashNsTx(ws.address, `${label}.sui`, freshPrice, true, preferred);
+              if (regResult?.txBytes) {
+                const _isWaaP = /waap/i.test(getState().walletName || '');
+                const { digest } = (!_isWaaP && regResult.sponsorAddress)
+                  ? await signAndExecuteSponsoredTx(regResult.txBytes)
+                  : await signAndExecuteTransaction(regResult.txBytes);
+                nsAvail = 'owned';
+                app.suinsName = app.suinsName || `${label}.sui`;
+                showToast(`\u{1F4DB} ${label}.sui registered \u2713`);
+                _updateIdleStatus();
+                setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
+              } else {
+                showToast('Could not build registration transaction');
+              }
             } else {
               const reason = infer.recommended?.reason ?? 'Could not build transaction';
               const bals = infer.balances;
@@ -10785,50 +11110,16 @@ function bindEvents() {
             _idleActionBtn!.disabled = false;
           }
         } else if (btnText === 'Shade') {
-          // Shade: mint iUSD rounded up to cover registration + 10% buffer.
-          // User holds the iUSD freely but spending below threshold liquidates the Shade.
-          // Agents deliberate every 60s whether to keep or cancel underwater Shades.
+          // Shade: route through the unified _shadeCreate path
+          // (which tries user-signed first, then falls back to
+          // ultron-fronted proxy when the user lacks SUI).
           e.stopPropagation();
           if (!label) return;
           const ws = getState();
           if (!ws.address) { showToast('Connect wallet first'); return; }
-          const shadeCost = Math.ceil((nsPriceUsd ?? 7.77) * 1.10 * 100) / 100;
-          _idleActionBtn!.disabled = true;
-          _idleActionBtn!.textContent = 'Shading\u2026';
-
-          // Create Shade order on server — agents will deliberate on it
-          (async () => {
-            try {
-              const commitment = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${label}.sui:${ws.address}`));
-              const commitHex = Array.from(new Uint8Array(commitment)).map(b => b.toString(16).padStart(2, '0')).join('');
-              await fetch('/api/cache/shade-create', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                  domain: label,
-                  holder: ws.address,
-                  thresholdUsd: shadeCost,
-                  graceEndMs: nsGraceEndMs || (Date.now() + 30 * 86_400_000),
-                  commitment: commitHex,
-                }),
-              });
-              showToast(`\u26a1 Shade ${label}.sui — hold $${shadeCost.toFixed(2)} iUSD until grace expires`);
-
-              // Open menu with amount pre-filled for iUSD mint
-              pendingSendAmount = String(shadeCost);
-              if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
-              setTimeout(() => {
-                const amtInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-                if (amtInput) { amtInput.value = String(shadeCost); amtInput.dispatchEvent(new Event('input', { bubbles: true })); }
-                const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-                if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
-              }, 500);
-            } catch (err) {
-              showToast(err instanceof Error ? err.message : 'Shade failed');
-            }
-            _idleActionBtn!.textContent = 'Shade';
-            _idleActionBtn!.disabled = false;
-          })();
+          window.dispatchEvent(new CustomEvent('ski:shade-create', {
+            detail: { address: ws.address, label },
+          }));
         } else if (btnText === 'Storm') {
           // Toggle Storm convo — open/close conversation with history.
           // Mirror the lightning quick-action: always pre-fill the thunder
@@ -10878,19 +11169,11 @@ function bindEvents() {
           if (!_addr && nsAvail === 'taken') {
             try { const { lookupNftOwner: _lno } = await import('./suins.js'); const o = await _lno(_initLabel); if (o) { _addr = o; nsNftOwner = o; } } catch {}
           }
-          let cardName = _initLabel;
-          if (_addr && _rosterCache?.addr === _addr) {
-            const primary = _rosterCache.names.find(n => n.primary);
-            if (primary) cardName = primary.name;
-          } else if (_addr) {
-            try {
-              const r = await fetch('https://graphql.mainnet.sui.io/graphql', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: `query($a:SuiAddress!){ address(address:$a){ defaultNameRecord{domain} } }`, variables: { a: _addr } }) });
-              const g = await r.json() as any;
-              const prim = (g?.data?.address?.defaultNameRecord?.domain ?? '').replace(/\.sui$/, '').toLowerCase();
-              if (prim) cardName = prim;
-            } catch {}
-          }
-          _updateIdleCard(cardName);
+          // Always use the typed/restored label — don't
+          // reverse-resolve to the target's primary name (which
+          // may differ, e.g. "usd" vs "usd1"). The card should
+          // reflect what the user searched, not who owns it.
+          _updateIdleCard(_initLabel);
         });
         // Auto-open conversation unconditionally on overlay mount with a
         // pre-filled name. Storm is top-priority UI: if a label is loaded,
@@ -11327,35 +11610,146 @@ function bindEvents() {
 
       // Storm-actions + send-group delegate same iusd/rumble handlers
       // $ button in storm mode — insert $ after last @name tag
+      // Helper: set `@name$` (or `@name$amount`) into the thunder
+      // input and reliably park the cursor AFTER the `$`. Browsers
+      // will sometimes restore the prior selection after a
+      // programmatic `.focus()`, so we re-apply the selection on a
+      // stack of deferral tiers (sync → microtask → rAF → macrotask)
+      // to guarantee the cursor lands at the end no matter what the
+      // browser, input-click handler, or focus handler tries next.
+      const _setThunderInputWithCursorAtEnd = (fullValue: string) => {
+        // Live-query the input each call — handler closure may
+        // reference an orphaned element after a menu re-render.
+        const el = (document.getElementById('ski-idle-thunder') as HTMLInputElement | null)
+          ?? _idleThunderInputEl;
+        if (!el) return;
+        const applyEnd = () => {
+          const len = el.value.length;
+          try { el.setSelectionRange(len, len); } catch {}
+        };
+        el.value = fullValue;
+        el.focus();
+        applyEnd();                       // sync
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        queueMicrotask(applyEnd);         // after input listeners
+        requestAnimationFrame(applyEnd);  // after browser focus
+        setTimeout(applyEnd, 0);          // macrotask belt-and-braces
+        setTimeout(applyEnd, 60);         // after debounced side-effects
+      };
+
       _idleOverlay.querySelector('#ski-idle-thunder-at-iusd')?.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (!_idleThunderInputEl) return;
-        // Use card name (authority) — fall back to input label, then primary
         const cardName = _cardCurrentName || nsLabel.trim().toLowerCase() || (app.suinsName?.replace(/\.sui$/, '') || '');
         if (!cardName) return;
-        // Set @name$, focus, then move the cursor to the END so the
-        // user can type the amount immediately. Order matters:
-        //   1. Set value
-        //   2. focus() — some browsers reset selection on focus
-        //      from a non-focused state, so setting selection
-        //      BEFORE focus gets overridden.
-        //   3. setSelectionRange to end-of-string
-        //   4. dispatch input so the preview / tag sync / icon swap
-        //      all see the new state.
-        // An extra rAF-scheduled re-clamp absorbs any async clamp
-        // from the input-click / keyup listeners that might fire as
-        // a side effect of the focus transition.
-        _idleThunderInputEl.value = `@${cardName}$`;
-        _idleThunderInputEl.focus();
-        const _end = _idleThunderInputEl.value.length;
-        try { _idleThunderInputEl.setSelectionRange(_end, _end); } catch {}
-        _idleThunderInputEl.dispatchEvent(new Event('input'));
-        requestAnimationFrame(() => {
-          if (!_idleThunderInputEl) return;
-          const _endAgain = _idleThunderInputEl.value.length;
-          try { _idleThunderInputEl.setSelectionRange(_endAgain, _endAgain); } catch {}
+        _setThunderInputWithCursorAtEnd(`@${cardName}$`);
+      });
+
+      // Recall button — scans for ShieldedVault objects where
+      // the user is sender, builds the recall PTB CLIENT-SIDE
+      // (avoids v2→v1 BCS mismatch on WaaP), and signs.
+      _idleOverlay.querySelector('#ski-idle-recall-btn')?.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const ws = getState();
+        if (!ws.address) { showToast('Connect wallet first'); return; }
+        const btn = ev.target as HTMLButtonElement;
+        btn.disabled = true;
+        btn.textContent = '\u2026';
+        try {
+          showToast('\u{1F50D} Scanning for recallable vaults\u2026');
+          const res = await fetch('/api/recall-vaults', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ address: ws.address }),
+          });
+          const data = await res.json() as { vaults?: any[]; count?: number; totalSui?: number; txBase64?: string; description?: string; error?: string; message?: string };
+          if (data.error) { showToast(data.error); return; }
+          if (!data.count || !data.vaults?.length) { showToast(data.message || 'No vaults to recall'); return; }
+          showToast(`\u21A9 ${data.description}`);
+
+          // Build PTB client-side then pre-build to bytes
+          // with our own GraphQL client. WaaP needs Uint8Array
+          // (not Transaction) — passing a v2 Transaction object
+          // causes WaaP to try v1 .build() which reads the
+          // non-existent gasConfig.price field.
+          // Build with explicit sharedObjectRef — avoids the
+          // GraphQL resolver's dry-run which doesn't propagate
+          // ctx.sender() correctly for entry functions that
+          // check sender ownership (triggers ENotExpired).
+          const { Transaction } = await import('@mysten/sui/transactions');
+          const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+          const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+          const PKG = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782';
+          const CLOCK = '0x0000000000000000000000000000000000000000000000000000000000000006';
+          const GQL = 'https://graphql.mainnet.sui.io/graphql';
+          const _gql = new SuiGraphQLClient({ url: GQL, network: 'mainnet' });
+
+          // Fetch ISV + gas price + sender coins in parallel
+          // Batch ALL vaults with explicit sharedObjectRef —
+          // avoids the GraphQL resolver's dry-run which fails
+          // on recall's ctx.sender() assert. Server provides
+          // ISV + version + digest for each vault. Build
+          // WITHOUT client so no simulation runs.
+          const tx = new Transaction();
+          tx.setSender(normalizeSuiAddress(ws.address));
+          for (const v of data.vaults!) {
+            tx.moveCall({
+              target: `${PKG}::shielded::recall`,
+              arguments: [
+                tx.sharedObjectRef({ objectId: v.objectId, initialSharedVersion: v.isv, mutable: true }),
+                tx.sharedObjectRef({ objectId: CLOCK, initialSharedVersion: 1, mutable: false }),
+              ],
+            });
+          }
+          // Fetch gas price + sender coins for offline build
+          const _gpRes = await _gql.query({ query: '{ epoch { referenceGasPrice } }' });
+          tx.setGasPrice(Number((_gpRes.data as any)?.epoch?.referenceGasPrice ?? 750));
+          tx.setGasBudget(50_000_000);
+          const _scRes = await fetch(GQL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: `query($a:SuiAddress!){ address(address:$a){ objects(filter:{type:"0x2::coin::Coin<0x2::sui::SUI>"}, first:3){ nodes{ address version digest } } } }`, variables: { a: ws.address } }) });
+          const _sc = (await _scRes.json() as any)?.data?.address?.objects?.nodes ?? [];
+          if (_sc.length > 0) tx.setGasPayment([{ objectId: _sc[0].address, version: String(_sc[0].version), digest: _sc[0].digest }]);
+          const txBytes = await tx.build();
+          const result = await signAndExecuteTransaction(txBytes);
+          showToast(`\u2713 ${data.count} vault${(data.count ?? 0) > 1 ? 's' : ''} recalled (${(data.totalSui ?? 0).toFixed(2)} SUI)`);
+          setTimeout(() => refreshPortfolio(true), 3000);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.toLowerCase().includes('reject')) showToast(msg.slice(0, 200));
+        } finally {
+          btn.disabled = false;
+          btn.textContent = '\u21A9';
+        }
+      });
+
+      // Quick-amount chips: one tap fills `@name$amount` into the
+      // thunder input, marks the compose stage as 'confirmed', and
+      // fires `_sendIdleThunder` so the transaction builds + the
+      // wallet popup opens immediately. Zero extra taps.
+      _idleOverlay.querySelectorAll<HTMLButtonElement>('.ski-idle-thunder-quick-amt').forEach((btn) => {
+        btn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const amt = btn.dataset.amt ?? '';
+          if (!amt) return;
+          const name = _cardCurrentName
+            || _activeStormCounterparty
+            || nsLabel.trim().toLowerCase()
+            || (app.suinsName?.replace(/\.sui$/, '') || '');
+          if (!name) { showToast('Search a name first'); return; }
+          const value = `@${name}$${amt}`;
+          _setThunderInputWithCursorAtEnd(value);
+          // Auto-send after a short delay so the input value
+          // has settled and the preview/tag sync has fired.
+          setTimeout(() => {
+            _thunderComposeStage = 'confirmed';
+            _thunderComposeConfirmedRaw = value;
+            _sendIdleThunder();
+          }, 120);
         });
       });
+
+      // Hang the helper off the overlay so the identity card's
+      // quick-amount buttons (rendered via _showNftPopover) can
+      // reuse it without needing another closure.
+      (_idleOverlay as any)._setThunderInputWithCursorAtEnd = _setThunderInputWithCursorAtEnd;
 
       // Diamond click → toggle target address row (own addresses or Roster lookup for others)
       _idleOverlay.querySelector('#ski-idle-status')?.addEventListener('click', async (e) => {
@@ -11366,6 +11760,23 @@ function bindEvents() {
         if (!viewingName) return;
         const ownName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
         const isOwnName = nsAvail === 'owned' || nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === viewingName);
+
+        // Red hexagon / orange triangle = taken or grace period.
+        // Clicking the status icon triggers a Shade order so the
+        // name auto-registers the second the grace period ends.
+        // _shadeCreate lives in the SKI menu closure — dispatch
+        // a custom event to bridge the scope boundary.
+        if (!isOwnName && (nsAvail === 'taken' || nsAvail === 'grace')) {
+          if (nsShadeOrder) {
+            showToast(`${viewingName}.sui already shaded`);
+            return;
+          }
+          window.dispatchEvent(new CustomEvent('ski:shade-create', {
+            detail: { address: ws.address, label: viewingName },
+          }));
+          return;
+        }
+
         if (!isOwnName) { showToast('You don\u2019t own this name'); return; }
         if (viewingName === ownName) { showToast(`${viewingName}.sui is already your default`); return; }
 
@@ -12268,6 +12679,7 @@ function bindEvents() {
           // rejection. Pinning the coin explicitly via
           // setGasPayment skips that query entirely.
           let _dripGasCoin: { objectId: string; version: string; digest: string } | null = null;
+          let _dripHappened = false;
           if (_myAddrForSend) {
             try {
               const dripRes = await fetch('/api/fund-gas', {
@@ -12279,6 +12691,7 @@ function bindEvents() {
                 skipped?: boolean; digest?: string; error?: string;
               };
               if (dripRes.ok && dripJson.digest) {
+                _dripHappened = true;
                 await new Promise(r => setTimeout(r, 1500));
               }
             } catch { /* best-effort */ }
@@ -12286,7 +12699,14 @@ function bindEvents() {
             // The drip may have landed a moment ago; indexer lag
             // means it might take a beat to show up on the first
             // query.
-            const _pollDeadline = Date.now() + 10_000;
+            //
+            // Only pin when a drip actually happened — otherwise
+            // tx.build's auto-gas-select sees the user's existing
+            // coins just fine, and pinning a specific coin ref
+            // risks going stale (concurrent refreshes / prior tx
+            // mutations produced "Object 0x… not found"
+            // regressions on regular $-sends).
+            const _pollDeadline = _dripHappened ? Date.now() + 10_000 : 0;
             while (Date.now() < _pollDeadline) {
               try {
                 const _cr = await fetch('https://graphql.mainnet.sui.io/graphql', {
@@ -12318,6 +12738,7 @@ function bindEvents() {
               await new Promise(r => setTimeout(r, 600));
             }
           }
+          let _completedCount = 0;
           try {
             for (const recip of recipients) {
               if (_cancelled) break;
@@ -12331,25 +12752,135 @@ function bindEvents() {
               const groupUuid = makeThunderGroupId(_myAddrForSend, _recipAddrForGid);
 
               if (transferAmtUsd) {
-                // $amount transfer — needs on-chain tx. sendThunder swaps the
-                // SUI input → USDC via DeepBook in the same PTB, so we need to
-                // over-provision the SUI side by ~5% to cover pool fee + slippage
-                // and still land the recipient above the requested $ amount.
+                // $amount transfer. Two routes:
+                //
+                //   SUI-native (preferred): split SUI from the user's
+                //     own coin into a shielded vault; recipient claims.
+                //     Requires ~5% overprovisioned SUI balance.
+                //
+                //   iUSD-native (fallback): when the user has no SUI
+                //     (or not enough to cover the transfer + gas),
+                //     split $amount from their iUSD coin and transfer
+                //     it directly to the recipient. Gas is sponsored
+                //     by ultron. Privacy is reduced — amount and
+                //     recipient are visible on-chain — but it's the
+                //     only route for a wallet holding stables only.
                 const recipAddr = await lookupRecipientAddress(recip);
                 if (!recipAddr) { showToast(`Cannot resolve address for ${recip}`); continue; }
                 const suiPrice = suiPriceCache?.price ?? 0;
                 if (suiPrice <= 0) { showToast('Cannot determine SUI price'); continue; }
-                const suiAmount = (transferAmtUsd / suiPrice) * 1.05;
-                // Use ceil so micropayments (e.g. \$0.001) round UP
-                // to at least 1 lamport instead of floor-ing to 0.
-                // Enforce a 1k-mist floor so the shielded vault
-                // deposit never hits EZeroAmount and the recipient
-                // always gets something non-dust.
+
+                // Decide route: can we afford this as a SUI split?
+                // Shielded deposit does NOT swap — it escrows SUI
+                // directly — so there's no pool-slippage buffer to
+                // reserve. Strict conversion $amount / SUI price,
+                // plus a ~0.05 SUI gas-reservation headroom. The
+                // old 5% buffer was stale from an earlier SUI→USDC
+                // swap version of the shielded path.
+                const requiredSui = (transferAmtUsd / suiPrice) + 0.05;
+                const userSui = app.sui || 0;
+                const needsIusdRoute = userSui < requiredSui;
+
+                const _hasTransferAttachments = _pendingThunderFiles.length > 0;
+
+                if (needsIusdRoute) {
+                  // Fetch user's iUSD coins via GraphQL. iUSD is 1:1
+                  // USD at 9 decimals.
+                  const _iusdInnerType = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+                  const _iusdCoinType = `0x2::coin::Coin<${_iusdInnerType}>`;
+                  const _iusdMist = BigInt(Math.ceil(transferAmtUsd * 1e9));
+                  let _iusdCoins: Array<{ objectId: string; balance: bigint }> = [];
+                  try {
+                    const _cq = await fetch('https://graphql.mainnet.sui.io/graphql', {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ query: `{
+                        address(address: "${_myAddrForSend}") {
+                          objects(filter: { type: "${_iusdCoinType}" }, first: 20) {
+                            nodes { address contents { json } }
+                          }
+                        }
+                      }` }),
+                    });
+                    const _cj = await _cq.json() as { data?: { address?: { objects?: { nodes?: Array<{ address: string; contents?: { json?: { balance?: string } } }> } } } };
+                    _iusdCoins = (_cj?.data?.address?.objects?.nodes ?? [])
+                      .map(n => ({ objectId: n.address, balance: BigInt(n.contents?.json?.balance ?? '0') }))
+                      .filter(c => c.balance > 0n)
+                      .sort((a, b) => (a.balance > b.balance ? -1 : 1));
+                  } catch {}
+                  const _iusdTotal = _iusdCoins.reduce((a, c) => a + c.balance, 0n);
+                  if (_iusdTotal < _iusdMist) {
+                    showToast(`Not enough iUSD to send $${transferAmtUsd}`);
+                    continue;
+                  }
+                  // Take the largest coin as primary; any others get
+                  // merged if the largest alone can't cover.
+                  const _primary = _iusdCoins[0];
+                  const _mergeIds: string[] = [];
+                  if (_primary.balance < _iusdMist) {
+                    let _running = _primary.balance;
+                    for (const c of _iusdCoins.slice(1)) {
+                      _mergeIds.push(c.objectId);
+                      _running += c.balance;
+                      if (_running >= _iusdMist) break;
+                    }
+                  }
+                  // WaaP can't do dual-sig sponsorship — its iframe
+                  // re-serializes bytes, breaking the sponsor
+                  // signature. For WaaP users, rely on the SUI
+                  // drip from ultron (0.1 SUI, bumped above) and
+                  // have WaaP pay gas itself using the dripped
+                  // coin pinned via gasPayment. Non-WaaP users
+                  // take the true sponsor path.
+                  const _iusdIsWaaP = /waap/i.test(getState().walletName || '');
+                  if (_cancelled) break;
+                  await sendThunder({
+                    groupRef: { uuid: groupUuid },
+                    text: draft.raw || msgText,
+                    recipientAddress: recipAddr,
+                    senderName,
+                    recipientName: recip,
+                    iusdTransfer: {
+                      recipientAddress: recipAddr,
+                      amountMist: _iusdMist,
+                      primaryCoinId: _primary.objectId,
+                      mergeCoinIds: _mergeIds.length ? _mergeIds : undefined,
+                    },
+                    intentUsd: transferAmtUsd,
+                    sponsored: !_iusdIsWaaP,
+                    gasPayment: _iusdIsWaaP && _dripGasCoin ? [_dripGasCoin] : undefined,
+                    files: _hasTransferAttachments
+                      ? _pendingThunderFiles.map(f => ({
+                          fileName: f.fileName,
+                          mimeType: f.mimeType,
+                          data: f.data,
+                        }))
+                      : undefined,
+                    signAndExecute: async (txOrBytes: any) => {
+                      if (sendBtn) sendBtn.innerHTML = `\u26a1 $${transferAmtUsd}\u2026`;
+                      showToast(`\u26a1 Sending $${transferAmtUsd} iUSD to ${recip}`);
+                      const bytes = txOrBytes instanceof Uint8Array ? txOrBytes : txOrBytes;
+                      const result = _iusdIsWaaP
+                        ? await signAndExecuteTransaction(bytes)
+                        : await signAndExecuteSponsoredTx(bytes as Uint8Array);
+                      _markStormExists(groupUuid);
+                      return result;
+                    },
+                  });
+                  _addThunderContact(recip);
+                  _completedCount++;
+                  continue;
+                }
+
+                // SUI-native shielded path. Pure escrow (no
+                // swap), so amountMist = $amount ÷ SUI price —
+                // no slippage buffer. 1k-mist floor keeps
+                // micropayments above the vault's EZeroAmount.
+                const suiAmount = transferAmtUsd / suiPrice;
                 let amountMist = BigInt(Math.ceil(suiAmount * 1e9));
                 if (amountMist < 1000n) amountMist = 1000n;
                 const transfer = { recipientAddress: recipAddr, amountMist };
                 if (_cancelled) break;
-                const _hasTransferAttachments = _pendingThunderFiles.length > 0;
                 await sendThunder({
                   groupRef: { uuid: groupUuid },
                   text: draft.raw || msgText,
@@ -12357,14 +12888,7 @@ function bindEvents() {
                   senderName,
                   recipientName: recip,
                   transfer,
-                  // Pass the user's intended USD amount so the transfer
-                  // note reflects exactly what they typed, not the
-                  // slippage-inflated SUI equivalent.
                   intentUsd: transferAmtUsd,
-                  // Pin the just-dripped SUI coin as explicit gas payment
-                  // so tx.build doesn't try to auto-select and race the
-                  // indexer. Only set when the pre-flight poll found a
-                  // coin on the user's address.
                   gasPayment: _dripGasCoin ? [_dripGasCoin] : undefined,
                   files: _hasTransferAttachments
                     ? _pendingThunderFiles.map(f => ({
@@ -12426,6 +12950,7 @@ function bindEvents() {
                 _markStormExists(groupUuid);
               }
               _addThunderContact(recip);
+              _completedCount++;
             }
             if (_cancelled) {
               if (sendBtn) {
@@ -12447,6 +12972,15 @@ function bindEvents() {
               _liveInput.dispatchEvent(new Event('input', { bubbles: true }));
             }
             _clearPendingFiles();
+            // Only fire the "sent" toast if at least one recipient
+            // actually completed. When every recipient bailed out
+            // via `continue` (e.g. "Not enough iUSD"), the loop
+            // still reaches this block but nothing went on-chain.
+            if (_completedCount === 0) {
+              _thunderComposeStage = 'confirmed';
+              _renderThunderComposePreview();
+              return;
+            }
             const names = recipients.join(', ');
             if (transferAmtUsd) {
               showToast(`$${transferAmtUsd} iUSD Thunder to ${names} sent`);
@@ -12552,34 +13086,48 @@ function bindEvents() {
           if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
         }
       };
-      // SOL deposit QR — shows on overlay when Quest mode is active
+      // SOL deposit QR — shows when Shade is active or funding needed
       let _solQrShown = '';
-      async function _showSolQr(amountUsd: number) {
+      let _solQrLabel = '';
+      async function _showSolQr(amountUsd: number, label?: string, route?: number) {
         const qrEl = _idleOverlay?.querySelector('#ski-idle-sol-qr') as HTMLElement | null;
         if (!qrEl) return;
         const ws = getState();
         if (!ws.address) { qrEl.setAttribute('hidden', ''); return; }
-        // Don't re-fetch if already showing for same address
-        if (_solQrShown === ws.address) { qrEl.removeAttribute('hidden'); return; }
+        const cacheKey = `${ws.address}:${amountUsd}:${label || ''}:${route ?? 0}`;
+        if (_solQrShown === cacheKey) { qrEl.removeAttribute('hidden'); return; }
         try {
           const r = await fetch('/api/cache/deposit-intent', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ suiAddress: ws.address, amountUsd }),
+            body: JSON.stringify({
+              suiAddress: ws.address,
+              amountUsd,
+              route: route ?? 0,
+              params: label ? { shadeDomain: label } : undefined,
+            }),
           });
           if (!r.ok) return;
-          const d = await r.json() as { qr?: string; prismUri?: string; usdcAmount?: string; iusdAmount?: string; tag?: number; solQr?: string; solAmount?: number; solanaPayUri?: string };
-          if (!d.qr && !d.solQr) return;
-          _solQrShown = ws.address;
-          // Prefer Solana Pay QR (scannable by Phantom/Solflare) over Prism URI QR
+          const d = await r.json() as { qr?: string; solQr?: string; solAmount?: number; solanaPayUri?: string; solAddress?: string; iusdAmount?: string };
+          if (!d.solQr && !d.qr) return;
+          _solQrShown = cacheKey;
+          _solQrLabel = label || '';
           const qrUrl = d.solQr || d.qr;
-          const qrLink = d.solanaPayUri || d.prismUri || '';
-          const estUsd = d.amountUsd ?? (d.solAmount && d.solPrice ? d.solAmount * d.solPrice : 7.77);
+          const solAddr = d.solAddress || '7iVxCjQpLEhsYTLCUVJkPBZvnTXgtLKmNLKVDMrctv3U';
+          const solAmt = d.solAmount ? d.solAmount.toFixed(3) : '?';
+          const shadeLabel = label ? `shade ${label}.sui` : 'fund';
+          const solLogo = `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:36px;height:36px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 0 8px rgba(0,0,0,0.4)"><svg viewBox="0 0 397 311" width="22" height="17"><defs><linearGradient id="sg" x1="0" y1="311" x2="397" y2="0" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs><path d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7zM64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8zM333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z" fill="url(#sg)"/></svg></div>`;
           qrEl.innerHTML = `
-            <div class="ski-idle-sol-qr-inner" style="position:relative;opacity:0.4;pointer-events:none">
-              <img src="${esc(qrUrl)}" alt="Solana Pay" width="80" height="80" class="ski-idle-sol-qr-img">
-              <span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:48px;color:#ef4444;text-shadow:0 0 8px rgba(0,0,0,0.8)">\u2715</span>
-              <span class="ski-idle-sol-qr-amt" style="color:#ef4444">TODO</span>
+            <div class="ski-idle-sol-qr-inner" style="padding:14px 16px 10px">
+              <div style="position:relative;display:inline-block">
+                <img src="${esc(qrUrl)}" alt="Send SOL" width="180" height="180" class="ski-idle-sol-qr-img" style="border-radius:12px">
+                ${solLogo}
+              </div>
+              <div class="ski-idle-sol-qr-label" style="margin-top:6px">
+                <span style="color:#9945FF;font-weight:800;font-size:0.85rem">${esc(shadeLabel)}</span>
+                <span style="color:#94a3b8;font-size:0.7rem">$${amountUsd.toFixed(2)} \u2192 sol@ultron</span>
+                <span style="color:#64748b;font-size:0.6rem;word-break:break-all">${solAddr.slice(0, 8)}\u2026${solAddr.slice(-6)}</span>
+              </div>
             </div>
           `;
           qrEl.removeAttribute('hidden');
@@ -12858,13 +13406,38 @@ function bindEvents() {
             myAddr = (getState().address || '').toLowerCase();
           }
         }
-        if (!myAddr) return;
+        if (!myAddr) {
+          // Wallet never connected — clear the spinner so it
+          // doesn't hang on "Opening Storm…" forever.
+          convoEl.innerHTML = '';
+          convoEl.setAttribute('hidden', '');
+          _idleThunderSend?.classList.remove('ski-idle-thunder-send--loading');
+          return;
+        }
         let counterpartyAddr = '';
         try {
           const { lookupRecipientAddressCached } = await import('./client/thunder.js');
           counterpartyAddr = (await lookupRecipientAddressCached(bare)) || '';
         } catch {}
-        if (!counterpartyAddr) return;
+        if (!counterpartyAddr) {
+          // Name doesn't resolve — no storm possible. Clear the
+          // spinner and leave the convo hidden.
+          convoEl.innerHTML = '';
+          convoEl.setAttribute('hidden', '');
+          _idleThunderSend?.classList.remove('ski-idle-thunder-send--loading');
+          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+          return;
+        }
+        // Mark the storm as active so the card switches identity
+        // to this counterparty and fetches THEIR balance at THEIR
+        // resolved address — even though the wallet owner differs.
+        _activeStormCounterparty = bare;
+        _activeStormCounterpartyAddr = counterpartyAddr;
+        // Force a card refresh keyed on the counterparty. The
+        // existing cache key would otherwise keep us on the old
+        // display.
+        _cardCacheKey = '';
+        _updateIdleCard(bare);
         const { makeThunderGroupId } = await import('./client/thunder.js');
         const groupId = makeThunderGroupId(myAddr, counterpartyAddr);
 
@@ -13095,68 +13668,79 @@ function bindEvents() {
         // render reliably across browsers and read as "this is an encrypted
         // channel" without needing emoji glyphs.
         const stormLabel = hasStorm ? '\u27EC STORM \u27ED' : '\u27E8 open \u27E9';
-        const fetchedBubbles = entries.slice(-20).map(m => {
+        // ── Pre-classify entries into settled transfers (collapsed
+        // into a one-line summary) vs. everything else (rendered
+        // individually). Keeps the storm clean: ten settled $1
+        // sends become one gray line "↑ $10 · 10 txs".
+        const _recentEntries = entries.slice(-20);
+        const _isTransferNote = (text: string) =>
+          /^[\u{1F4B8}\u26A1]\s*(?:\$|\u00A5|\u20AC)/u.test(text)
+          || /^@[a-z0-9-]+\s*\u2190\s*[\u{1F4B8}\u26A1]\s*\$/iu.test(text)
+          || /^[\u{1F4B8}\u26A1].*\$\d+.*\bsent\b/iu.test(text);
+        const _parseAmt = (text: string) => {
+          const m = text.match(/\$(\d+(?:\.\d+)?)/);
+          return m ? parseFloat(m[1]) : 0;
+        };
+        let _settledOutUsd = 0;
+        let _settledInUsd = 0;
+        let _settledCount = 0;
+        const _settledIdxs = new Set<number>();
+        _recentEntries.forEach((m, i) => {
+          if (!_isTransferNote(m.text)) return;
+          const dMatch = m.text.match(/tx:([A-Za-z0-9]{40,60})/);
+          const dig = dMatch ? dMatch[1] : '';
+          if (!dig || !_settledTxDigests.has(dig)) return;
+          const amt = _parseAmt(m.text);
+          const isOut = m.senderAddress.toLowerCase() === myAddr;
+          if (isOut) _settledOutUsd += amt; else _settledInUsd += amt;
+          _settledCount++;
+          _settledIdxs.add(i);
+        });
+
+        const fetchedBubbles = _recentEntries.map((m, idx) => {
+          // Skip individually-rendered settled transfers — they'll
+          // be replaced by one collapsed summary line inserted at
+          // the position of the FIRST settled bubble.
+          if (_settledIdxs.has(idx)) {
+            // Only the first settled index renders the summary line;
+            // the rest are empty strings (filtered out below).
+            const _isFirstSettled = idx === Math.min(..._settledIdxs);
+            if (_isFirstSettled && _settledCount > 0) {
+              const _parts: string[] = [];
+              if (_settledOutUsd > 0) _parts.push(`\u2191 $${_settledOutUsd % 1 === 0 ? _settledOutUsd : _settledOutUsd.toFixed(2)} sent`);
+              if (_settledInUsd > 0) _parts.push(`\u2193 $${_settledInUsd % 1 === 0 ? _settledInUsd : _settledInUsd.toFixed(2)} received`);
+              _parts.push(`${_settledCount} tx${_settledCount > 1 ? 's' : ''}`);
+              return `<div class="ski-idle-bubble ski-idle-bubble--summary" title="${_settledCount} settled transfer${_settledCount > 1 ? 's' : ''}">${_parts.join(' \u00b7 ')}</div>`;
+            }
+            return '';
+          }
+
           const isOut = m.senderAddress.toLowerCase() === myAddr;
           const baseCls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
-          // Transfer-note thunders: both the new 💸 format and the
-          // legacy "⚡ $X sent" format render centered + green.
-          // New format carries a tx:<digest> suffix so the UI can
-          // look up the on-chain IOU escrow object and surface a
-          // claim (recipient) / recall (sender, post-TTL) action.
-          // Accept three transfer-note shapes:
-          //   legacy "⚡ $X sent"
-          //   old    "💸 $1 → @ralph"
-          //   new    "@ralph ← 💸 $1" (recipient-first layout)
-          const _isTransfer = /^[\u{1F4B8}\u26A1]\s*(?:\$|\u00A5|\u20AC)/u.test(m.text)
-            || /^@[a-z0-9-]+\s*\u2190\s*[\u{1F4B8}\u26A1]\s*\$/iu.test(m.text)
-            || /^[\u{1F4B8}\u26A1].*\$\d+.*\bsent\b/iu.test(m.text);
+          const _isTransfer = _isTransferNote(m.text);
           const senderName = _rlCache[m.senderAddress.toLowerCase()] || m.senderAddress.slice(0, 8);
           const nameTag = !isOut ? `<span class="ski-idle-bubble-sender">${esc(senderName)}</span> ` : '';
           if (_isTransfer) {
             const _digestMatch = m.text.match(/tx:([A-Za-z0-9]{40,60})/);
             const _digest = _digestMatch ? _digestMatch[1] : '';
-            // Pre-apply the settled class if we've seen this digest
-            // resolve to a consumed vault before. Survives convo
-            // re-renders so the gray paint doesn't flash back to
-            // green on every WS tick.
             const _isKnownSettled = _digest && _settledTxDigests.has(_digest);
             const cls = _isKnownSettled
               ? `ski-idle-bubble--transfer ski-idle-bubble--transfer-settled`
               : `ski-idle-bubble--transfer`;
-            // If we recorded the settlement (claim/recall) tx digest,
-            // stamp a green ✓ pill onto the label so the user can click
-            // through to the on-chain record.
             const _settlementDigest = _isKnownSettled ? (_settlementTxDigests[_digest] || '') : '';
             const _settlementPillHtml = _settlementDigest
               ? `<a class="ski-idle-bubble-claim-tx" href="https://suivision.xyz/txblock/${esc(_settlementDigest)}" target="_blank" rel="noopener noreferrer" data-no-bubble-click="1" title="Settlement tx — ${esc(_settlementDigest)}"> \u2713 ${esc(_settlementDigest.slice(0, 6))}\u2026</a>`
               : '';
             const _rawLabel = m.text.replace(/\s*\u00b7?\s*tx:[A-Za-z0-9]+\s*$/, '').trim();
-            // Turn any @mention inside the label into a clickable
-            // pill that populates the name input on click (same
-            // behavior as the sender name badge). Everything else
-            // is plain escaped text.
             let _labelHtml = esc(_rawLabel).replace(/@([a-z0-9-]{3,63})/gi, (_m, name) => {
               const bare = String(name).toLowerCase();
               return `<span class="ski-idle-bubble-mention" data-populate-name="${esc(bare)}" data-no-bubble-click="1">@${esc(bare)}</span>`;
             });
-            // Wrap the $amount in a span so it can stay green even
-            // when the surrounding bubble goes gray on settlement.
-            // The amount is the one datum that should read as "value
-            // delivered" regardless of escrow state.
             _labelHtml = _labelHtml.replace(/(\$\d+(?:\.\d{1,2})?)/, '<span class="ski-idle-bubble-amt">$1</span>');
-            // Recipient-side only: sender name badge sits over the
-            // top-left corner of the bubble as a little tag. Click
-            // populates the name input instead of navigating.
             const _bareSender = (senderName || '').toLowerCase();
             const _transferNameTag = !isOut && _bareSender
               ? `<span class="ski-idle-bubble-sender" data-populate-name="${esc(_bareSender)}" data-no-bubble-click="1" title="Populate name input with @${esc(_bareSender)}">${esc(_bareSender)}</span>`
               : '';
-            // "collected" label is rendered via a CSS ::after
-            // pseudo-element on .ski-idle-bubble--transfer-settled
-            // below. Pure-CSS means it auto-appears whenever the
-            // class is added (by initial render, background poll,
-            // or click handler), without needing the innerHTML
-            // render path to know about it at first paint.
             const _inner = `${_transferNameTag}${_labelHtml}${_settlementPillHtml}`;
             const _role = isOut ? 'sender' : 'recipient';
             const _bubbleTitle = _isKnownSettled
@@ -13250,29 +13834,26 @@ function bindEvents() {
               if (b.classList.contains('ski-idle-bubble--transfer-settled')) return;
               const tx = b.dataset.tx || '';
               if (!tx) return;
-              // Fast path: we already know this digest is settled
-              // from a prior click or poll. Paint immediately.
               if (_settledTxDigests.has(tx)) {
                 b.classList.add('ski-idle-bubble--transfer-settled');
                 return;
               }
-              // Cache the resolved vault id on the bubble so repeat
-              // paints skip the digest→vault GraphQL hop.
               let vaultId = b.dataset.vaultId || '';
+              let vaultIsv = b.dataset.vaultIsv || '';
+              let vaultKind = b.dataset.vaultKind || '';
               if (!vaultId) {
                 let ref = await lookupAnyVaultFromDigest(tx);
                 if (!ref) {
-                  // Indexer lag on a fresh deposit — one short retry,
-                  // then bail and leave the bubble LIVE. Marking a
-                  // brand-new deposit settled was the exact false
-                  // positive that made every transfer look collected
-                  // the instant it sent.
                   await new Promise(r => setTimeout(r, 1500));
                   ref = await lookupAnyVaultFromDigest(tx);
                 }
                 if (!ref) return;
                 vaultId = ref.objectId;
+                vaultIsv = String(ref.initialSharedVersion);
+                vaultKind = ref.kind;
                 b.dataset.vaultId = vaultId;
+                b.dataset.vaultIsv = vaultIsv;
+                b.dataset.vaultKind = vaultKind;
               }
               const live = await isVaultLive(vaultId);
               if (!live) {
@@ -13280,6 +13861,28 @@ function bindEvents() {
                 _markSettled(tx);
               }
             }));
+
+            // SUIAMI mode: count live (unresolved) transfer
+            // vaults. If any exist, swap the Storm ACTION button
+            // (next to the name input) to green "SUIAMI" so it's
+            // the prominent call-to-action for batch claim/recall.
+            const _liveBubbles = Array.from(convoEl.querySelectorAll<HTMLElement>(
+              '.ski-idle-bubble--transfer[data-vault-id]:not(.ski-idle-bubble--transfer-settled)',
+            ));
+            const _actionBtn = _idleActionBtn as HTMLElement | null;
+            if (_actionBtn && _liveBubbles.length > 0) {
+              let _liveTotal = 0;
+              for (const b of _liveBubbles) {
+                const amtEl = b.querySelector('.ski-idle-bubble-amt');
+                const m = (amtEl?.textContent || '').match(/\$(\d+(?:\.\d+)?)/);
+                if (m) _liveTotal += parseFloat(m[1]);
+              }
+              const _label = _liveTotal > 0 ? `$${_liveTotal % 1 === 0 ? _liveTotal : _liveTotal.toFixed(2)}` : 'SUIAMI';
+              _actionBtn.textContent = _label;
+              _actionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
+              _actionBtn.title = `Claim / recall ${_liveBubbles.length} transfer${_liveBubbles.length > 1 ? 's' : ''} ($${_liveTotal.toFixed(2)})`;
+              _actionBtn.disabled = false;
+            }
           } catch (e) {
             console.warn('[iou] settlement poll failed:', e instanceof Error ? e.message : e);
           }
@@ -13997,7 +14600,7 @@ function bindEvents() {
         }
         if (e.key === 'Enter') { e.preventDefault(); _thunderComposeStage = 'confirmed'; _thunderComposeConfirmedRaw = _idleThunderInput?.value || ''; _sendIdleThunder(); }
       });
-      _idleThunderSend?.addEventListener('click', (e) => {
+      _idleThunderSend?.addEventListener('click', async (e) => {
         e.stopPropagation();
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         const hasText = _idleThunderInput?.value.trim();
@@ -14225,6 +14828,14 @@ function bindEvents() {
       ];
       const _loadIdleBg = async (bg: typeof IDLE_BACKGROUNDS[number]) => {
         if (!_idleVideo) return;
+        // Set data-bg IMMEDIATELY so CSS layout matches the
+        // intended background from the first paint. The actual
+        // video content loads async below — without this, the
+        // poster (ski-idle.gif) shows while data-bg is still
+        // "basmr" from a previous session, applying basmr's
+        // raised name-row (top: 8%) on top of the ski scene.
+        if (_idleOverlay) _idleOverlay.dataset.bg = bg.id;
+        try { localStorage.setItem('ski:idle-bg', bg.id); } catch {}
         if ('caches' in self) {
           try {
             const cache = await caches.open('ski-media-v3');
@@ -14252,7 +14863,6 @@ function bindEvents() {
           _idleVideo.innerHTML = `<source src="${bg.webm}" type="video/webm"><source src="${bg.mp4}" type="video/mp4">`;
           _idleVideo.load();
         }
-        try { localStorage.setItem('ski:idle-bg', bg.id); } catch {}
       };
       // Resolve current choice from localStorage (default to first entry).
       let _currentBgIdx = 0;
@@ -14351,6 +14961,21 @@ function bindEvents() {
           // autoplay mute gate. Catch + ignore if still blocked.
           try { await _idleVideo.play(); } catch {}
         }
+      });
+
+      // Video toggle — cycle between idle backgrounds. Small
+      // button next to the audio toggle so the user can switch
+      // scenes without leaving the overlay.
+      const _bgToggle = document.createElement('button');
+      _bgToggle.className = 'ski-idle-bg-toggle';
+      _bgToggle.type = 'button';
+      _bgToggle.title = 'Switch background';
+      _bgToggle.textContent = '\u{1F3AC}';
+      _idleOverlay?.appendChild(_bgToggle);
+      _bgToggle.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        _currentBgIdx = (_currentBgIdx + 1) % IDLE_BACKGROUNDS.length;
+        void _loadIdleBg(IDLE_BACKGROUNDS[_currentBgIdx]);
       });
 
       // ─── Storm purge (×) — bulk-clear all messages in the open storm ──
