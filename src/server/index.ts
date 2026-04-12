@@ -3,6 +3,8 @@ import { agentsMiddleware } from 'hono-agents';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
+import { createZkLoginApp } from './zklogin-proxy.js';
+import { encryptProxy } from './encrypt-proxy.js';
 // ika-provision.ts is available for server-side DKG if needed in future,
 // but DKG WASM must run client-side (browser) — Workers can't run it.
 
@@ -18,9 +20,18 @@ interface Env {
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
   HELIUS_API_KEY?: string; // Solana RPC (Helius)
   HELIUS_WEBHOOK_SECRET?: string; // Validates incoming Helius webhook requests
+  ZKLOGIN_PROVER_URL?: string; // zkLogin prover upstream (devnet vampire / mainnet self-host)
+  ENCRYPT_GRPC_URL?: string; // dWallet Encrypt upstream (pre-alpha devnet)
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+// ── zkLogin prover proxy + Encrypt FHE bridge ───────────────────────
+// Mounted early so rate-limit middleware still applies via /api/* prefix.
+// zkLogin: vampire Mysten's free devnet prover, self-host for mainnet later.
+// Encrypt: stub mode until pre-alpha exposes gRPC-Web or grpc-gateway.
+app.route('/api/zklogin', createZkLoginApp());
+app.route('/api/encrypt', encryptProxy);
 
 // ── Rate limiting middleware ────────────────────────────────────────────
 // Simple per-IP sliding window. Uses in-memory Map (resets on cold start).
