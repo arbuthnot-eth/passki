@@ -869,8 +869,11 @@ export function createZkLoginWallet(): Wallet {
           // Interactive connect — prompt user to pick a provider, then redirect.
           const picked = await showZkLoginPicker();
           if (!picked) {
-            // User cancelled — return empty accounts, no redirect
-            return { accounts: [] as readonly WalletAccount[] };
+            // User cancelled the picker. Throw a recognisable rejection so
+            // wallet.ts's connect() race bails out immediately instead of
+            // sitting on the 5-minute timeout waiting for accounts that will
+            // never arrive.
+            throw new Error('UserRejectedRequest');
           }
 
           await startZkLogin(picked);

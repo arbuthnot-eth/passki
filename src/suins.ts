@@ -41,6 +41,21 @@ export function suinsCfg(): (typeof mainPackage)['mainnet'] {
   return mainPackage[getSuinsNetwork()];
 }
 
+/**
+ * Return the NS Pyth feed object ID, asserting it is a real NS price feed.
+ * On testnet the SDK fills `coins.NS.feed` with the HFT placeholder feed
+ * (NS has no real testnet oracle). Using that as the NS price source would
+ * produce wildly wrong swap rates — detect + throw instead of silently
+ * building a bad PTB.
+ */
+function requireNsFeed(): string {
+  const feed = suinsCfg().coins.NS.feed;
+  if (!feed || getSuinsNetwork() !== 'mainnet') {
+    throw new Error('NS Pyth feed unavailable on this network — NS-pay PTBs are mainnet-only until testnet feed exists');
+  }
+  return feed;
+}
+
 /** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility. */
 async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown): Promise<Uint8Array> {
   maybeAppendRoster(tx);
@@ -1026,7 +1041,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
     // Pyth price feed for NS/USD — pay oracle update fee from gas
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-      tx, suinsCfg().coins.NS.feed, tx.gas,
+      tx, requireNsFeed(), tx.gas,
     );
 
     // Merge all NS coins into one, then pass to register — contract takes what it needs via Pyth
@@ -1058,7 +1073,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
     // Pyth price feed for NS/USD — pay oracle update fee from gas
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-      tx, suinsCfg().coins.NS.feed, tx.gas,
+      tx, requireNsFeed(), tx.gas,
     );
     const dbPool = tx.sharedObjectRef({
       objectId: DB_NS_USDC_POOL,
@@ -1115,7 +1130,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     setupGas(tx);
 
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-      tx, suinsCfg().coins.NS.feed, tx.gas,
+      tx, requireNsFeed(), tx.gas,
     );
 
     // Step 1: merge all iUSD, split the input amount
@@ -1325,7 +1340,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     // If we have NS (from swap or existing), register with NS (25% discount)
     if (finalNsCoin) {
       const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-        tx, suinsCfg().coins.NS.feed, tx.gas,
+        tx, requireNsFeed(), tx.gas,
       );
       const suinsTx = new SuinsTransaction(suinsClient, tx);
       const nft = suinsTx.register({

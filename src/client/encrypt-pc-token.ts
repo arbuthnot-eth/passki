@@ -222,6 +222,147 @@ export function estimateConfidentialTransferCost(
   };
 }
 
+// ---------------------------------------------------------------------------
+// PC-Swap — confidential AMM swap primitive
+// ---------------------------------------------------------------------------
+
+/**
+ * Placeholder PC-Swap pool address. The real PC-Swap program publishes
+ * pool PDAs per (inputMint, outputMint) pair — this constant is a stub
+ * used when the caller does not specify a pool.
+ */
+export const DEFAULT_PCSWAP_POOL = 'PCSwap1111111111111111111111111111111111111';
+
+export interface BuildConfidentialSwapOpts {
+  /** User Solana pubkey (base58). */
+  user: string;
+  /** Input SPL mint (base58). */
+  inputMint: string;
+  /** Output SPL mint (base58). */
+  outputMint: string;
+  /** Amount to swap in smallest units of `inputMint`. */
+  amountIn: bigint;
+  /** Minimum acceptable output in smallest units of `outputMint` (slippage bound). */
+  minAmountOut: bigint;
+  /** Optional PC-Swap pool address; defaults to `DEFAULT_PCSWAP_POOL`. */
+  poolId?: string;
+}
+
+/**
+ * Structured description of a PC-Swap `confidential_swap` instruction.
+ * Mirrors ConfidentialTransferInstruction — a plain-object shape we can
+ * later feed into a real Solana transaction builder once the PC-Swap
+ * program interface (account layout, discriminator bytes, data encoding)
+ * is published.
+ */
+export interface ConfidentialSwapInstruction {
+  programId: string;
+  /** [user, inputMint, outputMint, pool] */
+  accounts: string[];
+  data: {
+    discriminator: 'confidential_swap';
+    amountInCiphertextId: string;
+    minAmountOutCiphertextId: string;
+    user: string;
+    inputMint: string;
+    outputMint: string;
+    pool: string;
+  };
+}
+
+export interface BuildConfidentialSwapResult {
+  instructions: ConfidentialSwapInstruction[];
+  ciphertexts: { amountIn: EUint64 | null; minAmountOut: EUint64 | null };
+  mode: EncryptMode;
+  note: string;
+}
+
+/**
+ * Build a confidential-swap instruction object for PC-Swap.
+ *
+ * Flow:
+ *   1. Detect mode (stub vs live vs unknown). If 'unknown' we return
+ *      early with an explanatory note so callers gating real on-chain
+ *      actions do not accidentally submit against an undetermined
+ *      backend.
+ *   2. Encrypt `amountIn` and `minAmountOut` via `encryptBalance` to get
+ *      two ciphertext IDs.
+ *   3. Shape the result into a plain `{ instructions, ciphertexts, ... }`
+ *      object whose `.data.*CiphertextId` fields are the IDs a real
+ *      PC-Swap program would consume.
+ *
+ * Pre-alpha: the ciphertext IDs are fake strings returned by the CF
+ * Worker proxy; no real Solana transaction is submitted from here.
+ */
+export async function buildConfidentialSwapTx(
+  opts: BuildConfidentialSwapOpts,
+): Promise<BuildConfidentialSwapResult> {
+  const { user, inputMint, outputMint, amountIn, minAmountOut } = opts;
+  const pool = opts.poolId ?? DEFAULT_PCSWAP_POOL;
+
+  const client = getEncryptClient();
+  const mode = await detectEncryptMode(client);
+
+  if (mode === 'unknown') {
+    return {
+      instructions: [],
+      ciphertexts: { amountIn: null, minAmountOut: null },
+      mode,
+      note: 'UNKNOWN MODE: could not determine whether upstream Encrypt proxy is stub or live (transient network error fetching network_key). Caller MUST NOT submit this result — retry detectEncryptMode() and rebuild once mode resolves to stub or live.',
+    };
+  }
+
+  const amountInCiphertext = await encryptBalance(amountIn, ENCRYPT_PROGRAM_ID, undefined, client);
+  const minAmountOutCiphertext = await encryptBalance(minAmountOut, ENCRYPT_PROGRAM_ID, undefined, client);
+
+  const instruction: ConfidentialSwapInstruction = {
+    // PC-Swap program ID is not yet published; reuse the Encrypt program
+    // ID as a placeholder so the instruction shape is non-empty. Swap to
+    // the real PC-Swap program ID once it lands.
+    programId: ENCRYPT_PROGRAM_ID,
+    accounts: [user, inputMint, outputMint, pool],
+    data: {
+      discriminator: 'confidential_swap',
+      amountInCiphertextId: amountInCiphertext.id,
+      minAmountOutCiphertextId: minAmountOutCiphertext.id,
+      user,
+      inputMint,
+      outputMint,
+      pool,
+    },
+  };
+
+  const note =
+    mode === 'stub'
+      ? 'STUB MODE: ciphertext IDs are fake values from the dotski-devnet proxy. No Solana transaction is submitted. Shape matches what the future PC-Swap confidential_swap instruction will consume.'
+      : 'LIVE MODE: ciphertext IDs came from the Encrypt network, but PC-Swap program interface is not finalized — instruction is still returned as a plain object, not a @solana/web3.js Transaction.';
+
+  return {
+    instructions: [instruction],
+    ciphertexts: { amountIn: amountInCiphertext, minAmountOut: minAmountOutCiphertext },
+    mode,
+    note,
+  };
+}
+
+/**
+ * Estimate the cost of a confidential swap.
+ *
+ * Pre-alpha stub: returns fixed placeholder values identical to
+ * estimateConfidentialTransferCost. Real numbers will come from Solana
+ * `getFeeForMessage` plus the Encrypt network fee schedule once PC-Swap
+ * is finalized.
+ */
+export function estimateConfidentialSwapCost(
+  _amountIn: bigint,
+): ConfidentialTransferCostEstimate {
+  return {
+    gasSOL: 0.00005,
+    encryptFeeUSDC: 0,
+    note: 'Placeholder estimate. Real gas will come from Solana `getFeeForMessage` once the PC-Swap instruction is a real @solana/web3.js Transaction; Encrypt network fees are 0 during pre-alpha and will be published with Alpha 1.',
+  };
+}
+
 // Re-export the low-level primitive for callers that want to encrypt a
 // balance without building a full instruction.
 export { encryptBalance };
