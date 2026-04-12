@@ -112,6 +112,37 @@ export interface ZkLoginSession {
   expiresAtEpoch: number;
 }
 
+/**
+ * Thrown when a cached zkLogin proof's maxEpoch has passed and the user
+ * must re-authenticate. Callers can `catch (e) { if (e instanceof ZkLoginEpochExpiredError) e.recover(); }`
+ * to re-trigger the OAuth flow without tight coupling to the UI layer.
+ */
+export class ZkLoginEpochExpiredError extends Error {
+  readonly provider: OAuthProvider;
+  readonly currentEpoch: number;
+  readonly maxEpoch: number;
+  constructor(provider: OAuthProvider, currentEpoch: number, maxEpoch: number) {
+    super(`zkLogin proof expired (current epoch ${currentEpoch} > maxEpoch ${maxEpoch}) — re-auth required`);
+    this.name = 'ZkLoginEpochExpiredError';
+    this.provider = provider;
+    this.currentEpoch = currentEpoch;
+    this.maxEpoch = maxEpoch;
+  }
+  /** Re-trigger the OAuth flow for the original provider. Navigates away from the page. */
+  async recover(): Promise<void> {
+    await startZkLogin(this.provider);
+  }
+}
+
+export interface ZkLoginSessionHealth {
+  /** True if there is an active session and current epoch ≤ maxEpoch. */
+  valid: boolean;
+  /** maxEpoch - currentEpoch. Negative means already expired. */
+  epochsRemaining: number;
+  /** True when the session should be re-proved soon (< 1 epoch remaining). */
+  shouldRefresh: boolean;
+}
+
 interface SerializedEphemeralSession {
   /** Bech32 `suiprivkey1...` string from Ed25519Keypair.getSecretKey() */
   secretKey: string;
@@ -284,9 +315,10 @@ export function extractJwtNonce(jwt: string): string | null {
   try {
     const [, payload] = jwt.split('.');
     if (!payload) return null;
-    // base64url → base64
-    const b64 = payload.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((payload.length + 3) % 4);
-    const json = atob(b64);
+    // base64url → base64 (pad to length multiple of 4)
+    const b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '===='.slice(b64.length % 4);
+    const json = atob(padded);
     const claims = JSON.parse(json) as { nonce?: string };
     return typeof claims.nonce === 'string' ? claims.nonce : null;
   } catch {
@@ -620,13 +652,47 @@ export async function restoreZkLoginSession(): Promise<ZkLoginSession | null> {
 // ─── Transaction Signing ────────────────────────────────────────────
 
 /**
+ * Check whether a cached zkLogin session's proof has expired on-chain.
+ * On expiry: clears proof + ephemeral session, dispatches `ski:zklogin-expired`
+ * event, and throws ZkLoginEpochExpiredError. Callers can catch and invoke
+ * `.recover()` to re-trigger the OAuth flow.
+ *
+ * No-op if the epoch query itself fails — we fall through to signing and let
+ * the tx fail at submission rather than block on a flaky GraphQL endpoint.
+ */
+async function assertEpochNotExpired(zkSession: ZkLoginSession): Promise<void> {
+  let currentEpoch: number;
+  try {
+    currentEpoch = await getCurrentEpoch();
+  } catch {
+    return; // don't block signing on GraphQL flakes
+  }
+  if (currentEpoch > zkSession.maxEpoch) {
+    clearZkLoginProof();
+    clearEphemeralSession();
+    activeZkSession = null;
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('ski:zklogin-expired', {
+          detail: { provider: zkSession.provider, currentEpoch, maxEpoch: zkSession.maxEpoch },
+        }));
+      } catch {}
+    }
+    throw new ZkLoginEpochExpiredError(zkSession.provider, currentEpoch, zkSession.maxEpoch);
+  }
+}
+
+/**
  * Sign a transaction with zkLogin.
  * Uses the ephemeral keypair to sign, then wraps in a zkLogin signature.
+ * Throws ZkLoginEpochExpiredError if the proof's maxEpoch has passed.
  */
 export async function signTransaction(
   txBytes: Uint8Array,
   zkSession: ZkLoginSession,
 ): Promise<string> {
+  await assertEpochNotExpired(zkSession);
+
   const ephemeral = restoreEphemeralSession();
   if (!ephemeral) throw new Error('No ephemeral session — zkLogin session expired, sign in again');
 
@@ -645,11 +711,14 @@ export async function signTransaction(
 /**
  * Sign a personal message with zkLogin.
  * Uses the ephemeral keypair to sign, then wraps in a zkLogin signature.
+ * Throws ZkLoginEpochExpiredError if the proof's maxEpoch has passed.
  */
 export async function signPersonalMessage(
   message: Uint8Array,
   zkSession: ZkLoginSession,
 ): Promise<string> {
+  await assertEpochNotExpired(zkSession);
+
   const ephemeral = restoreEphemeralSession();
   if (!ephemeral) throw new Error('No ephemeral session — zkLogin session expired, sign in again');
 
@@ -661,6 +730,94 @@ export async function signPersonalMessage(
     zkSession.maxEpoch,
     userSignature,
   );
+}
+
+/**
+ * Report the health of the currently active zkLogin session.
+ * - `valid`: session exists and current epoch ≤ maxEpoch
+ * - `epochsRemaining`: maxEpoch - currentEpoch (negative = expired)
+ * - `shouldRefresh`: true when epochsRemaining < 1, i.e. re-prove on next free moment
+ *
+ * Returns `{ valid: false, epochsRemaining: -Infinity, shouldRefresh: true }` when
+ * there is no active session or the epoch query fails.
+ */
+export async function getZkLoginSessionHealth(): Promise<ZkLoginSessionHealth> {
+  if (!activeZkSession) {
+    return { valid: false, epochsRemaining: -Infinity, shouldRefresh: true };
+  }
+  let currentEpoch: number;
+  try {
+    currentEpoch = await getCurrentEpoch();
+  } catch {
+    return { valid: false, epochsRemaining: -Infinity, shouldRefresh: true };
+  }
+  const epochsRemaining = activeZkSession.maxEpoch - currentEpoch;
+  const valid = epochsRemaining >= 0;
+  const shouldRefresh = epochsRemaining < 1;
+  return { valid, epochsRemaining, shouldRefresh };
+}
+
+/**
+ * Attempt a silent zkLogin refresh without a full OAuth redirect.
+ *
+ * Strategy: if the cached JWT is still within its own exp and the ephemeral
+ * session is still in sessionStorage, re-hit the prover with a fresh maxEpoch
+ * bump. The same JWT + nonce is reusable against the prover until its `exp`
+ * claim passes, so we can mint a new proof without bouncing through Google/Apple.
+ *
+ * Returns `true` on success (activeZkSession updated + re-cached).
+ * Returns `false` if a full OAuth redirect is required — caller should invoke
+ * `startZkLogin(provider)` in that case.
+ */
+export async function tryRefreshZkLogin(): Promise<boolean> {
+  if (!activeZkSession) return false;
+
+  // Is the JWT itself still valid? `exp` is seconds since epoch.
+  try {
+    const decoded = decodeJwt(activeZkSession.jwt);
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (typeof decoded.exp === 'number' && decoded.exp <= nowSec) {
+      return false; // JWT expired — full OAuth required
+    }
+  } catch {
+    return false;
+  }
+
+  // Ephemeral session must still be present — the prover binds the proof to
+  // the extended ephemeral public key, so we can't re-prove without it.
+  const ephemeral = restoreEphemeralSession();
+  if (!ephemeral) return false;
+
+  try {
+    const currentEpoch = await getCurrentEpoch();
+    // If the ephemeral session's maxEpoch is still in the future, reuse it;
+    // otherwise we cannot refresh silently (nonce would change → new OAuth).
+    if (currentEpoch > ephemeral.maxEpoch) return false;
+
+    const extPubKey = getExtendedEphemeralPublicKey(ephemeral.keypair.getPublicKey());
+    const proof = await fetchZkProof(
+      activeZkSession.jwt,
+      extPubKey,
+      ephemeral.maxEpoch,
+      ephemeral.randomness,
+      activeZkSession.salt,
+    );
+
+    const refreshed: ZkLoginSession = {
+      ...activeZkSession,
+      proof,
+      maxEpoch: ephemeral.maxEpoch,
+      ephemeralPublicKey: extPubKey,
+      expiresAtEpoch: ephemeral.maxEpoch,
+    };
+
+    const { visitorId } = await getDeviceId();
+    await storeZkLoginProof(refreshed, visitorId);
+    activeZkSession = refreshed;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ─── Wallet Standard Registration ───────────────────────────────────

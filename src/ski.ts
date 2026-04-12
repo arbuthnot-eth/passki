@@ -627,7 +627,11 @@ initUI();
 import('./zklogin.js').then(({ registerZkLogin, configureZkLogin }) => {
   try {
     const host = typeof window !== 'undefined' ? window.location.hostname : '';
-    const isDevnet = /dotski-devnet\.[a-z0-9-]+\.workers\.dev$/i.test(host) || /^devnet\./i.test(host);
+    const isDevnet =
+      /dotski-devnet\.[a-z0-9-]+\.workers\.dev$/i.test(host) ||
+      /^devnet\./i.test(host) ||
+      host === 'localhost' ||
+      host === '127.0.0.1';
     configureZkLogin(isDevnet
       ? { graphqlUrl: 'https://graphql.testnet.sui.io/graphql', network: 'testnet' }
       : { graphqlUrl: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
