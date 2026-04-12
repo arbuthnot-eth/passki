@@ -92,6 +92,30 @@ const waapPlaceholder: Wallet = {
   },
 };
 
+// Static zkLogin placeholder so the modal roster shows a zkLogin row before
+// the real zklogin.ts module finishes loading.  Clicking the placeholder
+// triggers the lazy-load; once the real wallet registers, getSuiWallets()
+// returns that one instead.
+const ZKLOGIN_PLACEHOLDER_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjgiIGhlaWdodD0iMTI4Ij48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjMDBkNGFhIi8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMDA4OGZmIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIGZpbGw9InVybCgjZykiIHJ4PSIyNCIvPjx0ZXh0IHg9IjY0IiB5PSI3OCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZvbnQtc2l6ZT0iNDQiIGZpbGw9IndoaXRlIj5aSzwvdGV4dD48L3N2Zz4=';
+const zkLoginPlaceholder: Wallet = {
+  name: 'zkLogin',
+  version: '1.0.0' as const,
+  icon: ZKLOGIN_PLACEHOLDER_ICON as `data:image/svg+xml;base64,${string}`,
+  chains: ['sui:mainnet' as const],
+  accounts: [],
+  features: {
+    'standard:connect': {
+      version: '1.0.0',
+      async connect() {
+        // Placeholder — the real zkLogin wallet replaces this once loaded.
+        // Trigger lazy load so the next click hits the real wallet.
+        import('./zklogin.js').then(({ registerZkLogin }) => registerZkLogin()).catch(() => {});
+        return { accounts: [] };
+      },
+    },
+  },
+};
+
 /** Get all Sui-compatible wallets currently registered */
 export function getSuiWallets(): Wallet[] {
   const real = walletsApi.get().filter((w) => {
@@ -102,6 +126,10 @@ export function getSuiWallets(): Wallet[] {
   // Include static WaaP placeholder if the real WaaP SDK hasn't registered yet
   if (!real.some(w => /waap/i.test(w.name))) {
     real.push(waapPlaceholder);
+  }
+  // Include static zkLogin placeholder if the real zklogin module hasn't registered yet
+  if (!real.some(w => /^zklogin$/i.test(w.name))) {
+    real.push(zkLoginPlaceholder);
   }
   return real;
 }

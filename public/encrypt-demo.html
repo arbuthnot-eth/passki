@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>.SKI // confidential iUSD demo (pre-alpha)</title>
+    <style>
+      :root {
+        --bg: #000;
+        --fg: #00ff9c;
+        --fg-dim: #0b8a5a;
+        --cyan: #00e5ff;
+        --warn-bg: #2a0000;
+        --warn-fg: #ff5555;
+        --warn-border: #ff2222;
+        --err: #ff6b6b;
+        --ok: #00ff9c;
+        --run: #00e5ff;
+        --panel: #060d0a;
+        --border: #083b2a;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      body {
+        padding: 24px;
+        max-width: 960px;
+        margin: 0 auto;
+      }
+      .warn {
+        background: var(--warn-bg);
+        color: var(--warn-fg);
+        border: 1px solid var(--warn-border);
+        padding: 10px 14px;
+        font-weight: bold;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 20px;
+        text-align: center;
+      }
+      .header h1 {
+        margin: 0 0 6px 0;
+        color: var(--cyan);
+        font-size: 18px;
+        letter-spacing: 0.5px;
+      }
+      .header .sub {
+        margin: 0 0 16px 0;
+        color: var(--fg-dim);
+      }
+      .btn {
+        background: transparent;
+        color: var(--fg);
+        border: 1px solid var(--fg);
+        padding: 6px 12px;
+        font-family: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        text-transform: lowercase;
+      }
+      .btn:hover:not(:disabled) { background: var(--fg); color: var(--bg); }
+      .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+      .btn-primary {
+        border-color: var(--cyan);
+        color: var(--cyan);
+        margin-bottom: 18px;
+      }
+      .btn-primary:hover:not(:disabled) { background: var(--cyan); color: var(--bg); }
+      .steps { display: flex; flex-direction: column; gap: 14px; }
+      .step {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        padding: 12px 14px;
+      }
+      .step-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .step-title {
+        margin: 0;
+        font-size: 13px;
+        font-weight: normal;
+        color: var(--cyan);
+        flex: 1;
+        min-width: 0;
+      }
+      .status {
+        font-size: 11px;
+        text-transform: uppercase;
+        color: var(--fg-dim);
+      }
+      .status.running { color: var(--run); }
+      .status.ok      { color: var(--ok); }
+      .status.err     { color: var(--err); }
+      .output { margin-top: 10px; }
+      .output:empty { display: none; }
+      pre.out, pre.err {
+        margin: 0;
+        padding: 10px;
+        background: #000;
+        border: 1px dashed var(--border);
+        color: var(--fg);
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        max-height: 400px;
+        overflow: auto;
+      }
+      pre.err {
+        color: var(--err);
+        border-color: var(--err);
+      }
+      .footer {
+        margin-top: 24px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="encrypt-demo"></div>
+    <script type="module" src="/dist/encrypt-demo.js"></script>
+  </body>
+</html>

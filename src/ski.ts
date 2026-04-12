@@ -620,6 +620,22 @@ initUI();
 // Start WaaP loading immediately — don't wait for window.load.
 // The preflight fetch inside registerWaaP is non-blocking and the SDK init
 // is fast, so this shaves seconds off the time the modal shows stale state.
+//
+// zkLogin loads in parallel — it's a lightweight Wallet Standard provider
+// that registers alongside WaaP, Backpack, etc.  Configure network based on
+// hostname so devnet/testnet points at testnet GraphQL and mainnet at mainnet.
+import('./zklogin.js').then(({ registerZkLogin, configureZkLogin }) => {
+  try {
+    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+    const isDevnet = /dotski-devnet\.[a-z0-9-]+\.workers\.dev$/i.test(host) || /^devnet\./i.test(host);
+    configureZkLogin(isDevnet
+      ? { graphqlUrl: 'https://graphql.testnet.sui.io/graphql', network: 'testnet' }
+      : { graphqlUrl: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+  } catch { /* hostname unavailable */ }
+  registerZkLogin();
+}).catch((err) => {
+  console.warn('[.SKI] zkLogin lazy-load failed:', err);
+});
 import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
   registerWaaP();
   // Console helpers on window.ski:
