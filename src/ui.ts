@@ -3086,10 +3086,30 @@ export async function refreshPortfolio(force = false) {
     const solPrice = getTokenPrice('SOL');
     const solUsd = (solPrice && app.solBalance > 0) ? app.solBalance * solPrice : 0;
     const solIusdUsd = app.solIusdBalance > 0 ? app.solIusdBalance : 0;
+    // Pending shade deposits — iUSD locked in StableShadeOrder<iUSD>
+    // objects. These auto-execute into SuiNS registrations for the
+    // holder within the grace period, or refund on cancel. Counting
+    // them in the total keeps the user's visible "net worth" honest
+    // across the shade lifecycle.
+    let shadePendingUsd = 0;
+    try {
+      if (_shadeDoState && _shadeDoState.orders?.length) {
+        const px = suiPrice ?? 0;
+        for (const o of _shadeDoState.orders) {
+          if (o.status !== 'pending') continue;
+          const raw = Number(BigInt(o.depositMist || '0'));
+          if (o.isStable) {
+            shadePendingUsd += raw / 1e9; // iUSD 1:1
+          } else if (px > 0) {
+            shadePendingUsd += (raw / 1e9) * px;
+          }
+        }
+      }
+    } catch { /* non-fatal */ }
     if (suiUsd != null) {
-      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd + solIusdUsd;
+      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd + solIusdUsd + shadePendingUsd;
     } else if (app.usd == null) {
-      const nonNullTotal = app.stableUsd + tokensUsd + solUsd + solIusdUsd;
+      const nonNullTotal = app.stableUsd + tokensUsd + solUsd + solIusdUsd + shadePendingUsd;
       app.usd = nonNullTotal > 0 ? nonNullTotal : null;
     }
 
@@ -6217,6 +6237,39 @@ function renderSkiMenu() {
     const stableBal = app.stableUsd < 1 ? app.stableUsd.toFixed(4) : app.stableUsd.toFixed(2);
     _coinChipsCache.push({ icon: stableIcon, val: app.stableUsd, html: _usdMode ? _fmtUsdChipHtml(app.stableUsd) : _fmtCoinHtml(app.stableUsd, 'wk-coin-frac--usd'), key: 'usd', colorCls: 'wk-coin-item--usd', tooltip: `${stableBal} USDC` });
   }
+
+  // Pending shade deposits — iUSD locked in StableShadeOrder<iUSD>
+  // objects waiting to execute. Surfaces in the dropdown so the
+  // user sees the $ attributed to their pending registrations,
+  // even though it isn't liquid.
+  try {
+    const _pendingShade = _coinChipsCache.some(c => c.key === 'shade');
+    if (!_pendingShade && _shadeDoState && _shadeDoState.orders?.length) {
+      const _suiPx = getSuiPriceWithFallback();
+      let _shadeUsd = 0;
+      for (const o of _shadeDoState.orders) {
+        if (o.status !== 'pending') continue;
+        const raw = Number(BigInt(o.depositMist || '0'));
+        if (o.isStable) {
+          _shadeUsd += raw / 1e9; // iUSD 1:1
+        } else {
+          _shadeUsd += (raw / 1e9) * _suiPx;
+        }
+      }
+      if (_shadeUsd >= 0.01) {
+        const _shadeTip = `${_shadeUsd.toFixed(2)} pending in shades`;
+        _coinChipsCache.push({
+          icon: stableIcon,
+          val: _shadeUsd,
+          html: _usdMode ? _fmtUsdChipHtml(_shadeUsd) : _fmtCoinHtml(_shadeUsd, 'wk-coin-frac--usd'),
+          key: 'shade',
+          colorCls: 'wk-coin-item--usd wk-coin-item--shade-pending',
+          tooltip: _shadeTip,
+        });
+      }
+    }
+  } catch { /* best-effort */ }
+
   _coinChipsCache.sort((a, b) => b.val - a.val);
   // Auto-select: if 'USD' (balView default), match the first stablecoin chip; otherwise highest value
   if (selectedCoinSymbol === 'USD' && _coinChipsCache.length) {
