@@ -14767,6 +14767,9 @@ function bindEvents() {
                     showToast(_isShielded ? '\u23f3 Claiming shielded\u2026' : '\u23f3 Claiming IOU\u2026');
                     try {
                       let bytes: Uint8Array;
+                      // Captured by the shielded branch; used by the
+                      // optimistic balance credit on success.
+                      let _claimedMist = 0n;
                       if (_isShielded) {
                         // Shielded claim needs the opening (r, amount)
                         // recovered from the Seal-encrypted blob stored
@@ -14796,6 +14799,7 @@ function bindEvents() {
                         const openingLen = view2.getUint32(0, true);
                         const openingB64 = new TextDecoder().decode(plaintext.slice(4, 4 + openingLen));
                         const { blinding, amountMist } = decodeOpening(openingB64);
+                        _claimedMist = amountMist;
                         bytes = await buildShieldedClaimTx({
                           sender: getState().address || '',
                           vaultObjectId: ref.objectId,
@@ -14806,6 +14810,17 @@ function bindEvents() {
                         });
                       } else {
                         bytes = await buildClaimIouTx(ref.objectId, ref.initialSharedVersion, _claimSponsor ?? undefined);
+                        // Legacy IOU — parse amount from the visible
+                        // bubble text ("$X.XX") as a best-effort credit.
+                        const amtText = _bubEl.querySelector('.ski-idle-bubble-amt')?.textContent || '';
+                        const amtMatch = amtText.match(/\$([\d.]+)/);
+                        if (amtMatch) {
+                          const usd = parseFloat(amtMatch[1]);
+                          const suiPrice = getSuiPriceWithFallback();
+                          if (usd > 0 && suiPrice > 0) {
+                            _claimedMist = BigInt(Math.floor((usd / suiPrice) * 1e9));
+                          }
+                        }
                       }
                       const r = _claimSponsor
                         ? await signAndExecuteSponsoredTx(bytes, true)
@@ -14819,8 +14834,43 @@ function bindEvents() {
                       // paint and the stamped pill.
                       _bubEl.classList.add('ski-idle-bubble--transfer-settled');
                       _markSettled(_txDigest, claimDigest || undefined);
-                      // Refresh balance immediately so the claimed funds show up
-                      setTimeout(() => refreshPortfolio(true), 2000);
+                      // Optimistic balance: credit the user's liquid
+                      // SUI immediately so the SKI menu / card / total
+                      // USD all reflect the claimed amount without
+                      // waiting on the indexer. refreshPortfolio still
+                      // runs in the background to reconcile with the
+                      // real on-chain state, but the user never sees
+                      // the gap.
+                      try {
+                        const _amtSui = Number(_claimedMist) / 1e9;
+                        app.sui += _amtSui;
+                        const _suiPrice = getSuiPriceWithFallback();
+                        if (typeof app.usd === 'number') {
+                          app.usd += _amtSui * _suiPrice;
+                        }
+                        // Invalidate the per-card balance cache for
+                        // every address so any card rendered next
+                        // picks up fresh data. Keyed by lowercase
+                        // address across both render paths (NFT
+                        // hover card + idle-overlay card).
+                        for (const k of Object.keys(_cardBalCache)) delete _cardBalCache[k];
+                        try {
+                          for (const k of Object.keys(localStorage)) {
+                            if (k.startsWith('ski:card-bal:')) localStorage.removeItem(k);
+                          }
+                        } catch {}
+                        // Re-render SKI menu + any visible card so
+                        // the new balance lands immediately.
+                        render();
+                        if (nsLabel) _updateIdleCard(nsLabel);
+                      } catch { /* non-fatal — indexer path still runs below */ }
+                      // Indexer-reconciled refresh. Force-bypass the
+                      // 15s throttle. Fires twice — once immediately
+                      // (catches any balances not covered by the
+                      // optimistic path like stables) and once at
+                      // 2500ms (catches slow-indexing fullnodes).
+                      refreshPortfolio(true).catch(() => {});
+                      setTimeout(() => refreshPortfolio(true).catch(() => {}), 2500);
                       if (claimDigest) {
                         _bubEl.dataset.tx = claimDigest;
                         _bubEl.dataset.claimTx = claimDigest;
