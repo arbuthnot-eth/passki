@@ -752,18 +752,16 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const tMatch = typeRepr.match(/StableShadeOrder<([^>]+)>/);
         const coinType = tMatch?.[1] || IUSD_TYPE;
 
-        // cancel_stable refunds the full deposit to ctx.sender().
-        // In the current shade-proxy flow the FUNDER is ultron
-        // (treasury underwrites shades from the cache), so the
-        // Move contract's native semantics already refund to the
-        // correct address. No holder-forward here — that would
-        // unfairly drain the cache to a holder who never paid.
-        //
-        // If we later pivot to user-funded shades where brando
-        // signs the create_stable tx directly, the funder becomes
-        // brando and ultron would no longer be in the loop.
+        // cancel_stable is a Move entry fun that auto-transfers the
+        // refunded coin to `ctx.sender()` = ultron. To the user,
+        // ultron is infrastructure — the person who "sent" the shade
+        // is the holder (brando) who initiated it in the UI, and
+        // that's who the iUSD should round-trip back to. Second tx
+        // below forwards ultron's refund to the holder address we
+        // captured in treasury state at create time.
         const shadesNow = ((this.state as any).shades ?? []) as Array<Record<string, any>>;
         const shadeRow = shadesNow.find((s) => s.objectId === body.objectId);
+        const holderAddr = shadeRow?.holder ? normalizeSuiAddress(String(shadeRow.holder)) : '';
         const depositMist = shadeRow?.depositMist ? BigInt(shadeRow.depositMist) : 0n;
 
         const SHADE_V5_PKG = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
@@ -779,23 +777,65 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const txBytes = await tx.build({ client: transport as never });
         const { signature } = await keypair.signTransaction(txBytes);
         const digest = await this._submitTx(txBytes, signature);
-        console.log(`[shade-cancel-stable] ${body.objectId.slice(0,10)}… → digest ${digest}, refunded ${Number(depositMist)/1e9} iUSD to funder ${ultronAddr.slice(0,10)}…`);
+        console.log(`[shade-cancel-stable] ${body.objectId.slice(0,10)}… → digest ${digest}`);
+
+        // Second tx: forward the refunded iUSD from ultron to the
+        // holder (the user who "sent" the shade in the UI). The
+        // whole point of a cancel is the user gets their money
+        // back — ultron is just a signer, not the economic owner.
+        let forwardDigest = '';
+        let forwardedTo = '';
+        if (holderAddr && holderAddr.toLowerCase() !== ultronAddr.toLowerCase() && depositMist > 0n) {
+          try {
+            // Wait briefly for the fullnode to index the refunded
+            // coin before we try to spend it.
+            await new Promise((r) => setTimeout(r, 1500));
+            const balRes = await transport.query({
+              query: `query($a:SuiAddress!,$t:String!){ address(address:$a){ objects(filter:{type:$t}, first:20){ nodes{ address version digest contents { json } } } } }`,
+              variables: { a: ultronAddr, t: `0x2::coin::Coin<${coinType}>` },
+            });
+            const iusdCoins = ((balRes.data as any)?.address?.objects?.nodes ?? [])
+              .map((n: any) => ({ objectId: n.address, version: String(n.version), digest: n.digest, balance: BigInt(n.contents?.json?.balance ?? '0') }))
+              .filter((c: any) => c.balance > 0n)
+              .sort((a: any, b: any) => (a.balance > b.balance ? -1 : 1));
+            const total = iusdCoins.reduce((s: bigint, c: any) => s + c.balance, 0n);
+            if (total < depositMist) {
+              console.warn(`[shade-cancel-stable] ultron has ${total} iUSD, need ${depositMist} to forward to holder — skipping forward`);
+            } else {
+              const fwdTx = new Transaction();
+              fwdTx.setSender(ultronAddr);
+              const primary = fwdTx.objectRef({ objectId: iusdCoins[0].objectId, version: iusdCoins[0].version, digest: iusdCoins[0].digest });
+              if (iusdCoins.length > 1) {
+                fwdTx.mergeCoins(primary, iusdCoins.slice(1).map((c: any) => fwdTx.objectRef({ objectId: c.objectId, version: c.version, digest: c.digest })));
+              }
+              const [payout] = fwdTx.splitCoins(primary, [fwdTx.pure.u64(depositMist)]);
+              fwdTx.transferObjects([payout], fwdTx.pure.address(holderAddr));
+              const fwdBytes = await fwdTx.build({ client: transport as never });
+              const { signature: fwdSig } = await keypair.signTransaction(fwdBytes);
+              forwardDigest = await this._submitTx(fwdBytes, fwdSig);
+              forwardedTo = holderAddr;
+              console.log(`[shade-cancel-stable] forwarded ${Number(depositMist)/1e9} iUSD → holder ${holderAddr.slice(0,10)}… digest ${forwardDigest}`);
+            }
+          } catch (e) {
+            console.warn('[shade-cancel-stable] forward-to-holder failed:', e instanceof Error ? e.message : e);
+          }
+        }
 
         // Prune the shade from state so the deliberation loop stops
         // tracking it.
         const shades = ((this.state as any).shades ?? []).map((s: any) =>
           s.objectId === body.objectId
-            ? { ...s, status: 'cancelled', deliberation: `cancel_stable via ${digest.slice(0, 10)}…` }
+            ? { ...s, status: 'cancelled', deliberation: `cancel_stable via ${digest.slice(0, 10)}…${forwardDigest ? ` · refunded to holder via ${forwardDigest.slice(0,10)}…` : ''}` }
             : s,
         );
         this.setState({ ...this.state, shades } as any);
 
         return new Response(JSON.stringify({
           digest,
-          refundedTo: ultronAddr,
+          forwardDigest: forwardDigest || null,
+          refundedTo: forwardedTo || ultronAddr,
           coinType,
           depositMist: depositMist.toString(),
-          note: 'Funder is ultron (treasury underwrites via shade-proxy); refund returned to ultron per Move contract ctx.sender() semantics.',
         }), { headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
