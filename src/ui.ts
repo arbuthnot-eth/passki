@@ -11704,6 +11704,9 @@ function bindEvents() {
         if (!ws.address) { showToast('Connect wallet first'); return; }
         const btn = e.currentTarget as HTMLButtonElement;
         btn.style.opacity = '0.4';
+        // Hoisted so retry-on-auth-setup branch in catch can re-submit the mint
+        let mintAmount: bigint = 0n;
+        let collateralValueMist: bigint = 0n;
         try {
           // Find all non-gas tokens to route to iUSD (keep SUI for gas)
           const nonGas = walletCoins.filter(c =>
@@ -11826,7 +11829,8 @@ function bindEvents() {
           // Max mint at 150% ratio: collateral * 10000 / 15000 - currentSupply
           const maxMint = totalCollateral * 10000n / 15000n - currentSupply;
           // Leave 5% buffer
-          const mintAmount = maxMint * 95n / 100n;
+          mintAmount = maxMint * 95n / 100n;
+          collateralValueMist = totalCollateral;
 
           if (mintAmount <= 0n) {
             showToast('Collateral fully utilized — no iUSD to mint');
