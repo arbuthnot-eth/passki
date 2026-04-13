@@ -206,6 +206,14 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
         headers: { 'content-type': 'application/json' },
       });
     }
+    if (url.pathname.endsWith('/poll-sign') || url.searchParams.has('poll-sign')) {
+      const signId = url.searchParams.get('id') ?? '';
+      const curve = (url.searchParams.get('curve') ?? 'secp256k1') as 'ed25519' | 'secp256k1';
+      const result = await this._pollSignCompleted(signId, curve);
+      return new Response(JSON.stringify(result), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
     if (url.pathname.endsWith('/request-sign') || url.searchParams.has('request-sign')) {
       try {
         const body = await request.json() as {
@@ -1023,6 +1031,137 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
     } catch (err) {
       const error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       return { ok: false, error, durationMs: Date.now() - t0 };
+    }
+  }
+
+  /**
+   * Increment D step 3: poll a SignSession object until state === Completed,
+   * then parse the signature bytes out of the completed state payload via
+   * the SDK's parseSignatureFromSignOutput helper.
+   *
+   * Same JSON-RPC transport + variant-shape handling as the presign poll.
+   * When Completed, the state payload carries a `signature: number[]`
+   * field that contains the raw MPC sign output — parseSignatureFromSignOutput
+   * converts that into the canonical curve/algorithm-specific signature
+   * bytes (DER-encoded for ECDSA, raw 64 bytes for Ed25519).
+   */
+  private async _pollSignCompleted(
+    signSessionId: string,
+    curve: 'ed25519' | 'secp256k1' = 'secp256k1',
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    completed?: boolean;
+    signatureHex?: string;
+    state?: string;
+    durationMs: number;
+  }> {
+    const t0 = Date.now();
+    if (!signSessionId) {
+      return { ok: false, error: 'signSessionId required', durationMs: Date.now() - t0 };
+    }
+    const TIMEOUT_MS = 60_000;
+    const INTERVAL_MS = 2_000;
+    let lastState = 'Unknown';
+    let rawSignatureOutput: number[] | null = null;
+    while (Date.now() - t0 < TIMEOUT_MS) {
+      try {
+        const res = await fetch('https://sui-rpc.publicnode.com', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0', id: 1, method: 'sui_getObject',
+            params: [signSessionId, { showContent: true }],
+          }),
+        });
+        if (res.ok) {
+          const json = await res.json() as {
+            result?: { data?: { content?: { fields?: { state?: unknown } } } };
+          };
+          const stateRaw = json.result?.data?.content?.fields?.state;
+          if (stateRaw && typeof stateRaw === 'object') {
+            const stateObj = stateRaw as Record<string, unknown> & { variant?: string; fields?: unknown };
+            let variantName = '';
+            let variantFields: unknown = null;
+            if (stateObj.variant) {
+              variantName = stateObj.variant;
+              variantFields = stateObj.fields;
+            } else {
+              const keys = Object.keys(stateObj).filter((k) => k !== 'type' && k !== 'fields');
+              if (keys.length > 0) {
+                variantName = keys[0];
+                variantFields = (stateObj as Record<string, unknown>)[variantName];
+              }
+            }
+            lastState = variantName || lastState;
+            if (variantName === 'Completed') {
+              // The signature payload is nested — variantFields may be
+              // `{ signature: [...] }` or `{ fields: { signature: [...] } }`
+              // depending on how sui_getObject serialized it.
+              const payload = variantFields as Record<string, unknown> | null;
+              const sigCandidate = payload && typeof payload === 'object'
+                ? (payload as { signature?: unknown; fields?: { signature?: unknown } }).signature
+                  ?? (payload as { fields?: { signature?: unknown } }).fields?.signature
+                : null;
+              if (Array.isArray(sigCandidate)) {
+                rawSignatureOutput = sigCandidate as number[];
+              }
+              break;
+            }
+            if (variantName === 'NetworkRejected') {
+              return {
+                ok: false,
+                error: 'sign NetworkRejected',
+                completed: false,
+                state: lastState,
+                durationMs: Date.now() - t0,
+              };
+            }
+          }
+        }
+      } catch (err) {
+        console.log(`[poll-sign] fetch err: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      await new Promise((r) => setTimeout(r, INTERVAL_MS));
+    }
+
+    if (!rawSignatureOutput) {
+      return {
+        ok: false,
+        error: `sign did not reach Completed within ${TIMEOUT_MS}ms (last=${lastState})`,
+        completed: false,
+        state: lastState,
+        durationMs: Date.now() - t0,
+      };
+    }
+
+    try {
+      ensureWasmReady();
+      const ikaCurve = curve === 'ed25519' ? Curve.ED25519 : Curve.SECP256K1;
+      const algo = curve === 'ed25519' ? SignatureAlgorithm.EdDSA : SignatureAlgorithm.ECDSASecp256k1;
+      const rawBytes = new Uint8Array(rawSignatureOutput);
+      const parsed = await parseSignatureFromSignOutput(
+        ikaCurve as never,
+        algo as never,
+        rawBytes,
+      );
+      const signatureHex = Array.from(parsed).map((b) => b.toString(16).padStart(2, '0')).join('');
+      return {
+        ok: true,
+        completed: true,
+        signatureHex,
+        state: 'Completed',
+        durationMs: Date.now() - t0,
+      };
+    } catch (err) {
+      const error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      return {
+        ok: false,
+        error: `parseSignatureFromSignOutput failed: ${error}`,
+        completed: true,
+        state: 'Completed',
+        durationMs: Date.now() - t0,
+      };
     }
   }
 }
