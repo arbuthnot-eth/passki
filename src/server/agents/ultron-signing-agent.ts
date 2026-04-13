@@ -16,7 +16,7 @@
  */
 
 import { Agent } from 'agents';
-import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
@@ -64,15 +64,13 @@ const ULTRON_ED25519_DKG_DIGEST = '9dP8g9v3m7DG4XnGWcWEYyqqSNCAS2DnMWeEAz1Sdx5d'
 const SEED_PREFIX_ED25519 = 'ultron-dkg:ed25519:';
 const SEED_PREFIX_SECP256K1 = 'ultron-dkg:secp256k1:';
 
-// JSON-RPC endpoints for the Sui mainnet. Primary + two fallbacks; same
-// pattern the shade-executor uses for tx submission. We don't use
-// fullnode.mainnet.sui.io because it sunsets JSON-RPC in April 2026 —
-// PublicNode / BlockVision / Ankr are the long-term providers.
-const SUI_JSON_RPC_URLS = [
-  'https://sui-rpc.publicnode.com',
-  'https://sui-mainnet-endpoint.blockvision.org',
-  'https://rpc.ankr.com/sui',
-];
+// Mysten's GraphQL endpoint — the First Commandment compliant transport.
+// GraphQL supports reads (.core surface) AND tx submission (executeTransaction)
+// AND tx lookup by digest, so it fully replaces the JSON-RPC path that
+// Porygon Psybeam is retiring. gRPC would be the ideal transport but doesn't
+// work in Cloudflare Workers (no HTTP/2 bidi streaming); GraphQL is the
+// next-best fit and has no April-2026 sunset.
+const SUI_GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 
 // Wrangler treats .wasm imports inside the src/ tree as
 // `WebAssembly.Module` at build time via the CompiledWasm rule in
@@ -108,28 +106,27 @@ function ensureWasmReady(): void {
 }
 
 let _ikaClient: IkaClient | null = null;
-let _suiJsonRpc: SuiJsonRpcClient | null = null;
+let _suiGraphQL: SuiGraphQLClient | null = null;
 
 /**
- * Lazy init the IkaClient wrapping a SuiJsonRpcClient. Stays cached for
+ * Lazy init the IkaClient wrapping a SuiGraphQLClient. Stays cached for
  * the DO's lifetime so subsequent signing calls reuse the same client
- * (avoids the ~200 ms handshake cost per request). The first endpoint
- * that responds successfully wins via Promise.any across SUI_JSON_RPC_URLS.
+ * (avoids the ~200 ms handshake cost per request).
+ *
+ * IkaClient's SDK reaches for five methods on `client.core.*`: getObject,
+ * getObjects, listOwnedObjects, listDynamicFields, simulateTransaction.
+ * SuiGraphQLClient exposes all five via `GraphQLCoreClient` with identical
+ * signatures to SuiJsonRpcClient's core, so the swap is a drop-in.
  */
-async function getIkaClient(): Promise<{ ika: IkaClient; sui: SuiJsonRpcClient }> {
-  if (_ikaClient && _suiJsonRpc) return { ika: _ikaClient, sui: _suiJsonRpc };
+async function getIkaClient(): Promise<{ ika: IkaClient; sui: SuiGraphQLClient }> {
+  if (_ikaClient && _suiGraphQL) return { ika: _ikaClient, sui: _suiGraphQL };
   const config = getNetworkConfig('mainnet');
-  type Candidate = { ika: IkaClient; sui: SuiJsonRpcClient };
-  const candidates = SUI_JSON_RPC_URLS.map(async (url): Promise<Candidate> => {
-    const sui = new SuiJsonRpcClient({ url });
-    const ika = new IkaClient({ config, suiClient: sui as never });
-    await ika.initialize();
-    return { ika, sui };
-  });
-  const winner = await Promise.any(candidates);
-  _ikaClient = winner.ika;
-  _suiJsonRpc = winner.sui;
-  return winner;
+  const sui = new SuiGraphQLClient({ url: SUI_GRAPHQL_URL, network: 'mainnet' });
+  const ika = new IkaClient({ config, suiClient: sui as never });
+  await ika.initialize();
+  _ikaClient = ika;
+  _suiGraphQL = sui;
+  return { ika, sui };
 }
 
 /**
@@ -346,33 +343,43 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       // the centralized DKG step, NOT the decentralized/network output
       // stored on-chain in the dWallet state. The user output was emitted
       // in the DKG tx's DWalletDKGRequestEvent as `event_data.user_public_output`
-      // — 232 bytes for ed25519. Pull it via a direct JSON-RPC getTransactionBlock
-      // call since the SDK's IkaClient doesn't surface event data.
-      const txBody = JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'sui_getTransactionBlock',
-        params: [ULTRON_ED25519_DKG_DIGEST, { showEvents: true }],
+      // — 232 bytes for ed25519. Pull it via GraphQL getTransaction with
+      // events included.
+      //
+      // The SDK warns that `event.json` shape can differ between JSON-RPC
+      // and GraphQL so we defensively check both nested (`event_data.*`)
+      // and flat layouts. If neither works we bail loudly.
+      const txResult = await sui.core.getTransaction({
+        digest: ULTRON_ED25519_DKG_DIGEST,
+        include: { events: true },
       });
-      const txRpcUrl = SUI_JSON_RPC_URLS[0];
-      const txRes = await fetch(txRpcUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: txBody,
-      });
-      if (!txRes.ok) {
-        return { ok: false, error: `DKG tx lookup failed: HTTP ${txRes.status}`, stateBefore, durationMs: Date.now() - t0 };
-      }
-      const txJson = await txRes.json() as {
-        result?: { events?: Array<{
-          type: string;
-          parsedJson?: { event_data?: { dwallet_id?: string; user_public_output?: number[] } };
-        }> };
+      const txInner = txResult.$kind === 'Transaction'
+        ? txResult.Transaction
+        : txResult.FailedTransaction;
+      const events = txInner?.events ?? [];
+      type DkgPayload = {
+        dwallet_id?: string;
+        user_public_output?: number[] | Uint8Array;
       };
-      const dkgEvent = (txJson.result?.events ?? []).find((e) =>
-        e.type.includes('DWalletDKGRequestEvent') &&
-        e.parsedJson?.event_data?.dwallet_id === ULTRON_ED25519_DWALLET_ID,
-      );
-      const userPublicOutputArr = dkgEvent?.parsedJson?.event_data?.user_public_output;
-      if (!userPublicOutputArr || userPublicOutputArr.length === 0) {
+      type DkgEventJson = DkgPayload & { event_data?: DkgPayload };
+      const dkgEvent = events.find((e) => {
+        const typeStr = e.eventType ?? '';
+        if (!typeStr.includes('DWalletDKGRequestEvent')) return false;
+        const json = (e.json ?? {}) as DkgEventJson;
+        const dwalletId = json.event_data?.dwallet_id ?? json.dwallet_id;
+        return dwalletId === ULTRON_ED25519_DWALLET_ID;
+      });
+      if (!dkgEvent) {
+        return {
+          ok: false,
+          error: `DWalletDKGRequestEvent not found in tx ${ULTRON_ED25519_DKG_DIGEST}`,
+          stateBefore,
+          durationMs: Date.now() - t0,
+        };
+      }
+      const dkgJson = (dkgEvent.json ?? {}) as DkgEventJson;
+      const userPublicOutputRaw = dkgJson.event_data?.user_public_output ?? dkgJson.user_public_output;
+      if (!userPublicOutputRaw || (Array.isArray(userPublicOutputRaw) && userPublicOutputRaw.length === 0)) {
         return {
           ok: false,
           error: `user_public_output not found in DKG event for tx ${ULTRON_ED25519_DKG_DIGEST}`,
@@ -380,7 +387,9 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
           durationMs: Date.now() - t0,
         };
       }
-      const userPublicOutput = new Uint8Array(userPublicOutputArr);
+      const userPublicOutput = userPublicOutputRaw instanceof Uint8Array
+        ? userPublicOutputRaw
+        : new Uint8Array(userPublicOutputRaw);
 
       // Build the accept PTB via IkaTransaction.
       const tx = new Transaction();
@@ -396,27 +405,23 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
         encryptedUserSecretKeyShareId: ULTRON_ED25519_ENCRYPTED_SHARE_ID,
       });
 
-      // Build, sign with ultron's Ed25519 keypair, submit via JSON-RPC.
+      // Build, sign with ultron's Ed25519 keypair, submit via GraphQL.
+      // SuiGraphQLClient.core.executeTransaction has the same surface as
+      // the JSON-RPC core client so this is a drop-in from pre-Psybeam.
       const txBytes = await tx.build({ client: sui as never });
       const { signature } = await keypair.signTransaction(txBytes);
-      const execResult = await (sui as unknown as {
-        core: {
-          executeTransaction: (args: {
-            transaction: Uint8Array;
-            signatures: string[];
-            include?: { effects: boolean };
-          }) => Promise<{ digest: string }>;
-        };
-      }).core.executeTransaction({
+      const execResult = await sui.core.executeTransaction({
         transaction: txBytes,
         signatures: [signature],
-        include: { effects: true },
       });
-      const digest = execResult.digest;
+      const execInner = execResult.$kind === 'Transaction'
+        ? execResult.Transaction
+        : execResult.FailedTransaction;
+      const digest = execInner?.digest ?? '';
 
       // Re-read the dwallet to confirm state transition. Give the indexer
-      // a moment to catch up — JSON-RPC read-after-write can race with
-      // tx finality on the fullnode's read replica.
+      // a moment to catch up — read-after-write can race with tx finality
+      // on the read replica regardless of transport.
       await new Promise((r) => setTimeout(r, 2000));
       const after = await ika.getDWallet(ULTRON_ED25519_DWALLET_ID) as unknown as {
         state?: Record<string, unknown>;
