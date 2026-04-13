@@ -113,9 +113,50 @@ app.use('*', async (c, next) => {
   if (c.req.header('upgrade') === 'websocket') return;
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
-  c.header('X-Frame-Options', 'SAMEORIGIN');
+  // X-Frame-Options omitted — we use frame-ancestors (CSP) instead, which is
+  // the modern replacement. XFO SAMEORIGIN conflicts with WaaP's cross-origin
+  // iframe lifecycle in some browsers.
   c.header('Permissions-Policy', 'clipboard-read=()'); // block clipboard read prompts (WalletConnect w3m-input-address)
-  // CSP: allow self + Sui RPCs + Walrus + CDN for /squids marked page
+  // CSP: allow self + Sui RPCs + Walrus + CDN for /squids marked page.
+  // WaaP (human.tech) needs explicit frame-src + connect-src entries for its
+  // iframe-based wallet protocol. Without these, every WaaP auth/signing
+  // iframe is silently blocked by the default-src 'self' fallback and the
+  // whole wallet looks broken. The domains come from @human.tech/waap-constants.
+  const WAAP_FRAME = [
+    'https://waap.xyz',
+    'https://*.waap.xyz',
+    'https://*.silk-protector.com',
+    'https://*.silk-protector-microservice-km.com',
+    'https://*.silk-protector-microservice-pe.com',
+    'https://*.silkwallet.net',
+    'https://silksecure.net',
+    'https://*.silksecure.net',
+    'https://dashboard.silk.sc',
+    'https://gastank.app-76797b4474a8.enclave.evervault.com',
+  ].join(' ');
+  const WAAP_CONNECT = [
+    'https://*.waap.xyz',
+    'https://prod-waap-ws-relay.fly.dev',
+    'wss://prod-waap-ws-relay.fly.dev',
+    'https://*.silk-protector.com',
+    'https://*.silk-protector-microservice-km.com',
+    'https://*.silk-protector-microservice-pe.com',
+    'https://*.silkwallet.net',
+    'https://silksecure.net',
+    'https://*.silksecure.net',
+    'https://gastank.app-76797b4474a8.enclave.evervault.com',
+    'https://api.fpjs.io',
+    'https://fpcdn.io',
+  ].join(' ');
+  // OAuth providers WaaP redirects to for social auth
+  const OAUTH_FORMS = [
+    'https://accounts.google.com',
+    'https://api.twitter.com',
+    'https://x.com',
+    'https://twitter.com',
+    'https://discord.com',
+    'https://github.com',
+  ].join(' ');
   c.header('Content-Security-Policy', [
     "default-src 'self'",
     // Inline script in index.html for shell restore — nonce would be ideal but
@@ -124,10 +165,11 @@ app.use('*', async (c, next) => {
     "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
     "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
-    "connect-src 'self' https://*.sui.io https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://aggregator.walrus-testnet.walrus.space https://fpcdn.io https://api.fpjs.io",
+    `connect-src 'self' https://*.sui.io https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://aggregator.walrus-testnet.walrus.space ${WAAP_CONNECT}`,
+    `frame-src 'self' ${WAAP_FRAME}`,
     "frame-ancestors 'self' https://*.sui.ski",
     "base-uri 'self'",
-    "form-action 'self'",
+    `form-action 'self' ${OAUTH_FORMS}`,
   ].join('; '));
 });
 
