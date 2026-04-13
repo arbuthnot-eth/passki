@@ -1540,6 +1540,235 @@ app.post('/api/cache/swap-sui-for-deep', async (c) => {
   }
 });
 
+// ── Probe: old sol@ultron balances ──────────────────────────────────
+// Derives the legacy Solana address from SHADE_KEEPER_PRIVATE_KEY
+// (raw ed25519 pubkey, base58-encoded) and reports SOL + SPL balances
+// at that address. Used before running the sweep to see exactly what
+// needs to move to the new IKA-derived sol@ultron.
+//
+// Read-only: the address itself is public info, so no auth needed.
+app.get('/api/cache/ultron-sol-probe', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { b58encode } = await import('./solana-spl.js');
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const oldSolAddress = b58encode(keypair.getPublicKey().toRawBytes());
+
+    const SOL_RPCS = [
+      'https://sui-rpc.publicnode.com', // ignored, SOL only — keep list pure
+    ];
+    // Use the same Helius-first logic we use elsewhere — direct fetch keeps
+    // the endpoint self-contained and avoids importing the full rpcCall helper.
+    const helius = c.env.HELIUS_API_KEY
+      ? `https://mainnet.helius-rpc.com/?api-key=${c.env.HELIUS_API_KEY}`
+      : 'https://api.mainnet-beta.solana.com';
+
+    const rpc = async (method: string, params: unknown[]) => {
+      const r = await fetch(helius, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      if (!r.ok) throw new Error(`${method} HTTP ${r.status}`);
+      const j = await r.json() as { result?: unknown; error?: { message?: string } };
+      if (j.error) throw new Error(`${method}: ${j.error.message}`);
+      return j.result;
+    };
+
+    const [solRes, tokenRes] = await Promise.all([
+      rpc('getBalance', [oldSolAddress, { commitment: 'confirmed' }]),
+      rpc('getTokenAccountsByOwner', [
+        oldSolAddress,
+        { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+        { encoding: 'jsonParsed', commitment: 'confirmed' },
+      ]),
+    ]);
+
+    const solLamports = Number((solRes as { value?: number })?.value ?? 0);
+    const tokenAccounts = ((tokenRes as { value?: Array<{ pubkey: string; account: { data: { parsed: { info: { mint: string; tokenAmount: { amount: string; decimals: number; uiAmountString: string } } } } } }> })?.value ?? [])
+      .map((t) => ({
+        ata: t.pubkey,
+        mint: t.account.data.parsed.info.mint,
+        amount: t.account.data.parsed.info.tokenAmount.amount,
+        decimals: t.account.data.parsed.info.tokenAmount.decimals,
+        uiAmount: t.account.data.parsed.info.tokenAmount.uiAmountString,
+      }))
+      .filter((t) => BigInt(t.amount) > 0n);
+
+    return c.json({
+      oldSolAddress,
+      solLamports,
+      solUi: solLamports / 1e9,
+      tokenAccounts,
+      totalTokens: tokenAccounts.length,
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Sweep old sol@ultron → new IKA-derived sol@ultron ─────────────────
+// Drains all SOL + SPL balances from the legacy raw-keypair address
+// (old sol@ultron = base58(suiPubkey)) to a recipient — in practice
+// the new IKA-derived address from window.rumbleUltron('ed25519').
+// The server signs with the same SHADE_KEEPER_PRIVATE_KEY because the
+// old address is literally base58(pubkey(keeperKey)), so the same
+// 32-byte private key is the Solana private key for that wallet.
+//
+// Admin-gated like /api/cache/rumble-ultron-seed.
+app.post('/api/cache/sweep-sol-ultron', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json() as {
+      recipient: string; // new sol@ultron (base58)
+      adminAddress: string;
+      signature: string;
+      message: string; // "sweep-sol-ultron:<recipient>:<YYYY-MM-DD>"
+    };
+    if (!body.recipient || !body.adminAddress || !body.signature || !body.message) {
+      return c.json({ error: 'Missing recipient, adminAddress, signature, or message' }, 400);
+    }
+    const normalizedAdmin = body.adminAddress.toLowerCase();
+    if (!ADMIN_ADDRESSES.has(normalizedAdmin)) {
+      return c.json({ error: `${body.adminAddress} not in admin allowlist` }, 403);
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const expected = `sweep-sol-ultron:${body.recipient}:${today}`;
+    if (body.message !== expected) {
+      return c.json({ error: `message must be exactly "${expected}"` }, 400);
+    }
+    try {
+      const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
+      const messageBytes = new TextEncoder().encode(body.message);
+      await verifyPersonalMessageSignature(messageBytes, body.signature, {
+        address: normalizedAdmin,
+      });
+    } catch (err) {
+      return c.json({ error: `Invalid signature: ${err instanceof Error ? err.message : String(err)}` }, 403);
+    }
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { ed25519 } = await import('@noble/curves/ed25519.js');
+    const { b58encode, b58decode, sweepSplAccount, sweepNativeSol } = await import('./solana-spl.js');
+    type SolanaRpcConfig = import('./solana-spl.js').SolanaRpcConfig;
+
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ownerPub = keypair.getPublicKey().toRawBytes();
+    const oldSolAddress = b58encode(ownerPub);
+    const recipientPub = b58decode(body.recipient);
+    if (recipientPub.length !== 32) {
+      return c.json({ error: `recipient ${body.recipient} did not decode to 32 bytes` }, 400);
+    }
+    // Extract the raw 32-byte ed25519 secret so we can sign with noble.
+    // SuiKeypair.getSecretKey() returns bech32; getKeyScheme/export paths
+    // vary by version, so we use the bech32 decoder from @mysten/sui.
+    const { decodeSuiPrivateKey } = await import('@mysten/sui/cryptography');
+    const decoded = decodeSuiPrivateKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    if (decoded.scheme !== 'ED25519') {
+      return c.json({ error: `Unsupported keeper scheme: ${decoded.scheme}` }, 500);
+    }
+    const rawSecret = decoded.secretKey;
+
+    // The SPL sweep uses ed25519.sign(msg, 32-byte private key) which
+    // @noble/curves/ed25519 accepts directly. Solana signature format is
+    // the raw 64-byte ed25519 signature.
+    const signFn = async (msg: Uint8Array): Promise<Uint8Array> => {
+      return ed25519.sign(msg, rawSecret);
+    };
+
+    const helius = c.env.HELIUS_API_KEY
+      ? `https://mainnet.helius-rpc.com/?api-key=${c.env.HELIUS_API_KEY}`
+      : 'https://api.mainnet-beta.solana.com';
+    const rpcConfig: SolanaRpcConfig = {
+      rpcs: [
+        helius,
+        'https://sui-rpc.publicnode.com', // placeholder, not Solana — we could add a publicnode Solana if one exists
+        'https://api.mainnet-beta.solana.com',
+      ].filter(u => !u.includes('sui-rpc')),
+      heliusApiKey: c.env.HELIUS_API_KEY,
+    };
+
+    // Step 1: query current balances (so we sweep exactly what's there).
+    const rpc = async (method: string, params: unknown[]) => {
+      const r = await fetch(helius, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      if (!r.ok) throw new Error(`${method} HTTP ${r.status}`);
+      const j = await r.json() as { result?: unknown; error?: { message?: string } };
+      if (j.error) throw new Error(`${method}: ${j.error.message}`);
+      return j.result;
+    };
+    const tokenRes = await rpc('getTokenAccountsByOwner', [
+      oldSolAddress,
+      { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+      { encoding: 'jsonParsed', commitment: 'confirmed' },
+    ]);
+    const accounts = ((tokenRes as { value?: Array<{ pubkey: string; account: { data: { parsed: { info: { mint: string; tokenAmount: { amount: string; decimals: number } } } } } }> })?.value ?? [])
+      .map((t) => ({
+        ata: t.pubkey,
+        mint: t.account.data.parsed.info.mint,
+        amount: BigInt(t.account.data.parsed.info.tokenAmount.amount),
+        decimals: t.account.data.parsed.info.tokenAmount.decimals,
+      }))
+      .filter((t) => t.amount > 0n);
+
+    const swept: Array<{ mint: string; amount: string; decimals: number; signature: string; destAta: string }> = [];
+    // Step 2: sweep each SPL token account.
+    for (const acc of accounts) {
+      try {
+        const res = await sweepSplAccount(
+          signFn,
+          ownerPub,
+          recipientPub,
+          b58decode(acc.ata),
+          b58decode(acc.mint),
+          acc.amount,
+          acc.decimals,
+          rpcConfig,
+        );
+        swept.push({
+          mint: acc.mint,
+          amount: acc.amount.toString(),
+          decimals: acc.decimals,
+          signature: res.signature,
+          destAta: res.destAta,
+        });
+      } catch (err) {
+        console.error(`[sweep-sol-ultron] SPL sweep failed for ${acc.mint}:`, err);
+        return c.json({
+          error: `SPL sweep failed for ${acc.mint}: ${err instanceof Error ? err.message : String(err)}`,
+          partial: swept,
+        }, 500);
+      }
+    }
+
+    // Step 3: wait for SPL txs to settle + rent refunds to land, then drain SOL.
+    await new Promise((r) => setTimeout(r, accounts.length > 0 ? 6000 : 0));
+    const solRes = await rpc('getBalance', [oldSolAddress, { commitment: 'confirmed' }]);
+    const lamports = BigInt((solRes as { value?: number })?.value ?? 0);
+    let solSweep: { signature: string; drained: string } | null = null;
+    try {
+      const drain = await sweepNativeSol(signFn, ownerPub, recipientPub, lamports, rpcConfig);
+      solSweep = { signature: drain.signature, drained: drain.drained.toString() };
+    } catch (err) {
+      console.warn('[sweep-sol-ultron] SOL drain skipped:', err instanceof Error ? err.message : err);
+    }
+
+    return c.json({
+      oldSolAddress,
+      recipient: body.recipient,
+      swept,
+      solSweep,
+    });
+  } catch (err) {
+    console.error('[sweep-sol-ultron] error:', err);
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Rumble Ultron seed — deterministic encryption-key seed for ultron's
 //    IKA dWallet. Server derives from SHADE_KEEPER_PRIVATE_KEY so the
 //    same seed can be re-derived later for autonomous ultron signing.

@@ -260,6 +260,62 @@ function withPriorityFee(ixs: SolInstruction[], cuPrice = SENDER_MIN_CU_PRICE_MI
   ];
 }
 
+/** SPL Token: TransferChecked — safer than Transfer because the amount and
+ *  decimals are validated against the mint. Opcode 12. */
+function transferCheckedIx(
+  source: Uint8Array,
+  mint: Uint8Array,
+  destination: Uint8Array,
+  owner: Uint8Array,
+  amount: bigint,
+  decimals: number,
+): SolInstruction {
+  return {
+    programId: b58decode(TOKEN_PROGRAM),
+    accounts: [
+      { pubkey: source, isSigner: false, isWritable: true },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: destination, isSigner: false, isWritable: true },
+      { pubkey: owner, isSigner: true, isWritable: false },
+    ],
+    data: concat(new Uint8Array([12]), u64LE(amount), new Uint8Array([decimals])),
+  };
+}
+
+/** SPL Token: CloseAccount — reclaims the rent deposit from an SPL token
+ *  account. The account must be empty (balance = 0). Opcode 9. */
+function closeAccountIx(
+  account: Uint8Array,
+  destination: Uint8Array,
+  owner: Uint8Array,
+): SolInstruction {
+  return {
+    programId: b58decode(TOKEN_PROGRAM),
+    accounts: [
+      { pubkey: account, isSigner: false, isWritable: true },
+      { pubkey: destination, isSigner: false, isWritable: true },
+      { pubkey: owner, isSigner: true, isWritable: false },
+    ],
+    data: new Uint8Array([9]),
+  };
+}
+
+/** System Program: Transfer — native SOL transfer. Opcode 2. */
+function systemTransferIx(
+  source: Uint8Array,
+  destination: Uint8Array,
+  lamports: bigint,
+): SolInstruction {
+  return {
+    programId: b58decode(SYSTEM_PROGRAM),
+    accounts: [
+      { pubkey: source, isSigner: true, isWritable: true },
+      { pubkey: destination, isSigner: false, isWritable: true },
+    ],
+    data: concat(u32LE(2), u64LE(lamports)),
+  };
+}
+
 /** SPL Token: MintTo */
 function mintToIx(
   mint: Uint8Array,
@@ -552,4 +608,83 @@ export async function mintSplTokens(
   console.log(`[solana-spl] Minted ${amount} to ATA ${ataAddr}, tx: ${result}`);
 
   return { ata: ataAddr, signature: result };
+}
+
+/**
+ * Sweep a single SPL token account from `owner` to `recipient`.
+ *
+ * One transaction that: (1) creates the recipient ATA idempotently so
+ * transfer always lands, (2) transferChecked'd the full balance, and
+ * (3) closeAccount's the source ATA so the ~0.002 SOL rent deposit comes
+ * back to `owner` (which gets picked up by the SOL sweep afterwards).
+ *
+ * Signing is the caller's responsibility — pass the same ed25519 sign fn
+ * that signs for `ownerPubkey`.
+ */
+export async function sweepSplAccount(
+  signFn: (msg: Uint8Array) => Promise<Uint8Array>,
+  ownerPubkey: Uint8Array,
+  recipientPubkey: Uint8Array,
+  sourceAta: Uint8Array,
+  mintPubkey: Uint8Array,
+  amount: bigint,
+  decimals: number,
+  config: SolanaRpcConfig,
+): Promise<{ signature: string; destAta: string }> {
+  const destAta = await deriveATA(recipientPubkey, mintPubkey);
+  const blockhash = await getRecentBlockhash(config);
+
+  const instructions: SolInstruction[] = withPriorityFee([
+    createATAIdempotentIx(ownerPubkey, destAta, recipientPubkey, mintPubkey),
+    transferCheckedIx(sourceAta, mintPubkey, destAta, ownerPubkey, amount, decimals),
+    closeAccountIx(sourceAta, ownerPubkey, ownerPubkey),
+  ]);
+
+  const { message } = buildMessage(ownerPubkey, instructions, blockhash);
+  const sig = await signFn(message);
+  const rawTx = concat(compactU16(1), sig, message);
+  const txB64 = btoa(String.fromCharCode(...rawTx));
+
+  const result = await sendViaHelius(config, txB64, config.heliusApiKey);
+  console.log(`[solana-spl] Swept ${amount} of mint ${b58encode(mintPubkey).slice(0, 8)}… → ${b58encode(destAta).slice(0, 8)}…, tx: ${result}`);
+
+  return { signature: result, destAta: b58encode(destAta) };
+}
+
+/**
+ * Drain the SOL balance of `owner` to `recipient`, leaving only the tx fee.
+ * Use after sweepSplAccount so ATA rent refunds have landed and the total
+ * balance reflects everything we can safely drain.
+ */
+export async function sweepNativeSol(
+  signFn: (msg: Uint8Array) => Promise<Uint8Array>,
+  ownerPubkey: Uint8Array,
+  recipientPubkey: Uint8Array,
+  lamports: bigint,
+  config: SolanaRpcConfig,
+): Promise<{ signature: string; drained: bigint }> {
+  const blockhash = await getRecentBlockhash(config);
+  // Reserve exactly the priority-fee amount the tx will burn. With a
+  // single System.transfer + ComputeBudget headers at the baseline CU
+  // limit we need ~5_000 lamports base fee plus cuPrice*cuLimit/1e6
+  // priority. 1.2M micro-lamports/CU × 200k CU = 240k extra lamports.
+  const reserveFee = 5_000n + (SENDER_MIN_CU_PRICE_MICROLAMPORTS * BigInt(SENDER_CU_LIMIT)) / 1_000_000n;
+  if (lamports <= reserveFee) {
+    throw new Error(`Balance ${lamports} too low to cover ${reserveFee} fee reserve`);
+  }
+  const drain = lamports - reserveFee;
+
+  const instructions: SolInstruction[] = withPriorityFee([
+    systemTransferIx(ownerPubkey, recipientPubkey, drain),
+  ]);
+
+  const { message } = buildMessage(ownerPubkey, instructions, blockhash);
+  const sig = await signFn(message);
+  const rawTx = concat(compactU16(1), sig, message);
+  const txB64 = btoa(String.fromCharCode(...rawTx));
+
+  const result = await sendViaHelius(config, txB64, config.heliusApiKey);
+  console.log(`[solana-spl] Drained ${drain} lamports → ${b58encode(recipientPubkey).slice(0, 8)}…, tx: ${result}`);
+
+  return { signature: result, drained: drain };
 }

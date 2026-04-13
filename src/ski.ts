@@ -630,6 +630,55 @@ const _rumbleUltron = async (curves: 'ed25519' | 'secp256k1' | 'both' = 'ed25519
 (globalThis as unknown as { rumbleUltron: typeof _rumbleUltron }).rumbleUltron = _rumbleUltron;
 console.log('[ski] rumbleUltron hook installed — call rumbleUltron("ed25519")');
 
+// Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
+// Pass the recipient address explicitly (typically the new sol@ultron
+// from window.rumbleUltron). Admin-gated via the same signed-message
+// pattern as the seed endpoint.
+const _sweepSolUltron = async (recipient: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return { error: 'not connected' };
+  }
+  if (!recipient || recipient.length < 32) {
+    return { error: 'pass the new sol@ultron address as recipient' };
+  }
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const message = `sweep-sol-ultron:${recipient}:${today}`;
+    const { signPersonalMessage } = await import('./wallet.js');
+    const sig = await signPersonalMessage(new TextEncoder().encode(message));
+    console.log(`[sweep-sol-ultron] submitting sweep → ${recipient.slice(0, 8)}\u2026`);
+    const res = await fetch('/api/cache/sweep-sol-ultron', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        recipient,
+        adminAddress: ws.address,
+        signature: sig.signature,
+        message,
+      }),
+    });
+    const json = await res.json() as { error?: string; swept?: unknown[]; solSweep?: unknown; oldSolAddress?: string };
+    if (!res.ok || json.error) {
+      console.error('[sweep-sol-ultron] failed:', json);
+      showToast(`Sweep failed: ${json.error || `HTTP ${res.status}`}`);
+      return json;
+    }
+    console.log('[sweep-sol-ultron] result:', json);
+    const splCount = json.swept?.length ?? 0;
+    showToast(`Swept ${splCount} SPL + ${json.solSweep ? 'SOL' : 'no SOL'} \u2192 ${recipient.slice(0, 8)}\u2026`);
+    return json;
+  } catch (err) {
+    console.error('[sweep-sol-ultron] error:', err);
+    showToast(err instanceof Error ? err.message : 'Sweep failed');
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+(window as unknown as { sweepSolUltron: typeof _sweepSolUltron }).sweepSolUltron = _sweepSolUltron;
+(globalThis as unknown as { sweepSolUltron: typeof _sweepSolUltron }).sweepSolUltron = _sweepSolUltron;
+console.log('[ski] sweepSolUltron hook installed — call sweepSolUltron("<new-sol-address>")');
+
 // ─── Auto Pre-Rumble on name registration ──────────────────────────────
 // When a new name is registered, fire pre-rumble in the background so the
 // name immediately has chain addresses (ultron-custodial until user Rumbles).
