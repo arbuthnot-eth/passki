@@ -132,6 +132,20 @@ After 15s of inactivity (or via SKI button cycle), the menu collapses into a com
 
 The overlay restores instantly on hard refresh via `ski:last-address` localStorage fallback, with IKA addresses cached to `ski:ika-addrs:${address}`.
 
+### Squids Panel — Cross-Chain Balance Display
+
+Clicking the 🦑 squid quick-action opens the **squids panel**, the idle-overlay view of every chain the user's IKA dWallet derives. Each row shows the chain glyph, truncated address, and live USD balance:
+
+- **SUI** — native + stables via gRPC `listBalances` (Mysten fullnode)
+- **BTC** — native via mempool.space `/api/address/<addr>` (free, key-less)
+- **SOL** — native + iUSD-SPL via Helius `/api/sol-rpc` proxy (`getBalance` + `getTokenAccountsByOwner`)
+- **ETH (mainnet)** — native + USDC ERC-20 via **viem** + Alchemy HTTPS transport (`ALCHEMY_ETH_URL` secret, `eth_getBalance` + `erc20Abi.balanceOf`)
+- **TRON** — USDT-TRC20 via TronGrid `/v1/accounts/<addr>` (free tier)
+
+Derived addresses come from the IKA dWallet `public_output` — even dWallets stuck in `AwaitingKeyHolderSignature` produce valid BCS-derived addresses, so users see their cross-chain identity the moment DKG starts instead of waiting for the accept-share step. Balances roll into the single `app.usd` total alongside Sui and stables so the header balance pill is a true net-worth aggregate across every chain brando holds.
+
+**QR top slot** — above the chain rows, a chain-colored QR code with the selected chain's logo inlaid (green `$` for SUI, orange `₿` for BTC, official Solana parallelograms for SOL, indigo `Ξ` for ETH, red Tron triangles for TRON). Clicking a chain row updates the QR + highlights the row in its chain color; clicking the QR expands it to 260×260. Hovering a row swaps the truncated hex for the identity form (`brando.sui` / `btc@brando` / `sol@brando` / `eth@brando` / `tron@brando`) while the native `title` tooltip shows the full hex — both visible simultaneously.
+
 ### SKI Modal
 
 Single-column overlay with key detail pane, Splash legend (keys grouped by shape tier), wallet list, and WaaP social login row. Long-press lock (2.2s) pins a wallet. Layout toggle persists preference.
@@ -160,6 +174,19 @@ Thunder is a thin wrapper around [`@mysten/sui-stack-messaging`](https://github.
 - **Timestamp jitter** — DO rounds `createdAt`/`updatedAt` to 10s buckets + ±5s noise on ingest. Monotonic `order` preserves UI sort.
 - **Sender index on the wire** — new messages store `senderIndex` (position in the DO's participant list) instead of the raw Sui address. A dump of `messages` no longer reveals who authored what.
 - **Attachment guard** — DO rejects `attachments: [...]` at the send boundary; our transport does not round-trip them, and silently accepting would leak blob IDs outside the Seal envelope.
+
+### Thunder Attachments (Regizapdos #147)
+
+Full attachment support lands via `@mysten/sui-stack-messaging` — Seal-encrypted per file, uploaded to Walrus via the configured HTTP publisher, decrypted on click via the SDK's `handle.data()`. All three main send paths (`iUSD transfer`, `SUI shielded transfer`, plain text send) wire `files: AttachmentFile[]` through `sendThunder`. Ancillary paths (read receipts, quick-reply) deliberately don't carry attachments.
+
+**Cache hydration** — `_ThunderEntry` in the stale-while-revalidate localStorage cache preserves attachment refs (`storageId`, `fileName`, `mimeType`, `fileSize`) so reopened storms paint chips/thumbs immediately instead of flashing text-only. Bytes stay in Walrus; only refs cross the localStorage boundary. The AES-GCM key in IndexedDB stays non-extractable.
+
+**Size limits** (aligned with SDK enforcement):
+- Per-file: **2 MB** (was 10 MB UI-side, SDK always enforced 2 MB)
+- Per message: **4 files** (was 10 UI-side)
+- Total per message: **5 MB** (new pre-upload guard — 4×2 MB silent failures now caught at attach time)
+
+Errors fire as UI toasts before the SDK rejects. Walrus upload failures fail the whole send cleanly — no silent text orphaning. WaaP attachment path verification is deferred (needs live repro).
 
 Remaining Phase 2 items (sealed sender, non-derivable group IDs, encrypted membership) are deferred — see `docs/superpowers/specs/2026-04-10-thunder-privacy-audit-and-roadmap.md`.
 
@@ -248,6 +275,31 @@ Seal-encrypted cross-chain identity exchange. No cleartext cross-chain addresses
 
 ---
 
+## Mega Sableye — Private Interaction Set (#148)
+
+Roster chips render with a **black diamond** glyph for names brando has privately interacted with (Thunder send, value transfer, cross-chain credit). The set lives as **AES-GCM ciphertext** in the user's Chronicom Durable Object — the operator only ever sees the opaque blob, and the wrapping key is a **non-extractable** `CryptoKey` persisted in browser IndexedDB so raw key material never leaves the device.
+
+**Client — `src/client/sableye.ts`:**
+- `warmSableye(addr)` — fetch ciphertext from Chronicom, AES-GCM decrypt into in-memory `Set<string>`
+- `noteCounterparty(name, chain)` — add + debounce 2s persist back to Chronicom
+- `hasSableye(name)` — synchronous lookup for render loops (`_renderRosterChip` calls this)
+- `drainXchainLog()` — pulls any server-side webhook touches and processes them through `reverseLookupName`
+- `flushSableye()` / `resetSableye()` — lifecycle
+
+**Chronicom DO slice — `src/server/agents/chronicom.ts`:**
+- `sableye: { cipher?: string; updatedAt?: number; xchainLog?: [...] }`
+- Rejects non-string cipher at the write boundary; DO inspection yields only ciphertext
+- Worker routes `GET/POST /api/chronicom/sableye?addr=<address>`
+
+**Event hooks (minimal resource impact):**
+- **Thunder** — `sendThunder` in `thunder-stack.ts` dispatches `ski:thunder-sent` with the recipient name; ui records the counterparty on every send
+- **Cross-chain** — Helius + Alchemy webhook handlers append to `sableye.xchainLog` via an internal `/sableye-xchain-append` DO route (rides nursery PR #132 — depends on webhook handlers not yet on master)
+- **Roster render** — `_renderRosterChip` consults `hasSableye(bareName)` synchronously; black diamond on hit, blue square on miss
+
+See issue #145, PR #148.
+
+---
+
 ## Shade
 
 Privacy-preserving SuiNS grace-period domain sniping. Commitment-reveal hides domain/target/timing on-chain until execution. Seal encryption for payload privacy.
@@ -289,7 +341,18 @@ See `docs/superpowers/specs/2026-04-11-openclob-bundle-tags.md`.
 
 ## Pokemon Swarm
 
-.SKI runs a Pokedex coordinator Durable Object that watches GitHub issues, branches, and PRs as a live swarm. Per the naming convention: legendary Pokemon are releases, regular Pokemon with level tags are commits and issues, merged PRs are evolutions. Recent evolutions include Raichu Lv.40 (ultron-sponsored thunder gas), Mr. Mime Lv.42 (shielded Pedersen transfers), Alakazam Lv.36 (forward secrecy via DEK rotation), Psyduck Lv.22 (collected-pill fix), Diglett Lv.18 (dust gate), and Dugtrio Lv.36 (batched shielded deposits).
+.SKI runs a Pokedex coordinator Durable Object that watches GitHub issues, branches, and PRs as a live swarm. Per the naming convention: legendary Pokemon are releases, regular Pokemon with level tags are commits and issues, merged PRs are evolutions (canon forms first — Mega, Gigantamax — otherwise Pokemon Infinite Fusion cross-species forms). Recent evolutions include:
+
+- **Mega Sableye** (#148) — Seal-encrypted private interaction set; black-diamond roster glyphs; Chronicom ciphertext slice
+- **Regizapdos** (#147, Zapdos × Registeel fusion) — Thunder attachment hardening; cache hydration of attachment refs; SDK-aligned size limits (2 MB/file, 4 files, 5 MB total)
+- **Raichu Lv.40** — ultron-sponsored thunder gas
+- **Mr. Mime Lv.42** — shielded Pedersen transfers
+- **Alakazam Lv.36** — forward secrecy via DEK rotation
+- **Psyduck Lv.22** — collected-pill fix
+- **Diglett Lv.18** — dust gate
+- **Dugtrio Lv.36** — batched shielded deposits
+
+**gitcatch** — the full commit → evolve → deploy cycle. `gitcatch Pokemon` commits outstanding moves as Pokemon-named commits, lands the PR as an evolution (canon Mega / Gigantamax first, then Infinite Fusion cross-species naming), and deploys to mainnet. Memory: `feedback_gitcatch.md`.
 
 The Pokedex DO is bound as `PokedexAgent` and exposes `/api/pokedex/*` routes. See `docs/superpowers/specs/2026-04-11-pokemon-swarm-agents.md`.
 
