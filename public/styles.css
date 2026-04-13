@@ -3893,9 +3893,16 @@ body {
   width: fit-content;
   margin-top: -11px;
   margin-left: 29px;
+  /* Pinned above the name input row's transparent margin background
+   * (.wk-dd-ns-section--elevated sits at z-index: 51). The summary
+   * must always render on top of that transparent strip so users can
+   * see their settled-transfer count even when the SKI menu is open
+   * over the idle overlay. Drop-shadow keeps the text legible against
+   * any photo/card behind it. */
   position: relative;
-  z-index: 3;
-  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.8));
+  z-index: 60;
+  pointer-events: auto;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.95)) drop-shadow(0 0 1px rgba(0,0,0,0.7));
 }
 /* Settled transfer: flip the @mention pill green so the recipient
  * can see at a glance that the claim landed on their name. */

@@ -3221,11 +3221,19 @@ function _renderProfileEl(el: HTMLElement) {
   const labelClass = hasSuins ? 'wk-widget-title' : 'wk-widget-title is-address';
 
   // Wallet icon + optional social badge (badge is a sibling, not inside the clipped icon span)
+  // The WaaP badge displays the locally-stored social provider (X / Google /
+  // Discord / GitHub). When the badge SVG isn't ready yet — fresh session,
+  // cleared cache, or the user hasn't reconnected since we started caching
+  // providers — we render `?` as a placeholder that opens the provider
+  // picker on click. Track that "WaaP is connected but provider unknown"
+  // state so we can suppress the .sui.ski link until it's set.
   let iconHtml = '';
+  let waapProviderReady = true;
   if (ws.walletIcon) {
     const social = socialIconSvg(ws.walletName);
     const isWaap = /waap/i.test(ws.walletName || '');
     const badgeSvg = isWaap ? _waapProviderBadgeSvg(ws.address) : '';
+    if (isWaap && !badgeSvg) waapProviderReady = false;
     const badge = isWaap
       ? `<span class="ski-waap-x ski-waap-x--picker" data-provider-picker title="Change login method">${badgeSvg || '?'}</span>`
       : social ? `<span class="ski-waap-x">𝕏</span>` : '';
@@ -3234,7 +3242,13 @@ function _renderProfileEl(el: HTMLElement) {
 
   // IKA status populated from on-chain query, not localStorage
 
-  const skiUrl = hasSuins ? `https://${esc(label)}.sui.ski` : '';
+  // Only emit the .sui.ski link when BOTH the user has a SuiNS name AND
+  // the identity is fully set up (WaaP provider known, or non-WaaP wallet).
+  // If the WaaP badge is `?` the widget renders as a button — still in the
+  // grid as a clickable choice (opens the provider picker via the badge),
+  // but does NOT navigate to name.sui.ski before the social login is set.
+  const profileReady = hasSuins && waapProviderReady;
+  const skiUrl = profileReady ? `https://${esc(label)}.sui.ski` : '';
   // Squid 🦑 is always rendered so the layout doesn't jump. Dimmed + greyscale
   // when the user has no IKA wallet yet — a visible-but-muted hint to Rumble.
   const squidDim = app.ikaWalletId ? '' : ';opacity:0.35;filter:grayscale(1)';
@@ -3246,7 +3260,7 @@ function _renderProfileEl(el: HTMLElement) {
           </span>
         </span>`;
 
-  el.innerHTML = hasSuins
+  el.innerHTML = profileReady
     ? `<div class="wk-widget">
       <a class="wk-widget-btn connected" href="${skiUrl}" target="_blank" rel="noopener" title="${esc(label)}.sui.ski">
         ${innerHtml}
