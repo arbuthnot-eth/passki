@@ -43,8 +43,8 @@ import {
   getActiveSponsoredList,
   resolveNameToAddress,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
-import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, pokeIouSweeper, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildCreateStableShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildCancelStableShadeOrderTx, buildCancelRefundStableShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, findCreatedStableShadeOrderRef, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
+import { connectShadeExecutor, scheduleShadeExecution, scheduleStableShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, pokeIouSweeper, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import { ethToTron } from './client/chains.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
@@ -8573,21 +8573,22 @@ function renderSkiMenu() {
    *  deposit and the ShadeExecutorAgent alarm handles the
    *  rest). */
   async function _shadeCreate(address: string, label: string, btn?: HTMLButtonElement | null, executeAfterMs?: number) {
-    const price = suiPriceCache?.price;
-    if (!price || price <= 0) { showToast('SUI price unavailable \u2014 try again'); return; }
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
     const effectiveMs = executeAfterMs ?? nsGraceEndMs;
     try {
+      // Preferred path: user-funded StableShadeOrder<iUSD>. User owns the
+      // order on-chain, so cancel refunds flow back to them naturally —
+      // no ultron-forwarding hack needed.
       let txBytes: Uint8Array;
-      let orderInfo: Omit<ShadeOrderInfo, 'objectId'>;
+      let orderInfo: Omit<ShadeOrderInfo, 'objectId'> & { coinType?: string };
       try {
-        const result = await buildCreateShadeOrderTx(address, label, effectiveMs, price);
+        const result = await buildCreateStableShadeOrderTx(address, label, effectiveMs);
         txBytes = result.txBytes;
         orderInfo = result.orderInfo;
       } catch (buildErr) {
         const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
-        if (msg.includes('Insufficient') || msg.includes('insufficient') || msg.includes('GasBalanceTooLow')) {
-          // User can't afford the SUI deposit — proxy via ultron
+        if (msg.includes('Insufficient iUSD') || msg.includes('insufficient')) {
+          // User lacks iUSD — proxy via ultron (ultron-funded fallback)
           showToast(`\u26a1 Ultron fronting shade deposit for ${label}.sui\u2026`);
           const proxyRes = await fetch('/api/cache/shade-proxy', {
             method: 'POST',
@@ -8619,9 +8620,8 @@ function renderSkiMenu() {
         throw buildErr;
       }
       if (btn) btn.textContent = '\u270f';
-      const { digest, effects } = await signAndExecuteTransaction(txBytes);
-      let orderId = extractShadeOrderIdFromEffects(effects);
-      const placeholderId = orderId ?? `pending:${digest || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
+      const { digest } = await signAndExecuteTransaction(txBytes);
+      const placeholderId = `pending:${digest || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
       const fullOrder: ShadeOrderInfo = { ...orderInfo, objectId: placeholderId };
       addShadeOrder(address, fullOrder);
       nsShadeOrder = fullOrder;
@@ -8633,31 +8633,31 @@ function renderSkiMenu() {
       showToast(`${label}.sui shaded \u2713`);
       setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_SHORT_MS);
       const resolveAndSchedule = async () => {
-        if (!orderId && digest) {
-          orderId = await findCreatedShadeOrderId(digest);
-          if (orderId && orderId !== placeholderId) {
-            removeShadeOrder(address, placeholderId);
-            fullOrder.objectId = orderId;
-            addShadeOrder(address, fullOrder);
-            if (nsShadeOrder?.objectId === placeholderId) nsShadeOrder = fullOrder;
-            const idx = nsShadeOrders.findIndex(o => o.objectId === placeholderId);
-            if (idx >= 0) nsShadeOrders[idx] = { ...fullOrder };
-            else nsShadeOrders.push({ ...fullOrder });
-            _patchNsOwnedList();
-            try { cancelShadeExecution(placeholderId); } catch {}
-          }
+        // StableShadeOrder<T> — must resolve via findCreatedStableShadeOrderRef
+        // because scheduleStableShadeExecution needs initialSharedVersion.
+        if (!digest) return;
+        const ref = await findCreatedStableShadeOrderRef(digest);
+        if (!ref) {
+          console.warn('[Shade] failed to resolve StableShadeOrder ref from', digest);
+          return;
         }
-        const resolvedId = orderId ?? placeholderId;
-        // Connect WS for state updates (best-effort — don't block scheduling)
+        removeShadeOrder(address, placeholderId);
+        fullOrder.objectId = ref.objectId;
+        addShadeOrder(address, fullOrder);
+        if (nsShadeOrder?.objectId === placeholderId) nsShadeOrder = fullOrder;
+        const idx = nsShadeOrders.findIndex(o => o.objectId === placeholderId);
+        if (idx >= 0) nsShadeOrders[idx] = { ...fullOrder };
+        _patchNsOwnedList();
+        // Connect WS for completion notifications (best-effort)
         try {
           connectShadeExecutor(address, (state: ShadeExecutorState) => {
             _shadeDoState = state;
-            const doOrder = state.orders.find(o => o.objectId === resolvedId);
+            const doOrder = state.orders.find(o => o.objectId === ref.objectId);
             if (doOrder?.status === 'completed') {
               nsShadeOrder = null;
               _stopShadeCountdown();
-              removeShadeOrder(address, resolvedId);
-              nsShadeOrders = nsShadeOrders.filter(o => o.objectId !== resolvedId);
+              removeShadeOrder(address, ref.objectId);
+              nsShadeOrders = nsShadeOrders.filter(o => o.objectId !== ref.objectId);
               nsAvail = 'owned';
               _patchNsStatus();
               _patchNsPrice();
@@ -8666,24 +8666,24 @@ function renderSkiMenu() {
               showToast(`${fullOrder.domain}.sui auto-registered \u2713 ${doOrder.digest ? doOrder.digest.slice(0, 8) + '\u2026' : ''}`);
             }
           });
-        } catch { /* WS optional — scheduling uses HTTP fallback */ }
-        // Schedule with DO (tries WS RPC, falls back to HTTP POST)
+        } catch { /* WS optional */ }
         try {
-          const schedResult = await scheduleShadeExecution({
-            objectId: resolvedId,
+          const schedResult = await scheduleStableShadeExecution({
+            objectId: ref.objectId,
             domain: fullOrder.domain,
             executeAfterMs: fullOrder.executeAfterMs,
             targetAddress: fullOrder.targetAddress,
             salt: fullOrder.salt,
             ownerAddress: address,
             depositMist: String(fullOrder.depositMist),
-            preferredRoute: 'sui-ns',
+            initialSharedVersion: ref.initialSharedVersion,
+            coinType: ref.coinType || orderInfo.coinType,
           });
           if (!schedResult.success) {
-            console.warn('[Shade] DO scheduling failed:', schedResult.error);
+            console.warn('[Shade] DO scheduleStable failed:', schedResult.error);
           }
         } catch (schedErr) {
-          console.warn('[Shade] DO scheduling error:', schedErr);
+          console.warn('[Shade] DO scheduleStable error:', schedErr);
         }
       };
       resolveAndSchedule();
@@ -8724,9 +8724,15 @@ function renderSkiMenu() {
       let firstErr = '';
       for (const o of ordersToCxl) {
         try {
-          const tx = isWaapWallet
-            ? await buildCancelRefundShadeOrderTx(address, o.objectId)
-            : await buildCancelShadeOrderTx(address, o.objectId);
+          const isStable = (o as { stable?: boolean }).stable === true;
+          const coinType = (o as { coinType?: string }).coinType;
+          const tx = isStable
+            ? (isWaapWallet
+                ? await buildCancelRefundStableShadeOrderTx(address, o.objectId, coinType)
+                : await buildCancelStableShadeOrderTx(address, o.objectId, coinType))
+            : (isWaapWallet
+                ? await buildCancelRefundShadeOrderTx(address, o.objectId)
+                : await buildCancelShadeOrderTx(address, o.objectId));
           if (btn) btn.textContent = `\u270f ${ordersToCxl.indexOf(o) + 1}/${ordersToCxl.length}`;
           const result = await signAndExecuteTransaction(tx);
           if (isWaapWallet) {

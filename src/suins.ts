@@ -1929,6 +1929,9 @@ export async function buildSwapAndPurchaseTx(
 /** Shade package on mainnet (published by plankton.sui). */
 const SHADE_PACKAGE = '0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203';
 
+/** Shade v5 — coin-generic StableShadeOrder<T>. Used with iUSD for stable shades. */
+const SHADE_V5_PACKAGE = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
+
 
 export interface ShadeOrderInfo {
   objectId: string;
@@ -2078,6 +2081,94 @@ export async function buildCreateShadeOrderTx(
 }
 
 /**
+ * Build a user-signed PTB to create a StableShadeOrder<IUSD>.
+ *
+ * Unlike buildCreateShadeOrderTx (SUI-denominated, legacy), this builder:
+ *  - lists the caller's iUSD coins and splits the deposit from them
+ *  - calls `shade::create_stable<IUSD>` on SHADE_V5_PACKAGE
+ *  - leaves the caller as the on-chain order owner, so cancel refunds flow
+ *    back to them naturally (no ultron-forwarding hack needed)
+ *
+ * Deposit sizing mirrors the server-side path: discounted NS price / 1e6
+ * converted to iUSD (1 USD = 1e9 mist, 9 decimals) + 10% slippage buffer.
+ */
+export async function buildCreateStableShadeOrderTx(
+  rawAddress: string,
+  domain: string,
+  graceEndMs: number,
+): Promise<{ txBytes: Uint8Array; orderInfo: Omit<ShadeOrderInfo, 'objectId'> & { coinType: string } }> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = gqlClient;
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
+
+  // Calculate deposit in USD (NS-discounted) with 10% slippage buffer.
+  const [rawPrice, discountMap] = await Promise.all([
+    suinsClient.calculatePrice({ name: `${domain}.sui`, years: 1 }),
+    suinsClient.getCoinTypeDiscount(),
+  ]);
+  const nsKey = suinsCfg().coins.NS.type.replace(/^0x/, '');
+  const discountPct = discountMap.get(nsKey) ?? 0;
+  const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
+  // iUSD has 9 decimals, 1 USD = 1e9 mist.
+  const depositMist = BigInt(Math.ceil(discountedUsd * 1.10 * 1e9));
+
+  // List caller's iUSD coins — must have enough to cover deposit.
+  const iusdCoins = (await listCoinsOfType(transport, walletAddress, IUSD_TYPE))
+    .filter(c => c.balance > 0n)
+    .sort((a, b) => (a.balance > b.balance ? -1 : 1));
+  const iusdTotal = iusdCoins.reduce((s, c) => s + c.balance, 0n);
+  if (iusdTotal < depositMist) {
+    throw new Error(`Insufficient iUSD: need ${(Number(depositMist) / 1e9).toFixed(2)}, have ${(Number(iusdTotal) / 1e9).toFixed(2)}`);
+  }
+
+  // Salt + commitment — identical keccak256 preimage to legacy create path.
+  const salt = generateSalt();
+  const commitment = await buildCommitment(domain, graceEndMs, walletAddress, salt);
+
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  // Merge all iUSD coins into the first, split the deposit amount.
+  const primary = tx.objectRef({
+    objectId: iusdCoins[0].objectId,
+    version: iusdCoins[0].version,
+    digest: iusdCoins[0].digest,
+  });
+  if (iusdCoins.length > 1) {
+    tx.mergeCoins(
+      primary,
+      iusdCoins.slice(1).map(c => tx.objectRef({ objectId: c.objectId, version: c.version, digest: c.digest })),
+    );
+  }
+  const [depositCoin] = tx.splitCoins(primary, [tx.pure.u64(depositMist)]);
+  tx.moveCall({
+    target: `${SHADE_V5_PACKAGE}::shade::create_stable`,
+    typeArguments: [IUSD_TYPE],
+    arguments: [
+      depositCoin,
+      tx.pure.vector('u8', Array.from(commitment)),
+      tx.pure.vector('u8', []),
+    ],
+  });
+  // Return leftover iUSD to the caller.
+  tx.transferObjects([primary], tx.pure.address(walletAddress));
+
+  const txBytes = await buildWithTx(tx, transport);
+
+  const orderInfo = {
+    domain,
+    owner: walletAddress,
+    depositMist,
+    executeAfterMs: graceEndMs,
+    targetAddress: walletAddress,
+    salt,
+    coinType: IUSD_TYPE,
+  };
+
+  return { txBytes, orderInfo };
+}
+
+/**
  * Build a PTB to execute a Shade order (reveal + register).
  *
  * PTB composition:
@@ -2177,6 +2268,48 @@ export async function buildCancelRefundShadeOrderTx(
 }
 
 /**
+ * Build a PTB to cancel a StableShadeOrder<iUSD> (owner-only).
+ * Consumes the order object and returns the iUSD deposit to the owner.
+ */
+export async function buildCancelStableShadeOrderTx(
+  rawAddress: string,
+  orderObjectId: string,
+  coinType: string = IUSD_TYPE,
+): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = gqlClient;
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+  tx.moveCall({
+    target: `${SHADE_V5_PACKAGE}::shade::cancel_stable`,
+    typeArguments: [coinType],
+    arguments: [tx.object(orderObjectId)],
+  });
+  return buildWithTx(tx, transport);
+}
+
+/**
+ * Build a PTB to refund a StableShadeOrder<iUSD> via &mut shared access
+ * (WaaP-safe path). Order object is left empty and can be reaped later.
+ */
+export async function buildCancelRefundStableShadeOrderTx(
+  rawAddress: string,
+  orderObjectId: string,
+  coinType: string = IUSD_TYPE,
+): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = gqlClient;
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+  tx.moveCall({
+    target: `${SHADE_V5_PACKAGE}::shade::cancel_refund_stable`,
+    typeArguments: [coinType],
+    arguments: [tx.object(orderObjectId)],
+  });
+  return buildWithTx(tx, transport);
+}
+
+/**
  * Build a PTB to delete a cancelled (already refunded) Shade order.
  * Intended for keeper/server execution.
  */
@@ -2226,6 +2359,68 @@ export function extractShadeOrderIdFromEffects(effects: unknown): string | null 
         if (typeof id === 'string') return id;
       }
     }
+  }
+  return null;
+}
+
+/**
+ * Query a transaction digest to find the created StableShadeOrder<T> ref
+ * (objectId + initialSharedVersion + coinType). The executor DO needs the
+ * ISV to build a sharedObjectRef at alarm time.
+ */
+export async function findCreatedStableShadeOrderRef(
+  digest: string,
+): Promise<{ objectId: string; initialSharedVersion: number; coinType: string } | null> {
+  const query = `query($digest: String!) {
+    transactionBlock(digest: $digest) {
+      effects {
+        objectChanges {
+          nodes {
+            outputState {
+              ... on MoveObject {
+                address
+                contents { type { repr } }
+                owner { __typename ... on Shared { initialSharedVersion } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }`;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1500));
+    try {
+      const res = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query, variables: { digest } }),
+      });
+      const json = await res.json() as {
+        data?: { transactionBlock?: { effects?: { objectChanges?: { nodes?: Array<{
+          outputState?: {
+            address?: string;
+            contents?: { type?: { repr?: string } };
+            owner?: { __typename?: string; initialSharedVersion?: number | string };
+          };
+        }> } } } };
+      };
+      const nodes = json?.data?.transactionBlock?.effects?.objectChanges?.nodes ?? [];
+      for (const node of nodes) {
+        const out = node.outputState;
+        if (!out) continue;
+        const typeRepr = out.contents?.type?.repr ?? '';
+        if (!typeRepr.includes('shade::StableShadeOrder')) continue;
+        const objectId = out.address;
+        const isv = out.owner?.initialSharedVersion;
+        if (!objectId || isv === undefined) continue;
+        // Extract coin type from StableShadeOrder<T> repr
+        const m = typeRepr.match(/shade::StableShadeOrder<([^>]+)>/);
+        const coinType = m?.[1] ?? '';
+        return { objectId, initialSharedVersion: Number(isv), coinType };
+      }
+      if (json?.data?.transactionBlock) return null;
+    } catch { /* retry */ }
   }
   return null;
 }
@@ -2323,39 +2518,61 @@ export function findShadeOrder(address: string, domain: string): ShadeOrderInfo 
  * Returns minimal info (objectId + depositMist) for orders not tracked in localStorage.
  * This is the fallback when findCreatedShadeOrderId failed to extract the ID after creation.
  */
-export async function fetchOnChainShadeOrders(rawAddress: string): Promise<Array<{ objectId: string; depositMist: string; sealedPayload?: string; commitment?: string }>> {
+export async function fetchOnChainShadeOrders(rawAddress: string): Promise<Array<{ objectId: string; depositMist: string; sealedPayload?: string; commitment?: string; stable?: boolean; coinType?: string }>> {
   const address = normalizeSuiAddress(rawAddress);
+  const queryType = async (type: string) => {
+    try {
+      const res = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($type: String!) {
+            objects(filter: { type: $type }) {
+              nodes { address asMoveObject { contents { json type { repr } } } }
+            }
+          }`,
+          variables: { type },
+        }),
+      });
+      const json = await res.json() as {
+        data?: { objects?: { nodes?: Array<{
+          address: string;
+          asMoveObject?: { contents?: { json?: { owner?: string; deposit?: string; sealed_payload?: string; commitment?: string }; type?: { repr?: string } } };
+        }> } };
+      };
+      return json?.data?.objects?.nodes ?? [];
+    } catch { return []; }
+  };
   try {
-    // ShadeOrders are shared objects — query by type, filter by owner field in contents
-    const res = await fetch(GQL_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        query: `query($type: String!) {
-          objects(filter: { type: $type }) {
-            nodes { address asMoveObject { contents { json } } }
-          }
-        }`,
-        variables: {
-          type: `${SHADE_PACKAGE}::shade::ShadeOrder`,
-        },
-      }),
-    });
-    const json = await res.json() as {
-      data?: { objects?: { nodes?: Array<{
-        address: string;
-        asMoveObject?: { contents?: { json?: { owner?: string; deposit?: string; sealed_payload?: string; commitment?: string } } };
-      }> } };
-    };
-    // Filter to only orders owned by this address
-    return (json?.data?.objects?.nodes ?? [])
+    // Query both legacy ShadeOrder and new StableShadeOrder<iUSD> in parallel.
+    const [legacyNodes, stableNodes] = await Promise.all([
+      queryType(`${SHADE_PACKAGE}::shade::ShadeOrder`),
+      queryType(`${SHADE_V5_PACKAGE}::shade::StableShadeOrder<${IUSD_TYPE}>`),
+    ]);
+    const legacy = legacyNodes
       .filter(n => normalizeSuiAddress(n.asMoveObject?.contents?.json?.owner ?? '') === address)
       .map(n => ({
         objectId: n.address,
         depositMist: n.asMoveObject?.contents?.json?.deposit ?? '0',
         sealedPayload: n.asMoveObject?.contents?.json?.sealed_payload,
         commitment: n.asMoveObject?.contents?.json?.commitment,
+        stable: false,
       }));
+    const stable = stableNodes
+      .filter(n => normalizeSuiAddress(n.asMoveObject?.contents?.json?.owner ?? '') === address)
+      .map(n => {
+        const repr = n.asMoveObject?.contents?.type?.repr ?? '';
+        const m = repr.match(/shade::StableShadeOrder<([^>]+)>/);
+        return {
+          objectId: n.address,
+          depositMist: n.asMoveObject?.contents?.json?.deposit ?? '0',
+          sealedPayload: n.asMoveObject?.contents?.json?.sealed_payload,
+          commitment: n.asMoveObject?.contents?.json?.commitment,
+          stable: true,
+          coinType: m?.[1] ?? IUSD_TYPE,
+        };
+      });
+    return [...legacy, ...stable];
   } catch { return []; }
 }
 
