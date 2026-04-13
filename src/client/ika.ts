@@ -460,8 +460,27 @@ export async function provisionDWallet(
 
     const ikaTx2 = new IkaTransaction({ ikaClient: client, transaction: dkgTx, userShareEncryptionKeys });
 
-    // Register encryption key + DKG in same PTB — sequential execution within tx
-    await ikaTx2.registerEncryptionKey({ curve });
+    // Check whether an encryption key for this curve already exists for the
+    // caller. If a prior DKG attempt failed AFTER register_encryption_key ran
+    // (e.g. the accept-share step was never completed and the dWallet got
+    // stuck in AwaitingKeyHolderSignature), the on-chain table already holds
+    // the exact encryption key bytes we'd re-register — trying again aborts
+    // with `0x2::dynamic_field::add` code 0 ("field already exists"). The
+    // IkaClient's `getActiveEncryptionKey(address)` simulates the coordinator
+    // read and returns silently if a key is registered. We use it as a
+    // presence probe — if it throws, we include register; if it returns,
+    // we skip to avoid the collision.
+    let skipRegisterEncryptionKey = false;
+    try {
+      await client.getActiveEncryptionKey(userAddress);
+      skipRegisterEncryptionKey = true;
+      console.log('[ika:dkg] encryption key already registered for', userAddress.slice(0, 10), '— skipping registerEncryptionKey');
+    } catch {
+      console.log('[ika:dkg] no existing encryption key, will include registerEncryptionKey');
+    }
+    if (!skipRegisterEncryptionKey) {
+      await ikaTx2.registerEncryptionKey({ curve });
+    }
 
     const dkgResult = await ikaTx2.requestDWalletDKG({
       curve,
