@@ -3461,6 +3461,11 @@ let nsTransferRecipient = ''; // value in the transfer-recipient input
 // Thunder counts disabled — pending v4 migration (#63). Always empty.
 let _thunderCounts: Record<string, number> = {};
 
+// Sableye — module handle for synchronous roster lookup. Populated
+// after warmSableye() resolves. Null until then → roster renders
+// default blue squares and picks up diamonds on next open.
+let _sableyeMod: { hasSableye: (n: string) => boolean } | null = null;
+
 /** Transfer tx digests known to be settled (claimed or recalled).
  *  Populated by the click handler + the background settlement poll.
  *  Persisted to localStorage so re-renders, reloads, and cross-session
@@ -10724,7 +10729,14 @@ function bindEvents() {
       let _rosterWheelBound = false;
 
       const _renderRosterChip = ({ name, expirationMs, primary }: _RosterEntry) => {
-        const shape = _shapeOnlySvg('blue-square', 14);
+        // Sableye Lv.50 — black diamond for names in the private
+        // interaction set. Synchronous lookup against the warmed
+        // cache; falls back to blue square if cache not yet loaded.
+        const _bareChip = name.replace(/\.sui$/, '').toLowerCase();
+        const _isPrivate = (() => {
+          try { return _sableyeMod?.hasSableye?.(_bareChip) === true; } catch { return false; }
+        })();
+        const shape = _shapeOnlySvg(_isPrivate ? 'black-diamond' : 'blue-square', 14);
         let expiryTag = '';
         let itemCls = '';
         if (primary) itemCls += ' ski-idle-roster-item--primary';
@@ -15774,6 +15786,39 @@ export function initUI() {
           },
         });
         warmThunderSession().catch(() => {});
+      }).catch(() => {});
+
+      // Sableye — warm the encrypted private-interaction cache.
+      // See issue #145. One Chronicom fetch + local AES-GCM decrypt.
+      // The ski:thunder-sent event fires from sendThunder; ui records
+      // the counterparty immediately so the roster flips to black
+      // diamond on next render.
+      import('./client/sableye.js').then(async ({ warmSableye, noteCounterparty, drainXchainLog, hasSableye }) => {
+        _sableyeMod = { hasSableye };
+        await warmSableye(ws.address).catch(() => {});
+        window.addEventListener('ski:thunder-sent', (ev) => {
+          const name = ((ev as CustomEvent).detail?.recipientName ?? '') as string;
+          if (name) noteCounterparty(name, 'sui');
+        });
+        // Drain any server-side xchain webhook log (Sableye Lv.40
+        // lands separately with the Helius/Alchemy handlers) and
+        // map fromAddress → bare name via reverse lookup.
+        const pending = drainXchainLog();
+        if (pending.length > 0) {
+          try {
+            const { reverseLookupName } = await import('./client/thunder.js');
+            for (const entry of pending) {
+              try {
+                const name = await reverseLookupName(entry.fromAddress);
+                if (name) {
+                  const chain = entry.chain === 'sol' || entry.chain === 'eth' || entry.chain === 'btc'
+                    ? entry.chain : 'sui';
+                  noteCounterparty(name, chain);
+                }
+              } catch { /* per-entry best-effort */ }
+            }
+          } catch { /* reverseLookup unavailable */ }
+        }
       }).catch(() => {});
 
       // Execute Prism intent if one was stored from ?prism= URL
