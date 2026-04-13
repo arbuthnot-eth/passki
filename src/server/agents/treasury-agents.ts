@@ -727,7 +727,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // salt is lost (i.e., cannot execute the intended happy path).
     if ((url.pathname.endsWith('/shade-cancel-stable') || url.searchParams.has('shade-cancel-stable')) && request.method === 'POST') {
       try {
-        const body = await request.json() as { objectId: string };
+        const body = await request.json() as { objectId: string; noForward?: boolean };
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
         const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
         const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
@@ -783,9 +783,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         // holder (the user who "sent" the shade in the UI). The
         // whole point of a cancel is the user gets their money
         // back — ultron is just a signer, not the economic owner.
+        // Skipped when `noForward: true` is set (e.g. cancel-and-
+        // reshade flows where the funds need to stay on ultron so
+        // the reshade can reuse them without needing fresh liquidity).
         let forwardDigest = '';
         let forwardedTo = '';
-        if (holderAddr && holderAddr.toLowerCase() !== ultronAddr.toLowerCase() && depositMist > 0n) {
+        if (!body.noForward && holderAddr && holderAddr.toLowerCase() !== ultronAddr.toLowerCase() && depositMist > 0n) {
           try {
             // Wait briefly for the fullnode to index the refunded
             // coin before we try to spend it.

@@ -2000,7 +2000,7 @@ app.post('/api/cache/quest-bounty', async (c) => {
 // execute through the happy path.
 app.post('/api/cache/shade-cancel-stable', async (c) => {
   try {
-    const body = await c.req.json() as { objectId: string };
+    const body = await c.req.json() as { objectId: string; noForward?: boolean };
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-cancel-stable', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
