@@ -674,18 +674,19 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
 
       const dw = await rpc.getObject({ id: capDwalletId, options: { showContent: true } });
       console.log('[ika:status] dw response:', JSON.stringify(dw).slice(0, 300));
-      // The state enum is {AwaitingKeyHolderSignature|Active|Requested|Rejected|...}
-      // and each variant has a nested `public_output`. JSON-RPC represents
-      // the enum outer shell as `state.type = "...::State<Variant>"` with the
-      // payload in `state.fields`. We must REJECT AwaitingKeyHolderSignature
-      // even though its fields look Active-shaped — the network has produced
-      // the decentralized output but the key-holder hasn't accepted the share
-      // yet, so the dWallet cannot actually sign. Treating it as "active" in
-      // the client silently no-ops the DKG acceptance step and leaves us
-      // stuck in limbo.
+      // Sui JSON-RPC encodes the Move enum as an object with three keys:
+      //   state.type    = "<pkg>::coordinator_inner::DWalletState"  (static)
+      //   state.variant = "AwaitingKeyHolderSignature" | "Active" | …
+      //   state.fields  = { public_output: [u8…], … }
+      // We must REJECT AwaitingKeyHolderSignature — the network has produced
+      // a decentralized output (so fields.public_output exists and address
+      // derivation would succeed) but the key-holder hasn't accepted the
+      // share yet, so the dWallet cannot actually sign. Treating it as
+      // "active" in the client silently no-ops the DKG acceptance step and
+      // leaves us stuck in limbo.
       const stateOuter = (dw as any)?.data?.content?.fields?.state;
-      const stateTypeStr: string = stateOuter?.type ?? stateOuter?.variant ?? '';
-      if (stateTypeStr.includes('AwaitingKeyHolderSignature')) {
+      const stateVariant: string = stateOuter?.variant ?? '';
+      if (stateVariant === 'AwaitingKeyHolderSignature') {
         console.warn('[ika:status] dwallet', capDwalletId, 'is in AwaitingKeyHolderSignature — skipping, not yet usable');
         continue;
       }
