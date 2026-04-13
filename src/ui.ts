@@ -4546,9 +4546,17 @@ function _nsOwnedListHtml(): string {
   const hasFilter = filterQ.length > 0 && !nsSubnameParent;
 
   // Build chip data with match info
+  // The user's primary .sui name (app.suinsName) is rendered ALONE in
+  // its own row above the grid — gold-styled, isolated, and never
+  // intermixed with the rest of the chips. Everything else (shades +
+  // owned + wishlist) shifts down to row 2+ in the grid below.
+  const primaryBare = app.suinsName ? app.suinsName.replace(/\.sui$/, '').toLowerCase() : '';
   type ChipEntry = { html: string; matches: boolean };
-  const chipEntries: ChipEntry[] = sorted.map(d => {
+  let primaryChipHtml = '';
+  const chipEntries: ChipEntry[] = [];
+  for (const d of sorted) {
     const bare = d.name.replace(/\.sui$/, '');
+    const isPrimary = primaryBare && bare.toLowerCase() === primaryBare;
     const matches = !hasFilter || bare.toLowerCase().includes(filterQ);
     // Pick shape: kiosk → blue-square, cap → black-diamond, nft → blue-square
     const shape: SkiDotVariant = d.kind === 'cap' ? 'black-diamond' : 'blue-square';
@@ -4572,12 +4580,15 @@ function _nsOwnedListHtml(): string {
       thunderHtml = `<span class="wk-ns-thunder-badge${pulseCls}" data-thunder-count="${_tcOn}" data-domain="${esc(bare)}" title="${_tcTotal} thunder${_tcTotal > 1 ? 's' : ''}${_tcOn > 0 ? ` (${_tcOn} pending)` : ''}">\u26c8\ufe0f${_tcTotal > 1 ? _tcTotal : ''}</span>`;
     }
     const kioskCls = d.inKiosk ? ' wk-ns-owned-chip--kiosk' : '';
+    const primaryCls = isPrimary ? ' wk-ns-owned-chip--primary' : '';
     const dimCls = hasFilter && !matches && _tcTotal <= 0 ? ' wk-ns-owned-chip--dim' : '';
-    return {
-      html: `<button class="wk-ns-owned-chip${kioskCls}${dimCls}" data-domain="${esc(bare)}" type="button" title="${esc(d.name)}">${shapeSvg}${esc(bare)}${badge}${expiryHtml}${thunderHtml}</button>`,
-      matches,
-    };
-  });
+    const html = `<button class="wk-ns-owned-chip${kioskCls}${primaryCls}${dimCls}" data-domain="${esc(bare)}" type="button" title="${esc(d.name)}">${shapeSvg}${esc(bare)}${badge}${expiryHtml}${thunderHtml}</button>`;
+    if (isPrimary) {
+      primaryChipHtml = html;
+    } else {
+      chipEntries.push({ html, matches });
+    }
+  }
 
   // Shade order chips (red-hexagon) — sorted by executeAfterMs ascending
   // Always shown first and never dimmed by filter
@@ -4669,7 +4680,18 @@ function _nsOwnedListHtml(): string {
       : `<div id="wk-roster-qr" data-qr-addr="${esc(qrAddr)}"${actionAttr}${colorAttr}></div>`;
   }
 
-  return `<div class="wk-ns-owned-inner">${header}<div class="wk-ns-owned-grid">${chips.join('')}</div></div>`;
+  // Primary row sits between the header and the grid. When there's a
+  // primary it's the only thing in this row, gold-styled. When there's
+  // no primary the row simply doesn't render and the grid follows the
+  // header directly. The grid contains everything else (shades + non-
+  // primary owned + wishlist), so the visual stack is:
+  //   [Header: title | stats | tally]
+  //   [Primary chip, alone, gold]
+  //   [Grid: shades first, then everything else, column-wrap]
+  const primaryRowHtml = primaryChipHtml
+    ? `<div class="wk-ns-owned-primary-row">${primaryChipHtml}</div>`
+    : '';
+  return `<div class="wk-ns-owned-inner">${header}${primaryRowHtml}<div class="wk-ns-owned-grid">${chips.join('')}</div></div>`;
 }
 
 /** Clear the NS input and reset price/status when opening the roster. */

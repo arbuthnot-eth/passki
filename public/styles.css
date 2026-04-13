@@ -2248,7 +2248,10 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  border: 1px solid rgba(77, 162, 255, 0.2);
+  /* Square off all 4 sides — full opacity 1px border so each chip
+   * reads as a clear rectangle. Rounded corners stay at 5px so it's
+   * not a literal box. */
+  border: 1px solid rgba(77, 162, 255, 0.7);
   border-radius: 5px;
   background: rgba(77, 162, 255, 0.06);
   padding: 4px 7px;
@@ -2263,8 +2266,29 @@ body {
 }
 @media (hover: hover) {
   .wk-ns-owned-chip:hover {
-    border-color: rgba(77, 162, 255, 0.5);
+    border-color: rgba(77, 162, 255, 0.95);
     background: rgba(77, 162, 255, 0.14);
+  }
+}
+/* Primary chip — gold styling for the user's main .sui name. Rendered
+ * alone in its own row above the grid so it stands out as the
+ * canonical identity. */
+.wk-ns-owned-primary-row {
+  display: flex;
+  flex-flow: row wrap;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.wk-ns-owned-chip--primary {
+  border-color: rgba(251, 191, 36, 0.85);
+  background: rgba(251, 191, 36, 0.12);
+  color: rgba(255, 235, 180, 1);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.15) inset;
+}
+@media (hover: hover) {
+  .wk-ns-owned-chip--primary:hover {
+    border-color: rgba(251, 191, 36, 1);
+    background: rgba(251, 191, 36, 0.2);
   }
 }
 .wk-ns-owned-chip--dim {
@@ -2272,24 +2296,24 @@ body {
 }
 /* Kiosk / Tradeport listed — orange #FF794B */
 .wk-ns-owned-chip--kiosk {
-  border-color: rgba(255, 121, 75, 0.3);
+  border-color: rgba(255, 121, 75, 0.75);
   background: rgba(255, 121, 75, 0.08);
 }
 @media (hover: hover) {
   .wk-ns-owned-chip--kiosk:hover {
-    border-color: rgba(255, 121, 75, 0.5);
+    border-color: rgba(255, 121, 75, 1);
     background: rgba(255, 121, 75, 0.16);
   }
 }
 /* Wishlist (black-diamond) chips */
 .wk-ns-owned-chip--wish {
-  border-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.4);
   background: rgba(255, 255, 255, 0.02);
   color: rgba(255, 255, 255, 0.4);
 }
 @media (hover: hover) {
   .wk-ns-owned-chip--wish:hover {
-    border-color: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.65);
     background: rgba(255, 255, 255, 0.06);
     color: rgba(255, 255, 255, 0.6);
   }
@@ -2341,12 +2365,12 @@ body {
 .wk-ns-wish-rm:hover { color: rgba(239, 68, 68, 0.8); }
 /* Shade order chips — red #ef4444 */
 .wk-ns-owned-chip--shade {
-  border-color: rgba(239, 68, 68, 0.3);
+  border-color: rgba(239, 68, 68, 0.75);
   background: rgba(239, 68, 68, 0.08);
 }
 @media (hover: hover) {
   .wk-ns-owned-chip--shade:hover {
-    border-color: rgba(239, 68, 68, 0.5);
+    border-color: rgba(239, 68, 68, 1);
     background: rgba(239, 68, 68, 0.16);
   }
 }
