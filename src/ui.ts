@@ -43,8 +43,8 @@ import {
   getActiveSponsoredList,
   resolveNameToAddress,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
-import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildCreateStableShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildCancelStableShadeOrderTx, buildCancelRefundStableShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, findCreatedStableShadeOrderRef, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
+import { connectShadeExecutor, scheduleShadeExecution, scheduleStableShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, pokeIouSweeper, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import { ethToTron } from './client/chains.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
@@ -247,6 +247,8 @@ export interface AppState {
   ethAddress: string;
   solAddress: string;
   solBalance: number;
+  /** iUSD SPL balance on Solana for the user's dWallet-derived Solana address. */
+  solIusdBalance: number;
   skiMenuOpen: boolean;
   copied: boolean;
   splashSponsor: boolean;
@@ -263,6 +265,7 @@ const app: AppState = {
   ethAddress: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; if (!a) return ''; const c = localStorage.getItem(`ski:ika-addrs:${a}`); return c ? (JSON.parse(c).eth || '') : ''; } catch { return ''; } })(),
   solAddress: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; if (!a) return ''; const c = localStorage.getItem(`ski:ika-addrs:${a}`); return c ? (JSON.parse(c).sol || '') : ''; } catch { return ''; } })(),
   solBalance: 0,
+  solIusdBalance: 0,
   skiMenuOpen: (() => { try { return localStorage.getItem('ski:lift') === '1'; } catch { return false; } })(),
   copied: false,
   splashSponsor: false,
@@ -2808,7 +2811,7 @@ function _renderNetworkSelect() {
 const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold', IKA: 'ika', SOL: 'solana' };
 // Conservative default prices so dust filtering works before live prices arrive.
 // These are intentionally LOW — better to undervalue and filter dust than overvalue and show it.
-const _DEFAULT_TOKEN_PRICES: Record<string, number> = { NS: 0.018, WAL: 0.069, DEEP: 0.026, XAUM: 4492, IKA: 0.003, SOL: 82 };
+const _DEFAULT_TOKEN_PRICES: Record<string, number> = { SUI: 0.9, NS: 0.018, WAL: 0.069, DEEP: 0.026, XAUM: 4492, IKA: 0.003, SOL: 82 };
 let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() => {
   try {
     const raw = localStorage.getItem('ski:token-prices');
@@ -2827,6 +2830,10 @@ let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() 
 
 function getTokenPrice(symbol: string): number | null { return tokenPriceCache[symbol]?.price ?? _DEFAULT_TOKEN_PRICES[symbol] ?? null; }
 function getNsTokenPrice(): number | null { return getTokenPrice('NS'); }
+/** SUI/USD with a sane fallback chain: live cache → static default → 0.
+ *  Used anywhere a card or aggregator would otherwise zero out SUI
+ *  value on a fresh render before suiPriceCache finishes seeding. */
+function getSuiPriceWithFallback(): number { return suiPriceCache?.price || _DEFAULT_TOKEN_PRICES.SUI || 0; }
 
 /** Fetch prices for all non-SUI, non-stable tokens via CoinGecko + DexScreener fallback. */
 async function fetchTokenPrices(): Promise<void> {
@@ -2931,17 +2938,22 @@ function getTotalSui(): number {
   return totalUsd / price;
 }
 
+// Same-origin proxy (server relays to Helius with HELIUS_API_KEY) first.
+// Public fallbacks kept as a lifeline if the proxy is down, but the
+// browser should basically always be hitting /api/sol-rpc in practice
+// since mainnet-beta 403s most origins and publicnode is rate-limited.
+const SOL_RPCS = [
+  '/api/sol-rpc',
+  'https://solana-rpc.publicnode.com',
+];
+
 /** Fetch SOL balance for the IKA dWallet Solana address. Races multiple Solana RPCs. */
 async function _fetchSolBalance(): Promise<void> {
   if (!app.solAddress) return;
-  const endpoints = [
-    'https://solana-rpc.publicnode.com',
-    'https://api.mainnet-beta.solana.com',
-  ];
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [app.solAddress] });
   try {
     const result = await Promise.any(
-      endpoints.map(url =>
+      SOL_RPCS.map(url =>
         fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
           .then(r => r.json())
           .then((data: any) => {
@@ -2952,6 +2964,59 @@ async function _fetchSolBalance(): Promise<void> {
       ),
     );
     app.solBalance = result / 1e9;
+  } catch { /* non-blocking */ }
+}
+
+// Cached iUSD SPL mint address from the treasury. Fetched once per page
+// load; if the mint doesn't exist yet the endpoint returns null and we
+// skip the SPL balance fetch for the rest of the session.
+let _iusdSolMintCache: string | null | undefined;
+async function _getIusdSolMint(): Promise<string | null> {
+  if (_iusdSolMintCache !== undefined) return _iusdSolMintCache;
+  try {
+    const res = await fetch('/api/cache/iusd-sol-mint');
+    if (!res.ok) { _iusdSolMintCache = null; return null; }
+    const data = await res.json() as { mintAddress?: string | null };
+    _iusdSolMintCache = data.mintAddress || null;
+    return _iusdSolMintCache;
+  } catch {
+    _iusdSolMintCache = null;
+    return null;
+  }
+}
+
+/**
+ * Fetch iUSD SPL balance for the user's Solana dWallet address.
+ * Uses SPL Token's `getTokenAccountsByOwner` (JSON-parsed) so we don't
+ * need the @solana/web3.js bundle client-side. Races the same RPC pool
+ * as `_fetchSolBalance`. iUSD SPL is 9 decimals (parity with Sui iUSD).
+ */
+async function _fetchSolIusdBalance(): Promise<void> {
+  if (!app.solAddress) return;
+  const mint = await _getIusdSolMint();
+  if (!mint) return;
+  const body = JSON.stringify({
+    jsonrpc: '2.0', id: 1, method: 'getTokenAccountsByOwner',
+    params: [app.solAddress, { mint }, { encoding: 'jsonParsed' }],
+  });
+  try {
+    const result = await Promise.any(
+      SOL_RPCS.map(url =>
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+          .then(r => r.json())
+          .then((data: any) => {
+            const nodes = data?.result?.value;
+            if (!Array.isArray(nodes)) throw new Error('no value');
+            return nodes as Array<{ account?: { data?: { parsed?: { info?: { tokenAmount?: { uiAmount?: number } } } } } }>;
+          })
+      ),
+    );
+    let total = 0;
+    for (const n of result) {
+      const ui = n?.account?.data?.parsed?.info?.tokenAmount?.uiAmount;
+      if (typeof ui === 'number' && Number.isFinite(ui)) total += ui;
+    }
+    app.solIusdBalance = total;
   } catch { /* non-blocking */ }
 }
 
@@ -2966,13 +3031,14 @@ export async function refreshPortfolio(force = false) {
   const fetchedFor = ws.address; // capture before any await
 
   try {
-    // gRPC for all balances + SUI price + token prices + SuiNS + SOL balance in parallel
+    // gRPC for all balances + SUI price + token prices + SuiNS + SOL balance + iUSD SPL in parallel
     const [allBalResult, suinsName, suiPrice] = await Promise.all([
       grpcClient.core.listBalances({ owner: fetchedFor }).catch(() => null),
       lookupSuiNS(fetchedFor),
       fetchSuiPrice(),
       fetchTokenPrices(),
       _fetchSolBalance(),
+      _fetchSolIusdBalance(),
     ]);
 
     // Wallet switched while fetch was in-flight — discard stale result
@@ -3020,13 +3086,35 @@ export async function refreshPortfolio(force = false) {
       const tp = getTokenPrice(c.symbol);
       if (tp != null && tp > 0) tokensUsd += c.balance * tp;
     }
-    // Include Solana balance in total
+    // Include Solana balance in total — native SOL + iUSD SPL ($1 peg)
     const solPrice = getTokenPrice('SOL');
     const solUsd = (solPrice && app.solBalance > 0) ? app.solBalance * solPrice : 0;
+    const solIusdUsd = app.solIusdBalance > 0 ? app.solIusdBalance : 0;
+    // Pending shade deposits — iUSD locked in StableShadeOrder<iUSD>
+    // objects. These auto-execute into SuiNS registrations for the
+    // holder within the grace period, or refund on cancel. Counting
+    // them in the total keeps the user's visible "net worth" honest
+    // across the shade lifecycle.
+    let shadePendingUsd = 0;
+    try {
+      if (_shadeDoState && _shadeDoState.orders?.length) {
+        const px = suiPrice ?? 0;
+        for (const o of _shadeDoState.orders) {
+          if (o.status !== 'pending') continue;
+          const raw = Number(BigInt(o.depositMist || '0'));
+          if (o.isStable) {
+            shadePendingUsd += raw / 1e9; // iUSD 1:1
+          } else if (px > 0) {
+            shadePendingUsd += (raw / 1e9) * px;
+          }
+        }
+      }
+    } catch { /* non-fatal */ }
     if (suiUsd != null) {
-      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd;
+      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd + solIusdUsd + shadePendingUsd;
     } else if (app.usd == null) {
-      app.usd = app.stableUsd + tokensUsd + solUsd > 0 ? app.stableUsd + tokensUsd + solUsd : null;
+      const nonNullTotal = app.stableUsd + tokensUsd + solUsd + solIusdUsd + shadePendingUsd;
+      app.usd = nonNullTotal > 0 ? nonNullTotal : null;
     }
 
     // Keep active detail balance in sync if it's showing the connected wallet
@@ -4725,7 +4813,7 @@ async function _fetchCardBalance(addr: string): Promise<{ suiUsd: number; stable
     });
     const data = await res.json() as { data?: { address?: { balances?: { nodes?: Array<{ coinType: { repr: string }; totalBalance: string }> } } } };
     const nodes = data?.data?.address?.balances?.nodes ?? [];
-    const suiPrice = suiPriceCache?.price ?? 0;
+    const suiPrice = getSuiPriceWithFallback();
     let suiBal = 0;
     let stableUsd = 0;
     for (const n of nodes) {
@@ -5797,6 +5885,7 @@ function menuCopyAddress(e: Event) {
 function _treasuryPanelHtml(): string {
   const solPrice = getTokenPrice('SOL') ?? 82;
   const solUsd = app.solBalance > 0 ? (app.solBalance * solPrice).toFixed(2) : '0.00';
+  const solIusd = app.solIusdBalance > 0 ? app.solIusdBalance.toFixed(2) : '0.00';
   const totalRevenue = app.usd != null ? (app.usd * 0.05).toFixed(2) : '0.00'; // 5% of portfolio as proxy
 
   return `
@@ -5860,6 +5949,10 @@ function _treasuryPanelHtml(): string {
         <div class="wk-treasury-row">
           <span class="wk-treasury-key">SOL Balance</span>
           <span class="wk-treasury-val">${app.solBalance > 0 ? app.solBalance.toFixed(4) : '—'} SOL ($${solUsd})</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">iUSD (Solana)</span>
+          <span class="wk-treasury-val">${app.solIusdBalance > 0 ? app.solIusdBalance.toFixed(2) : '—'} iUSD ($${solIusd})</span>
         </div>
         <div class="wk-treasury-row">
           <span class="wk-treasury-key">Chains</span>
@@ -6148,6 +6241,39 @@ function renderSkiMenu() {
     const stableBal = app.stableUsd < 1 ? app.stableUsd.toFixed(4) : app.stableUsd.toFixed(2);
     _coinChipsCache.push({ icon: stableIcon, val: app.stableUsd, html: _usdMode ? _fmtUsdChipHtml(app.stableUsd) : _fmtCoinHtml(app.stableUsd, 'wk-coin-frac--usd'), key: 'usd', colorCls: 'wk-coin-item--usd', tooltip: `${stableBal} USDC` });
   }
+
+  // Pending shade deposits — iUSD locked in StableShadeOrder<iUSD>
+  // objects waiting to execute. Surfaces in the dropdown so the
+  // user sees the $ attributed to their pending registrations,
+  // even though it isn't liquid.
+  try {
+    const _pendingShade = _coinChipsCache.some(c => c.key === 'shade');
+    if (!_pendingShade && _shadeDoState && _shadeDoState.orders?.length) {
+      const _suiPx = getSuiPriceWithFallback();
+      let _shadeUsd = 0;
+      for (const o of _shadeDoState.orders) {
+        if (o.status !== 'pending') continue;
+        const raw = Number(BigInt(o.depositMist || '0'));
+        if (o.isStable) {
+          _shadeUsd += raw / 1e9; // iUSD 1:1
+        } else {
+          _shadeUsd += (raw / 1e9) * _suiPx;
+        }
+      }
+      if (_shadeUsd >= 0.01) {
+        const _shadeTip = `${_shadeUsd.toFixed(2)} pending in shades`;
+        _coinChipsCache.push({
+          icon: stableIcon,
+          val: _shadeUsd,
+          html: _usdMode ? _fmtUsdChipHtml(_shadeUsd) : _fmtCoinHtml(_shadeUsd, 'wk-coin-frac--usd'),
+          key: 'shade',
+          colorCls: 'wk-coin-item--usd wk-coin-item--shade-pending',
+          tooltip: _shadeTip,
+        });
+      }
+    }
+  } catch { /* best-effort */ }
+
   _coinChipsCache.sort((a, b) => b.val - a.val);
   // Auto-select: if 'USD' (balView default), match the first stablecoin chip; otherwise highest value
   if (selectedCoinSymbol === 'USD' && _coinChipsCache.length) {
@@ -8451,21 +8577,22 @@ function renderSkiMenu() {
    *  deposit and the ShadeExecutorAgent alarm handles the
    *  rest). */
   async function _shadeCreate(address: string, label: string, btn?: HTMLButtonElement | null, executeAfterMs?: number) {
-    const price = suiPriceCache?.price;
-    if (!price || price <= 0) { showToast('SUI price unavailable \u2014 try again'); return; }
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
     const effectiveMs = executeAfterMs ?? nsGraceEndMs;
     try {
+      // Preferred path: user-funded StableShadeOrder<iUSD>. User owns the
+      // order on-chain, so cancel refunds flow back to them naturally —
+      // no ultron-forwarding hack needed.
       let txBytes: Uint8Array;
-      let orderInfo: Omit<ShadeOrderInfo, 'objectId'>;
+      let orderInfo: Omit<ShadeOrderInfo, 'objectId'> & { coinType?: string };
       try {
-        const result = await buildCreateShadeOrderTx(address, label, effectiveMs, price);
+        const result = await buildCreateStableShadeOrderTx(address, label, effectiveMs);
         txBytes = result.txBytes;
         orderInfo = result.orderInfo;
       } catch (buildErr) {
         const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
-        if (msg.includes('Insufficient') || msg.includes('insufficient') || msg.includes('GasBalanceTooLow')) {
-          // User can't afford the SUI deposit — proxy via ultron
+        if (msg.includes('Insufficient iUSD') || msg.includes('insufficient')) {
+          // User lacks iUSD — proxy via ultron (ultron-funded fallback)
           showToast(`\u26a1 Ultron fronting shade deposit for ${label}.sui\u2026`);
           const proxyRes = await fetch('/api/cache/shade-proxy', {
             method: 'POST',
@@ -8497,9 +8624,8 @@ function renderSkiMenu() {
         throw buildErr;
       }
       if (btn) btn.textContent = '\u270f';
-      const { digest, effects } = await signAndExecuteTransaction(txBytes);
-      let orderId = extractShadeOrderIdFromEffects(effects);
-      const placeholderId = orderId ?? `pending:${digest || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
+      const { digest } = await signAndExecuteTransaction(txBytes);
+      const placeholderId = `pending:${digest || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
       const fullOrder: ShadeOrderInfo = { ...orderInfo, objectId: placeholderId };
       addShadeOrder(address, fullOrder);
       nsShadeOrder = fullOrder;
@@ -8511,31 +8637,31 @@ function renderSkiMenu() {
       showToast(`${label}.sui shaded \u2713`);
       setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_SHORT_MS);
       const resolveAndSchedule = async () => {
-        if (!orderId && digest) {
-          orderId = await findCreatedShadeOrderId(digest);
-          if (orderId && orderId !== placeholderId) {
-            removeShadeOrder(address, placeholderId);
-            fullOrder.objectId = orderId;
-            addShadeOrder(address, fullOrder);
-            if (nsShadeOrder?.objectId === placeholderId) nsShadeOrder = fullOrder;
-            const idx = nsShadeOrders.findIndex(o => o.objectId === placeholderId);
-            if (idx >= 0) nsShadeOrders[idx] = { ...fullOrder };
-            else nsShadeOrders.push({ ...fullOrder });
-            _patchNsOwnedList();
-            try { cancelShadeExecution(placeholderId); } catch {}
-          }
+        // StableShadeOrder<T> — must resolve via findCreatedStableShadeOrderRef
+        // because scheduleStableShadeExecution needs initialSharedVersion.
+        if (!digest) return;
+        const ref = await findCreatedStableShadeOrderRef(digest);
+        if (!ref) {
+          console.warn('[Shade] failed to resolve StableShadeOrder ref from', digest);
+          return;
         }
-        const resolvedId = orderId ?? placeholderId;
-        // Connect WS for state updates (best-effort — don't block scheduling)
+        removeShadeOrder(address, placeholderId);
+        fullOrder.objectId = ref.objectId;
+        addShadeOrder(address, fullOrder);
+        if (nsShadeOrder?.objectId === placeholderId) nsShadeOrder = fullOrder;
+        const idx = nsShadeOrders.findIndex(o => o.objectId === placeholderId);
+        if (idx >= 0) nsShadeOrders[idx] = { ...fullOrder };
+        _patchNsOwnedList();
+        // Connect WS for completion notifications (best-effort)
         try {
           connectShadeExecutor(address, (state: ShadeExecutorState) => {
             _shadeDoState = state;
-            const doOrder = state.orders.find(o => o.objectId === resolvedId);
+            const doOrder = state.orders.find(o => o.objectId === ref.objectId);
             if (doOrder?.status === 'completed') {
               nsShadeOrder = null;
               _stopShadeCountdown();
-              removeShadeOrder(address, resolvedId);
-              nsShadeOrders = nsShadeOrders.filter(o => o.objectId !== resolvedId);
+              removeShadeOrder(address, ref.objectId);
+              nsShadeOrders = nsShadeOrders.filter(o => o.objectId !== ref.objectId);
               nsAvail = 'owned';
               _patchNsStatus();
               _patchNsPrice();
@@ -8544,24 +8670,24 @@ function renderSkiMenu() {
               showToast(`${fullOrder.domain}.sui auto-registered \u2713 ${doOrder.digest ? doOrder.digest.slice(0, 8) + '\u2026' : ''}`);
             }
           });
-        } catch { /* WS optional — scheduling uses HTTP fallback */ }
-        // Schedule with DO (tries WS RPC, falls back to HTTP POST)
+        } catch { /* WS optional */ }
         try {
-          const schedResult = await scheduleShadeExecution({
-            objectId: resolvedId,
+          const schedResult = await scheduleStableShadeExecution({
+            objectId: ref.objectId,
             domain: fullOrder.domain,
             executeAfterMs: fullOrder.executeAfterMs,
             targetAddress: fullOrder.targetAddress,
             salt: fullOrder.salt,
             ownerAddress: address,
             depositMist: String(fullOrder.depositMist),
-            preferredRoute: 'sui-ns',
+            initialSharedVersion: ref.initialSharedVersion,
+            coinType: ref.coinType || orderInfo.coinType,
           });
           if (!schedResult.success) {
-            console.warn('[Shade] DO scheduling failed:', schedResult.error);
+            console.warn('[Shade] DO scheduleStable failed:', schedResult.error);
           }
         } catch (schedErr) {
-          console.warn('[Shade] DO scheduling error:', schedErr);
+          console.warn('[Shade] DO scheduleStable error:', schedErr);
         }
       };
       resolveAndSchedule();
@@ -8602,9 +8728,15 @@ function renderSkiMenu() {
       let firstErr = '';
       for (const o of ordersToCxl) {
         try {
-          const tx = isWaapWallet
-            ? await buildCancelRefundShadeOrderTx(address, o.objectId)
-            : await buildCancelShadeOrderTx(address, o.objectId);
+          const isStable = (o as { stable?: boolean }).stable === true;
+          const coinType = (o as { coinType?: string }).coinType;
+          const tx = isStable
+            ? (isWaapWallet
+                ? await buildCancelRefundStableShadeOrderTx(address, o.objectId, coinType)
+                : await buildCancelStableShadeOrderTx(address, o.objectId, coinType))
+            : (isWaapWallet
+                ? await buildCancelRefundShadeOrderTx(address, o.objectId)
+                : await buildCancelShadeOrderTx(address, o.objectId));
           if (btn) btn.textContent = `\u270f ${ordersToCxl.indexOf(o) + 1}/${ordersToCxl.length}`;
           const result = await signAndExecuteTransaction(tx);
           if (isWaapWallet) {
@@ -8933,6 +9065,15 @@ function renderSkiMenu() {
   if (!nsShadeOrdersPruned && ws.address) {
     nsShadeOrdersPruned = true;
     pruneShadeOrders(ws.address).catch(() => {});
+    // Aggressive recall: poke the server-side iou-sweeper so any
+    // expired Thunder IOU / ShieldedVault outbound from this wallet
+    // (or anyone) comes home immediately instead of waiting up to
+    // 10 min for the cron. Fire-and-forget — logs result on success.
+    pokeIouSweeper().then((r) => {
+      if (r.recalled && r.recalled > 0) {
+        showToast(`Recalled ${r.recalled} expired Thunder escrow${r.recalled > 1 ? 's' : ''}`);
+      }
+    }).catch(() => {});
     nsShadeOrder = findShadeOrder(ws.address, nsLabel.trim());
 
     // Auto-schedule recovery — ensure all pending orders are registered with the DO
@@ -10240,7 +10381,10 @@ function bindEvents() {
       let _activeStormCounterpartyAddr = '';
       const _CARD_BAL_TTL = 60_000; // 1 min in-memory cache
       const _CARD_BAL_PERSIST_TTL = 30 * 60 * 1000; // 30 min localStorage cache
-      const _CARD_BAL_KEY = (label: string) => `ski:card-bal:v1:${label.toLowerCase()}`;
+      // v2 bump: v1 entries baked with the SUI-price=0 bug need to be
+      // invalidated so recalled funds reappear without waiting for the
+      // 30-min persist TTL.
+      const _CARD_BAL_KEY = (label: string) => `ski:card-bal:v2:${label.toLowerCase()}`;
       const _loadCardBalPersisted = (label: string): { usd: number; addr: string } | null => {
         try {
           const raw = localStorage.getItem(_CARD_BAL_KEY(label));
@@ -10309,7 +10453,7 @@ function bindEvents() {
           const _balLabel = _bal >= 1 ? Math.round(_bal).toLocaleString() : _bal.toFixed(2);
           const balHtml = `<span class="ski-idle-card-bal"><span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_balLabel}</span></span> `;
           const iusdBadge = _suiamiVerifyHtml ? ' <img src="/assets/iusd.svg" class="ski-idle-card-iusd" width="16" height="16" alt="iUSD">' : '';
-          const _atBtn = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
+          const _atBtn = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="22" height="22" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.8"/></svg></button>`;
           const _recallBtn = `<button class="ski-idle-card-recall" id="ski-idle-recall-vaults" type="button" title="Recall all unclaimed vaults">\u21A9</button>`;
           card.innerHTML = `${_atBtn}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${balHtml}${iusdBadge}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${_recallBtn}`;
           return;
@@ -10344,7 +10488,7 @@ function bindEvents() {
         const _cb = Math.max(0, cachedBal);
         const _cbLabel = cachedBal < 0 ? '\u2026' : (_cb >= 1 ? Math.round(_cb).toLocaleString() : _cb.toFixed(2));
         const cachedBalHtml = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_cbLabel}</span>`;
-        const _atBtn2 = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
+        const _atBtn2 = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="22" height="22" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.8"/></svg></button>`;
         card.innerHTML = `${_atBtn2}<span class="ski-idle-card-name" title="Populate input">${esc(name)}</span><span class="ski-idle-card-bal" id="ski-idle-card-bal">${cachedBalHtml}</span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
 
         // Skip the fetch only when in-memory cache is still fresh. A
@@ -10369,7 +10513,7 @@ function bindEvents() {
             });
             const gql2 = await r2.json() as any;
             let totalUsd = 0;
-            const price = suiPriceCache?.price ?? 0.87;
+            const price = getSuiPriceWithFallback();
             const SUI_CT = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
             const USDC_CT = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
             const IUSD_CT = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
@@ -10385,8 +10529,9 @@ function bindEvents() {
               else if (ct === DEEP_CT) totalUsd += (Number(raw) / 1e6) * 0.03;
             }
             const ws = getState();
-            if (ws.address && addr?.toLowerCase() === ws.address.toLowerCase() && app.solBalance > 0) {
-              totalUsd += app.solBalance * (getTokenPrice('SOL') ?? 83);
+            if (ws.address && addr?.toLowerCase() === ws.address.toLowerCase()) {
+              if (app.solBalance > 0) totalUsd += app.solBalance * (getTokenPrice('SOL') ?? 83);
+              if (app.solIusdBalance > 0) totalUsd += app.solIusdBalance; // iUSD is $1 peg
             }
             // Cache the balance (memory + persisted)
             _cardBalCache = { addr, usd: totalUsd, ts: Date.now() };
@@ -14135,7 +14280,10 @@ function bindEvents() {
             : [];
           if (_attachments.length === 0) {
             // Plain text bubble, no attachments — fast path.
-            return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
+            const _editedBadge = (m as unknown as { isEdited?: boolean }).isEdited
+              ? ' <span class="ski-idle-bubble-edited" title="edited">(edited)</span>'
+              : '';
+            return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}${_editedBadge}</div>`;
           }
           // Mixed / attachment-only bubble: one container with an
           // optional text line, then the attachment rows. Keeps the
@@ -14366,6 +14514,72 @@ function bindEvents() {
         convoEl.addEventListener('scroll', _syncProgress, { passive: true });
         // Recompute on next frame in case layout hasn't settled (fonts, QR svg).
         requestAnimationFrame(_syncProgress);
+
+        // Aggressive auto-claim: when a recipient loads a storm, fire the
+        // existing per-bubble click flow for every unsettled transfer
+        // addressed to them. The click handler below already handles the
+        // full Seal-decrypt + buildShieldedClaimTx + sign + submit path,
+        // plus the settled-paint update — we just dispatch the clicks so
+        // the user doesn't have to.
+        //
+        // Rate-limited: 800ms stagger between claims so we don't flood
+        // the wallet with concurrent sign prompts. Skips anything
+        // already settled, already recall-armed, or expired (those go
+        // through the server sweeper instead).
+        setTimeout(() => {
+          const claimable = Array.from(convoEl.querySelectorAll<HTMLElement>(
+            '.ski-idle-bubble--transfer[data-iou-role="recipient"]:not(.ski-idle-bubble--transfer-settled):not(.ski-idle-bubble--recall-armed)',
+          ));
+          if (claimable.length === 0) return;
+          try { console.log(`[thunder] auto-claiming ${claimable.length} incoming transfer(s)`); } catch {}
+          let delay = 0;
+          for (const b of claimable) {
+            setTimeout(() => {
+              try {
+                b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              } catch {}
+            }, delay);
+            delay += 800;
+          }
+        }, 400);
+
+        // Double-click an out-bubble to edit the text. Transfer bubbles,
+        // attachment-mixed bubbles, and incoming bubbles are skipped —
+        // only the plain text the sender wrote is mutable. Delegates
+        // once on convoEl so we don't touch the dense per-bubble click
+        // handler below. Sender auth is enforced server-side; the DO's
+        // /update handler rejects anyone who isn't the original sender.
+        if (!(convoEl as unknown as { _skiEditBound?: boolean })._skiEditBound) {
+          (convoEl as unknown as { _skiEditBound: boolean })._skiEditBound = true;
+          convoEl.addEventListener('dblclick', async (ev) => {
+            const target = ev.target as HTMLElement | null;
+            const bub = target?.closest<HTMLElement>('.ski-idle-bubble--out');
+            if (!bub) return;
+            if (bub.classList.contains('ski-idle-bubble--transfer')) return;
+            if (bub.classList.contains('ski-idle-bubble--mixed')) return;
+            const msgId = bub.dataset.id || '';
+            if (!msgId) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            const _currentText = (bub.textContent || '').replace(/\s*\(edited\)\s*$/, '').trim();
+            const next = window.prompt('Edit thunder', _currentText);
+            if (next == null) return; // user cancelled
+            const trimmed = next.trim();
+            if (!trimmed || trimmed === _currentText) return;
+            try {
+              const { editThunder } = await import('./client/thunder-stack.js');
+              // groupUuid is captured from the enclosing convo-open
+              // closure and matches the storm we're viewing.
+              await editThunder({ groupRef: { uuid: groupUuid }, messageId: msgId, text: trimmed });
+              // Optimistic patch — replace text + append (edited)
+              bub.innerHTML = `${esc(trimmed)} <span class="ski-idle-bubble-edited" title="edited">(edited)</span>`;
+              showToast('Thunder edited \u2713');
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              showToast(`Edit failed: ${msg.slice(0, 120)}`);
+            }
+          });
+        }
 
         // Click-to-delete: tap once = confirm (red), tap again = strike/delete
         // Incoming signals on owned names → on-chain strike (rebate → treasury)
@@ -14616,6 +14830,9 @@ function bindEvents() {
                     showToast(_isShielded ? '\u23f3 Claiming shielded\u2026' : '\u23f3 Claiming IOU\u2026');
                     try {
                       let bytes: Uint8Array;
+                      // Captured by the shielded branch; used by the
+                      // optimistic balance credit on success.
+                      let _claimedMist = 0n;
                       if (_isShielded) {
                         // Shielded claim needs the opening (r, amount)
                         // recovered from the Seal-encrypted blob stored
@@ -14645,6 +14862,7 @@ function bindEvents() {
                         const openingLen = view2.getUint32(0, true);
                         const openingB64 = new TextDecoder().decode(plaintext.slice(4, 4 + openingLen));
                         const { blinding, amountMist } = decodeOpening(openingB64);
+                        _claimedMist = amountMist;
                         bytes = await buildShieldedClaimTx({
                           sender: getState().address || '',
                           vaultObjectId: ref.objectId,
@@ -14655,6 +14873,17 @@ function bindEvents() {
                         });
                       } else {
                         bytes = await buildClaimIouTx(ref.objectId, ref.initialSharedVersion, _claimSponsor ?? undefined);
+                        // Legacy IOU — parse amount from the visible
+                        // bubble text ("$X.XX") as a best-effort credit.
+                        const amtText = _bubEl.querySelector('.ski-idle-bubble-amt')?.textContent || '';
+                        const amtMatch = amtText.match(/\$([\d.]+)/);
+                        if (amtMatch) {
+                          const usd = parseFloat(amtMatch[1]);
+                          const suiPrice = getSuiPriceWithFallback();
+                          if (usd > 0 && suiPrice > 0) {
+                            _claimedMist = BigInt(Math.floor((usd / suiPrice) * 1e9));
+                          }
+                        }
                       }
                       const r = _claimSponsor
                         ? await signAndExecuteSponsoredTx(bytes, true)
@@ -14668,8 +14897,43 @@ function bindEvents() {
                       // paint and the stamped pill.
                       _bubEl.classList.add('ski-idle-bubble--transfer-settled');
                       _markSettled(_txDigest, claimDigest || undefined);
-                      // Refresh balance immediately so the claimed funds show up
-                      setTimeout(() => refreshPortfolio(true), 2000);
+                      // Optimistic balance: credit the user's liquid
+                      // SUI immediately so the SKI menu / card / total
+                      // USD all reflect the claimed amount without
+                      // waiting on the indexer. refreshPortfolio still
+                      // runs in the background to reconcile with the
+                      // real on-chain state, but the user never sees
+                      // the gap.
+                      try {
+                        const _amtSui = Number(_claimedMist) / 1e9;
+                        app.sui += _amtSui;
+                        const _suiPrice = getSuiPriceWithFallback();
+                        if (typeof app.usd === 'number') {
+                          app.usd += _amtSui * _suiPrice;
+                        }
+                        // Invalidate the per-card balance cache for
+                        // every address so any card rendered next
+                        // picks up fresh data. Keyed by lowercase
+                        // address across both render paths (NFT
+                        // hover card + idle-overlay card).
+                        for (const k of Object.keys(_cardBalCache)) delete _cardBalCache[k];
+                        try {
+                          for (const k of Object.keys(localStorage)) {
+                            if (k.startsWith('ski:card-bal:')) localStorage.removeItem(k);
+                          }
+                        } catch {}
+                        // Re-render SKI menu + any visible card so
+                        // the new balance lands immediately.
+                        render();
+                        if (nsLabel) _updateIdleCard(nsLabel);
+                      } catch { /* non-fatal — indexer path still runs below */ }
+                      // Indexer-reconciled refresh. Force-bypass the
+                      // 15s throttle. Fires twice — once immediately
+                      // (catches any balances not covered by the
+                      // optimistic path like stables) and once at
+                      // 2500ms (catches slow-indexing fullnodes).
+                      refreshPortfolio(true).catch(() => {});
+                      setTimeout(() => refreshPortfolio(true).catch(() => {}), 2500);
                       if (claimDigest) {
                         _bubEl.dataset.tx = claimDigest;
                         _bubEl.dataset.claimTx = claimDigest;

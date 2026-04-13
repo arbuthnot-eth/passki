@@ -539,6 +539,146 @@ window.addEventListener('ski:rumble', async (e) => {
   }
 });
 
+// ─── Admin: Rumble Ultron ─────────────────────────────────────────────
+// Expose window.rumbleUltron('ed25519' | 'secp256k1' | 'both') so an
+// admin can provision ultron's IKA dWallets from the devtools console
+// without shipping visible UI. The connected wallet pays the IKA + SUI
+// and signs the DKG tx; the resulting DWalletCap transfers to ultron.
+//
+// Note: this provisions the cap but does NOT do user-share re-encryption
+// — ultron owns the cap but cannot yet sign autonomously without the
+// browser that ran DKG. Autonomous signing is a follow-up.
+const ULTRON_ADDRESS = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+const _rumbleUltron = async (curves: 'ed25519' | 'secp256k1' | 'both' = 'ed25519') => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return { error: 'not connected' };
+  }
+  const { rumble } = await loadIka();
+  const { Curve } = await import('@ika.xyz/sdk');
+  const curveSet = curves === 'both'
+    ? [Curve.SECP256K1, Curve.ED25519]
+    : curves === 'secp256k1'
+      ? [Curve.SECP256K1]
+      : [Curve.ED25519];
+
+  // Fetch the deterministic encryption seed from the admin-gated server
+  // endpoint. The seed is derived from SHADE_KEEPER_PRIVATE_KEY so a
+  // keeper runtime can reconstruct the same encryption keys and sign
+  // autonomously on ultron's behalf later — no seed storage needed.
+  // Only one curve at a time for now (the endpoint + flow is per-curve).
+  const primaryCurve = curves === 'secp256k1' ? 'secp256k1' : 'ed25519';
+  console.log(`[rumble-ultron] fetching deterministic seed (${primaryCurve})…`);
+  let encryptionSeed: Uint8Array | undefined;
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const message = `rumble-ultron:${ULTRON_ADDRESS}:${today}`;
+    const { signPersonalMessage } = await import('./wallet.js');
+    const sig = await signPersonalMessage(new TextEncoder().encode(message));
+    const seedRes = await fetch('/api/cache/rumble-ultron-seed', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        curve: primaryCurve,
+        adminAddress: ws.address,
+        signature: sig.signature,
+        message,
+      }),
+    });
+    const seedJson = await seedRes.json() as { seedHex?: string; error?: string };
+    if (!seedRes.ok || !seedJson.seedHex) {
+      throw new Error(seedJson.error || `HTTP ${seedRes.status}`);
+    }
+    encryptionSeed = new Uint8Array(seedJson.seedHex.match(/.{2}/g)!.map(h => parseInt(h, 16)));
+    console.log('[rumble-ultron] seed fetched, length:', encryptionSeed.length);
+  } catch (err) {
+    console.error('[rumble-ultron] seed fetch failed:', err);
+    showToast(`Seed fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+
+  showToast(`Rumble Ultron \u2014 provisioning ${curves} \u2192 ${ULTRON_ADDRESS.slice(0, 10)}\u2026`);
+  try {
+    const result = await rumble(
+      ws.address,
+      (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+      (stage: string) => console.log(`[rumble-ultron] ${stage}`),
+      ULTRON_ADDRESS,
+      { curves: curveSet, encryptionSeed },
+    );
+    console.log('[rumble-ultron] result:', result);
+    const chains: string[] = [];
+    if (result.btcAddress) chains.push('BTC');
+    if (result.ethAddress) chains.push('ETH');
+    if (result.solAddress) chains.push('SOL');
+    if (chains.length) {
+      showToast(`Ultron rumbled \u2014 ${chains.join(' + ')} cap \u2192 ultron`);
+    } else {
+      showToast(`Ultron rumble failed \u2014 ${result.error || 'check console'}`);
+    }
+    return result;
+  } catch (err) {
+    console.error('[rumble-ultron] error:', err);
+    showToast(err instanceof Error ? err.message : 'Rumble Ultron failed');
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+// Expose on multiple globals so it's reachable from `rumbleUltron()`
+// bare, `window.rumbleUltron()`, and `globalThis.rumbleUltron()`.
+(window as unknown as { rumbleUltron: typeof _rumbleUltron }).rumbleUltron = _rumbleUltron;
+(globalThis as unknown as { rumbleUltron: typeof _rumbleUltron }).rumbleUltron = _rumbleUltron;
+console.log('[ski] rumbleUltron hook installed — call rumbleUltron("ed25519")');
+
+// Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
+// Pass the recipient address explicitly (typically the new sol@ultron
+// from window.rumbleUltron). Admin-gated via the same signed-message
+// pattern as the seed endpoint.
+const _sweepSolUltron = async (recipient: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return { error: 'not connected' };
+  }
+  if (!recipient || recipient.length < 32) {
+    return { error: 'pass the new sol@ultron address as recipient' };
+  }
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const message = `sweep-sol-ultron:${recipient}:${today}`;
+    const { signPersonalMessage } = await import('./wallet.js');
+    const sig = await signPersonalMessage(new TextEncoder().encode(message));
+    console.log(`[sweep-sol-ultron] submitting sweep → ${recipient.slice(0, 8)}\u2026`);
+    const res = await fetch('/api/cache/sweep-sol-ultron', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        recipient,
+        adminAddress: ws.address,
+        signature: sig.signature,
+        message,
+      }),
+    });
+    const json = await res.json() as { error?: string; swept?: unknown[]; solSweep?: unknown; oldSolAddress?: string };
+    if (!res.ok || json.error) {
+      console.error('[sweep-sol-ultron] failed:', json);
+      showToast(`Sweep failed: ${json.error || `HTTP ${res.status}`}`);
+      return json;
+    }
+    console.log('[sweep-sol-ultron] result:', json);
+    const splCount = json.swept?.length ?? 0;
+    showToast(`Swept ${splCount} SPL + ${json.solSweep ? 'SOL' : 'no SOL'} \u2192 ${recipient.slice(0, 8)}\u2026`);
+    return json;
+  } catch (err) {
+    console.error('[sweep-sol-ultron] error:', err);
+    showToast(err instanceof Error ? err.message : 'Sweep failed');
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+(window as unknown as { sweepSolUltron: typeof _sweepSolUltron }).sweepSolUltron = _sweepSolUltron;
+(globalThis as unknown as { sweepSolUltron: typeof _sweepSolUltron }).sweepSolUltron = _sweepSolUltron;
+console.log('[ski] sweepSolUltron hook installed — call sweepSolUltron("<new-sol-address>")');
+
 // ─── Auto Pre-Rumble on name registration ──────────────────────────────
 // When a new name is registered, fire pre-rumble in the background so the
 // name immediately has chain addresses (ultron-custodial until user Rumbles).
@@ -620,6 +760,26 @@ initUI();
 // Start WaaP loading immediately — don't wait for window.load.
 // The preflight fetch inside registerWaaP is non-blocking and the SDK init
 // is fast, so this shaves seconds off the time the modal shows stale state.
+//
+// zkLogin loads in parallel — it's a lightweight Wallet Standard provider
+// that registers alongside WaaP, Backpack, etc.  Configure network based on
+// hostname so devnet/testnet points at testnet GraphQL and mainnet at mainnet.
+import('./zklogin.js').then(({ registerZkLogin, configureZkLogin }) => {
+  try {
+    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+    const isDevnet =
+      /dotski-devnet\.[a-z0-9-]+\.workers\.dev$/i.test(host) ||
+      /^devnet\./i.test(host) ||
+      host === 'localhost' ||
+      host === '127.0.0.1';
+    configureZkLogin(isDevnet
+      ? { graphqlUrl: 'https://graphql.testnet.sui.io/graphql', network: 'testnet' }
+      : { graphqlUrl: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+  } catch { /* hostname unavailable */ }
+  registerZkLogin();
+}).catch((err) => {
+  console.warn('[.SKI] zkLogin lazy-load failed:', err);
+});
 import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
   registerWaaP();
   // Console helpers on window.ski:

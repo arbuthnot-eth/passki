@@ -8,24 +8,53 @@
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import { detectNetwork } from './network.js';
 
 // ─── Backend URLs ─────────────────────────────────────────────────────
 
 /**
- * gRPC-Web endpoints for browser fan-out.
+ * gRPC-Web endpoints for browser fan-out (mainnet).
  * Hayabusa (hb.sui.ski) is a racing gRPC proxy with two-tier caching
  * (L1 in-memory + L2 KV) that hedges requests across upstream fullnodes.
  */
-export const GRPC_BACKENDS: string[] = [
+const GRPC_BACKENDS_MAINNET: string[] = [
   'https://hb.sui.ski',
   'https://rpc-mainnet.suiscan.xyz:443',
 ];
 
-/** Primary gRPC URL (for SuinsClient and other APIs that need a single client) */
-export const grpcUrl = GRPC_BACKENDS[0];
+/** gRPC-Web endpoints for browser fan-out (testnet). */
+const GRPC_BACKENDS_TESTNET: string[] = [
+  'https://fullnode.testnet.sui.io:443',
+];
 
-/** GraphQL endpoint (read-only queries — no racing needed, single endpoint) */
-export const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+const GQL_URL_MAINNET = 'https://graphql.mainnet.sui.io/graphql';
+const GQL_URL_TESTNET = 'https://graphql.testnet.sui.io/graphql';
+
+const JSONRPC_URL_MAINNET = 'https://sui-rpc.publicnode.com';
+const JSONRPC_URL_TESTNET = 'https://fullnode.testnet.sui.io:443';
+
+/**
+ * Resolved-at-module-load network for the current browser hostname.
+ * Server-side (no globalThis.location) → mainnet. The devnet CF worker
+ * serves the same bundle from dotski-devnet.*.workers.dev, where this
+ * resolves to testnet.
+ */
+const ACTIVE_NETWORK: 'mainnet' | 'testnet' = detectNetwork();
+
+/** gRPC racing backends for the active network. */
+export const GRPC_BACKENDS: string[] =
+  ACTIVE_NETWORK === 'testnet' ? GRPC_BACKENDS_TESTNET : GRPC_BACKENDS_MAINNET;
+
+/** Primary gRPC URL (for SuinsClient and other APIs that need a single client). */
+export const grpcUrl: string = GRPC_BACKENDS[0];
+
+/** GraphQL endpoint (read-only queries — no racing needed, single endpoint). */
+export const GQL_URL: string =
+  ACTIVE_NETWORK === 'testnet' ? GQL_URL_TESTNET : GQL_URL_MAINNET;
+
+/** JSON-RPC endpoint — IKA SDK pagination transport (sunsets April 2026). */
+const JSONRPC_URL: string =
+  ACTIVE_NETWORK === 'testnet' ? JSONRPC_URL_TESTNET : JSONRPC_URL_MAINNET;
 
 // ─── Singleton clients ────────────────────────────────────────────────
 // Three clients, each for its strengths:
@@ -35,21 +64,24 @@ export const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 
 /** gRPC client — tx building, balance checks, general ops */
 export const grpcClient = new SuiGrpcClient({
-  network: 'mainnet',
+  network: ACTIVE_NETWORK,
   baseUrl: grpcUrl,
 });
 
 /** GraphQL client — read queries, future IKA SDK target */
 export const gqlClient = new SuiGraphQLClient({
   url: GQL_URL,
-  network: 'mainnet',
+  network: ACTIVE_NETWORK,
 });
 
 /** JSON-RPC client — IKA SDK (only working transport for IKA pagination) */
 export const jsonRpcClient = new SuiJsonRpcClient({
-  url: 'https://sui-rpc.publicnode.com',
-  network: 'mainnet',
+  url: JSONRPC_URL,
+  network: ACTIVE_NETWORK,
 });
+
+/** The network these singletons were constructed for. Exported for tests. */
+export const rpcNetwork: 'mainnet' | 'testnet' = ACTIVE_NETWORK;
 
 // ─── Racing transaction execution ─────────────────────────────────────
 
@@ -60,7 +92,7 @@ const RACE_RETRIES = 2;
 const _grpcClients = new Map<string, SuiGrpcClient>();
 function getGrpcClient(url: string): SuiGrpcClient {
   let c = _grpcClients.get(url);
-  if (!c) { c = new SuiGrpcClient({ network: 'mainnet', baseUrl: url }); _grpcClients.set(url, c); }
+  if (!c) { c = new SuiGrpcClient({ network: ACTIVE_NETWORK, baseUrl: url }); _grpcClients.set(url, c); }
   return c;
 }
 

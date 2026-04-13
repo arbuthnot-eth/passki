@@ -26,11 +26,31 @@ import { grpcClient, gqlClient, jsonRpcClient } from '../rpc.js';
 
 let ikaClient: IkaClient | null = null;
 
+/**
+ * Runtime IKA network detection — mirrors getSuinsNetwork() in src/suins.ts.
+ * Returns 'testnet' for localhost and dotski-devnet.*.workers.dev, else 'mainnet'.
+ *
+ * NOTE: IKA testnet DKG is currently BLOCKED — IKA_ENC_KEY table IDs below
+ * are mainnet-specific and testnet equivalents aren't wired up yet. The
+ * network detection exists so IkaClient can be pointed at the right Sui
+ * network, and so getProtocolPublicParametersDirect() can throw a clear
+ * "testnet not yet supported" error instead of silently hitting nonexistent
+ * mainnet object IDs.
+ */
+export function getIkaNetwork(): 'mainnet' | 'testnet' {
+  try {
+    const host = (typeof location !== 'undefined' ? location.hostname : '') || '';
+    if (host === 'localhost' || host === '127.0.0.1') return 'testnet';
+    if (host.startsWith('dotski-devnet.') && host.endsWith('.workers.dev')) return 'testnet';
+  } catch {}
+  return 'mainnet';
+}
+
 /** JSON-RPC via same-origin proxy — used for getCoins, executeTransactionBlock */
 let localJsonRpc: SuiJsonRpcClient | null = null;
 function getLocalJsonRpc(): SuiJsonRpcClient {
   if (!localJsonRpc) {
-    localJsonRpc = new SuiJsonRpcClient({ url: '/api/rpc', network: 'mainnet' });
+    localJsonRpc = new SuiJsonRpcClient({ url: '/api/rpc', network: getIkaNetwork() });
   }
   return localJsonRpc;
 }
@@ -39,7 +59,7 @@ let initPromise: Promise<void> | null = null;
 
 async function getClient(): Promise<IkaClient> {
   if (!ikaClient) {
-    const config = getNetworkConfig('mainnet');
+    const config = getNetworkConfig(getIkaNetwork());
 
     // Race all three transports — first one to initialize() wins.
     // gRPC has pagination bug, GraphQL hung before, JSON-RPC works but sunsets April 2026.
@@ -97,6 +117,14 @@ async function getProtocolPublicParametersDirect(
   // Use gRPC for TableVec reads — fast binary protocol, no query size limit.
   // readTableVecAsRawBytes uses hasNextPage (not the broken cursor===cursor pattern)
   // so gRPC pagination works fine here. GraphQL hits 5KB query payload limit.
+  //
+  // IKA_ENC_KEY table IDs are mainnet-specific. On testnet we don't yet have
+  // equivalent network-DKG / reconfig TableVec object IDs, so this path must
+  // fail loudly rather than silently querying nonexistent objects.
+  // TODO(devnet): populate testnet IKA_ENC_KEY constants once available.
+  if (getIkaNetwork() !== 'mainnet') {
+    throw new Error('IKA testnet not yet supported — mainnet only. DKG table IDs are not wired up for testnet.');
+  }
   const config = getNetworkConfig('mainnet');
   const readerClient = new IkaClient({ config, suiClient: grpcClient as any });
   await readerClient.initialize().catch(() => {}); // non-fatal
@@ -268,6 +296,10 @@ export interface ProvisionCallbacks {
   requestedCurve?: typeof Curve.SECP256K1 | typeof Curve.ED25519;
   /** Address that receives the DWalletCap. Defaults to sender (userAddress). */
   targetOwner?: string;
+  /** 32-byte seed to use instead of a random one. Deterministic so the
+   *  encryption keys can be re-derived later by a party that knows the
+   *  seed (e.g. server-side keeper). Required for autonomous target signing. */
+  encryptionSeed?: Uint8Array;
 }
 
 /**
@@ -293,16 +325,20 @@ export async function provisionDWallet(
   const curveLabel = curve === Curve.ED25519 ? 'ed25519' : 'secp256k1';
   console.log('[ika:dkg] provisionDWallet called for', userAddress, 'curve:', curveLabel, 'isWaap:', callbacks.isWaap);
 
-  // Step 0: Check if user already has a dWallet of this curve
+  // Step 0: Check if the RECIPIENT of the DWalletCap already has a dWallet
+  // of this curve. When targetOwner is set (e.g. rumble-for-ultron) the
+  // sender's own dWallets are irrelevant — skipping based on the sender's
+  // state would silently no-op a legitimate DKG for a different owner.
   log('Checking existing...');
-  const existing = await getCrossChainStatus(userAddress);
+  const checkAddr = callbacks.targetOwner ?? userAddress;
+  const existing = await getCrossChainStatus(checkAddr);
   if (curve === Curve.SECP256K1 && existing.btcAddress) {
-    console.log('[ika:dkg] Already have secp256k1 dWallet, skipping DKG');
+    console.log(`[ika:dkg] ${checkAddr.slice(0, 10)}… already has secp256k1 dWallet, skipping DKG`);
     log('Already active!');
     return existing;
   }
   if (curve === Curve.ED25519 && existing.solAddress) {
-    console.log('[ika:dkg] Already have ed25519 dWallet, skipping DKG');
+    console.log(`[ika:dkg] ${checkAddr.slice(0, 10)}… already has ed25519 dWallet, skipping DKG`);
     log('Already active!');
     return existing;
   }
@@ -338,8 +374,16 @@ export async function provisionDWallet(
   const client = await withTimeout(getClient(), 60_000, 'IKA client init');
   console.log('[ika:dkg] Step 2a: client ready');
 
-  const seedBytes = new Uint8Array(32);
-  crypto.getRandomValues(seedBytes);
+  // Seed: deterministic when caller passes one (so a keeper can re-derive
+  // the encryption keys and sign autonomously later), otherwise random.
+  let seedBytes: Uint8Array;
+  if (callbacks.encryptionSeed && callbacks.encryptionSeed.length === 32) {
+    seedBytes = callbacks.encryptionSeed;
+    console.log('[ika:dkg] using caller-supplied deterministic encryption seed');
+  } else {
+    seedBytes = new Uint8Array(32);
+    crypto.getRandomValues(seedBytes);
+  }
   const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seedBytes, curve);
   const sessionIdentifier = createRandomSessionIdentifier();
 
@@ -767,10 +811,23 @@ export async function rumble(
   executeTx: (txBytes: Uint8Array) => Promise<{ digest: string }>,
   onProgress?: (stage: string) => void,
   targetOwner?: string,
+  opts?: {
+    curves?: Array<typeof Curve.SECP256K1 | typeof Curve.ED25519>;
+    /** Deterministic 32-byte encryption seed — required if the target must
+     *  sign autonomously after DKG. The server-side keeper can re-derive
+     *  the same seed from its own secret and reconstruct the encryption
+     *  keys without the browser being present. */
+    encryptionSeed?: Uint8Array;
+  },
 ): Promise<RumbleResult> {
   const log = onProgress ?? (() => {});
   const wallet = await import('../wallet.js');
   const isWaap = /waap/i.test((await import('../wallet.js')).getState().walletName);
+
+  // Curve set — default to both. Pass ['ed25519'] to only do sol@<owner>.
+  const wantCurves = opts?.curves ?? [Curve.SECP256K1, Curve.ED25519];
+  const wantSecp = wantCurves.includes(Curve.SECP256K1);
+  const wantEd = wantCurves.includes(Curve.ED25519);
 
   const callbacks: ProvisionCallbacks = {
     signTransaction: (txBytes: Uint8Array) => wallet.signTransaction(txBytes),
@@ -778,6 +835,7 @@ export async function rumble(
     isWaap,
     onStatus: log,
     targetOwner,
+    encryptionSeed: opts?.encryptionSeed,
   };
 
   // Step 0: Check SuiNS name requirement before starting
@@ -803,56 +861,66 @@ export async function rumble(
     console.warn('[rumble] SuiNS check failed, proceeding anyway:', err);
   }
 
-  // Step 1: Check what already exists
+  // Step 1: Check what already exists. When targetOwner is set we must
+  // check the *target*'s existing dWallets, not the signer's — otherwise
+  // an idempotent rumble-for-ultron would re-provision every time.
   log('Checking existing dWallets...');
-  let status = await getCrossChainStatus(address);
+  const statusAddr = targetOwner ?? address;
+  let status = await getCrossChainStatus(statusAddr);
 
   // Step 2: If missing secp256k1, provision BTC/ETH
-  if (!status.btcAddress) {
-    log('Provisioning BTC/ETH (secp256k1)...');
-    try {
-      status = await provisionDWallet(address, {
-        ...callbacks,
-        requestedCurve: Curve.SECP256K1,
-        onStatus: (msg: string) => log(`secp256k1: ${msg}`),
-      });
-    } catch (err) {
-      console.error('[rumble] secp256k1 DKG failed:', err);
-      log(`secp256k1 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
-      // Continue — try ed25519 even if secp256k1 failed
+  if (wantSecp) {
+    if (!status.btcAddress) {
+      log('Provisioning BTC/ETH (secp256k1)...');
+      try {
+        status = await provisionDWallet(address, {
+          ...callbacks,
+          requestedCurve: Curve.SECP256K1,
+          onStatus: (msg: string) => log(`secp256k1: ${msg}`),
+        });
+      } catch (err) {
+        console.error('[rumble] secp256k1 DKG failed:', err);
+        log(`secp256k1 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+        // Continue — try ed25519 even if secp256k1 failed
+      }
+    } else {
+      log('secp256k1 already active');
     }
-  } else {
-    log('secp256k1 already active');
   }
 
   // Step 3: If missing ed25519, provision SOL
-  if (!status.solAddress) {
-    log('Provisioning SOL (ed25519)...');
-    try {
-      status = await provisionDWallet(address, {
-        ...callbacks,
-        requestedCurve: Curve.ED25519,
-        onStatus: (msg: string) => log(`ed25519: ${msg}`),
-      });
-    } catch (err) {
-      console.error('[rumble] ed25519 DKG failed:', err);
-      log(`ed25519 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+  if (wantEd) {
+    if (!status.solAddress) {
+      log('Provisioning SOL (ed25519)...');
+      try {
+        status = await provisionDWallet(address, {
+          ...callbacks,
+          requestedCurve: Curve.ED25519,
+          onStatus: (msg: string) => log(`ed25519: ${msg}`),
+        });
+      } catch (err) {
+        console.error('[rumble] ed25519 DKG failed:', err);
+        log(`ed25519 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+      }
+    } else {
+      log('ed25519 already active');
     }
-  } else {
-    log('ed25519 already active');
   }
 
-  // Step 4: Final status check to get all addresses
+  // Step 4: Final status check to get all addresses — query the TARGET
+  // when a targetOwner was set, otherwise the sender. Otherwise the
+  // returned addresses are the signer's, not the recipient's.
   log('Finalizing...');
-  const final = await getCrossChainStatus(address);
+  const finalAddr = targetOwner ?? address;
+  const final = await getCrossChainStatus(finalAddr);
 
-  // Collect all dWalletCap IDs
+  // Collect all dWalletCap IDs — owned by the same address we checked above.
   const dwalletCaps: string[] = [];
   try {
     const rpc = getLocalJsonRpc();
     const DWALLET_CAP_TYPE = '0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317::coordinator_inner::DWalletCap';
     const owned = await rpc.getOwnedObjects({
-      owner: address,
+      owner: finalAddr,
       filter: { StructType: DWALLET_CAP_TYPE },
       options: { showContent: true },
       limit: 10,

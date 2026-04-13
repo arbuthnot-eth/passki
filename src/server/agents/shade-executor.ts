@@ -24,6 +24,14 @@ import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 import { raceExecuteTransaction, TxFailureError, GQL_URL } from '../rpc.js';
 const SHADE_PACKAGE = '0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203';
+// StableShadeOrder<T> lives in the upgraded shade package. Its execute_stable
+// flow takes a treasury address, splits 10% to it, and returns Coin<T> to the
+// caller for downstream registration.
+const STABLE_SHADE_PACKAGE = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
+
+// iUSD — the only stable coin type used as a StableShadeOrder deposit today.
+const IUSD_PACKAGE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9';
+const IUSD_TYPE = `${IUSD_PACKAGE}::iusd::IUSD`;
 
 // DeepBook v3 — swap pools for NS registration discount
 const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
@@ -33,10 +41,18 @@ const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe1
 const DB_SUI_USDC_POOL_ISV = 389750322;
 const DB_NS_USDC_POOL = '0x0c0fdd4008740d81a8a7d4281322aee71a1b62c449eb5b142656753d89ebc060';
 const DB_NS_USDC_POOL_ISV = 414947421;
+// iUSD↔USDC pool we seeded for two-hop stable shade routing.
+const DB_IUSD_USDC_POOL = '0x38df72f5d07607321d684ed98c9a6c411c0b8968e100a1cd90a996f912cd6ce1';
+const DB_IUSD_USDC_POOL_ISV = 832866334;
 const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+const NS_TYPE = '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS';
 const SUI_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
 const NS_PYTH_PRICE_INFO = '0xc6352e1ea55d7b5acc3ed690cc3cdf8007978071d7bfd6a189445018cfb366e0';
 const NS_PYTH_PRICE_INFO_ISV = 417086474;
+// Treasury address for StableShadeOrder's 10% fee. t2000.sui for now;
+// will move to an IKA-dWallet multisig per the first commandment.
+const STABLE_SHADE_TREASURY = '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57';
 
 const SWEEP_DELAY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const MAX_RETRIES = 3;
@@ -61,6 +77,13 @@ export interface ShadeExecutorOrder {
   executedAt?: number;
   digest?: string;
   error?: string;
+  /** When true, targets StableShadeOrder<coinType> + execute_stable instead
+   *  of legacy ShadeOrder + execute. */
+  isStable?: boolean;
+  /** Type arg for StableShadeOrder<T>. Defaults to iUSD when isStable=true. */
+  coinType?: string;
+  /** Required to reference the order as a shared object in a PTB. */
+  initialSharedVersion?: number;
 }
 
 export interface ThunderSweepEntry {
@@ -77,6 +100,18 @@ export interface ShadeExecutorState {
 
 interface Env {
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
+  SUI_NETWORK?: string; // 'mainnet' | 'testnet' — set by wrangler.jsonc / wrangler.devnet.jsonc
+}
+
+/**
+ * Shade is mainnet-only: the Move package at SHADE_PACKAGE is not deployed
+ * on testnet, and the keeper ultron.sui account only has mainnet gas. The
+ * devnet worker sets `SUI_NETWORK=testnet`, so guard every state-changing
+ * path on mainnet. Read-only endpoints (status/poke) stay open.
+ */
+function isMainnetEnv(env: Env): boolean {
+  const network = (env.SUI_NETWORK || 'mainnet').toLowerCase();
+  return network === 'mainnet';
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -138,6 +173,18 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
         return new Response(JSON.stringify(result), {
           headers: { 'content-type': 'application/json' },
         });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    }
+    if ((url.pathname.endsWith('/schedule-stable') || url.searchParams.has('schedule-stable')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as Parameters<typeof this.scheduleStable>[0];
+        const result = await this.scheduleStable(params);
+        return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), {
           status: 400,
@@ -212,6 +259,10 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     depositMist: string;
     preferredRoute?: ShadeRoute;
   }): Promise<{ success: boolean; error?: string }> {
+    // Fail-closed on non-mainnet workers — Shade Move package is mainnet-only.
+    if (!isMainnetEnv(this.env)) {
+      return { success: false, error: 'Shade is mainnet-only — this worker is running on a non-mainnet network' };
+    }
     // Verify the ownerAddress matches the DO instance name (keyed by user address)
     if (params.ownerAddress !== this.name) {
       return { success: false, error: 'Owner address does not match DO instance' };
@@ -247,6 +298,67 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
     this.setState({ orders: [...pruned, order] });
     this.scheduleNextAlarm();
+    return { success: true };
+  }
+
+  // ─── Schedule a StableShadeOrder<T> for auto-execution ──────────────
+  // Parallel to schedule() but marks the order as `isStable` so the
+  // alarm path uses _executeStable() (execute_stable + iUSD→USDC→NS
+  // swap + NS-pay register) instead of the legacy SUI-denominated flow.
+  @callable()
+  async scheduleStable(params: {
+    objectId: string;
+    domain: string;
+    executeAfterMs: number;
+    targetAddress: string;
+    salt: string;
+    ownerAddress: string;
+    depositMist: string;
+    initialSharedVersion: number;
+    coinType?: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    if (!isMainnetEnv(this.env)) {
+      return { success: false, error: 'Shade is mainnet-only — this worker is running on a non-mainnet network' };
+    }
+    if (params.ownerAddress !== this.name) {
+      return { success: false, error: 'Owner address does not match DO instance' };
+    }
+    if (!params.initialSharedVersion || params.initialSharedVersion <= 0) {
+      return { success: false, error: 'initialSharedVersion required for StableShadeOrder (shared object)' };
+    }
+    if (this.state.orders.some(o => o.objectId === params.objectId)) {
+      return { success: true };
+    }
+    const existingActive = this.state.orders.find(
+      o => o.domain === params.domain && (o.status === 'pending' || o.status === 'executing'),
+    );
+    if (existingActive) {
+      return {
+        success: false,
+        error: `Active order already exists for ${params.domain} (${existingActive.objectId})`,
+      };
+    }
+    const pruned = this.state.orders.filter(
+      o => !(o.domain === params.domain && (o.status === 'completed' || o.status === 'failed')),
+    );
+    const order: ShadeExecutorOrder = {
+      objectId: params.objectId,
+      domain: params.domain,
+      executeAfterMs: params.executeAfterMs,
+      targetAddress: params.targetAddress,
+      salt: params.salt,
+      ownerAddress: params.ownerAddress,
+      depositMist: params.depositMist,
+      isStable: true,
+      coinType: params.coinType || IUSD_TYPE,
+      initialSharedVersion: params.initialSharedVersion,
+      status: 'pending',
+      retries: 0,
+      createdAt: Date.now(),
+    };
+    this.setState({ orders: [...pruned, order] });
+    this.scheduleNextAlarm();
+    console.log(`[ShadeExecutor] scheduleStable ${params.domain} (${params.objectId.slice(0, 10)}…) fires at ${new Date(params.executeAfterMs).toISOString()}`);
     return { success: true };
   }
 
@@ -423,12 +535,26 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   // ─── Core execution logic ──────────────────────────────────────────
 
   private async executeOrder(order: ShadeExecutorOrder) {
+    if (!isMainnetEnv(this.env)) {
+      this.updateOrder(order.objectId, {
+        status: 'failed',
+        error: 'Shade is mainnet-only — this worker is running on a non-mainnet network',
+      });
+      return;
+    }
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
       this.updateOrder(order.objectId, {
         status: 'failed',
         error: 'No ultron private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)',
       });
       return;
+    }
+
+    // StableShadeOrder<T>: iUSD-denominated, different package + entry
+    // function. Dispatch to the dedicated stable execution path so the
+    // legacy SUI→NS routes below never touch it.
+    if (order.isStable) {
+      return this._executeStable(order);
     }
 
     // Pre-flight: verify ultron has gas before building routes
@@ -576,6 +702,151 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
           error: errorMsg,
           retries,
         });
+      } else {
+        const delay = RETRY_DELAYS_MS[retries - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+        this.updateOrder(order.objectId, {
+          status: 'pending',
+          retries,
+          error: `Retry ${retries}/${MAX_RETRIES}: ${errorMsg}`,
+        });
+        this.ctx.storage.setAlarm(Date.now() + delay);
+      }
+    }
+  }
+
+  // ─── StableShadeOrder<iUSD> execution ──────────────────────────────
+  // execute_stable takes the order by value, a preimage tuple that
+  // matches the on-chain commitment, and a treasury address. It emits
+  // a 10% cut to the treasury and returns Coin<iUSD> to the caller.
+  // We then swap that iUSD → USDC → NS via DeepBook and register
+  // the domain using the NS-pay path (25% discount).
+  private async _executeStable(order: ShadeExecutorOrder) {
+    if (!order.initialSharedVersion) {
+      this.updateOrder(order.objectId, {
+        status: 'failed',
+        error: 'StableShadeOrder requires initialSharedVersion in scheduled state',
+      });
+      return;
+    }
+    const coinType = order.coinType || IUSD_TYPE;
+    if (coinType !== IUSD_TYPE) {
+      this.updateOrder(order.objectId, {
+        status: 'failed',
+        error: `Unsupported StableShadeOrder coin type: ${coinType} (only iUSD today)`,
+      });
+      return;
+    }
+    this.updateOrder(order.objectId, { status: 'executing' });
+    console.log(`[ShadeExecutor] _executeStable ${order.objectId.slice(0, 10)}… ${order.domain}.sui deposit=${order.depositMist} ${coinType.split('::').pop()}`);
+
+    try {
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY!);
+      const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
+
+      const domainBytes = Array.from(new TextEncoder().encode(order.domain));
+      const saltBytes = Array.from(hexToBytes(order.salt));
+      const targetAddr = normalizeSuiAddress(order.targetAddress);
+      const fullDomain = `${order.domain}.sui`;
+
+      // NS-discounted price computation — mirrors the legacy path.
+      const [rawPrice, discountMap] = await Promise.all([
+        suinsClient.calculatePrice({ name: fullDomain, years: 1 }),
+        suinsClient.getCoinTypeDiscount(),
+      ]);
+      const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
+      const discountPct = discountMap.get(nsKey) ?? 25;
+      const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
+      // 1.5% buffer so DeepBook slippage + pool drift don't starve us.
+      const usdcNeeded = BigInt(Math.ceil(discountedUsd * 1.015 * 100) * 10000);
+
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+
+      // 1) execute_stable<iUSD> — consumes the shared order, returns Coin<iUSD>.
+      //    90% of the deposit comes back to us; 10% goes to treasury.
+      const [iusdCoin] = tx.moveCall({
+        target: `${STABLE_SHADE_PACKAGE}::shade::execute_stable`,
+        typeArguments: [coinType],
+        arguments: [
+          tx.sharedObjectRef({
+            objectId: order.objectId,
+            initialSharedVersion: order.initialSharedVersion,
+            mutable: true,
+          }),
+          tx.pure.vector('u8', domainBytes),
+          tx.pure.u64(order.executeAfterMs),
+          tx.pure.address(targetAddr),
+          tx.pure.vector('u8', saltBytes),
+          tx.pure.address(STABLE_SHADE_TREASURY),
+          tx.object.clock(),
+        ],
+      });
+
+      // 2) iUSD → USDC (DeepBook: iUSD is base, USDC is quote; stable peg).
+      const [zeroDeepA] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+      const [usdcOut, iusdChange, deepChangeA] = tx.moveCall({
+        target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+        typeArguments: [coinType, USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({ objectId: DB_IUSD_USDC_POOL, initialSharedVersion: DB_IUSD_USDC_POOL_ISV, mutable: true }),
+          iusdCoin,
+          zeroDeepA,
+          tx.pure.u64(1), // min_out — we gate slippage on the USDC→NS leg
+          tx.object.clock(),
+        ],
+      });
+
+      // 3) USDC → NS (DeepBook: NS is base, USDC is quote; we buy NS).
+      const [zeroDeepB] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+      const [nsOut, usdcChange, deepChangeB] = tx.moveCall({
+        target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+        typeArguments: [NS_TYPE, USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({ objectId: DB_NS_USDC_POOL, initialSharedVersion: DB_NS_USDC_POOL_ISV, mutable: true }),
+          usdcOut,
+          zeroDeepB,
+          tx.pure.u64(usdcNeeded), // budget in USDC, NS out depends on price
+          tx.object.clock(),
+        ],
+      });
+
+      // 4) Register with NS-pay (25% discount).
+      const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(tx, mainPackage.mainnet.coins.NS.feed);
+      const suinsTx = new SuinsTransaction(suinsClient, tx);
+      const nft = suinsTx.register({
+        domain: fullDomain,
+        years: 1,
+        coinConfig: mainPackage.mainnet.coins.NS,
+        coin: nsOut,
+        priceInfoObjectId,
+      });
+      suinsTx.setTargetAddress({ nft, address: targetAddr });
+      tx.transferObjects([nft], tx.pure.address(targetAddr));
+
+      // 5) Dust cleanup — return leftovers to the target user.
+      tx.transferObjects(
+        [iusdChange, usdcChange, nsOut, deepChangeA, deepChangeB],
+        tx.pure.address(targetAddr),
+      );
+
+      const txBytes = await tx.build({ client: transport as never });
+      const { signature } = await keypair.signTransaction(txBytes);
+      const digest = await this.submitTransaction(txBytes, signature);
+      console.log(`[ShadeExecutor] _executeStable submitted: ${digest}`);
+
+      this.updateOrder(order.objectId, {
+        status: 'completed',
+        digest,
+        executedAt: Date.now(),
+      });
+    } catch (err) {
+      const retries = (order.retries ?? 0) + 1;
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[ShadeExecutor] _executeStable failed: ${errorMsg}`);
+      if (retries >= MAX_RETRIES) {
+        this.updateOrder(order.objectId, { status: 'failed', error: errorMsg, retries });
       } else {
         const delay = RETRY_DELAYS_MS[retries - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
         this.updateOrder(order.objectId, {

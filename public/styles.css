@@ -2887,39 +2887,38 @@ body {
 .ski-idle-audio-toggle {
   all: unset;
   position: absolute;
-  top: 28px;
-  right: 8px;
+  top: 6px;
+  left: 6px;
   z-index: 6;
-  width: 32px;
-  height: 32px;
+  width: 22px;
+  height: 22px;
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 1rem;
+  font-size: 0.7rem;
   font-weight: 800;
   line-height: 1;
-  background: rgba(0, 0, 0, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 6px;
-  color: #fff;
+  color: rgba(255, 255, 255, 0.5);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .ski-idle-audio-toggle:hover {
-  background: rgba(255, 255, 255, 0.2);
-  border-color: rgba(255, 255, 255, 0.6);
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
 }
-/* When unmuted, use the green "active" treatment matching --iusd and --squid
-   active states so it reads as an engaged toggle at a glance. */
+/* Unmuted = BASMR — green opaque stylized button */
 .ski-idle-audio-toggle--on {
-  background: rgba(34, 197, 94, 0.12);
-  border-color: rgba(34, 197, 94, 0.35);
-  color: #22c55e;
+  background: rgba(34, 197, 94, 0.3);
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  color: #4ade80;
 }
 .ski-idle-audio-toggle--on:hover {
-  background: rgba(34, 197, 94, 0.2);
-  border-color: rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.45);
+  border-color: rgba(34, 197, 94, 0.7);
 }
 .ski-idle-iusd-btn {
   all: unset;
@@ -3491,9 +3490,9 @@ body {
 .ski-idle-card {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: auto;
-  padding: 5px 8px;
+  padding: 6px 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.65rem;
   font-weight: 600;
@@ -3534,7 +3533,14 @@ body {
   color: #ef4444;
   background: rgba(239, 68, 68, 0.15);
 }
-.ski-idle-card-name { font-weight: 700; font-size: 0.85rem; color: #fff; white-space: nowrap; flex-shrink: 0; cursor: pointer; }
+.ski-idle-card-name { font-weight: 700; font-size: 1.05rem; color: #fff; white-space: nowrap; flex-shrink: 0; cursor: pointer; letter-spacing: -0.01em; }
+.ski-idle-bubble-edited {
+  font-size: 0.65em;
+  opacity: 0.55;
+  font-style: italic;
+  margin-left: 4px;
+  pointer-events: none;
+}
 .ski-idle-card-iusd { vertical-align: middle; margin-left: 3px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5)); }
 .ski-idle-card-name:hover { opacity: 0.85; }
 .ski-idle-card-bal {
@@ -4487,7 +4493,7 @@ a.ski-idle-bubble-name:hover {
  * are always-on affordances, not toggled by input focus or content. */
 .ski-idle-quick-actions {
   display: flex;
-  gap: 5px;
+  gap: 2px;
   flex-shrink: 0;
   align-items: center;
 }

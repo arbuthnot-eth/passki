@@ -100,11 +100,46 @@ const ATTACH_MAX_TOTAL_BYTES = 5_000_000;     // 5 MB total per send
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold):
 // Overclock, Studio Mirai, H2O Nodes.
 // NodeInfra excluded — broken CORS (duplicate Access-Control-Allow-Origin: *, *)
-const SEAL_SERVERS = [
+const SEAL_SERVERS_MAINNET = [
   { objectId: '0x145540d931f182fef76467dd8074c9839aea126852d90d18e1556fcbbd1208b6', weight: 1 }, // Overclock
   { objectId: '0xe0eb52eba9261b96e895bbb4deca10dcd64fbc626a1133017adcd5131353fd10', weight: 1 }, // Studio Mirai
   { objectId: '0x4a65b4ff7ba8f4b538895ee35959f982a95f0db7e2a202ec989d261ea927286a', weight: 1 }, // H2O Nodes
 ];
+
+// Testnet Seal key servers (Mysten-operated open-mode allowlist, 2-of-2 threshold).
+// @mysten/seal v1.1.1 does NOT export testnet defaults — these object IDs come from
+// the Seal testnet registry. Only two verified servers are included here; a third
+// was previously hand-coded with the wrong length (65 hex chars, caught by reviewer5)
+// and has been dropped. SDK will fall back to 2-of-2 threshold until a third
+// verified testnet server is added.
+//   TODO: https://github.com/MystenLabs/seal/blob/main/Design.md (key server list)
+const SEAL_SERVERS_TESTNET = [
+  { objectId: '0x73d05d62c18d9374e3ea529e8e0ed6161da1a141a001dcc14df90e2c2154c95c', weight: 1 }, // mysten-testnet-1
+  { objectId: '0xf5d14a81a982144ae441cd7d64b09027f116a468bd36e7eca494f750591623c8', weight: 1 }, // mysten-testnet-2
+];
+
+/**
+ * Pick Seal key servers based on the current hostname. Testnet hosts get the
+ * Mysten-operated testnet servers; everything else (prod, preview, unknown)
+ * stays on mainnet so we never silently downgrade a live user.
+ *
+ * Hostname condition mirrors getSuinsNetwork() in src/suins.ts exactly so
+ * that Seal key servers and SuiNS PTB network can never split-brain.
+ */
+function pickSealServers(): Array<{ objectId: string; weight: number }> {
+  try {
+    const host = (typeof location !== 'undefined' ? location.hostname : '') || '';
+    const isTestnet =
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      (host.startsWith('dotski-devnet.') && host.endsWith('.workers.dev'));
+    return isTestnet ? SEAL_SERVERS_TESTNET : SEAL_SERVERS_MAINNET;
+  } catch {
+    return SEAL_SERVERS_MAINNET;
+  }
+}
+
+const SEAL_SERVERS = pickSealServers();
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -895,6 +930,30 @@ async function encryptWithRetry(
  * Reads directly from the DO — messages are stored as base64 text.
  * Falls back to SDK's Seal-decrypt path for legacy encrypted messages.
  */
+/**
+ * Edit an existing Thunder. Uses the module-level `_signer` bound at
+ * initThunderClient time so callers don't have to plumb signers
+ * through the UI. Only the original sender can succeed — the DO's
+ * /update handler enforces senderAddress matches the row, and the
+ * Seal envelope uses the same key version as the original so
+ * participants can decrypt it. Attachments are left unchanged.
+ */
+export async function editThunder(opts: {
+  groupRef: GroupRef;
+  messageId: string;
+  text: string;
+}): Promise<{ messageId: string }> {
+  if (!_signer) throw new Error('Thunder client not initialized — call initThunderClient first');
+  const client = getThunderClient();
+  await client.messaging.editMessage({
+    groupRef: opts.groupRef,
+    messageId: opts.messageId,
+    text: opts.text,
+    signer: _signer as unknown as Parameters<typeof client.messaging.editMessage>[0]['signer'],
+  });
+  return { messageId: opts.messageId };
+}
+
 export async function getThunders(opts: {
   groupRef: GroupRef;
   afterOrder?: number;

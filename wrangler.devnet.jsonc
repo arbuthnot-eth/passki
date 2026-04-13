@@ -1,0 +1,55 @@
+// Devnet/testnet nursery config for .SKI worker.
+// Deploys as "dotski-devnet" — fully isolated from the mainnet "dotski" worker.
+// Usage: npx wrangler deploy --config wrangler.devnet.jsonc
+{
+  "name": "dotski-devnet",
+  "main": "src/server/index.ts",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "assets": {
+    "directory": "public",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/agents/*", "/api/*", "/squids"]
+  },
+
+  "vars": {
+    "SUI_NETWORK": "testnet",
+    "SUI_RPC_URL": "https://fullnode.testnet.sui.io:443",
+    "SUI_GRAPHQL_URL": "https://graphql.testnet.sui.io/graphql",
+    "SOLANA_RPC_URL": "https://api.devnet.solana.com",
+    "ENCRYPT_GRPC_URL": "pre-alpha-dev-1.encrypt.ika-network.net:443",
+    "ENCRYPT_PROGRAM_ID": "4ebfzWdKnrnGseuQpezXdG8yCdHqwQ1SSBHD3bWArND8",
+    "ZKLOGIN_PROVER_URL": "https://prover-dev.mystenlabs.com/v1"
+  },
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "SessionAgent", "class_name": "SessionAgent" },
+      { "name": "SponsorAgent", "class_name": "SponsorAgent" },
+      { "name": "SplashDeviceAgent", "class_name": "SplashDeviceAgent" },
+      { "name": "ShadeExecutorAgent", "class_name": "ShadeExecutorAgent" },
+      { "name": "TreasuryAgents", "class_name": "TreasuryAgents" },
+      { "name": "Chronicom", "class_name": "Chronicom" },
+      { "name": "TimestreamAgent", "class_name": "TimestreamAgent" },
+      { "name": "NameIndex", "class_name": "NameIndex" },
+      { "name": "Pokedex", "class_name": "Pokedex" }
+    ]
+  },
+
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SessionAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["SponsorAgent"] },
+    { "tag": "v3", "new_sqlite_classes": ["SplashDeviceAgent"] },
+    { "tag": "v4", "new_sqlite_classes": ["ShadeExecutorAgent"] },
+    { "tag": "v5", "new_sqlite_classes": ["TreasuryAgents"] },
+    { "tag": "v6", "new_sqlite_classes": ["Chronicom"] },
+    { "tag": "v7", "new_sqlite_classes": ["TimestreamAgent"] },
+    { "tag": "v8", "new_sqlite_classes": ["NameIndex"] },
+    { "tag": "v9", "new_sqlite_classes": ["Pokedex"] }
+  ],
+
+  "triggers": {
+    "crons": ["*/10 * * * *"]
+  }
+}
