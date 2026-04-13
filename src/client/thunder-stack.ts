@@ -171,7 +171,11 @@ export interface ThunderClientOptions {
 
 // ─── Client state ───────────────────────────────────────────────────
 
-type MessagingClient = ReturnType<typeof createSuiStackMessagingClient>;
+// Explicit <void> instantiation — without it, `ReturnType` on a generic
+// function resolves TApproveContext to `unknown` (the constraint upper
+// bound) instead of the default `void`, forcing every method to require
+// a `sealApproveContext` field we never pass.
+type MessagingClient = ReturnType<typeof createSuiStackMessagingClient<void>>;
 
 let _client: MessagingClient | null = null;
 let _signer: DappKitSigner | null = null;
@@ -305,7 +309,10 @@ export function initThunderClient(opts: ThunderClientOptions) {
   const gqlClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
   _warmer = () => _loadOrMintSessionKey(opts);
-  _client = createSuiStackMessagingClient(gqlClient as any, {
+  // Explicit <void> generic so SuiStackMessagingClient's TApproveContext
+  // resolves as void — without this TS infers `unknown` and every method
+  // starts demanding a `sealApproveContext` field we never pass.
+  _client = createSuiStackMessagingClient<void>(gqlClient as any, {
     seal: { serverConfigs: SEAL_SERVERS, verifyKeyServers: true },
     encryption: {
       sessionKey: {
