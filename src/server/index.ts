@@ -1625,6 +1625,27 @@ app.get('/api/ultron/wasm-spike', async (c) => {
   }
 });
 
+// Increment A of the full signing flow: read ultron's ed25519 dWallet
+// via JSON-RPC + IkaClient inside the DO. If this returns the dWallet
+// in Active state with a non-empty public_output, the transport path
+// is proven and every subsequent signing step uses the same surface.
+app.get('/api/ultron/read-dwallet', async (c) => {
+  try {
+    const stub = c.env.UltronSigningAgent.get(
+      c.env.UltronSigningAgent.idFromName('ultron-spike'),
+    );
+    const res = await stub.fetch(new Request('https://ultron-signer/read-dwallet', {
+      method: 'GET',
+      headers: { 'x-partykit-room': 'ultron' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
 // ── Probe: old sol@ultron balances ──────────────────────────────────
 // Derives the legacy Solana address from SHADE_KEEPER_PRIVATE_KEY
 // (raw ed25519 pubkey, base58-encoded) and reports SOL + SPL balances
