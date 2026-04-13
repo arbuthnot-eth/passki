@@ -4,6 +4,14 @@
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  // Tell the bundler that .wasm files should be built as
+  // WebAssembly.Module compiled modules. Required for the `import
+  // wasmModule from 'ika-wasm-binary'` line in UltronSigningAgent to
+  // produce a usable module at runtime.
+  "rules": [
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }
+  ],
+
   // Custom domain
   "routes": [
     { "pattern": "sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" }
@@ -54,6 +62,10 @@
       {
         "name": "Pokedex",
         "class_name": "Pokedex"
+      },
+      {
+        "name": "UltronSigningAgent",
+        "class_name": "UltronSigningAgent"
       }
     ]
   },
@@ -94,6 +106,10 @@
     {
       "tag": "v9",
       "new_sqlite_classes": ["Pokedex"]
+    },
+    {
+      "tag": "v10",
+      "new_sqlite_classes": ["UltronSigningAgent"]
     }
   ],
 

@@ -15,6 +15,7 @@ interface Env {
   TimestreamAgent: DurableObjectNamespace;
   NameIndex: DurableObjectNamespace;
   Pokedex: DurableObjectNamespace;
+  UltronSigningAgent: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
@@ -1593,6 +1594,33 @@ app.post('/api/sol-rpc', async (c) => {
     });
   } catch (err) {
     return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── UltronSigningAgent WASM smoke test (Registeel Toxic Spikes) ─────
+// Spike endpoint to validate that the IKA WASM binary loads inside a
+// Durable Object runtime. Proves/disproves the two claims from the
+// project_ultron_do_signing feasibility study:
+//   1. dwallet_mpc_wasm_bg.wasm imports + initializes in a Worker DO
+//   2. A pure-crypto exported function runs without throwing
+//
+// If this returns {ok:true}, the full UltronSigningAgent plan unlocks
+// (presign + decrypt + sign + submit all layer on top of the same
+// initSync path).
+app.get('/api/ultron/wasm-spike', async (c) => {
+  try {
+    const stub = c.env.UltronSigningAgent.get(
+      c.env.UltronSigningAgent.idFromName('ultron-spike'),
+    );
+    const res = await stub.fetch(new Request('https://ultron-signer/wasm-spike', {
+      method: 'GET',
+      headers: { 'x-partykit-room': 'ultron' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
   }
 });
 
@@ -3213,3 +3241,4 @@ export { Chronicom } from './agents/chronicom.js';
 export { TimestreamAgent } from './agents/timestream.js';
 export { NameIndex } from './agents/name-index.js';
 export { Pokedex } from './agents/pokedex.js';
+export { UltronSigningAgent } from './agents/ultron-signing-agent.js';
