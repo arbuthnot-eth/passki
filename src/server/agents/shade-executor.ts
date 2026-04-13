@@ -168,8 +168,8 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     }
     if ((url.pathname.endsWith('/schedule') || url.searchParams.has('schedule')) && request.method === 'POST') {
       try {
-        const params = await request.json() as Parameters<typeof this.schedule>[0];
-        const result = await this.schedule(params);
+        const params = await request.json() as Parameters<typeof this.scheduleOrder>[0];
+        const result = await this.scheduleOrder(params);
         return new Response(JSON.stringify(result), {
           headers: { 'content-type': 'application/json' },
         });
@@ -247,9 +247,13 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   }
 
   // ─── Schedule an order for auto-execution ───────────────────────────
+  // Named `scheduleOrder` rather than `schedule` because `agents` 0.10
+  // added a base-class `schedule(when, callback, payload, options)` method
+  // for cron/delayed task scheduling. Our domain method takes completely
+  // different params so we rename to avoid the signature collision.
 
   @callable()
-  async schedule(params: {
+  async scheduleOrder(params: {
     objectId: string;
     domain: string;
     executeAfterMs: number;

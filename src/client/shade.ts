@@ -112,7 +112,7 @@ export async function scheduleShadeExecution(params: {
   // Try WebSocket RPC first
   if (client) {
     try {
-      return await client.call<{ success: boolean; error?: string }>('schedule', [params]);
+      return await client.call<{ success: boolean; error?: string }>('scheduleOrder', [params]);
     } catch { /* WS failed — fall through to HTTP */ }
   }
   // HTTP fallback — always works
