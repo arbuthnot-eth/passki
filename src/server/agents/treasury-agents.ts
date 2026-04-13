@@ -752,6 +752,20 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const tMatch = typeRepr.match(/StableShadeOrder<([^>]+)>/);
         const coinType = tMatch?.[1] || IUSD_TYPE;
 
+        // cancel_stable refunds the full deposit to ctx.sender().
+        // In the current shade-proxy flow the FUNDER is ultron
+        // (treasury underwrites shades from the cache), so the
+        // Move contract's native semantics already refund to the
+        // correct address. No holder-forward here — that would
+        // unfairly drain the cache to a holder who never paid.
+        //
+        // If we later pivot to user-funded shades where brando
+        // signs the create_stable tx directly, the funder becomes
+        // brando and ultron would no longer be in the loop.
+        const shadesNow = ((this.state as any).shades ?? []) as Array<Record<string, any>>;
+        const shadeRow = shadesNow.find((s) => s.objectId === body.objectId);
+        const depositMist = shadeRow?.depositMist ? BigInt(shadeRow.depositMist) : 0n;
+
         const SHADE_V5_PKG = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
         const tx = new Transaction();
         tx.setSender(ultronAddr);
@@ -765,16 +779,24 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const txBytes = await tx.build({ client: transport as never });
         const { signature } = await keypair.signTransaction(txBytes);
         const digest = await this._submitTx(txBytes, signature);
-        console.log(`[shade-cancel-stable] ${body.objectId.slice(0,10)}… → digest ${digest}`);
+        console.log(`[shade-cancel-stable] ${body.objectId.slice(0,10)}… → digest ${digest}, refunded ${Number(depositMist)/1e9} iUSD to funder ${ultronAddr.slice(0,10)}…`);
 
         // Prune the shade from state so the deliberation loop stops
         // tracking it.
         const shades = ((this.state as any).shades ?? []).map((s: any) =>
-          s.objectId === body.objectId ? { ...s, status: 'cancelled', deliberation: `cancel_stable via ${digest.slice(0, 10)}…` } : s,
+          s.objectId === body.objectId
+            ? { ...s, status: 'cancelled', deliberation: `cancel_stable via ${digest.slice(0, 10)}…` }
+            : s,
         );
         this.setState({ ...this.state, shades } as any);
 
-        return new Response(JSON.stringify({ digest, refundedTo: ultronAddr, coinType }), { headers: { 'content-type': 'application/json' } });
+        return new Response(JSON.stringify({
+          digest,
+          refundedTo: ultronAddr,
+          coinType,
+          depositMist: depositMist.toString(),
+          note: 'Funder is ultron (treasury underwrites via shade-proxy); refund returned to ultron per Move contract ctx.sender() semantics.',
+        }), { headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
       }
