@@ -3374,6 +3374,27 @@ app.post('/api/helius/webhook', async (c) => {
           const amount = Number(t.tokenAmount ?? 0);
           if (amount <= 0) continue;
           console.log(`[agility] inbound SPL credit to sol@ultron: ${amount} of mint ${t.mint} from ${t.fromUserAccount} (sig ${sig})`);
+
+          // Porygon-Z Agility v2 — fan out to TreasuryAgents.processAgilityInbound
+          // which verifies the mint, resolves the Solana sender to a Sui
+          // identity via SUIAMI roster, records the credit in DO state,
+          // and would call mintIusd on the Sui side. v2 stops short of
+          // the real mint and only logs `[agility-v2] WOULD mint …`.
+          // Fire-and-forget so the webhook response isn't blocked.
+          const fromSolAddress = t.fromUserAccount;
+          const mintAddress = t.mint ?? '';
+          // Convert human-readable tokenAmount → raw units (9 decimals for iUSD SPL).
+          // Helius' tokenAmount is already divided by decimals; we ceil to avoid
+          // rounding-down to 0 on tiny transfers.
+          const amountRaw = String(Math.ceil(amount * 1e9));
+          const inboundSig = sig ?? '';
+          c.executionCtx.waitUntil(
+            authedTreasuryStub(c).fetch(new Request('https://treasury-do/?agility-inbound', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+              body: JSON.stringify({ fromSolAddress, amountRaw, mintAddress, sig: inboundSig }),
+            })).catch((e) => console.warn('[agility-v2] fan-out failed:', e?.message ?? e)),
+          );
         }
       }
       console.log(`[helius-webhook] ${type ?? 'UNKNOWN'} ${sig ?? ''} touched ${touched.size} accounts`);
@@ -3394,6 +3415,26 @@ app.post('/api/helius/webhook', async (c) => {
   } catch (err) {
     console.warn('[helius-webhook] parse failed:', err instanceof Error ? err.message : err);
     return c.json({ error: String(err) }, 400);
+  }
+});
+
+// ── Porygon-Z Agility v2 — inbound credit status for a Sui address ──
+// Returns recent iUSD SPL credits detected into sol@ultron that the
+// worker has resolved to the caller's Sui identity via SUIAMI roster.
+// v2 status is always 'detected' — v3 will surface 'minted' + digest.
+app.get('/api/agility/status/:address', async (c) => {
+  const address = c.req.param('address');
+  const limit = c.req.query('limit') ?? '20';
+  try {
+    const res = await authedTreasuryStub(c).fetch(new Request(
+      `https://treasury-do/?agility-status&address=${encodeURIComponent(address)}&limit=${encodeURIComponent(limit)}`,
+      { headers: { 'x-partykit-room': 'treasury' } },
+    ));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
   }
 });
 

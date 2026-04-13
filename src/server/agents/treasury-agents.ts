@@ -168,6 +168,22 @@ interface SquidGeo {
   ts: number;
 }
 
+/** Porygon-Z Agility v2 — one inbound iUSD SPL credit detected by the
+ *  Helius webhook, resolved to a Sui identity, and staged for a
+ *  Sui-side BAM v2 iUSD mint. `status: 'detected'` is the v2 terminal
+ *  state; v3 will flip to 'minted' once the real mintIusd call fires. */
+interface AgilityInbound {
+  sig: string;
+  fromSolAddress: string;
+  suiAddress: string;
+  amountRaw: string;
+  mintAddress: string;
+  ts: number;
+  status: 'detected' | 'minted' | 'failed';
+  digest?: string;
+  error?: string;
+}
+
 interface SquidStats {
   total: number;
   by_chain: { sui: number; btc: number; eth: number; sol: number };
@@ -2080,6 +2096,33 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
       }
+    }
+
+    // Porygon-Z Agility v2 — inbound SPL credit fan-out from webhook
+    if ((url.pathname.endsWith('/agility-inbound') || url.searchParams.has('agility-inbound')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as Parameters<typeof this.processAgilityInbound>[0];
+        const result = await this.processAgilityInbound(params);
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 200, // 200 even on skip — webhook retries are noise
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Agility v2 status — return recent inbound credits for a Sui address
+    if ((url.pathname.endsWith('/agility-status') || url.searchParams.has('agility-status')) && request.method === 'GET') {
+      const suiAddr = url.searchParams.get('address') ?? '';
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') ?? '20')));
+      const all = ((this.state as any).agilityInbounds as AgilityInbound[] | undefined) ?? [];
+      const filtered = suiAddr
+        ? all.filter(e => e.suiAddress.toLowerCase() === suiAddr.toLowerCase())
+        : all;
+      return new Response(JSON.stringify({ address: suiAddr, inbounds: filtered.slice(0, limit) }), {
+        headers: { 'content-type': 'application/json' },
+      });
     }
 
     if ((url.pathname.endsWith('/bam-mint-iusd-sol') || url.searchParams.has('bam-mint-iusd-sol')) && request.method === 'POST') {
@@ -6205,6 +6248,98 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       console.error('[OpenCLOB] createIusdSolMint error:', errStr);
       return { error: errStr };
     }
+  }
+
+  /** Porygon-Z Agility v2 — inbound iUSD SPL credit handler.
+   *
+   *  Invoked by the Helius webhook fan-out when it spots an incoming
+   *  iUSD SPL transfer to sol@ultron. We verify the mint matches
+   *  ultron's iUSD SPL mint stored in DO state, resolve the Solana
+   *  sender to its Sui identity via a stubbed lookup (TODO: real
+   *  reverse-SUIAMI roster scan), record the inbound in state, and
+   *  would call the existing `mintIusd` BAM v2 path to mint iUSD on
+   *  Sui against the credit. Per v2 scope, we stop short of the real
+   *  mint call and only log `[agility-v2] WOULD mint …`. Swapping the
+   *  log for a live `mintIusd` invocation is the v3 move.
+   *
+   *  Callers: worker route handler in server/index.ts via the
+   *  `/?agility-inbound` fetch path. No external auth: the
+   *  TreasuryAgents DO is already gated by `authedTreasuryStub`.
+   */
+  async processAgilityInbound(params: {
+    fromSolAddress: string;
+    amountRaw: string;
+    mintAddress: string;
+    sig: string;
+  }): Promise<{ ok: boolean; reason?: string; suiAddress?: string; wouldMint?: string }> {
+    const { fromSolAddress, amountRaw, mintAddress, sig } = params;
+    if (!fromSolAddress || !amountRaw || !mintAddress) {
+      return { ok: false, reason: 'missing params' };
+    }
+
+    // Verify the mint is ultron's canonical iUSD SPL mint
+    const expectedMint = (this.state as any).iusd_sol_mint as string | undefined;
+    if (!expectedMint) {
+      console.log(`[agility-v2] skip: iusd_sol_mint not set in DO state (sig ${sig})`);
+      return { ok: false, reason: 'iusd_sol_mint not set' };
+    }
+    if (mintAddress !== expectedMint) {
+      console.log(`[agility-v2] skip: mint ${mintAddress} != expected ${expectedMint} (sig ${sig})`);
+      return { ok: false, reason: 'mint mismatch' };
+    }
+
+    // Resolve sol sender → Sui address
+    // TODO(agility-v3): replace with real reverse SUIAMI roster scan.
+    // The forward lookup (`_resolveRecipientSolAddress`) walks a dynamic
+    // field by Sui address key; the reverse direction requires
+    // iterating all roster entries, which is nontrivial. For v2 we
+    // honour a single hardcoded mapping: sol@ultron → 0xa84ceb…b3c3.
+    // Any other sender falls through and we log + skip.
+    const suiAddress = this._reverseResolveSolToSui(fromSolAddress);
+    if (!suiAddress) {
+      console.log(`[agility-v2] skip: no Sui identity for sol sender ${fromSolAddress} (sig ${sig})`);
+      return { ok: false, reason: 'unknown sender' };
+    }
+
+    // Record the inbound credit in DO state for /api/agility/status
+    const inbounds: AgilityInbound[] = ((this.state as any).agilityInbounds as AgilityInbound[] | undefined) ?? [];
+    const entry: AgilityInbound = {
+      sig,
+      fromSolAddress,
+      suiAddress,
+      amountRaw,
+      mintAddress,
+      ts: Date.now(),
+      status: 'detected',
+    };
+    // Dedup on sig — webhook retries shouldn't double-record
+    const already = inbounds.find(e => e.sig === sig);
+    if (!already) {
+      inbounds.unshift(entry);
+      // Cap at 100 entries
+      if (inbounds.length > 100) inbounds.length = 100;
+      this.setState({ ...this.state, agilityInbounds: inbounds } as any);
+    }
+
+    // v2 stop-short: log the intended mint without executing it. The
+    // real call would be `this.mintIusd({ recipient: suiAddress,
+    // collateralValueMist: amountRaw, mintAmount: amountRaw,
+    // callerAddress: this.getUltronAddress() })` — wiring it live
+    // belongs in the v3 move once we've validated detection + lookup
+    // end-to-end on a real Helius payload.
+    console.log(`[agility-v2] WOULD mint ${amountRaw} iUSD to ${suiAddress} for inbound ${sig}`);
+    return { ok: true, suiAddress, wouldMint: amountRaw };
+  }
+
+  /** Stubbed reverse lookup: Solana address → Sui address.
+   *  v2 honours a single hardcoded mapping for ultron's own sol
+   *  address. v3 will scan the SUIAMI roster for any entry whose
+   *  `sol` chain field matches. */
+  private _reverseResolveSolToSui(solAddress: string): string | null {
+    const ULTRON_SOL = 'GfVzGHiSPyTnX6bawnahJnUPXeASF6qKPd224VQws1DW';
+    const ULTRON_SUI = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+    if (solAddress === ULTRON_SOL) return ULTRON_SUI;
+    return null;
   }
 
   /** BAM Mint: mint iUSD SPL tokens on Solana to a recipient.
