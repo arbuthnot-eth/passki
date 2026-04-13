@@ -2169,6 +2169,296 @@ export async function buildCreateStableShadeOrderTx(
 }
 
 /**
+ * Build a user-signed PTB to create a StableShadeOrder<IUSD>, funded from
+ * native SUI. Swaps SUI → iUSD inside the same PTB before depositing,
+ * so users who hold only SUI can open a stable shade order without first
+ * swapping manually.
+ *
+ * Routing strategy:
+ *   1. Try Aftermath aggregator with `getCompleteTradeRouteGivenAmountOut`
+ *      (exact iUSD output → computed SUI input). Composes the trade via
+ *      `addTransactionForCompleteTradeRoute`.
+ *   2. On failure, fall back to a direct two-hop DeepBook path:
+ *      SUI → USDC (SUI/USDC pool) then USDC → iUSD (iUSD/USDC pool).
+ *      Over-specifies the SUI input relative to a caller-supplied
+ *      `suiPriceUsd` with a 15% slippage buffer.
+ *
+ * After the swap, any pre-existing iUSD from the user's wallet is merged
+ * with the swapped iUSD, exactly `targetStableMist` is split off as the
+ * deposit coin for `shade::create_stable<IUSD>`, and any leftover iUSD is
+ * returned to the caller. Leftover SUI change is refunded to the gas coin.
+ *
+ * @param rawAddress         User wallet address (sender)
+ * @param domain             Bare domain name (no `.sui`) for the order
+ * @param graceEndMs         SuiNS grace-period expiry timestamp (ms)
+ * @param targetStableMist   Exact iUSD deposit amount (9 decimals mist)
+ * @param suiPriceUsd        Optional SUI/USD price used to size the
+ *                           DeepBook fallback. Ignored when Aftermath
+ *                           routing succeeds. Default: $2.00.
+ */
+export async function buildCreateStableShadeOrderFromSuiTx(
+  rawAddress: string,
+  domain: string,
+  graceEndMs: number,
+  targetStableMist: bigint,
+  suiPriceUsd: number = 2.0,
+): Promise<{ txBytes: Uint8Array; orderInfo: Omit<ShadeOrderInfo, 'objectId'> & { coinType: string } }> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = gqlClient;
+  const USDC_TYPE = suinsCfg().coins.USDC.type;
+
+  if (targetStableMist <= 0n) {
+    throw new Error('targetStableMist must be > 0');
+  }
+
+  // Pre-existing iUSD the user may already hold — merged into the swap output
+  // so we don't waste dust from prior balances.
+  const existingIusdCoins = (await listCoinsOfType(transport, walletAddress, IUSD_TYPE))
+    .filter(c => c.balance > 0n);
+  const existingIusdTotal = existingIusdCoins.reduce((s, c) => s + c.balance, 0n);
+
+  // How much iUSD still needs to come from the SUI swap to reach target.
+  const iusdGapMist = existingIusdTotal >= targetStableMist
+    ? 0n
+    : targetStableMist - existingIusdTotal;
+
+  // Salt + commitment — identical keccak256 preimage to stable create path.
+  const salt = generateSalt();
+  const commitment = await buildCommitment(domain, graceEndMs, walletAddress, salt);
+
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  // Compose the SUI → iUSD swap. Produces an `iusdFromSwap` move-call result
+  // referencing a `Coin<IUSD>` we can merge with pre-existing iUSD below.
+  // If the user already has enough iUSD (iusdGapMist === 0n) we skip the swap.
+  let iusdFromSwap: any = null;
+
+  if (iusdGapMist > 0n) {
+    // ── Aftermath aggregator path (preferred) ──
+    let aftermathComposed = false;
+    try {
+      const { Aftermath } = await import('aftermath-ts-sdk');
+      const af = new Aftermath('MAINNET');
+      await af.init();
+      const router = af.Router();
+
+      const route = await router.getCompleteTradeRouteGivenAmountOut({
+        coinInType: SUI_TYPE,
+        coinOutType: IUSD_TYPE,
+        // 2% slippage buffer baked into the requested amountOut so the
+        // resulting swap overshoots the gap slightly.
+        coinOutAmount: (iusdGapMist * 102n) / 100n,
+        slippage: 0.02,
+      });
+
+      if (route && route.coinIn?.amount && BigInt(route.coinIn.amount) > 0n) {
+        // Split the required SUI from gas for the aggregator input.
+        const suiInMist = BigInt(route.coinIn.amount);
+        // Extra 2% on the input side to absorb price movement between
+        // route fetch and execution.
+        const suiInBuffered = (suiInMist * 102n) / 100n;
+        const [suiPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiInBuffered)]);
+        const { coinOutId } = await router.addTransactionForCompleteTradeRoute({
+          tx,
+          walletAddress,
+          completeRoute: route,
+          slippage: 0.02,
+          coinInId: suiPayment,
+        });
+        if (coinOutId) {
+          iusdFromSwap = coinOutId;
+          aftermathComposed = true;
+        }
+      }
+    } catch {
+      // Aftermath failed — fall through to DeepBook
+    }
+
+    // ── DeepBook fallback: SUI → USDC → iUSD ──
+    if (!aftermathComposed) {
+      // Size SUI input from suiPriceUsd with a 15% buffer.
+      // iusdGapMist is 9-decimal iUSD mist; 1 iUSD ≈ $1.
+      const gapUsd = Number(iusdGapMist) / 1e9;
+      const suiNeededFloat = (gapUsd * 1.15) / suiPriceUsd;
+      const suiNeededMist = BigInt(Math.ceil(suiNeededFloat * 1e9));
+      if (suiNeededMist <= 0n) {
+        throw new Error('Computed SUI input is zero — check suiPriceUsd and targetStableMist');
+      }
+      const [suiPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiNeededMist)]);
+
+      // Hop 1: SUI → USDC via DeepBook SUI/USDC pool
+      const [zeroDeepSui] = tx.moveCall({
+        target: '0x2::coin::zero',
+        typeArguments: [DB_DEEP_TYPE],
+      });
+      const [suiChange, usdcFromSui, deepChangeSui] = tx.moveCall({
+        target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+        typeArguments: [SUI_TYPE, USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({
+            objectId: DB_SUI_USDC_POOL,
+            initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION,
+            mutable: true,
+          }),
+          suiPayment,
+          zeroDeepSui,
+          tx.pure.u64(1), // min out — DeepBook reverts on 0, so 1
+          tx.object.clock(),
+        ],
+      });
+
+      // Hop 2: USDC → iUSD via DeepBook iUSD/USDC pool
+      // iUSD is the *base* side of this pool; USDC is the quote. To go
+      // quote → base we use swap_exact_quote_for_base.
+      const [zeroDeepIusd] = tx.moveCall({
+        target: '0x2::coin::zero',
+        typeArguments: [DB_DEEP_TYPE],
+      });
+      const [iusdOut, usdcChange, deepChangeIusd] = tx.moveCall({
+        target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+        typeArguments: [IUSD_TYPE, USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({
+            objectId: DB_IUSD_USDC_POOL,
+            initialSharedVersion: DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION,
+            mutable: true,
+          }),
+          usdcFromSui,
+          zeroDeepIusd,
+          tx.pure.u64(1), // min out
+          tx.object.clock(),
+        ],
+      });
+
+      iusdFromSwap = iusdOut;
+
+      // Return DeepBook dust & change to the user. SUI change is merged
+      // back into gas. USDC change goes to the wallet as a coin object.
+      tx.mergeCoins(tx.gas, [suiChange]);
+      tx.transferObjects(
+        [usdcChange, deepChangeSui, deepChangeIusd],
+        tx.pure.address(walletAddress),
+      );
+    }
+  }
+
+  // Merge any pre-existing iUSD into the swapped iUSD (or use them
+  // directly when the swap was skipped entirely).
+  let mergedIusd: any;
+  if (iusdFromSwap) {
+    mergedIusd = iusdFromSwap;
+    if (existingIusdCoins.length > 0) {
+      tx.mergeCoins(
+        mergedIusd,
+        existingIusdCoins.map(c => tx.objectRef({
+          objectId: c.objectId, version: c.version, digest: c.digest,
+        })),
+      );
+    }
+  } else {
+    // Swap skipped — user already held enough iUSD. Mirror the behaviour
+    // of buildCreateStableShadeOrderTx and merge the existing coins.
+    if (existingIusdCoins.length === 0) {
+      throw new Error('No iUSD to fund deposit and SUI swap was not composed');
+    }
+    const primary = tx.objectRef({
+      objectId: existingIusdCoins[0].objectId,
+      version: existingIusdCoins[0].version,
+      digest: existingIusdCoins[0].digest,
+    });
+    if (existingIusdCoins.length > 1) {
+      tx.mergeCoins(
+        primary,
+        existingIusdCoins.slice(1).map(c => tx.objectRef({
+          objectId: c.objectId, version: c.version, digest: c.digest,
+        })),
+      );
+    }
+    mergedIusd = primary;
+  }
+
+  // Split the exact deposit amount and hand it to shade::create_stable.
+  const [depositCoin] = tx.splitCoins(mergedIusd, [tx.pure.u64(targetStableMist)]);
+  tx.moveCall({
+    target: `${SHADE_V5_PACKAGE}::shade::create_stable`,
+    typeArguments: [IUSD_TYPE],
+    arguments: [
+      depositCoin,
+      tx.pure.vector('u8', Array.from(commitment)),
+      tx.pure.vector('u8', []),
+    ],
+  });
+
+  // Any leftover iUSD (swap overshoot + pre-existing) → back to caller.
+  tx.transferObjects([mergedIusd], tx.pure.address(walletAddress));
+
+  const txBytes = await buildWithTx(tx, transport);
+
+  const orderInfo = {
+    domain,
+    owner: walletAddress,
+    depositMist: targetStableMist,
+    executeAfterMs: graceEndMs,
+    targetAddress: walletAddress,
+    salt,
+    coinType: IUSD_TYPE,
+  };
+
+  return { txBytes, orderInfo };
+}
+
+/**
+ * Smart dispatcher: picks the cheapest builder to open a StableShadeOrder
+ * based on the caller's on-chain balances.
+ *
+ *   1. If user's Sui iUSD ≥ targetStableMist → use buildCreateStableShadeOrderTx
+ *      (no swap, direct deposit).
+ *   2. Else if user has any SUI balance → use buildCreateStableShadeOrderFromSuiTx
+ *      (SUI → iUSD in-PTB, deposits target amount).
+ *   3. Else throw — user must fund the wallet. Error mentions Agility as the
+ *      recommended route (fund from Solana → Sui via Agility bridge).
+ *
+ * Note: case (1) computes its own deposit amount from SuiNS pricing and
+ * ignores the caller-supplied `targetStableMist`, matching existing
+ * buildCreateStableShadeOrderTx semantics. Case (2) honours
+ * `targetStableMist` exactly.
+ */
+export async function buildCreateStableShadeOrderAutoTx(
+  rawAddress: string,
+  domain: string,
+  graceEndMs: number,
+  targetStableMist: bigint,
+  suiPriceUsd: number = 2.0,
+): Promise<{ txBytes: Uint8Array; orderInfo: Omit<ShadeOrderInfo, 'objectId'> & { coinType: string } }> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = gqlClient;
+
+  const [iusdCoins, suiCoins] = await Promise.all([
+    listCoinsOfType(transport, walletAddress, IUSD_TYPE),
+    listCoinsOfType(transport, walletAddress, SUI_TYPE),
+  ]);
+  const iusdTotal = iusdCoins.reduce((s, c) => s + (c.balance > 0n ? c.balance : 0n), 0n);
+  const suiTotal = suiCoins.reduce((s, c) => s + (c.balance > 0n ? c.balance : 0n), 0n);
+
+  if (iusdTotal >= targetStableMist) {
+    return buildCreateStableShadeOrderTx(rawAddress, domain, graceEndMs);
+  }
+
+  if (suiTotal > 0n) {
+    return buildCreateStableShadeOrderFromSuiTx(
+      rawAddress, domain, graceEndMs, targetStableMist, suiPriceUsd,
+    );
+  }
+
+  throw new Error(
+    `No iUSD or SUI on Sui side for ${walletAddress.slice(0, 8)}… ` +
+    `Need ${(Number(targetStableMist) / 1e9).toFixed(2)} iUSD (or SUI to swap). ` +
+    `Fund via Agility (Solana → Sui bridge) first.`,
+  );
+}
+
+/**
  * Build a PTB to execute a Shade order (reveal + register).
  *
  * PTB composition:
