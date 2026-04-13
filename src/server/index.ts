@@ -2786,6 +2786,39 @@ app.get('/api/thunder/chronicom', async (c) => {
   catch { return c.json({ error: text }, 500); }
 });
 
+// ── Sableye Lv.10 — Leer ──────────────────────────────────────────────
+// Seal-encrypted counterparty set per wallet. The worker proxies the
+// ciphertext blob to the owner's Chronicom DO as-is; only the browser
+// (with Seal decrypt keys) ever sees plaintext. Consistent with the
+// existing public chronicom surface — no new auth middleware.
+app.get('/api/chronicom/sableye', async (c) => {
+  const addr = c.req.query('addr');
+  if (!addr) return c.json({ error: 'addr required' }, 400);
+  const stub = c.env.Chronicom.get(c.env.Chronicom.idFromName(addr));
+  const res = await stub.fetch(new Request('https://chronicom-do/sableye', {
+    method: 'GET',
+    headers: { 'x-partykit-room': addr },
+  }));
+  const text = await res.text();
+  try { return c.json(JSON.parse(text), res.status as any); }
+  catch { return c.json({ error: text }, 500); }
+});
+
+app.post('/api/chronicom/sableye', async (c) => {
+  const addr = c.req.query('addr');
+  if (!addr) return c.json({ error: 'addr required' }, 400);
+  const body = await c.req.text();
+  const stub = c.env.Chronicom.get(c.env.Chronicom.idFromName(addr));
+  const res = await stub.fetch(new Request('https://chronicom-do/sableye', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-partykit-room': addr },
+    body,
+  }));
+  const text = await res.text();
+  try { return c.json(JSON.parse(text), res.status as any); }
+  catch { return c.json({ error: text }, 500); }
+});
+
 // NameIndex — global target-reverse map shared across all sui.ski visitors.
 // Client writes mappings whenever it resolves `@name → address`, and
 // reads them as a last-resort fallback when SuiNS primary + owned-NFT
