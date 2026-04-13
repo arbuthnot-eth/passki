@@ -3746,7 +3746,7 @@ async function _renderConversation(counterparty: string, force = false) {
       if (inp) inp.value = sender;
       skipNextFocusClear = true;
       fetchAndShowNsPrice(sender);
-      _updateSendBtnMode();
+      document.getElementById('wk-send-btn')?.dispatchEvent(new CustomEvent('ns-status-change'));
     });
   });
 
@@ -3771,7 +3771,7 @@ async function _renderConversation(counterparty: string, force = false) {
       skipNextFocusClear = true;
       _addThunderContact(name);
       fetchAndShowNsPrice(name);
-      _updateSendBtnMode();
+      document.getElementById('wk-send-btn')?.dispatchEvent(new CustomEvent('ns-status-change'));
     });
   });
 
@@ -4098,7 +4098,7 @@ function _toggleRoster() {
     coinChipsOpen = false;
     _persistCoinChipsOpen();
     document.getElementById('wk-coins-collapse')?.classList.toggle('wk-qr-collapse--hidden', true);
-    _updateSendBtnMode();
+    document.getElementById('wk-send-btn')?.dispatchEvent(new CustomEvent('ns-status-change'));
   }
 }
 let nsSectionOpen = (() => {

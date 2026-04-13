@@ -456,7 +456,15 @@ window.addEventListener('ski:request-suiami', async (e) => {
         }
       }
       const { Transaction } = await import('@mysten/sui/transactions');
+      const { normalizeSuiAddress } = await import('@mysten/sui/utils');
       const tx = new Transaction();
+      // Tx sender MUST be set explicitly. WaaP and other wallets that
+      // pre-build with their own SDK fail with "Failed to build
+      // transaction: Missing transaction sender" when sender is unset
+      // even though signAndExecuteTransaction will eventually attach
+      // the signing account. Always normalize for WaaP addresses that
+      // may not be zero-padded.
+      tx.setSender(normalizeSuiAddress(ws.address));
       maybeAppendRoster(tx, ws.address, name, undefined, blobId);
       const { digest } = await signAndExecuteTransaction(tx);
       console.log('[suiami] roster attestation written:', digest);
@@ -777,6 +785,39 @@ const _testWalletSign = async (message: string = 'sui.ski smoke test') => {
 };
 (window as unknown as { testWalletSign: typeof _testWalletSign }).testWalletSign = _testWalletSign;
 console.log('[ski] testWalletSign hook installed — call testWalletSign() to test raw wallet signing');
+
+// Nuclear WaaP reset: nukes every WaaP/Silk/walletconnect key in
+// localStorage + sessionStorage, removes any injected iframes, clears
+// the dappkit "which wallet" marker, drops in-memory registration
+// state, then reloads the page for a totally fresh connect flow.
+//
+// Use when WaaP stops opening (iframe stuck, INVALID_DEVICE_SESSION,
+// signing hits Silk 400s repeatedly) and you've already tried
+// disconnect/reconnect through the normal UI.
+const _purgeWaaP = async () => {
+  try {
+    const { purgeWaaPState } = await import('./waap.js');
+    await purgeWaaPState();
+    console.log('[purgeWaaP] state purged, reloading in 1s...');
+    setTimeout(() => location.reload(), 1000);
+    return { ok: true };
+  } catch (err) {
+    console.error('[purgeWaaP] failed:', err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+(window as unknown as { purgeWaaP: typeof _purgeWaaP }).purgeWaaP = _purgeWaaP;
+console.log('[ski] purgeWaaP hook installed — call purgeWaaP() if WaaP iframe is stuck');
+
+// Auto-trigger if the URL query contains ?purge-waap so a stuck user
+// can just visit https://sui.ski/?purge-waap without knowing the
+// console command.
+try {
+  if (typeof location !== 'undefined' && location.search.includes('purge-waap')) {
+    console.log('[purgeWaaP] URL flag detected, running purge...');
+    _purgeWaaP();
+  }
+} catch { /* non-browser */ }
 
 // ─── Auto Pre-Rumble on name registration ──────────────────────────────
 // When a new name is registered, fire pre-rumble in the background so the
