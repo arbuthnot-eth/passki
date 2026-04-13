@@ -722,6 +722,33 @@ const _ultronRoster = async () => {
 (globalThis as unknown as { ultronRoster: typeof _ultronRoster }).ultronRoster = _ultronRoster;
 console.log('[ski] ultronRoster hook installed — call ultronRoster()');
 
+// Nuke every cached Seal session key + reset the circuit breaker so the
+// next Thunder interaction prompts a fresh wallet sign. Use when the
+// wallet backend starts rejecting mint sigs unexpectedly (possibly due
+// to a stale Silk session or a poisoned localStorage entry written by a
+// prior SDK version).
+const _clearSealCache = () => {
+  try {
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('ski:seal-sk:')) stale.push(k);
+    }
+    for (const k of stale) localStorage.removeItem(k);
+    console.log(`[clearSealCache] purged ${stale.length} Seal session key entries`);
+    // Force a page reload so module-level state (circuit breaker flags,
+    // in-memory promise cache) also resets cleanly.
+    console.log('[clearSealCache] reloading in 1s...');
+    setTimeout(() => location.reload(), 1000);
+    return { purged: stale.length };
+  } catch (err) {
+    console.error('[clearSealCache] error:', err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+(window as unknown as { clearSealCache: typeof _clearSealCache }).clearSealCache = _clearSealCache;
+console.log('[ski] clearSealCache hook installed — call clearSealCache() to reset Seal key state');
+
 // ─── Auto Pre-Rumble on name registration ──────────────────────────────
 // When a new name is registered, fire pre-rumble in the background so the
 // name immediately has chain addresses (ultron-custodial until user Rumbles).

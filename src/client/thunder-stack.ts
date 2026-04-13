@@ -190,7 +190,28 @@ let _address = '';
 // EXTENDED client (the one returned from createSuiStackMessagingClient
 // after the $extend chain). Using `_client` here closes that gap.
 const SESSION_KEY_TTL_MIN = 30;
-const SK_STORAGE_KEY = (addr: string) => `ski:seal-sk:v3:${addr.toLowerCase()}`;
+// Cache version bump: if a restored key ever produces a
+// personalMessage that the wallet's backend rejects, the cause is
+// most likely a format drift between the SDK version that wrote the
+// cache and the one reading it. Bumping the prefix forces every
+// client to re-mint from scratch on first load, without a manual
+// localStorage.clear().
+const SK_STORAGE_PREFIX = 'ski:seal-sk:v4:';
+const SK_STORAGE_KEY = (addr: string) => `${SK_STORAGE_PREFIX}${addr.toLowerCase()}`;
+// Best-effort sweep of any stale v1/v2/v3 entries so they don't linger
+// and confuse future debugging. Fire on module load.
+try {
+  if (typeof localStorage !== 'undefined') {
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && /^ski:seal-sk:v[123]:/.test(k)) stale.push(k);
+    }
+    for (const k of stale) localStorage.removeItem(k);
+    if (stale.length > 0) console.log(`[thunder] purged ${stale.length} stale Seal session key cache entries`);
+  }
+} catch { /* non-browser / storage disabled */ }
+
 let _sessionKeyPromise: Promise<SessionKey> | null = null;
 
 async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<SessionKey> {
