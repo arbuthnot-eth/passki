@@ -9865,7 +9865,7 @@ function bindEvents() {
               <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Squids" data-action="rumble">\ud83e\udd91</button>
               <button class="ski-idle-thunder-at-iusd ski-idle-quick-btn ski-idle-quick-btn--iusd" id="ski-idle-thunder-at-iusd" type="button" title="Attach amount">$</button>
               <button class="ski-idle-quick-btn ski-idle-quick-btn--attach" id="ski-idle-thunder-attach" type="button" title="Attach files">\ud83d\udcce</button>
-              <input id="ski-idle-thunder-file-input" type="file" multiple accept="image/*,video/*,audio/*,.pdf,.txt,.json,.md" style="display:none">
+              <input id="ski-idle-thunder-file-input" type="file" multiple accept="*/*" style="display:none">
             </div>
             <div class="ski-idle-thunder-input-wrap">
               <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypted thunder">
