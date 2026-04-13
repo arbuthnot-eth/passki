@@ -22,6 +22,8 @@ interface Env {
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
   HELIUS_API_KEY?: string; // Solana RPC (Helius)
   HELIUS_WEBHOOK_SECRET?: string; // Validates incoming Helius webhook requests
+  ALCHEMY_WEBHOOK_SECRET?: string; // Validates incoming Alchemy Address Activity webhooks
+  ALCHEMY_ETH_URL?: string; // Alchemy ETH mainnet HTTPS endpoint (viem transport)
   ZKLOGIN_PROVER_URL?: string; // zkLogin prover upstream (devnet vampire / mainnet self-host)
   ENCRYPT_GRPC_URL?: string; // dWallet Encrypt upstream (pre-alpha devnet)
 }
@@ -3262,6 +3264,47 @@ app.post('/api/helius/webhook', async (c) => {
     console.warn('[helius-webhook] parse failed:', err instanceof Error ? err.message : err);
     return c.json({ error: String(err) }, 400);
   }
+});
+
+// ── Alchemy webhook — ETH leg of Porygon-Z Conversion Beam ──
+// Address Activity notifications for eth@ultron. Verifies the HMAC-SHA256
+// signature Alchemy attaches to the raw body, parses inbound credits,
+// and delegates to eth-inbound.ts for the 95/5 split + Uniswap swap +
+// cross-chain iUSD mint. Returns 200 fast so Alchemy doesn't retry while
+// we process — the actual swap/mint work happens in waitUntil.
+app.post('/api/alchemy/webhook', async (c) => {
+  const { verifyAlchemySignature, parseInboundCredits, computeSplit, formatEth, ETH_ULTRON_ADDRESS } =
+    await import('./eth-inbound');
+  const rawBody = await c.req.text();
+  const sig = c.req.header('x-alchemy-signature');
+  const secret = c.env.ALCHEMY_WEBHOOK_SECRET;
+  if (!secret) {
+    // Fail loud in logs but return 200 — we don't want Alchemy to retry
+    // forever just because we haven't configured the secret yet.
+    console.warn('[alchemy-webhook] ALCHEMY_WEBHOOK_SECRET not set, accepting without verification');
+  } else {
+    const ok = await verifyAlchemySignature(rawBody, sig ?? null, secret);
+    if (!ok) return c.json({ error: 'Invalid signature' }, 401);
+  }
+  type AlchemyEvent = Parameters<typeof parseInboundCredits>[0];
+  let payload: AlchemyEvent;
+  try {
+    payload = JSON.parse(rawBody) as AlchemyEvent;
+  } catch (err) {
+    console.warn('[alchemy-webhook] JSON parse failed:', err instanceof Error ? err.message : err);
+    return c.json({ error: 'Invalid JSON' }, 400);
+  }
+  const credits = parseInboundCredits(payload);
+  console.log(`[alchemy-webhook] ${payload.event?.activity?.length ?? 0} activity entries, ${credits.length} qualifying credits for ${ETH_ULTRON_ADDRESS}`);
+  for (const credit of credits) {
+    const split = computeSplit(credit.amountWei);
+    console.log(`[alchemy-webhook] credit ${credit.txHash} from ${credit.fromAddress} ${formatEth(credit.amountWei)} ETH → split ${formatEth(split.stablesAmountWei)} to stables + ${formatEth(split.gasReserveWei)} reserved`);
+    // TODO (Porygon-Z Tri Attack): kick off the Uniswap v3 swap + iUSD mint
+    // via a dedicated ConversionBeamAgent DO. For v1 scaffold we just log;
+    // the actual swap requires the eth@ultron dWallet signing path
+    // (UltronSigningAgent Increment C/D) before we can move real funds.
+  }
+  return c.json({ ok: true, received: payload.event?.activity?.length ?? 0, qualifying: credits.length });
 });
 
 // ── Helius webhook management ──
