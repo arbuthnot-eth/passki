@@ -2070,6 +2070,8 @@ const ADMIN_ADDRESSES = new Set([
   '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57',
   // brando.sui — admin session (WaaP)
   '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28',
+  // brando.sui — admin session (new wallet, 2026-04-13)
+  '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057',
 ]);
 app.post('/api/cache/rumble-ultron-seed', async (c) => {
   try {
