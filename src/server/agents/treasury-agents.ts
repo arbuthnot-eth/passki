@@ -411,6 +411,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         // they claim to have sent via the amountMist field from the tx
         // effects balanceChanges.
         const balQ = await transport.query({
+          variables: {},
           query: `query {
             address(address: "${ultronAddr}") {
               iusd: balance(coinType: "${IUSD_TYPE}") { totalBalance }
@@ -461,6 +462,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
         // Build the USDC transfer PTB
         const usdcCoinsQ = await transport.query({
+          variables: {},
           query: `query { address(address: "${ultronAddr}") { objects(filter: { type: "0x2::coin::Coin<${USDC_TYPE}>" }, first: 50) { nodes { address version digest contents { json } } } } }`,
         });
         const usdcNodes = ((usdcCoinsQ.data as any)?.address?.objects?.nodes ?? []) as Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }>;
@@ -503,6 +505,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         tx.setSender(ultronAddr);
         const iusdType = IUSD_TYPE;
         const coinsQ = await transport.query({
+          variables: {},
           query: `query { address(address: "${ultronAddr}") { objects(filter: { type: "0x2::coin::Coin<${iusdType}>" }, first: 50) { nodes { address version digest contents { json } } } } }`,
         });
         const coinNodes = ((coinsQ.data as any)?.address?.objects?.nodes ?? []) as Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }>;
@@ -2736,6 +2739,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   }> {
     const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
     const res = await transport.query({
+      variables: {},
       query: `query {
         object(address: "${TreasuryAgents.IUSD_TREASURY}") {
           asMoveObject { contents { json } }
@@ -2980,6 +2984,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // 1. Read balances via GraphQL — sum of all coin objects per type.
       const balQ = await transport.query({
+        variables: {},
         query: `query {
           address(address: "${ultronAddr}") {
             sui: balance(coinType: "${SUI_TYPE}") { totalBalance }
@@ -3498,6 +3503,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Check for USDC dust
       const balRes = await transport.query({
+        variables: {},
         query: `query { address(address: "${ultronAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
       });
       const balances = (balRes.data as any)?.address?.balances?.nodes ?? [];
@@ -4155,6 +4161,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         // dynamic_field::add keyed on vector<u8>(asset_key)
         // GraphQL dynamicField query
         const dfQ = await transport.query({
+          variables: {},
           query: `query { object(address: "${TreasuryAgents.IUSD_TREASURY}") { dynamicField(name: { type: "vector<u8>", bcs: "${this._encodeU8VecBcs(assetKeyBytes)}" }) { value { ... on MoveValue { json } } } } }`,
         });
         const v = (dfQ.data as any)?.object?.dynamicField?.value?.json;
@@ -4262,6 +4269,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Read ultron's iUSD + USDC coins
       const coinsQ = await transport.query({
+        variables: {},
         query: `query {
           ultron: address(address: "${ultronAddr}") {
             iusd: objects(filter: { type: "0x2::coin::Coin<${IUSD_TYPE}>" }, first: 50) {
@@ -6421,6 +6429,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Check current DEEP balance
       const balRes = await transport.query({
+        variables: {},
         query: `query { address(address: "${ultronAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
       });
       const balances = (balRes.data as any)?.address?.balances?.nodes ?? [];
@@ -6603,6 +6612,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Check DEEP balance
       const balRes = await transport.query({
+        variables: {},
         query: `query { address(address: "${ultronAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
       });
       const balances = (balRes.data as any)?.address?.balances?.nodes ?? [];
@@ -6723,7 +6733,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         // Use unsafe_moveCall to build tx bytes (fullnode accepts the types),
         // then sign and submit. Bypasses SDK entirely.
         console.log(`[seedIusdPool] Withdrawing from owned BM ${balanceManagerId} via unsafe_moveCall...`);
-        const refGasRes2 = await transport.query({ query: '{ epoch { referenceGasPrice } }' });
+        const refGasRes2 = await transport.query({ variables: {}, query: '{ epoch { referenceGasPrice } }' });
         const gasPrice2 = Number((refGasRes2.data as any)?.epoch?.referenceGasPrice ?? 750);
 
         for (const coinType of [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE]) {
@@ -6868,7 +6878,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         tx2.setGasPayment([{ objectId: gasCoins[0].coinObjectId, version: gasCoins[0].version, digest: gasCoins[0].digest }]);
       }
       tx2.setGasBudget(50_000_000);
-      const refGasRes = await transport.query({ query: '{ epoch { referenceGasPrice } }' });
+      const refGasRes = await transport.query({ variables: {}, query: '{ epoch { referenceGasPrice } }' });
       tx2.setGasPrice(Number((refGasRes.data as any)?.epoch?.referenceGasPrice ?? 750));
 
       // Build WITHOUT client — all refs are explicit, no resolution needed
@@ -7429,6 +7439,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       if (!graceEndMs) {
         try {
           const nameRes = await transport.query({
+            variables: {},
             query: `query { nameRecord: resolveSuiNsAddress(domain: "${domain}") }`,
           });
           // If the name is expired, grace = expiry + 30 days.
