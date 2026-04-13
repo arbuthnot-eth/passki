@@ -218,8 +218,47 @@ try {
 
 let _sessionKeyPromise: Promise<SessionKey> | null = null;
 
+// Sticky rejection cooldown — when the user cancels a Seal session-key
+// sign, any subsequent storm-open / decrypt attempt would otherwise
+// re-prompt them immediately, creating an endless popup loop. We track
+// the last rejection time per address and refuse to mint a fresh key
+// for SEAL_REJECT_COOLDOWN_MS after a rejection. The cooldown clears
+// on:
+//   - explicit clearSealRejection() call (UI "retry" button)
+//   - wallet disconnect / reconnect (resetThunderClient)
+//   - the cooldown window elapsing naturally
+const SEAL_REJECT_COOLDOWN_MS = 5 * 60 * 1000; // 5 min
+let _sealRejectionAt: number | null = null;
+let _sealRejectionAddr: string | null = null;
+
+/** Clear the Seal sign rejection cooldown so the next storm open will re-prompt. */
+export function clearSealRejection(): void {
+  if (_sealRejectionAt !== null) console.log('[thunder] Seal rejection cooldown cleared');
+  _sealRejectionAt = null;
+  _sealRejectionAddr = null;
+}
+
+/** True when the user recently cancelled a Seal sign for this address. */
+export function isSealRejected(address: string): boolean {
+  if (!_sealRejectionAt || !_sealRejectionAddr) return false;
+  if (_sealRejectionAddr.toLowerCase() !== address.toLowerCase()) return false;
+  if (Date.now() - _sealRejectionAt > SEAL_REJECT_COOLDOWN_MS) {
+    _sealRejectionAt = null;
+    _sealRejectionAddr = null;
+    return false;
+  }
+  return true;
+}
+
 async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<SessionKey> {
   if (_sessionKeyPromise) return _sessionKeyPromise;
+  // Sticky rejection gate — fast-throw without prompting if the user
+  // cancelled within the cooldown window. Throws a recognizable error
+  // so callers can show "decryption cancelled" UI without spawning
+  // another wallet popup.
+  if (isSealRejected(opts.address)) {
+    throw new Error('Seal session-key sign was cancelled — click retry to prompt again');
+  }
   _sessionKeyPromise = (async () => {
     if (!_client) throw new Error('Thunder client not yet initialized');
     // Try to restore from localStorage.
@@ -282,6 +321,20 @@ async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<Sessio
       } catch (err) {
         lastErr = err;
         const msg = err instanceof Error ? err.message : String(err);
+        // Rejection → terminal. Set the sticky cooldown so subsequent
+        // storm opens DON'T re-prompt the user. They explicitly
+        // cancelled and we should respect that until they reset.
+        const isRejection = /reject/i.test(msg)
+          || /cancel/i.test(msg)
+          || /denied/i.test(msg)
+          || /user closed/i.test(msg)
+          || /action[_\s]*cancel/i.test(msg);
+        if (isRejection) {
+          _sealRejectionAt = Date.now();
+          _sealRejectionAddr = opts.address;
+          console.warn('[thunder] Seal session-key sign cancelled by user — cooldown set for 5 min');
+          throw new Error('Seal session-key sign was cancelled — click retry to prompt again');
+        }
         const isBackend400 = /backend error\s*\(400\)/i.test(msg)
           || /failed to generate signature/i.test(msg)
           || /unknown server error/i.test(msg)
@@ -420,6 +473,10 @@ export function resetThunderClient() {
   _address = '';
   _warmer = null;
   _sessionKeyPromise = null;
+  // Clear the Seal rejection cooldown — disconnecting is an explicit
+  // user action and signals a fresh start. The next wallet connect
+  // should be allowed to prompt for a new session key.
+  clearSealRejection();
 }
 
 // ─── Timestream DO transport ────────────────────────────────────────

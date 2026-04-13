@@ -757,6 +757,23 @@ const _clearSealCache = () => {
 (window as unknown as { clearSealCache: typeof _clearSealCache }).clearSealCache = _clearSealCache;
 console.log('[ski] clearSealCache hook installed — call clearSealCache() to reset Seal key state');
 
+// clearSealRejection — when the user cancels a Seal sign prompt, we set
+// a 5-min cooldown so subsequent storm opens don't re-prompt them in a
+// loop. This hook lets them clear the cooldown and try again without
+// reloading. Useful when the user cancels by accident or wants to retry
+// after switching contexts.
+const _clearSealRejection = async () => {
+  try {
+    const { clearSealRejection } = await import('./client/thunder.js');
+    clearSealRejection();
+    console.log('[clearSealRejection] cooldown cleared, next storm open will re-prompt');
+  } catch (err) {
+    console.error('[clearSealRejection] error:', err);
+  }
+};
+(window as unknown as { clearSealRejection: typeof _clearSealRejection }).clearSealRejection = _clearSealRejection;
+console.log('[ski] clearSealRejection hook installed — call clearSealRejection() after cancelling Seal sign');
+
 // Minimal smoke test for the wallet's signPersonalMessage path. Takes
 // a plain ASCII string, hands it straight to wallet.ts with nothing
 // else in the loop — no Seal SDK, no IKA SDK, no canonicalization, no

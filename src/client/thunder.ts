@@ -32,6 +32,8 @@ export {
   fetchGlobalTargetReverse,
   makeThunderGroupId,
   reverseLookupName,
+  clearSealRejection,
+  isSealRejected,
   type ThunderMessage,
   type ThunderClientOptions,
   humanizeThunderError,

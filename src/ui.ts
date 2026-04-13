@@ -9566,11 +9566,15 @@ function render() {
     if (!getState().address) { openModal(); return; }
     const href = skiHref();
     if (app.suinsName) {
+      // Connected with a SuiNS name → open profile in new tab
       window.open(href, '_blank', 'noopener,noreferrer');
-    } else if (window.location.hostname === 'sui.ski') {
-      window.location.reload();
     } else {
-      window.open(href, '_blank', 'noopener,noreferrer');
+      // Connected without a SuiNS name → open the modal so they
+      // can register one. Previously this branch did a hard
+      // location.reload() which restarted the idle video and
+      // every other reactive component, creating visible jitter.
+      // The modal is the right surface for this state.
+      openModal();
     }
   });
 }
