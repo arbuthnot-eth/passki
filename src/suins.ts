@@ -2081,25 +2081,45 @@ export async function buildCreateShadeOrderTx(
 }
 
 /**
- * Build a user-signed PTB to create a StableShadeOrder<IUSD>.
+ * Build a user-signed PTB to create a StableShadeOrder<T> for any
+ * supported stable coin type. Default T = IUSD.
  *
- * Unlike buildCreateShadeOrderTx (SUI-denominated, legacy), this builder:
- *  - lists the caller's iUSD coins and splits the deposit from them
- *  - calls `shade::create_stable<IUSD>` on SHADE_V5_PACKAGE
- *  - leaves the caller as the on-chain order owner, so cancel refunds flow
- *    back to them naturally (no ultron-forwarding hack needed)
+ * The underlying Move function `shade::create_stable<T>(coin, commitment,
+ * sealed_payload)` is already generic — Aqua Tail (move under #140) just
+ * surfaces that flexibility to the client so users can fund shade orders
+ * from USDC/USDT directly without first swapping to iUSD.
  *
- * Deposit sizing mirrors the server-side path: discounted NS price / 1e6
- * converted to iUSD (1 USD = 1e9 mist, 9 decimals) + 10% slippage buffer.
+ * Deposit sizing: discounted NS price in USD scaled to the stable's
+ * decimals + 10% slippage buffer. Both iUSD (9 decimals) and USDC
+ * (6 decimals on Sui) are handled via the `decimals` per-type constant.
  */
+type StableShadeCoinType = typeof IUSD_TYPE | string;
+
+interface StableCoinSpec {
+  type: string;
+  decimals: number;
+  label: string;
+}
+
+function getStableCoinSpec(coinType?: StableShadeCoinType): StableCoinSpec {
+  const type = coinType ?? IUSD_TYPE;
+  if (type === IUSD_TYPE) return { type: IUSD_TYPE, decimals: 9, label: 'iUSD' };
+  const usdcType = suinsCfg().coins.USDC.type;
+  if (type === usdcType) return { type: usdcType, decimals: 6, label: 'USDC' };
+  // Default fallback — treat unknown stables as 9-decimal iUSD-style.
+  return { type, decimals: 9, label: type.split('::').pop() ?? 'STABLE' };
+}
+
 export async function buildCreateStableShadeOrderTx(
   rawAddress: string,
   domain: string,
   graceEndMs: number,
+  coinType?: StableShadeCoinType,
 ): Promise<{ txBytes: Uint8Array; orderInfo: Omit<ShadeOrderInfo, 'objectId'> & { coinType: string } }> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
   const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
+  const stable = getStableCoinSpec(coinType);
 
   // Calculate deposit in USD (NS-discounted) with 10% slippage buffer.
   const [rawPrice, discountMap] = await Promise.all([
@@ -2109,16 +2129,19 @@ export async function buildCreateStableShadeOrderTx(
   const nsKey = suinsCfg().coins.NS.type.replace(/^0x/, '');
   const discountPct = discountMap.get(nsKey) ?? 0;
   const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
-  // iUSD has 9 decimals, 1 USD = 1e9 mist.
-  const depositMist = BigInt(Math.ceil(discountedUsd * 1.10 * 1e9));
+  // Deposit amount in the stable's own mist/µ-units.
+  const unit = BigInt(10 ** stable.decimals);
+  const depositMist = BigInt(Math.ceil(discountedUsd * 1.10 * Number(unit)));
 
-  // List caller's iUSD coins — must have enough to cover deposit.
-  const iusdCoins = (await listCoinsOfType(transport, walletAddress, IUSD_TYPE))
+  // List caller's coins of this stable type — must have enough to cover.
+  const coins = (await listCoinsOfType(transport, walletAddress, stable.type))
     .filter(c => c.balance > 0n)
     .sort((a, b) => (a.balance > b.balance ? -1 : 1));
-  const iusdTotal = iusdCoins.reduce((s, c) => s + c.balance, 0n);
-  if (iusdTotal < depositMist) {
-    throw new Error(`Insufficient iUSD: need ${(Number(depositMist) / 1e9).toFixed(2)}, have ${(Number(iusdTotal) / 1e9).toFixed(2)}`);
+  const total = coins.reduce((s, c) => s + c.balance, 0n);
+  if (total < depositMist) {
+    const have = (Number(total) / Number(unit)).toFixed(2);
+    const need = (Number(depositMist) / Number(unit)).toFixed(2);
+    throw new Error(`Insufficient ${stable.label}: need ${need}, have ${have}`);
   }
 
   // Salt + commitment — identical keccak256 preimage to legacy create path.
@@ -2128,29 +2151,31 @@ export async function buildCreateStableShadeOrderTx(
   const tx = new Transaction();
   tx.setSender(walletAddress);
 
-  // Merge all iUSD coins into the first, split the deposit amount.
+  // Merge all of the user's coins of this type into the first, then split
+  // the deposit amount off. Same pattern the iUSD-only path used; now
+  // parameterized over the type argument for `shade::create_stable<T>`.
   const primary = tx.objectRef({
-    objectId: iusdCoins[0].objectId,
-    version: iusdCoins[0].version,
-    digest: iusdCoins[0].digest,
+    objectId: coins[0].objectId,
+    version: coins[0].version,
+    digest: coins[0].digest,
   });
-  if (iusdCoins.length > 1) {
+  if (coins.length > 1) {
     tx.mergeCoins(
       primary,
-      iusdCoins.slice(1).map(c => tx.objectRef({ objectId: c.objectId, version: c.version, digest: c.digest })),
+      coins.slice(1).map(c => tx.objectRef({ objectId: c.objectId, version: c.version, digest: c.digest })),
     );
   }
   const [depositCoin] = tx.splitCoins(primary, [tx.pure.u64(depositMist)]);
   tx.moveCall({
     target: `${SHADE_V5_PACKAGE}::shade::create_stable`,
-    typeArguments: [IUSD_TYPE],
+    typeArguments: [stable.type],
     arguments: [
       depositCoin,
       tx.pure.vector('u8', Array.from(commitment)),
       tx.pure.vector('u8', []),
     ],
   });
-  // Return leftover iUSD to the caller.
+  // Return leftover stable coin to the caller.
   tx.transferObjects([primary], tx.pure.address(walletAddress));
 
   const txBytes = await buildWithTx(tx, transport);
@@ -2162,7 +2187,7 @@ export async function buildCreateStableShadeOrderTx(
     executeAfterMs: graceEndMs,
     targetAddress: walletAddress,
     salt,
-    coinType: IUSD_TYPE,
+    coinType: stable.type,
   };
 
   return { txBytes, orderInfo };

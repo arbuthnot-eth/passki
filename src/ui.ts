@@ -8592,7 +8592,20 @@ function renderSkiMenu() {
       } catch (buildErr) {
         const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
         if (msg.includes('Insufficient iUSD') || msg.includes('insufficient')) {
-          // User lacks iUSD — proxy via ultron (ultron-funded fallback)
+          // Fallback: ultron-funded shade-proxy. KNOWN OWNERSHIP GAP —
+          // the resulting order is owned by ultron (tx_context::sender =
+          // ultron since ultron signs), NOT by brando. Consequences:
+          //   • /api/shade/orders/:address returns zero for brando even
+          //     though brando initiated the shade
+          //   • brando cannot cancel the order directly (only ultron can)
+          //   • the registered name DOES still land at brando (executor
+          //     decrypts target from sealed payload), so no funds lost
+          // Long-term fix: Agility v2+ lets users bridge iUSD from
+          // Solana → Sui, eliminating the need for this fallback. Or
+          // a Move v6 upgrade with a `recipient: address` arg on
+          // create_stable so ultron can sign while naming brando as owner.
+          // See #140 "Crunch" or "Aqua Tail" for the tracking moves.
+          console.warn('[shade] falling back to ultron-funded proxy — order ownership will be ultron, not brando. Consider funding Sui iUSD or using Agility.');
           showToast(`\u26a1 Ultron fronting shade deposit for ${label}.sui\u2026`);
           const proxyRes = await fetch('/api/cache/shade-proxy', {
             method: 'POST',
