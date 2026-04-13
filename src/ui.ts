@@ -13151,8 +13151,14 @@ function bindEvents() {
       // reading from the File object.
       type _PendingFile = { fileName: string; mimeType: string; data: Uint8Array; previewUrl?: string };
       const _pendingThunderFiles: _PendingFile[] = [];
-      const _MAX_ATTACH_BYTES = 10 * 1024 * 1024; // 10 MB per file (SDK default)
-      const _MAX_ATTACH_COUNT = 10;
+      // Zapdos Lv.40 — align UI limits with the SDK's actual enforcement.
+      // ATTACH_MAX_FILE_BYTES = 2 MB, ATTACH_MAX_FILES = 4, ATTACH_MAX_TOTAL_BYTES = 5 MB
+      // in `src/client/thunder-stack.ts`. Reject large files at the UI
+      // so the user sees the error before a 10 MB upload fails silently
+      // in the SDK layer.
+      const _MAX_ATTACH_BYTES = 2 * 1024 * 1024;
+      const _MAX_ATTACH_COUNT = 4;
+      const _MAX_ATTACH_TOTAL_BYTES = 5 * 1024 * 1024;
       const _attachChips = _idleOverlay.querySelector('#ski-idle-thunder-attach-chips') as HTMLElement | null;
       const _attachBtn = _idleOverlay.querySelector('#ski-idle-thunder-attach') as HTMLButtonElement | null;
       const _attachFileInput = _idleOverlay.querySelector('#ski-idle-thunder-file-input') as HTMLInputElement | null;
@@ -13272,7 +13278,12 @@ function bindEvents() {
           return;
         }
         if (file.size > _MAX_ATTACH_BYTES) {
-          showToast(`${file.name} > 10 MB — too big`);
+          showToast(`${file.name} > 2 MB — too big`);
+          return;
+        }
+        const runningTotal = _pendingThunderFiles.reduce((n, p) => n + p.data.byteLength, 0);
+        if (runningTotal + file.size > _MAX_ATTACH_TOTAL_BYTES) {
+          showToast(`Attachments total > 5 MB — drop one first`);
           return;
         }
         const buf = await file.arrayBuffer();
@@ -14173,7 +14184,24 @@ function bindEvents() {
       // persisted in IndexedDB — raw key material never leaves the
       // browser's crypto store, so a localStorage dump yields ciphertext
       // alone with no way to recover plaintext.
-      type _ThunderEntry = { text: string; senderAddress: string; createdAt: number; messageId: string };
+      // Zapdos Lv.30 Drill Peck — attachment metadata survives cache
+      // round-trip so reopened storms render chips/thumbs immediately.
+      // We persist refs only (storageId, fileName, mimeType, fileSize);
+      // decrypted bytes are re-fetched via the SDK's Seal handle on
+      // click. Bytes live in Walrus, not localStorage.
+      type _ThunderAttachmentRef = {
+        fileName?: string;
+        mimeType?: string;
+        fileSize?: number;
+        wire?: { storageId?: string };
+      };
+      type _ThunderEntry = {
+        text: string;
+        senderAddress: string;
+        createdAt: number;
+        messageId: string;
+        attachments?: _ThunderAttachmentRef[];
+      };
       const _THUNDER_HIST_KEY = (gid: string) => `ski:thunder-hist:v2:${gid}`;
       const _THUNDER_HIST_TTL = 24 * 60 * 60 * 1000;
       const _IDB_NAME = 'ski-crypto';
@@ -14478,7 +14506,7 @@ function bindEvents() {
         // visible — _renderThunderComposePreview reads the open state.
         _renderThunderComposePreview?.();
 
-        let entries: Array<{ text: string; senderAddress: string; createdAt: number; messageId: string }> = [];
+        let entries: _ThunderEntry[] = [];
         try {
           // Fetch via getThunders so Seal decryption + padding-strip runs.
           // The raw DO payload is Seal ciphertext — decoding it as text shows
@@ -14491,6 +14519,17 @@ function bindEvents() {
             senderAddress: m.senderAddress || '',
             createdAt: m.createdAt ?? Date.now(),
             messageId: m.messageId || `msg-${m.order}`,
+            // Zapdos Lv.30 — preserve attachment metadata only (refs, no bytes).
+            // Bytes live in Walrus + get re-fetched via SDK handle on click.
+            // The ref shape matches what the bubble renderer reads at 14780.
+            attachments: Array.isArray(m.attachments) && m.attachments.length > 0
+              ? m.attachments.map((a: any) => ({
+                  fileName: a.fileName,
+                  mimeType: a.mimeType,
+                  fileSize: a.fileSize,
+                  wire: a.wire ? { storageId: a.wire.storageId } : undefined,
+                }))
+              : undefined,
           }));
         } catch { /* fallback to empty */ }
         // Always clear the loading class on the send button once the fetch
