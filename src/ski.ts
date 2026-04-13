@@ -549,7 +549,7 @@ window.addEventListener('ski:rumble', async (e) => {
 // — ultron owns the cap but cannot yet sign autonomously without the
 // browser that ran DKG. Autonomous signing is a follow-up.
 const ULTRON_ADDRESS = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
-(window as unknown as { rumbleUltron?: (curves?: 'ed25519' | 'secp256k1' | 'both') => Promise<unknown> }).rumbleUltron = async (curves: 'ed25519' | 'secp256k1' | 'both' = 'ed25519') => {
+const _rumbleUltron = async (curves: 'ed25519' | 'secp256k1' | 'both' = 'ed25519') => {
   const ws = getState();
   if (ws.status !== 'connected' || !ws.address) {
     showToast('Connect wallet first');
@@ -562,6 +562,42 @@ const ULTRON_ADDRESS = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77
     : curves === 'secp256k1'
       ? [Curve.SECP256K1]
       : [Curve.ED25519];
+
+  // Fetch the deterministic encryption seed from the admin-gated server
+  // endpoint. The seed is derived from SHADE_KEEPER_PRIVATE_KEY so a
+  // keeper runtime can reconstruct the same encryption keys and sign
+  // autonomously on ultron's behalf later — no seed storage needed.
+  // Only one curve at a time for now (the endpoint + flow is per-curve).
+  const primaryCurve = curves === 'secp256k1' ? 'secp256k1' : 'ed25519';
+  console.log(`[rumble-ultron] fetching deterministic seed (${primaryCurve})…`);
+  let encryptionSeed: Uint8Array | undefined;
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const message = `rumble-ultron:${ULTRON_ADDRESS}:${today}`;
+    const { signPersonalMessage } = await import('./wallet.js');
+    const sig = await signPersonalMessage(new TextEncoder().encode(message));
+    const seedRes = await fetch('/api/cache/rumble-ultron-seed', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        curve: primaryCurve,
+        adminAddress: ws.address,
+        signature: sig.signature,
+        message,
+      }),
+    });
+    const seedJson = await seedRes.json() as { seedHex?: string; error?: string };
+    if (!seedRes.ok || !seedJson.seedHex) {
+      throw new Error(seedJson.error || `HTTP ${seedRes.status}`);
+    }
+    encryptionSeed = new Uint8Array(seedJson.seedHex.match(/.{2}/g)!.map(h => parseInt(h, 16)));
+    console.log('[rumble-ultron] seed fetched, length:', encryptionSeed.length);
+  } catch (err) {
+    console.error('[rumble-ultron] seed fetch failed:', err);
+    showToast(`Seed fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+
   showToast(`Rumble Ultron \u2014 provisioning ${curves} \u2192 ${ULTRON_ADDRESS.slice(0, 10)}\u2026`);
   try {
     const result = await rumble(
@@ -569,7 +605,7 @@ const ULTRON_ADDRESS = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77
       (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
       (stage: string) => console.log(`[rumble-ultron] ${stage}`),
       ULTRON_ADDRESS,
-      { curves: curveSet },
+      { curves: curveSet, encryptionSeed },
     );
     console.log('[rumble-ultron] result:', result);
     const chains: string[] = [];
@@ -588,6 +624,11 @@ const ULTRON_ADDRESS = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77
     return { error: err instanceof Error ? err.message : String(err) };
   }
 };
+// Expose on multiple globals so it's reachable from `rumbleUltron()`
+// bare, `window.rumbleUltron()`, and `globalThis.rumbleUltron()`.
+(window as unknown as { rumbleUltron: typeof _rumbleUltron }).rumbleUltron = _rumbleUltron;
+(globalThis as unknown as { rumbleUltron: typeof _rumbleUltron }).rumbleUltron = _rumbleUltron;
+console.log('[ski] rumbleUltron hook installed — call rumbleUltron("ed25519")');
 
 // ─── Auto Pre-Rumble on name registration ──────────────────────────────
 // When a new name is registered, fire pre-rumble in the background so the

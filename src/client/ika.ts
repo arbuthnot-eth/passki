@@ -296,6 +296,10 @@ export interface ProvisionCallbacks {
   requestedCurve?: typeof Curve.SECP256K1 | typeof Curve.ED25519;
   /** Address that receives the DWalletCap. Defaults to sender (userAddress). */
   targetOwner?: string;
+  /** 32-byte seed to use instead of a random one. Deterministic so the
+   *  encryption keys can be re-derived later by a party that knows the
+   *  seed (e.g. server-side keeper). Required for autonomous target signing. */
+  encryptionSeed?: Uint8Array;
 }
 
 /**
@@ -321,16 +325,20 @@ export async function provisionDWallet(
   const curveLabel = curve === Curve.ED25519 ? 'ed25519' : 'secp256k1';
   console.log('[ika:dkg] provisionDWallet called for', userAddress, 'curve:', curveLabel, 'isWaap:', callbacks.isWaap);
 
-  // Step 0: Check if user already has a dWallet of this curve
+  // Step 0: Check if the RECIPIENT of the DWalletCap already has a dWallet
+  // of this curve. When targetOwner is set (e.g. rumble-for-ultron) the
+  // sender's own dWallets are irrelevant — skipping based on the sender's
+  // state would silently no-op a legitimate DKG for a different owner.
   log('Checking existing...');
-  const existing = await getCrossChainStatus(userAddress);
+  const checkAddr = callbacks.targetOwner ?? userAddress;
+  const existing = await getCrossChainStatus(checkAddr);
   if (curve === Curve.SECP256K1 && existing.btcAddress) {
-    console.log('[ika:dkg] Already have secp256k1 dWallet, skipping DKG');
+    console.log(`[ika:dkg] ${checkAddr.slice(0, 10)}… already has secp256k1 dWallet, skipping DKG`);
     log('Already active!');
     return existing;
   }
   if (curve === Curve.ED25519 && existing.solAddress) {
-    console.log('[ika:dkg] Already have ed25519 dWallet, skipping DKG');
+    console.log(`[ika:dkg] ${checkAddr.slice(0, 10)}… already has ed25519 dWallet, skipping DKG`);
     log('Already active!');
     return existing;
   }
@@ -366,8 +374,16 @@ export async function provisionDWallet(
   const client = await withTimeout(getClient(), 60_000, 'IKA client init');
   console.log('[ika:dkg] Step 2a: client ready');
 
-  const seedBytes = new Uint8Array(32);
-  crypto.getRandomValues(seedBytes);
+  // Seed: deterministic when caller passes one (so a keeper can re-derive
+  // the encryption keys and sign autonomously later), otherwise random.
+  let seedBytes: Uint8Array;
+  if (callbacks.encryptionSeed && callbacks.encryptionSeed.length === 32) {
+    seedBytes = callbacks.encryptionSeed;
+    console.log('[ika:dkg] using caller-supplied deterministic encryption seed');
+  } else {
+    seedBytes = new Uint8Array(32);
+    crypto.getRandomValues(seedBytes);
+  }
   const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seedBytes, curve);
   const sessionIdentifier = createRandomSessionIdentifier();
 
@@ -795,7 +811,14 @@ export async function rumble(
   executeTx: (txBytes: Uint8Array) => Promise<{ digest: string }>,
   onProgress?: (stage: string) => void,
   targetOwner?: string,
-  opts?: { curves?: Array<typeof Curve.SECP256K1 | typeof Curve.ED25519> },
+  opts?: {
+    curves?: Array<typeof Curve.SECP256K1 | typeof Curve.ED25519>;
+    /** Deterministic 32-byte encryption seed — required if the target must
+     *  sign autonomously after DKG. The server-side keeper can re-derive
+     *  the same seed from its own secret and reconstruct the encryption
+     *  keys without the browser being present. */
+    encryptionSeed?: Uint8Array;
+  },
 ): Promise<RumbleResult> {
   const log = onProgress ?? (() => {});
   const wallet = await import('../wallet.js');
@@ -812,6 +835,7 @@ export async function rumble(
     isWaap,
     onStatus: log,
     targetOwner,
+    encryptionSeed: opts?.encryptionSeed,
   };
 
   // Step 0: Check SuiNS name requirement before starting
@@ -883,17 +907,20 @@ export async function rumble(
     }
   }
 
-  // Step 4: Final status check to get all addresses
+  // Step 4: Final status check to get all addresses — query the TARGET
+  // when a targetOwner was set, otherwise the sender. Otherwise the
+  // returned addresses are the signer's, not the recipient's.
   log('Finalizing...');
-  const final = await getCrossChainStatus(address);
+  const finalAddr = targetOwner ?? address;
+  const final = await getCrossChainStatus(finalAddr);
 
-  // Collect all dWalletCap IDs
+  // Collect all dWalletCap IDs — owned by the same address we checked above.
   const dwalletCaps: string[] = [];
   try {
     const rpc = getLocalJsonRpc();
     const DWALLET_CAP_TYPE = '0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317::coordinator_inner::DWalletCap';
     const owned = await rpc.getOwnedObjects({
-      owner: address,
+      owner: finalAddr,
       filter: { StructType: DWALLET_CAP_TYPE },
       options: { showContent: true },
       limit: 10,

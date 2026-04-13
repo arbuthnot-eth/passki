@@ -1540,6 +1540,73 @@ app.post('/api/cache/swap-sui-for-deep', async (c) => {
   }
 });
 
+// ── Rumble Ultron seed — deterministic encryption-key seed for ultron's
+//    IKA dWallet. Server derives from SHADE_KEEPER_PRIVATE_KEY so the
+//    same seed can be re-derived later for autonomous ultron signing.
+//
+//    Admin-gated: caller must sign a personal message "rumble-ultron:
+//    <ultronAddress>:<YYYY-MM-DD>" with an address in the allowlist.
+//    The seed is effectively a signing credential — never expose without
+//    proof the caller is authorized to act on ultron's behalf.
+const ULTRON_ADDRESS = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+const ADMIN_ADDRESSES = new Set([
+  // plankton.sui — active local keystore (publishes iUSD, holds UpgradeCap)
+  '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57',
+  // brando.sui — admin session (WaaP)
+  '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28',
+]);
+app.post('/api/cache/rumble-ultron-seed', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json() as {
+      curve: 'ed25519' | 'secp256k1';
+      adminAddress: string;
+      signature: string; // base64
+      message: string;   // "rumble-ultron:<ultronAddr>:<YYYY-MM-DD>"
+    };
+    if (!body.curve || !body.adminAddress || !body.signature || !body.message) {
+      return c.json({ error: 'Missing curve, adminAddress, signature, or message' }, 400);
+    }
+    if (body.curve !== 'ed25519' && body.curve !== 'secp256k1') {
+      return c.json({ error: 'curve must be ed25519 or secp256k1' }, 400);
+    }
+    const normalizedAdmin = body.adminAddress.toLowerCase();
+    if (!ADMIN_ADDRESSES.has(normalizedAdmin)) {
+      return c.json({ error: `${body.adminAddress} not in admin allowlist` }, 403);
+    }
+    // Validate message format + freshness (today's UTC date).
+    const today = new Date().toISOString().slice(0, 10);
+    const expected = `rumble-ultron:${ULTRON_ADDRESS}:${today}`;
+    if (body.message !== expected) {
+      return c.json({ error: `message must be exactly "${expected}"` }, 400);
+    }
+    // Verify the personal message signature.
+    try {
+      const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
+      const messageBytes = new TextEncoder().encode(body.message);
+      await verifyPersonalMessageSignature(messageBytes, body.signature, {
+        address: normalizedAdmin,
+      });
+    } catch (err) {
+      return c.json({ error: `Invalid signature: ${err instanceof Error ? err.message : String(err)}` }, 403);
+    }
+    // Derive the deterministic seed. The keeper key is the root secret;
+    // the curve + ultron address discriminate per-dWallet so we can reuse
+    // the same mechanism for secp256k1 later without clobbering ed25519.
+    const { sha256 } = await import('@noble/hashes/sha2.js');
+    const keeperBytes = new TextEncoder().encode(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const saltBytes = new TextEncoder().encode(`ultron-dkg:${body.curve}:${ULTRON_ADDRESS}`);
+    const seedInput = new Uint8Array(keeperBytes.length + saltBytes.length);
+    seedInput.set(keeperBytes, 0);
+    seedInput.set(saltBytes, keeperBytes.length);
+    const seed = sha256(seedInput);
+    const seedHex = Array.from(seed, (b) => b.toString(16).padStart(2, '0')).join('');
+    return c.json({ seedHex, ultronAddress: ULTRON_ADDRESS });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Rumble — server-side IKA dWallet check/provision for ultron.sui ──
 app.post('/api/cache/rumble', async (c) => {
   try {
