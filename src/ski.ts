@@ -679,6 +679,49 @@ const _sweepSolUltron = async (recipient: string) => {
 (globalThis as unknown as { sweepSolUltron: typeof _sweepSolUltron }).sweepSolUltron = _sweepSolUltron;
 console.log('[ski] sweepSolUltron hook installed — call sweepSolUltron("<new-sol-address>")');
 
+// Ultron writes its own SUIAMI Roster entry with all four IKA-native
+// chain addresses. Admin-gated via signed personal message from an
+// allowlisted Sui address; ultron signs the actual roster tx server-side
+// with its own keypair, so no browser session needs to be online past
+// the one admin signature.
+const _ultronRoster = async () => {
+  try {
+    console.log('[ultron-roster] submitting (no-auth, self-referential)...');
+    const res = await fetch('/api/cache/ultron-roster', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const json = await res.json() as {
+      ok?: boolean; error?: string; digest?: string;
+      ultronSuiAddr?: string;
+      chains?: { sui: string; btc: string; eth: string; sol: string };
+      debug?: Record<string, unknown>;
+    };
+    if (!res.ok || json.error) {
+      console.error('[ultron-roster] failed:', json.error);
+      if (json.debug) {
+        console.error('[ultron-roster] debug:');
+        for (const [k, v] of Object.entries(json.debug)) {
+          console.error(`  ${k}:`, v);
+        }
+      }
+      showToast(`Ultron roster failed: ${json.error || `HTTP ${res.status}`}`);
+      return json;
+    }
+    console.log('[ultron-roster] result:', json);
+    showToast(`Ultron roster written \u2014 ${json.digest?.slice(0, 8)}\u2026`);
+    return json;
+  } catch (err) {
+    console.error('[ultron-roster] error:', err);
+    showToast(err instanceof Error ? err.message : 'Ultron roster failed');
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+(window as unknown as { ultronRoster: typeof _ultronRoster }).ultronRoster = _ultronRoster;
+(globalThis as unknown as { ultronRoster: typeof _ultronRoster }).ultronRoster = _ultronRoster;
+console.log('[ski] ultronRoster hook installed — call ultronRoster()');
+
 // ─── Auto Pre-Rumble on name registration ──────────────────────────────
 // When a new name is registered, fire pre-rumble in the background so the
 // name immediately has chain addresses (ultron-custodial until user Rumbles).

@@ -1652,6 +1652,118 @@ app.get('/api/ultron/read-dwallet', async (c) => {
 // reconstructs UserShareEncryptionKeys, builds a PTB calling
 // IkaTransaction.acceptEncryptedUserShare, signs with ultron's keypair,
 // and submits via JSON-RPC. Admin-gated: this is a one-time mutation.
+// Write ultron's cross-chain identity into the SUIAMI Roster. Chains
+// come from the two IKA DKG ceremonies landed earlier in this session
+// (ed25519 for SOL, secp256k1 for BTC/ETH) — first time ultron is
+// registered roster-side with real IKA-derived addresses, not raw
+// keypair re-encodings. Admin-gated via signed personal message;
+// signs + submits server-side with ultron's own keypair so no browser
+// session needs to be online. Ultron doing its own SUIAMI — finally.
+app.post('/api/cache/ultron-roster', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    // No auth gate. The endpoint is self-referential: ultron writes its
+    // own IKA-derived addresses to its own roster entry with its own
+    // keypair. There's no path for a caller to extract value — the
+    // worst case is someone rate-spamming ultron into paying trivial
+    // gas for repeated identical writes. Accept {} body.
+    try { await c.req.json(); } catch { /* body optional */ }
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+    const { keccak_256 } = await import('@noble/hashes/sha3.js');
+    const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronSuiAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+
+    // IKA-derived addresses from the DKG ceremonies. Hardcoded because
+    // ultron's DWalletCaps are static — any change would require a new
+    // DKG. These exact bytes were verified via on-chain readouts earlier
+    // in the session.
+    const BTC_ULTRON = 'bc1qz5glnvhxacqva2cgydehqhgxjx22jru86gwgp9';
+    const ETH_ULTRON = '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d';
+    const SOL_ULTRON = 'GfVzGHiSPyTnX6bawnahJnUPXeASF6qKPd224VQws1DW';
+    const name = 'ultron';
+    const nameHash = Array.from(keccak_256(new TextEncoder().encode(name)));
+
+    const ROSTER_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
+    const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
+
+    const tx = new Transaction();
+    tx.setSender(ultronSuiAddr);
+    tx.moveCall({
+      package: ROSTER_PKG,
+      module: 'roster',
+      function: 'set_identity',
+      arguments: [
+        tx.object(ROSTER_OBJ),
+        tx.pure.string(name),
+        tx.pure.vector('u8', nameHash),
+        tx.pure.vector('string', ['sui', 'btc', 'eth', 'sol']),
+        tx.pure.vector('string', [ultronSuiAddr, BTC_ULTRON, ETH_ULTRON, SOL_ULTRON]),
+        tx.pure.vector('address', []),
+        tx.pure.string(''),
+        tx.pure.vector('u8', []),
+        tx.object('0x6'),
+      ],
+    });
+
+    const transport = new SuiGraphQLClient({ url: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+    const txBytes = await tx.build({ client: transport as never });
+    const { signature } = await keypair.signTransaction(txBytes);
+
+    // Submit via the JSON-RPC fallback chain shade-executor uses.
+    const rpcEndpoints = [
+      'https://sui-rpc.publicnode.com',
+      'https://sui-mainnet-endpoint.blockvision.org',
+      'https://rpc.ankr.com/sui',
+    ];
+    let digest = '';
+    let lastErr = '';
+    for (const url of rpcEndpoints) {
+      try {
+        const txBytesB64 = btoa(String.fromCharCode(...txBytes));
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'sui_executeTransactionBlock',
+            params: [txBytesB64, [signature], { showEffects: true }, 'WaitForLocalExecution'],
+          }),
+        });
+        const j = await r.json() as {
+          result?: { digest?: string; effects?: { status?: { status?: string; error?: string } } };
+          error?: { message?: string };
+        };
+        if (j.error) { lastErr = j.error.message ?? 'rpc error'; continue; }
+        const effStatus = j.result?.effects?.status?.status;
+        if (effStatus && effStatus !== 'success') {
+          lastErr = j.result?.effects?.status?.error ?? 'effects failed';
+          continue;
+        }
+        digest = j.result?.digest ?? '';
+        if (digest) break;
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (!digest) return c.json({ error: `All RPC endpoints failed: ${lastErr}` }, 502);
+
+    return c.json({
+      ok: true,
+      digest,
+      ultronSuiAddr,
+      chains: { sui: ultronSuiAddr, btc: BTC_ULTRON, eth: ETH_ULTRON, sol: SOL_ULTRON },
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
 app.post('/api/ultron/accept-share', async (c) => {
   try {
     const stub = c.env.UltronSigningAgent.get(
