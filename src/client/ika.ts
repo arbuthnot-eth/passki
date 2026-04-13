@@ -795,10 +795,16 @@ export async function rumble(
   executeTx: (txBytes: Uint8Array) => Promise<{ digest: string }>,
   onProgress?: (stage: string) => void,
   targetOwner?: string,
+  opts?: { curves?: Array<typeof Curve.SECP256K1 | typeof Curve.ED25519> },
 ): Promise<RumbleResult> {
   const log = onProgress ?? (() => {});
   const wallet = await import('../wallet.js');
   const isWaap = /waap/i.test((await import('../wallet.js')).getState().walletName);
+
+  // Curve set — default to both. Pass ['ed25519'] to only do sol@<owner>.
+  const wantCurves = opts?.curves ?? [Curve.SECP256K1, Curve.ED25519];
+  const wantSecp = wantCurves.includes(Curve.SECP256K1);
+  const wantEd = wantCurves.includes(Curve.ED25519);
 
   const callbacks: ProvisionCallbacks = {
     signTransaction: (txBytes: Uint8Array) => wallet.signTransaction(txBytes),
@@ -831,43 +837,50 @@ export async function rumble(
     console.warn('[rumble] SuiNS check failed, proceeding anyway:', err);
   }
 
-  // Step 1: Check what already exists
+  // Step 1: Check what already exists. When targetOwner is set we must
+  // check the *target*'s existing dWallets, not the signer's — otherwise
+  // an idempotent rumble-for-ultron would re-provision every time.
   log('Checking existing dWallets...');
-  let status = await getCrossChainStatus(address);
+  const statusAddr = targetOwner ?? address;
+  let status = await getCrossChainStatus(statusAddr);
 
   // Step 2: If missing secp256k1, provision BTC/ETH
-  if (!status.btcAddress) {
-    log('Provisioning BTC/ETH (secp256k1)...');
-    try {
-      status = await provisionDWallet(address, {
-        ...callbacks,
-        requestedCurve: Curve.SECP256K1,
-        onStatus: (msg: string) => log(`secp256k1: ${msg}`),
-      });
-    } catch (err) {
-      console.error('[rumble] secp256k1 DKG failed:', err);
-      log(`secp256k1 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
-      // Continue — try ed25519 even if secp256k1 failed
+  if (wantSecp) {
+    if (!status.btcAddress) {
+      log('Provisioning BTC/ETH (secp256k1)...');
+      try {
+        status = await provisionDWallet(address, {
+          ...callbacks,
+          requestedCurve: Curve.SECP256K1,
+          onStatus: (msg: string) => log(`secp256k1: ${msg}`),
+        });
+      } catch (err) {
+        console.error('[rumble] secp256k1 DKG failed:', err);
+        log(`secp256k1 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+        // Continue — try ed25519 even if secp256k1 failed
+      }
+    } else {
+      log('secp256k1 already active');
     }
-  } else {
-    log('secp256k1 already active');
   }
 
   // Step 3: If missing ed25519, provision SOL
-  if (!status.solAddress) {
-    log('Provisioning SOL (ed25519)...');
-    try {
-      status = await provisionDWallet(address, {
-        ...callbacks,
-        requestedCurve: Curve.ED25519,
-        onStatus: (msg: string) => log(`ed25519: ${msg}`),
-      });
-    } catch (err) {
-      console.error('[rumble] ed25519 DKG failed:', err);
-      log(`ed25519 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+  if (wantEd) {
+    if (!status.solAddress) {
+      log('Provisioning SOL (ed25519)...');
+      try {
+        status = await provisionDWallet(address, {
+          ...callbacks,
+          requestedCurve: Curve.ED25519,
+          onStatus: (msg: string) => log(`ed25519: ${msg}`),
+        });
+      } catch (err) {
+        console.error('[rumble] ed25519 DKG failed:', err);
+        log(`ed25519 failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+      }
+    } else {
+      log('ed25519 already active');
     }
-  } else {
-    log('ed25519 already active');
   }
 
   // Step 4: Final status check to get all addresses

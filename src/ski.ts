@@ -539,6 +539,56 @@ window.addEventListener('ski:rumble', async (e) => {
   }
 });
 
+// ─── Admin: Rumble Ultron ─────────────────────────────────────────────
+// Expose window.rumbleUltron('ed25519' | 'secp256k1' | 'both') so an
+// admin can provision ultron's IKA dWallets from the devtools console
+// without shipping visible UI. The connected wallet pays the IKA + SUI
+// and signs the DKG tx; the resulting DWalletCap transfers to ultron.
+//
+// Note: this provisions the cap but does NOT do user-share re-encryption
+// — ultron owns the cap but cannot yet sign autonomously without the
+// browser that ran DKG. Autonomous signing is a follow-up.
+const ULTRON_ADDRESS = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+(window as unknown as { rumbleUltron?: (curves?: 'ed25519' | 'secp256k1' | 'both') => Promise<unknown> }).rumbleUltron = async (curves: 'ed25519' | 'secp256k1' | 'both' = 'ed25519') => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return { error: 'not connected' };
+  }
+  const { rumble } = await loadIka();
+  const { Curve } = await import('@ika.xyz/sdk');
+  const curveSet = curves === 'both'
+    ? [Curve.SECP256K1, Curve.ED25519]
+    : curves === 'secp256k1'
+      ? [Curve.SECP256K1]
+      : [Curve.ED25519];
+  showToast(`Rumble Ultron \u2014 provisioning ${curves} \u2192 ${ULTRON_ADDRESS.slice(0, 10)}\u2026`);
+  try {
+    const result = await rumble(
+      ws.address,
+      (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+      (stage: string) => console.log(`[rumble-ultron] ${stage}`),
+      ULTRON_ADDRESS,
+      { curves: curveSet },
+    );
+    console.log('[rumble-ultron] result:', result);
+    const chains: string[] = [];
+    if (result.btcAddress) chains.push('BTC');
+    if (result.ethAddress) chains.push('ETH');
+    if (result.solAddress) chains.push('SOL');
+    if (chains.length) {
+      showToast(`Ultron rumbled \u2014 ${chains.join(' + ')} cap \u2192 ultron`);
+    } else {
+      showToast(`Ultron rumble failed \u2014 ${result.error || 'check console'}`);
+    }
+    return result;
+  } catch (err) {
+    console.error('[rumble-ultron] error:', err);
+    showToast(err instanceof Error ? err.message : 'Rumble Ultron failed');
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+
 // ─── Auto Pre-Rumble on name registration ──────────────────────────────
 // When a new name is registered, fire pre-rumble in the background so the
 // name immediately has chain addresses (ultron-custodial until user Rumbles).
