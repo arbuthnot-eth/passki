@@ -249,6 +249,14 @@ export interface AppState {
   solBalance: number;
   /** iUSD SPL balance on Solana for the user's dWallet-derived Solana address. */
   solIusdBalance: number;
+  /** Native BTC balance for the user's dWallet-derived BTC address. */
+  btcBalance: number;
+  /** Native ETH balance for the user's dWallet-derived ETH address. */
+  ethBalance: number;
+  /** USDC (ERC-20 mainnet) balance for the user's dWallet-derived ETH address. */
+  ethUsdc: number;
+  /** USDT-TRC20 balance for the user's dWallet-derived TRON address. */
+  tronUsdt: number;
   skiMenuOpen: boolean;
   copied: boolean;
   splashSponsor: boolean;
@@ -266,6 +274,10 @@ const app: AppState = {
   solAddress: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; if (!a) return ''; const c = localStorage.getItem(`ski:ika-addrs:${a}`); return c ? (JSON.parse(c).sol || '') : ''; } catch { return ''; } })(),
   solBalance: 0,
   solIusdBalance: 0,
+  btcBalance: 0,
+  ethBalance: 0,
+  ethUsdc: 0,
+  tronUsdt: 0,
   skiMenuOpen: (() => { try { return localStorage.getItem('ski:lift') === '1'; } catch { return false; } })(),
   copied: false,
   splashSponsor: false,
@@ -829,8 +841,8 @@ async function getQrSvg(url: string, color?: string): Promise<string> {
 
 /** Generate a QR SVG for a Sui address with a center logo. Uses 'H' error correction to tolerate the overlay.
  *  mode='sui' → blue QR + Sui drop; mode='usd' → green QR + $ sign; mode='bw' → white QR + diamond */
-async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' | 'sol' = 'sui'): Promise<string> {
-  const dark = mode === 'btc' ? '#f7931a' : mode === 'sol' ? '#9945FF' : mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : '#60a5fa';
+async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' | 'sol' | 'eth' | 'tron' = 'sui'): Promise<string> {
+  const dark = mode === 'btc' ? '#f7931a' : mode === 'sol' ? '#9945FF' : mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : mode === 'eth' ? '#627eea' : mode === 'tron' ? '#FF0013' : '#60a5fa';
   // Solana QR uses purple modules (#9945FF) with the gradient logo in center
   const key = `ski:qr:addr:${mode}:${addr}`;
   try { const cached = localStorage.getItem(key); if (cached) return cached; } catch {}
@@ -858,12 +870,26 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' | 
       const ox = cx - br;
       const oy = cy - br;
       logoSvg = `<defs><linearGradient id="qr-sol-g" x1="0.59" y1="0.18" x2="0.29" y2="0.74" gradientUnits="objectBoundingBox"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs><circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="#0B1022"/><g transform="translate(${ox},${oy}) scale(${s / 48})"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#qr-sol-g)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#qr-sol-g)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#qr-sol-g)"/></g>`;
+    } else if (mode === 'eth') {
+      const fill = '#627eea';
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${br * 1.5}" font-weight="700" fill="white">\u039E</text>`;
+    } else if (mode === 'tron') {
+      // Actual TRON triangle logo paths (viewBox ~512). Scale to fit br*2 diameter.
+      const fill = '#FF0013';
+      const s = (br * 2 * 0.62) / 512;
+      const ox = cx - (512 * s) / 2;
+      const oy = cy - (512 * s) / 2;
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="${fill}"/><g transform="translate(${ox},${oy}) scale(${s})" fill="white"><path d="M378.8 0H4.5L167.1 340.7 505 121.1 378.8 0zM182.7 261.8L71.1 44.4h270.5L182.7 261.8zM204.1 294.5L454.4 147l-112.7 344.4L204.1 294.5z"/></g>`;
     } else if (mode === 'bw') {
       const d = br * 0.75;
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#1a1a2e" stroke="white" stroke-width="${d * 0.2}"/>`;
     } else {
-      // SUI mode — Sui drop
-      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="#4da2ff"/><g transform="translate(${cx - br * 0.62},${cy - br * 0.72}) scale(${(br * 2 * 0.65) / 300})" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
+      // SUI mode — Sui drop centered on the disc (path viewBox 300x384).
+      const pathW = 300, pathH = 384;
+      const scale = (br * 2 * 0.62) / pathH;
+      const ox = cx - (pathW * scale) / 2;
+      const oy = cy - (pathH * scale) / 2;
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="#4da2ff"/><g transform="translate(${ox},${oy}) scale(${scale})" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
     }
     svg = svg.replace('</svg>', `${logoSvg}</svg>`);
   }
@@ -2808,10 +2834,10 @@ function _renderNetworkSelect() {
 
 // Token price cache — maps symbol → { price, fetchedAt }
 // CoinGecko IDs for known Sui tokens
-const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold', IKA: 'ika', SOL: 'solana' };
+const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold', IKA: 'ika', SOL: 'solana', BTC: 'bitcoin', ETH: 'ethereum' };
 // Conservative default prices so dust filtering works before live prices arrive.
 // These are intentionally LOW — better to undervalue and filter dust than overvalue and show it.
-const _DEFAULT_TOKEN_PRICES: Record<string, number> = { SUI: 0.9, NS: 0.018, WAL: 0.069, DEEP: 0.026, XAUM: 4492, IKA: 0.003, SOL: 82 };
+const _DEFAULT_TOKEN_PRICES: Record<string, number> = { SUI: 0.9, NS: 0.018, WAL: 0.069, DEEP: 0.026, XAUM: 4492, IKA: 0.003, SOL: 82, BTC: 100000, ETH: 3500 };
 let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() => {
   try {
     const raw = localStorage.getItem('ski:token-prices');
@@ -3020,6 +3046,48 @@ async function _fetchSolIusdBalance(): Promise<void> {
   } catch { /* non-blocking */ }
 }
 
+/** Fetch native BTC balance from mempool.space via /api/balance/btc proxy. */
+async function _fetchBtcBalance(): Promise<void> {
+  if (!app.btcAddress) return;
+  try {
+    const r = await fetch(`/api/balance/btc/${encodeURIComponent(app.btcAddress)}`);
+    if (!r.ok) return;
+    const j = await r.json() as { sats?: number };
+    if (typeof j.sats === 'number') app.btcBalance = j.sats / 1e8;
+  } catch { /* non-blocking */ }
+}
+
+/** Fetch ETH native + USDC ERC-20 balance via Alchemy proxy. */
+async function _fetchEthBalance(): Promise<void> {
+  if (!app.ethAddress) return;
+  try {
+    const r = await fetch(`/api/balance/eth/${encodeURIComponent(app.ethAddress)}`);
+    if (!r.ok) return;
+    const j = await r.json() as { wei?: string; usdcRaw?: string };
+    if (j.wei) {
+      try { app.ethBalance = Number(BigInt(j.wei)) / 1e18; } catch {}
+    }
+    if (j.usdcRaw) {
+      try { app.ethUsdc = Number(BigInt(j.usdcRaw)) / 1e6; } catch {}
+    }
+  } catch { /* non-blocking */ }
+}
+
+/** Fetch USDT-TRC20 balance via TronGrid proxy. TRX itself is rarely held. */
+async function _fetchTronBalance(): Promise<void> {
+  if (!app.ethAddress) return; // TRON addr derived from ETH
+  const tronAddr = ethToTron(app.ethAddress);
+  if (!tronAddr) return;
+  try {
+    const r = await fetch(`/api/balance/tron/${encodeURIComponent(tronAddr)}`);
+    if (!r.ok) return;
+    const j = await r.json() as { sun?: number; usdtRaw?: string };
+    if (j.usdtRaw) {
+      try { app.tronUsdt = Number(BigInt(j.usdtRaw)) / 1e6; } catch {}
+    }
+  } catch { /* non-blocking */ }
+}
+
 export async function refreshPortfolio(force = false) {
   const ws = getState();
   if (!ws.address) return;
@@ -3039,6 +3107,9 @@ export async function refreshPortfolio(force = false) {
       fetchTokenPrices(),
       _fetchSolBalance(),
       _fetchSolIusdBalance(),
+      _fetchBtcBalance(),
+      _fetchEthBalance(),
+      _fetchTronBalance(),
     ]);
 
     // Wallet switched while fetch was in-flight — discard stale result
@@ -3090,6 +3161,14 @@ export async function refreshPortfolio(force = false) {
     const solPrice = getTokenPrice('SOL');
     const solUsd = (solPrice && app.solBalance > 0) ? app.solBalance * solPrice : 0;
     const solIusdUsd = app.solIusdBalance > 0 ? app.solIusdBalance : 0;
+    // Cross-chain: BTC + ETH native + ERC-20 USDC + USDT-TRC20 (each $1 peg).
+    const btcPrice = getTokenPrice('BTC');
+    const ethPrice = getTokenPrice('ETH');
+    const btcUsd = (btcPrice && app.btcBalance > 0) ? app.btcBalance * btcPrice : 0;
+    const ethUsd = (ethPrice && app.ethBalance > 0) ? app.ethBalance * ethPrice : 0;
+    const ethUsdcUsd = app.ethUsdc > 0 ? app.ethUsdc : 0;
+    const tronUsdtUsd = app.tronUsdt > 0 ? app.tronUsdt : 0;
+    const crossChainUsd = btcUsd + ethUsd + ethUsdcUsd + tronUsdtUsd;
     // Pending shade deposits — iUSD locked in StableShadeOrder<iUSD>
     // objects. These auto-execute into SuiNS registrations for the
     // holder within the grace period, or refund on cancel. Counting
@@ -3111,9 +3190,9 @@ export async function refreshPortfolio(force = false) {
       }
     } catch { /* non-fatal */ }
     if (suiUsd != null) {
-      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd + solIusdUsd + shadePendingUsd;
+      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd + solIusdUsd + crossChainUsd + shadePendingUsd;
     } else if (app.usd == null) {
-      const nonNullTotal = app.stableUsd + tokensUsd + solUsd + solIusdUsd + shadePendingUsd;
+      const nonNullTotal = app.stableUsd + tokensUsd + solUsd + solIusdUsd + crossChainUsd + shadePendingUsd;
       app.usd = nonNullTotal > 0 ? nonNullTotal : null;
     }
 
@@ -6167,6 +6246,10 @@ function renderSkiMenu() {
           try { localStorage.setItem(`ski:has-ika:${ws.address}`, app.ikaWalletId); } catch {}
           try { localStorage.setItem(`ski:ika-addrs:${ws.address}`, JSON.stringify({ btc: app.btcAddress, eth: app.ethAddress, sol: app.solAddress })); } catch {}
         }
+        // Cross-chain addresses just became available — trigger a fresh
+        // portfolio refresh so the BTC/ETH/TRON balance fetchers run.
+        // First refreshPortfolio on wallet connect had empty addresses.
+        refreshPortfolio(true).catch(() => {});
         render();
       }
     }).catch(() => { _dwalletCheckInFlight = false; });
@@ -8798,7 +8881,11 @@ function renderSkiMenu() {
       const isWaapWallet = /waap/i.test(getState().walletName || '');
       const allOnChain = await fetchOnChainShadeOrders(address);
       const ordersToCxl = allOnChain.length > 0 ? allOnChain : [{ objectId: existingOrder.objectId, depositMist: String(existingOrder.depositMist) }];
-      let totalRefund = 0;
+      // Tally refunds per coin type so the toast can show the right
+      // currency unit + decimals. Stable orders are iUSD or USDC, NOT SUI.
+      const IUSD_TYPE_STR = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+      const refundsByCoin = new Map<string, { amount: number; label: string }>();
+      const addrLc = address.toLowerCase();
       let cancelled = 0;
       let lastDigest = '';
       let firstErr = '';
@@ -8806,31 +8893,62 @@ function renderSkiMenu() {
         try {
           const isStable = (o as { stable?: boolean }).stable === true;
           const coinType = (o as { coinType?: string }).coinType;
-          const tx = isStable
-            ? (isWaapWallet
-                ? await buildCancelRefundStableShadeOrderTx(address, o.objectId, coinType)
-                : await buildCancelStableShadeOrderTx(address, o.objectId, coinType))
-            : (isWaapWallet
-                ? await buildCancelRefundShadeOrderTx(address, o.objectId)
-                : await buildCancelShadeOrderTx(address, o.objectId));
+          const orderOwner = String((o as { owner?: string }).owner ?? '').toLowerCase();
+          // Decimals per known stable type. iUSD = 9, USDC on Sui = 6.
+          // Default to 9 for unknown stables (matches iUSD assumption
+          // used elsewhere in the codebase).
+          const isUsdc = coinType?.toLowerCase().includes('::usdc::usdc');
+          const decimals = isStable ? (isUsdc ? 6 : 9) : 9;
+          const unitLabel = isStable ? (isUsdc ? 'USDC' : 'iUSD') : 'SUI';
+          // Ultron-owned legacy proxy orders: brando can't sign cancel
+          // (Move asserts ctx.sender == order.owner), so route through
+          // the server endpoint where ultron signs + forwards the iUSD
+          // back to brando. For brando-owned new orders, the standard
+          // user-signed path applies.
+          const isUltronOwned = orderOwner && orderOwner !== addrLc && isStable;
           if (btn) btn.textContent = `\u270f ${ordersToCxl.indexOf(o) + 1}/${ordersToCxl.length}`;
-          const result = await signAndExecuteTransaction(tx);
-          if (isWaapWallet) {
-            const cleanup = await reapCancelledShadeOrder(address, o.objectId);
-            if (!cleanup.success) {
-              const msg = (cleanup.error || 'Failed to delete cancelled shade object').toLowerCase();
-              if (!msg.includes('not found') && !msg.includes('already')) {
-                throw new Error(cleanup.error || 'Failed to delete cancelled shade object');
+          if (isUltronOwned) {
+            // Server-side ultron cancel + forward path
+            const res = await fetch('/api/cache/shade-cancel-stable', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ objectId: o.objectId, forwardToAddress: address }),
+            });
+            const j = await res.json() as { digest?: string; forwardDigest?: string; error?: string };
+            if (j.error) throw new Error(j.error);
+            if (j.forwardDigest) lastDigest = j.forwardDigest;
+            else if (j.digest) lastDigest = j.digest;
+          } else {
+            const tx = isStable
+              ? (isWaapWallet
+                  ? await buildCancelRefundStableShadeOrderTx(address, o.objectId, coinType)
+                  : await buildCancelStableShadeOrderTx(address, o.objectId, coinType))
+              : (isWaapWallet
+                  ? await buildCancelRefundShadeOrderTx(address, o.objectId)
+                  : await buildCancelShadeOrderTx(address, o.objectId));
+            const result = await signAndExecuteTransaction(tx);
+            if (isWaapWallet) {
+              const cleanup = await reapCancelledShadeOrder(address, o.objectId);
+              if (!cleanup.success) {
+                const msg = (cleanup.error || 'Failed to delete cancelled shade object').toLowerCase();
+                if (!msg.includes('not found') && !msg.includes('already')) {
+                  throw new Error(cleanup.error || 'Failed to delete cancelled shade object');
+                }
               }
+              if (cleanup.digest) lastDigest = cleanup.digest;
+            } else if (result.digest) {
+              lastDigest = result.digest;
             }
-            if (cleanup.digest) lastDigest = cleanup.digest;
-          } else if (result.digest) {
-            lastDigest = result.digest;
           }
           _shadeCancelledIds.add(o.objectId); _persistShadeCancelled();
           removeShadeOrder(address, o.objectId);
           try { cancelShadeExecution(o.objectId); } catch { /* best-effort */ }
-          totalRefund += Number(o.depositMist) / 1e9;
+          // Tally refund in the right coin's units
+          const key = coinType ?? IUSD_TYPE_STR;
+          const prev = refundsByCoin.get(key) ?? { amount: 0, label: unitLabel };
+          prev.amount += Number(o.depositMist) / Math.pow(10, decimals);
+          prev.label = unitLabel;
+          refundsByCoin.set(key, prev);
           cancelled++;
         } catch (err) {
           const raw = err instanceof Error ? err.message : String(err);
@@ -8847,7 +8965,10 @@ function renderSkiMenu() {
         _patchNsStatus();
         _patchNsPrice();
         _patchNsRoute();
-        showToast(`${cancelled} shade order${cancelled > 1 ? 's' : ''} cancelled \u2014 ${totalRefund.toFixed(2)} SUI refunded ${lastDigest ? lastDigest.slice(0, 8) + '\u2026' : ''}`);
+        const refundParts = Array.from(refundsByCoin.values())
+          .map(r => `${r.amount.toFixed(2)} ${r.label}`)
+          .join(' + ');
+        showToast(`${cancelled} shade order${cancelled > 1 ? 's' : ''} cancelled \u2014 ${refundParts || '0'} refunded ${lastDigest ? lastDigest.slice(0, 8) + '\u2026' : ''}`);
         setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_SHORT_MS);
       } else if (firstErr) {
         showToast(firstErr);
@@ -12110,7 +12231,14 @@ function bindEvents() {
             try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {}
             _unfreezeGif();
           } else {
-            // Currently closed → open (show whatever's already been rendered)
+            // Currently closed → open. If empty, delegate to the full
+            // Rumble button: when cached addresses exist it renders
+            // instantly and never fires DKG. If no cache + no addresses,
+            // it'll prompt to Rumble — same end state as a fresh user.
+            if (!addrRow.innerHTML.trim()) {
+              const rumbleBtn = _idleOverlay?.querySelector('#ski-idle-rumble') as HTMLButtonElement | null;
+              if (rumbleBtn) { rumbleBtn.click(); return; }
+            }
             addrRow.removeAttribute('hidden');
             squidBtn?.classList.add('ski-idle-quick-btn--active');
             try { sessionStorage.setItem('ski:idle-squids', '1'); } catch {}
@@ -12387,8 +12515,10 @@ function bindEvents() {
                 addrRow.setAttribute('hidden', '');
                 _unfreezeGif();
               } else {
-                // Use the card's resolved address — matches whoever the card is showing
-                const addr = nsTargetAddress || nsNftOwner || ws.address || '';
+                // Squids always shows the user's OWN dWallet addresses,
+                // regardless of which name card is currently displayed.
+                // Viewing another person's chains is a separate SUIAMI flow.
+                const addr = ws.address || '';
                 const short = `${addr.slice(0, 6)}\u2026${addr.slice(-6)}`;
                 const cachedBaseAddr = status.ethAddress; // same EVM address
                 const cachedTronAddr = status.ethAddress ? ethToTron(status.ethAddress) : '';
@@ -12402,7 +12532,11 @@ function bindEvents() {
                 // Per-row USD balances
                 const _suiUsd2 = app.sui * (suiPriceCache?.price ?? 0) + app.stableUsd;
                 const _solUsd2 = app.solBalance > 0 ? app.solBalance * (getTokenPrice('SOL') ?? 83) : 0;
-                const _fmtBal2 = (v: number) => v >= 0.50 ? `<span class="ski-idle-addr-bal"><span class="ski-idle-addr-bal-sign">$</span><span class="ski-idle-addr-bal-num">${Math.round(v).toLocaleString()}</span></span>` : '';
+                const _fmtBal2 = (v: number) => {
+                  if (!Number.isFinite(v) || v < 0) return '';
+                  const num = v >= 0.50 ? Math.round(v).toLocaleString() : v > 0 ? v.toFixed(2) : '0';
+                  return `<span class="ski-idle-addr-bal"><span class="ski-idle-addr-bal-sign">$</span><span class="ski-idle-addr-bal-num">${num}</span></span>`;
+                };
 
                 // Resolve cross-chain addresses: own wallet first, then cached IKA for any address
                 const _isOwnAddr = ws.address && addr.toLowerCase() === ws.address.toLowerCase();
@@ -12421,7 +12555,7 @@ function bindEvents() {
                 }
                 const _baseAddr = _eth; // same EVM address
                 const _tronAddr = _eth ? ethToTron(_eth) : '';
-                const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}${_isOwnAddr ? _fmtBal2(_suiUsd2) : ''}</span>`;
+                const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} <span class="ski-idle-addr-hex">${short}</span>${_isOwnAddr ? _fmtBal2(_suiUsd2) : ''}</span>`;
 
                 // --- Cross-chain rows: dark placeholders when viewing others without SUIAMI ---
                 if (!_isOwnAddr && !_hasSuiamiProof) {
@@ -12490,15 +12624,81 @@ function bindEvents() {
                     } catch {}
                   })();
                 } else {
-                  // Own wallet — show all addresses directly
-                  const btcLine = _btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${_btc}">${btcIcon} ${_btc.slice(0, 6)}\u2026${_btc.slice(-6)}</span>` : '';
-                  const solLine = _sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${_sol}">${solIcon} ${_sol.slice(0, 6)}\u2026${_sol.slice(-6)}${_fmtBal2(_solUsd2)}</span>` : '';
+                  // Own wallet — show all addresses directly with USD balances
+                  const _btcUsd2 = (getTokenPrice('BTC') ?? 0) * app.btcBalance;
+                  const _ethTotalUsd2 = ((getTokenPrice('ETH') ?? 0) * app.ethBalance) + app.ethUsdc;
+                  const _tronUsd2 = app.tronUsdt;
+                  const _shortStr = (s: string) => `${s.slice(0, 6)}\u2026${s.slice(-6)}`;
+                  const btcLine = _btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${_btc}">${btcIcon} <span class="ski-idle-addr-hex">${_shortStr(_btc)}</span>${_fmtBal2(_btcUsd2)}</span>` : '';
+                  const solLine = _sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${_sol}">${solIcon} <span class="ski-idle-addr-hex">${_shortStr(_sol)}</span>${_fmtBal2(_solUsd2)}</span>` : '';
                   const baseChip = _baseAddr ? `<span class="ski-idle-addr-l2-chip" data-l2="base" title="Base L2">${baseIcon}</span>` : '';
-                  const ethLine = _eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${_eth}">${ethIcon} ${_eth.slice(0, 6)}\u2026${_eth.slice(-6)}${baseChip}</span>` : '';
-                  const baseLine = _baseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${_baseAddr}">${baseIcon} ${_baseAddr.slice(0, 6)}\u2026${_baseAddr.slice(-6)}</span>` : '';
-                  const tronLine = _tronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tronAddr}">${tronIcon} ${_tronAddr.slice(0, 6)}\u2026${_tronAddr.slice(-6)}</span>` : '';
+                  const ethLine = _eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${_eth}">${ethIcon} <span class="ski-idle-addr-hex">${_shortStr(_eth)}</span>${baseChip}${_fmtBal2(_ethTotalUsd2)}</span>` : '';
+                  const baseLine = _baseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${_baseAddr}">${baseIcon} <span class="ski-idle-addr-hex">${_shortStr(_baseAddr)}</span></span>` : '';
+                  const tronLine = _tronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tronAddr}">${tronIcon} <span class="ski-idle-addr-hex">${_shortStr(_tronAddr)}</span>${_fmtBal2(_tronUsd2)}</span>` : '';
                   const suiamiLine = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--verified" type="button" title="Click to copy SUIAMI proof">\u2713 SUIAMI</button>`;
-                  addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}${suiamiLine}`;
+                  const qrTop = `<div class="ski-idle-addr-qr-top" id="ski-idle-addr-qr-top" style="--addr-qr-color:#4da2ff"></div>`;
+                  addrRow.innerHTML = `${qrTop}${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}${suiamiLine}`;
+                  // Render initial QR (sui) + wire chain-row clicks to swap it.
+                  const _qrEl = addrRow.querySelector('#ski-idle-addr-qr-top') as HTMLElement | null;
+                  const _setQr = (mode: 'usd' | 'sui' | 'btc' | 'sol' | 'eth' | 'tron', qaddr: string, color: string) => {
+                    if (!_qrEl || !qaddr) return;
+                    _qrEl.style.setProperty('--addr-qr-color', color);
+                    _getAddrQrSvg(qaddr, mode).then(svg => { if (_qrEl) _qrEl.innerHTML = svg; }).catch(() => {});
+                  };
+                  // Highlight a chain row in its chain color + deselect siblings.
+                  const _selectChainRow = (el: HTMLElement | null, color: string) => {
+                    if (!el) return;
+                    addrRow.querySelectorAll('.ski-idle-addr-line[data-addr-selected="1"]').forEach(s => {
+                      const h = s as HTMLElement;
+                      h.style.removeProperty('--addr-sel-bg');
+                      h.style.removeProperty('--addr-sel-color');
+                      h.removeAttribute('data-addr-selected');
+                    });
+                    el.setAttribute('data-addr-selected', '1');
+                    el.style.setProperty('--addr-sel-bg', `${color}25`);
+                    el.style.setProperty('--addr-sel-color', color);
+                  };
+                  _setQr('usd', addr, '#22c55e');
+                  _selectChainRow(addrRow.querySelector('.ski-idle-addr-line--sui'), '#22c55e');
+                  // Click the QR to expand/shrink it.
+                  _qrEl?.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    _qrEl.classList.toggle('ski-idle-addr-qr-top--expanded');
+                  });
+                  // Each chain row clickable → update QR + highlight row + copy.
+                  const _wireQr = (sel: string, mode: 'usd' | 'sui' | 'btc' | 'sol' | 'eth' | 'tron', qaddr: string, color: string) => {
+                    const el = addrRow.querySelector(sel) as HTMLElement | null;
+                    if (!el || !qaddr) return;
+                    el.addEventListener('click', (ev) => {
+                      ev.stopPropagation();
+                      ev.preventDefault();
+                      _setQr(mode, qaddr, color);
+                      _selectChainRow(el, color);
+                      navigator.clipboard.writeText(qaddr).catch(() => {});
+                    }, true);
+                  };
+                  // Hover swap: hex → chain@name (or name.sui for sui row).
+                  const _bareName = (app.suinsName || '').replace(/\.sui$/, '');
+                  const _wireHover = (sel: string, label: string) => {
+                    if (!_bareName || !label) return;
+                    const el = addrRow.querySelector(sel) as HTMLElement | null;
+                    if (!el) return;
+                    const hexEl = el.querySelector('.ski-idle-addr-hex') as HTMLElement | null;
+                    if (!hexEl) return;
+                    const orig = hexEl.textContent || '';
+                    el.addEventListener('mouseenter', () => { hexEl.textContent = label; });
+                    el.addEventListener('mouseleave', () => { hexEl.textContent = orig; });
+                  };
+                  _wireHover('.ski-idle-addr-line--sui', `${_bareName}.sui`);
+                  _wireHover('.ski-idle-addr-line--btc', `btc@${_bareName}`);
+                  _wireHover('.ski-idle-addr-line--sol', `sol@${_bareName}`);
+                  _wireHover('.ski-idle-addr-line--eth', `eth@${_bareName}`);
+                  _wireHover('.ski-idle-addr-line--tron', `tron@${_bareName}`);
+                  _wireQr('.ski-idle-addr-line--sui', 'usd', addr, '#22c55e');
+                  _wireQr('.ski-idle-addr-line--btc', 'btc', _btc, '#f7931a');
+                  _wireQr('.ski-idle-addr-line--sol', 'sol', _sol, '#9945FF');
+                  _wireQr('.ski-idle-addr-line--eth', 'eth', _eth, '#627eea');
+                  _wireQr('.ski-idle-addr-line--tron', 'tron', _tronAddr, '#FF0013');
                 }
 
                 addrRow.removeAttribute('hidden');
@@ -12641,7 +12841,128 @@ function bindEvents() {
           if (final.ethAddress) chains.push('ETH');
           if (final.solAddress) { chains.push('SOL'); updateStep(edStep, 'done', `ed25519 \u2713 SOL`); }
 
-          const summaryStep = addStep(`Rumble complete \u2014 ${chains.join(' + ') || 'no chains'} ready`, 'done');
+          // Persist to app state + cache so future overlay opens hit the
+          // cached render path. Then re-trigger the cached render now so
+          // the user sees the hex address row immediately, not just the
+          // rumble status panel.
+          if (final.btcAddress || final.solAddress || final.ethAddress) {
+            if (final.btcAddress) app.btcAddress = final.btcAddress;
+            if (final.ethAddress) app.ethAddress = final.ethAddress;
+            if (final.solAddress) app.solAddress = final.solAddress;
+            try {
+              localStorage.setItem(`ski:ika-addrs:${ws.address}`, JSON.stringify({
+                btc: app.btcAddress, eth: app.ethAddress, sol: app.solAddress,
+              }));
+            } catch {}
+            // Trigger a balance refresh now that addresses are live.
+            refreshPortfolio(true).catch(() => {});
+            // Render addresses directly into the addrRow as monospace chips
+            const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+            if (addrRow) {
+              const addr = ws.address || '';
+              const short = `${addr.slice(0, 6)}\u2026${addr.slice(-6)}`;
+              const _btc = final.btcAddress || '';
+              const _sol = final.solAddress || '';
+              const _eth = final.ethAddress || '';
+              const suiIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#22c55e" stroke="white" stroke-width="2.5"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">$</text></svg></span>`;
+              const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
+              const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
+              const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#627eea" stroke="white" stroke-width="2.5"/><path d="M20 8 L13 21 L20 25 Z" fill="#fff" opacity="0.6"/><path d="M20 8 L27 21 L20 25 Z" fill="#fff"/><path d="M20 26 L13 22 L20 32 Z" fill="#fff" opacity="0.6"/><path d="M20 26 L27 22 L20 32 Z" fill="#fff"/></svg></span>`;
+              const tronIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#FF0013" stroke="white" stroke-width="2.5"/><g transform="translate(7.5,11) scale(0.046)"><path d="M378.8 0H4.5L167.1 340.7 505 121.1 378.8 0zM182.7 261.8L71.1 44.4h270.5L182.7 261.8zM204.1 294.5L454.4 147l-112.7 344.4L204.1 294.5z" fill="white"/></g></svg></span>`;
+              const _tron = _eth ? ethToTron(_eth) : '';
+              const _fmtBalFb = (v: number) => {
+                if (!Number.isFinite(v) || v < 0) return '';
+                const num = v >= 0.50 ? Math.round(v).toLocaleString() : v > 0 ? v.toFixed(2) : '0';
+                return `<span class="ski-idle-addr-bal"><span class="ski-idle-addr-bal-sign">$</span><span class="ski-idle-addr-bal-num">${num}</span></span>`;
+              };
+              const _solUsd2Fb = ((getTokenPrice('SOL') ?? 0) * app.solBalance) + app.solIusdBalance;
+              const _btcUsd2Fb = (getTokenPrice('BTC') ?? 0) * app.btcBalance;
+              const _ethUsd2Fb = ((getTokenPrice('ETH') ?? 0) * app.ethBalance) + app.ethUsdc;
+              const _tronUsd2Fb = app.tronUsdt;
+              const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} <span class="ski-idle-addr-hex">${short}</span></span>`;
+              const btcLine = _btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${_btc}">${btcIcon} <span class="ski-idle-addr-hex">${_btc.slice(0, 6)}\u2026${_btc.slice(-6)}</span>${_fmtBalFb(_btcUsd2Fb)}</span>` : '';
+              const solLine = _sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${_sol}">${solIcon} <span class="ski-idle-addr-hex">${_sol.slice(0, 6)}\u2026${_sol.slice(-6)}</span>${_fmtBalFb(_solUsd2Fb)}</span>` : '';
+              const ethLine = _eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${_eth}">${ethIcon} <span class="ski-idle-addr-hex">${_eth.slice(0, 6)}\u2026${_eth.slice(-6)}</span>${_fmtBalFb(_ethUsd2Fb)}</span>` : '';
+              const tronLine = _tron ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tron}">${tronIcon} <span class="ski-idle-addr-hex">${_tron.slice(0, 6)}\u2026${_tron.slice(-6)}</span>${_fmtBalFb(_tronUsd2Fb)}</span>` : '';
+              const qrTop = `<div class="ski-idle-addr-qr-top" id="ski-idle-addr-qr-top" style="--addr-qr-color:#4da2ff"></div>`;
+              addrRow.innerHTML = `${qrTop}${suiLine}${btcLine}${solLine}${ethLine}${tronLine}`;
+              const _qrEl = addrRow.querySelector('#ski-idle-addr-qr-top') as HTMLElement | null;
+              const _setQr = (mode: 'usd' | 'sui' | 'btc' | 'sol' | 'eth' | 'tron', qaddr: string, color: string) => {
+                if (!_qrEl || !qaddr) return;
+                _qrEl.style.setProperty('--addr-qr-color', color);
+                _getAddrQrSvg(qaddr, mode).then(svg => { if (_qrEl) _qrEl.innerHTML = svg; }).catch(() => {});
+              };
+              const _selectChainRow = (el: HTMLElement | null, color: string) => {
+                if (!el || !addrRow) return;
+                addrRow.querySelectorAll('.ski-idle-addr-line[data-addr-selected="1"]').forEach(s => {
+                  const h = s as HTMLElement;
+                  h.style.removeProperty('--addr-sel-bg');
+                  h.style.removeProperty('--addr-sel-color');
+                  h.removeAttribute('data-addr-selected');
+                });
+                el.setAttribute('data-addr-selected', '1');
+                el.style.setProperty('--addr-sel-bg', `${color}25`);
+                el.style.setProperty('--addr-sel-color', color);
+              };
+              _setQr('usd', addr, '#22c55e');
+              _selectChainRow(addrRow.querySelector('.ski-idle-addr-line--sui'), '#22c55e');
+              _qrEl?.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                _qrEl.classList.toggle('ski-idle-addr-qr-top--expanded');
+              });
+              const _wireQr = (sel: string, mode: 'usd' | 'sui' | 'btc' | 'sol' | 'eth' | 'tron', qaddr: string, color: string) => {
+                const el = addrRow.querySelector(sel) as HTMLElement | null;
+                if (!el || !qaddr) return;
+                el.addEventListener('click', (ev) => {
+                  ev.stopPropagation();
+                  ev.preventDefault();
+                  _setQr(mode, qaddr, color);
+                  _selectChainRow(el, color);
+                  navigator.clipboard.writeText(qaddr).catch(() => {});
+                }, true);
+              };
+              // Hover swap: hex → chain@name (or name.sui).
+              const _bareName = (app.suinsName || '').replace(/\.sui$/, '');
+              const _wireHover = (sel: string, label: string) => {
+                if (!_bareName || !label) return;
+                const el = addrRow.querySelector(sel) as HTMLElement | null;
+                if (!el) return;
+                const hexEl = el.querySelector('.ski-idle-addr-hex') as HTMLElement | null;
+                if (!hexEl) return;
+                const orig = hexEl.textContent || '';
+                el.addEventListener('mouseenter', () => { hexEl.textContent = label; });
+                el.addEventListener('mouseleave', () => { hexEl.textContent = orig; });
+              };
+              _wireHover('.ski-idle-addr-line--sui', `${_bareName}.sui`);
+              _wireHover('.ski-idle-addr-line--btc', `btc@${_bareName}`);
+              _wireHover('.ski-idle-addr-line--sol', `sol@${_bareName}`);
+              _wireHover('.ski-idle-addr-line--eth', `eth@${_bareName}`);
+              _wireHover('.ski-idle-addr-line--tron', `tron@${_bareName}`);
+              _wireQr('.ski-idle-addr-line--sui', 'usd', addr, '#22c55e');
+              _wireQr('.ski-idle-addr-line--btc', 'btc', _btc, '#f7931a');
+              _wireQr('.ski-idle-addr-line--sol', 'sol', _sol, '#9945FF');
+              _wireQr('.ski-idle-addr-line--eth', 'eth', _eth, '#627eea');
+              _wireQr('.ski-idle-addr-line--tron', 'tron', _tron, '#FF0013');
+              addrRow.removeAttribute('hidden');
+              _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.add('ski-idle-quick-btn--active');
+              try { sessionStorage.setItem('ski:idle-squids', '1'); } catch {}
+              addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
+                el.addEventListener('click', (ev) => {
+                  ev.stopPropagation();
+                  const h = el as HTMLElement;
+                  const full = h.title || '';
+                  const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a'
+                    : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc'
+                    : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8'
+                    : h.classList.contains('ski-idle-addr-line--tron') ? '#FF0013'
+                    : '#22c55e';
+                  toggleAddrRow(h, full, c);
+                });
+              });
+            }
+          }
+
+          const summaryStep = addStep(`Squids Rumbled \ud83e\udd91 ${chains.join(' + ') || 'no chains'}`, 'done');
           if (summaryStep) {
             summaryStep.style.cursor = 'pointer';
             summaryStep.title = 'Tap to show addresses';
@@ -13823,17 +14144,13 @@ function bindEvents() {
       // path), we hit "Cannot access _closeCompetingPanels before
       // initialization" because the const line hasn't executed yet.
       function _closeCompetingPanels() {
-        const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+        // Squids row is intentionally NOT closed here — storm + squids
+        // coexist so the user keeps sight of their own addresses while
+        // a conversation opens in the background.
         const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
         const rumblePanel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
-        const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
-        if (addrRow && !addrRow.hasAttribute('hidden')) {
-          addrRow.setAttribute('hidden', '');
-          try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {}
-        }
         if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
         if (rumblePanel && !rumblePanel.hasAttribute('hidden')) rumblePanel.setAttribute('hidden', '');
-        squidBtn?.classList.remove('ski-idle-quick-btn--active');
       }
       // ─── Thunder history stale-while-revalidate cache ────────────────
       // Decrypted messages are cached in localStorage (AES-GCM encrypted)
@@ -16250,6 +16567,39 @@ export function initUI() {
           },
         });
         warmThunderSession().catch(() => {});
+      }).catch(() => {});
+
+      // Sableye — warm the encrypted private-interaction cache.
+      // See issue #145. One Chronicom fetch + local AES-GCM decrypt.
+      // The ski:thunder-sent event fires from sendThunder; ui records
+      // the counterparty immediately so the roster flips to black
+      // diamond on next render.
+      import('./client/sableye.js').then(async ({ warmSableye, noteCounterparty, drainXchainLog }) => {
+        await warmSableye().catch(() => {});
+        window.addEventListener('ski:thunder-sent', (ev) => {
+          const name = ((ev as CustomEvent).detail?.recipientName ?? '') as string;
+          if (name) noteCounterparty(name, 'sui');
+        });
+        // Lv.30 Knock Off — drain the server-side xchain webhook log
+        // and map fromAddresses back to SuiNS bare names via the
+        // existing reverse-lookup cache. Processed items are dropped
+        // from the server log on next warm, so this is at-least-once.
+        const pending = drainXchainLog();
+        if (pending.length > 0) {
+          try {
+            const { reverseLookupName } = await import('./client/thunder.js');
+            for (const entry of pending) {
+              try {
+                const name = await reverseLookupName(entry.fromAddress);
+                if (name) {
+                  const chain = entry.chain === 'sol' || entry.chain === 'eth' || entry.chain === 'btc'
+                    ? entry.chain : 'sui';
+                  noteCounterparty(name, chain);
+                }
+              } catch { /* per-entry best-effort */ }
+            }
+          } catch { /* reverseLookup unavailable */ }
+        }
       }).catch(() => {});
 
       // Execute Prism intent if one was stored from ?prism= URL

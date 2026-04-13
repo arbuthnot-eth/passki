@@ -693,6 +693,17 @@ export async function sendThunder(opts: {
 }): Promise<{ messageId: string }> {
   const groupId = 'uuid' in opts.groupRef ? opts.groupRef.uuid : '';
 
+  // Sableye hook: fire a one-shot browser event the moment we know
+  // the recipient. The ui layer listens and records the counterparty
+  // in the Seal-encrypted private interaction set. See issue #145.
+  if (opts.recipientName && typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent('ski:thunder-sent', {
+        detail: { recipientName: opts.recipientName },
+      }));
+    } catch { /* non-blocking */ }
+  }
+
   const client = getThunderClient();
   const hasTransfer = opts.transfer && opts.transfer.amountMist > 0n && opts.signAndExecute;
   const hasIusdTransfer = opts.iusdTransfer && opts.iusdTransfer.amountMist > 0n && opts.signAndExecute;

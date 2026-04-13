@@ -807,7 +807,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // salt is lost (i.e., cannot execute the intended happy path).
     if ((url.pathname.endsWith('/shade-cancel-stable') || url.searchParams.has('shade-cancel-stable')) && request.method === 'POST') {
       try {
-        const body = await request.json() as { objectId: string; noForward?: boolean };
+        const body = await request.json() as { objectId: string; noForward?: boolean; forwardToAddress?: string };
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
         const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
         const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
@@ -841,8 +841,21 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         // captured in treasury state at create time.
         const shadesNow = ((this.state as any).shades ?? []) as Array<Record<string, any>>;
         const shadeRow = shadesNow.find((s) => s.objectId === body.objectId);
-        const holderAddr = shadeRow?.holder ? normalizeSuiAddress(String(shadeRow.holder)) : '';
-        const depositMist = shadeRow?.depositMist ? BigInt(shadeRow.depositMist) : 0n;
+        // Forward destination — caller-supplied override beats DO state.
+        // Legacy shade-proxy orders pre-date the `holder` field in state,
+        // so they need an override or the iUSD lands stuck on ultron.
+        const holderAddr = body.forwardToAddress
+          ? normalizeSuiAddress(body.forwardToAddress)
+          : (shadeRow?.holder ? normalizeSuiAddress(String(shadeRow.holder)) : '');
+        // Deposit amount: prefer DO state, fall back to the on-chain
+        // `deposit` value embedded in the order's contents.json. Without
+        // this fallback, legacy orders that lack a state row would skip
+        // the forward step (depositMist === 0n).
+        const onChainDeposit = (() => {
+          const d = json?.deposit;
+          try { return d ? BigInt(String(d)) : 0n; } catch { return 0n; }
+        })();
+        const depositMist = shadeRow?.depositMist ? BigInt(shadeRow.depositMist) : onChainDeposit;
 
         const SHADE_V5_PKG = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
         const tx = new Transaction();

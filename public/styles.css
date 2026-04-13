@@ -3214,6 +3214,41 @@ body {
   font-size: 0.65rem;
 }
 .ski-idle-addr-row[hidden] { display: none; }
+.ski-idle-addr-qr-top {
+  align-self: center;
+  width: 104px;
+  height: 104px;
+  margin: 2px 0 6px;
+  border-radius: 8px;
+  padding: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--addr-qr-color, #4da2ff);
+  box-shadow: 0 0 12px -4px var(--addr-qr-color, #4da2ff);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ski-idle-addr-qr-top svg { width: 100%; height: 100%; display: block; }
+.ski-idle-addr-qr-top { cursor: pointer; transition: width 180ms ease, height 180ms ease, box-shadow 180ms ease; }
+.ski-idle-addr-qr-top:hover { box-shadow: 0 0 18px -2px var(--addr-qr-color, #4da2ff); }
+.ski-idle-addr-qr-top--expanded {
+  width: 260px !important;
+  height: 260px !important;
+  align-self: center !important;
+  margin-right: 0 !important;
+  box-shadow: 0 0 28px -2px var(--addr-qr-color, #4da2ff);
+  z-index: 5;
+}
+/* Muted ski-idle video background: shift QR to the right edge of the row. */
+.ski-idle-overlay[data-bg="ski-idle"] .ski-idle-addr-qr-top {
+  align-self: flex-end;
+  margin-right: 4px;
+}
+/* BASMR background: enlarge QR by 20%. */
+.ski-idle-overlay[data-bg="basmr"] .ski-idle-addr-qr-top {
+  width: 125px;
+  height: 125px;
+}
 .ski-idle-roster-panel {
   position: absolute;
   bottom: 66px;
@@ -3393,11 +3428,22 @@ body {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
-.ski-idle-addr-line:hover { background: rgba(255, 255, 255, 0.06); }
-.ski-idle-addr-line[data-addr-selected="1"] { background: var(--addr-sel-bg) !important; border-color: var(--addr-sel-color) !important; }
-.ski-idle-addr-line[data-addr-selected="1"]:hover { background: var(--addr-sel-bg) !important; border-color: var(--addr-sel-color) !important; }
+.ski-idle-addr-line:hover {
+  background: rgba(10, 10, 15, 0.96);
+  box-shadow: 0 0 14px -4px rgba(255, 255, 255, 0.2);
+}
+.ski-idle-addr-line[data-addr-selected="1"] {
+  background: linear-gradient(rgba(10, 10, 15, 0.96), rgba(10, 10, 15, 0.96)), var(--addr-sel-bg) !important;
+  border-color: var(--addr-sel-color) !important;
+  box-shadow: 0 0 14px -4px var(--addr-sel-color);
+}
+.ski-idle-addr-line[data-addr-selected="1"]:hover {
+  background: linear-gradient(rgba(10, 10, 15, 0.96), rgba(10, 10, 15, 0.96)), var(--addr-sel-bg) !important;
+  border-color: var(--addr-sel-color) !important;
+  box-shadow: 0 0 18px -2px var(--addr-sel-color);
+}
 .ski-idle-addr-line--sui {
   color: #22c55e;
   border-color: rgba(34, 197, 94, 0.35);
@@ -3687,6 +3733,13 @@ body {
 }
 .ski-idle-thunder-convo::-webkit-scrollbar { display: none; }
 .ski-idle-thunder-convo[hidden] { display: none; }
+/* When squids row is visible, the thunder convo is hidden — the user
+ * wants a clean view of their cross-chain addresses without message
+ * bubbles clashing. Storm state is preserved; closing squids brings
+ * the convo back immediately. */
+.ski-idle-media:has(#ski-idle-addr:not([hidden])) .ski-idle-thunder-convo {
+  display: none;
+}
 /* Loading state — shown while _expandIdleConvo is awaiting Seal session +
    DO fetch + decrypt. Replaced by bubble content once the fetch settles. */
 .ski-idle-convo-loading {

@@ -6,6 +6,8 @@ import { raceJsonRpc } from './rpc.js';
 import { createZkLoginApp } from './zklogin-proxy.js';
 import { encryptProxy } from './encrypt-proxy.js';
 import { verifyVectorIntent } from './vector-intent.js';
+import { createPublicClient, http, erc20Abi, type Address } from 'viem';
+import { mainnet } from 'viem/chains';
 // ika-provision.ts is available for server-side DKG if needed in future,
 // but DKG WASM must run client-side (browser) — Workers can't run it.
 
@@ -1741,6 +1743,72 @@ app.post('/api/sol-rpc', async (c) => {
   }
 });
 
+// ── Cross-chain balance proxies — IKA dWallet-derived addresses ─────
+// Browser hits these to populate the BTC/ETH/TRON chips in the idle
+// overlay squids row. Each endpoint returns raw on-chain amounts;
+// browser combines with CoinGecko prices for USD totals.
+
+// BTC — mempool.space (free, no key). Sums confirmed + unconfirmed.
+app.get('/api/balance/btc/:addr', async (c) => {
+  const addr = c.req.param('addr');
+  if (!/^(bc1|[13])[a-zA-Z0-9]{20,90}$/.test(addr)) return c.json({ error: 'invalid BTC addr' }, 400);
+  try {
+    const r = await fetch(`https://mempool.space/api/address/${addr}`);
+    if (!r.ok) return c.json({ error: `mempool.space ${r.status}` }, 502);
+    const j = await r.json() as { chain_stats?: { funded_txo_sum?: number; spent_txo_sum?: number }; mempool_stats?: { funded_txo_sum?: number; spent_txo_sum?: number } };
+    const conf = (j.chain_stats?.funded_txo_sum ?? 0) - (j.chain_stats?.spent_txo_sum ?? 0);
+    const unconf = (j.mempool_stats?.funded_txo_sum ?? 0) - (j.mempool_stats?.spent_txo_sum ?? 0);
+    return c.json({ sats: conf + unconf }, 200, { 'cache-control': 'public,max-age=30' });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ETH (mainnet) — viem + Alchemy transport. Native wei + USDC raw (6dp).
+const USDC_MAINNET: Address = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+app.get('/api/balance/eth/:addr', async (c) => {
+  const addr = c.req.param('addr');
+  if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) return c.json({ error: 'invalid ETH addr' }, 400);
+  if (!c.env.ALCHEMY_ETH_URL) return c.json({ error: 'ALCHEMY_ETH_URL not configured' }, 500);
+  try {
+    const client = createPublicClient({ chain: mainnet, transport: http(c.env.ALCHEMY_ETH_URL) });
+    const [wei, usdcRaw] = await Promise.all([
+      client.getBalance({ address: addr as Address }),
+      client.readContract({
+        address: USDC_MAINNET,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [addr as Address],
+      }),
+    ]);
+    return c.json({ wei: wei.toString(), usdcRaw: usdcRaw.toString() }, 200, { 'cache-control': 'public,max-age=30' });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// TRON — TronGrid. Returns TRX (sun) + USDT-TRC20 raw.
+// USDT-TRC20 contract: TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
+app.get('/api/balance/tron/:addr', async (c) => {
+  const addr = c.req.param('addr');
+  if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(addr)) return c.json({ error: 'invalid TRON addr' }, 400);
+  try {
+    const r = await fetch(`https://api.trongrid.io/v1/accounts/${addr}`);
+    if (!r.ok) return c.json({ error: `trongrid ${r.status}` }, 502);
+    const j = await r.json() as { data?: Array<{ balance?: number; trc20?: Array<Record<string, string>> }> };
+    const acct = j.data?.[0];
+    const sun = acct?.balance ?? 0;
+    let usdtRaw = '0';
+    for (const entry of acct?.trc20 ?? []) {
+      const v = entry['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'];
+      if (v) { usdtRaw = v; break; }
+    }
+    return c.json({ sun, usdtRaw }, 200, { 'cache-control': 'public,max-age=30' });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── UltronSigningAgent WASM smoke test (Registeel Toxic Spikes) ─────
 // Spike endpoint to validate that the IKA WASM binary loads inside a
 // Durable Object runtime. Proves/disproves the two claims from the
@@ -2124,6 +2192,98 @@ app.get('/api/cache/ultron-sol-probe', async (c) => {
     });
   } catch (err) {
     return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Split ultron's SUI into multiple small coins for presign payments ──
+// IKA's request_presign Move function consumes a SUI Coin object as a
+// payment arg by VALUE, which means it must be a real on-chain object
+// rather than the output of splitCoins (the SDK's payment helper rejects
+// splitCoins outputs as "Unused result without the drop ability"). To
+// keep ultron's main SUI coin intact for gas, we split it into a handful
+// of small coins ahead of time so each presign call has its own dedicated
+// payment coin. Idempotent: running it again just creates more small
+// coins. No auth needed — this only rearranges ultron's own SUI.
+app.post('/api/cache/ultron-split-sui', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json().catch(() => ({})) as { count?: number; sizeMist?: string };
+    const count = Math.max(1, Math.min(20, Number(body.count ?? 5)));
+    const sizeMist = BigInt(body.sizeMist ?? '50000000'); // default 0.05 SUI per piece
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
+
+    // Pull ultron's largest SUI coin to use as gas via raw JSON-RPC.
+    const coinsRes = await fetch('https://sui-rpc.publicnode.com', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'suix_getCoins',
+        params: [ultronAddr, '0x2::sui::SUI'],
+      }),
+    });
+    const coinsJson = await coinsRes.json() as { result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> } };
+    const coins = (coinsJson.result?.data ?? []).sort((a, b) => Number(BigInt(b.balance) - BigInt(a.balance)));
+    if (coins.length === 0) return c.json({ error: 'ultron has no SUI coins' }, 400);
+    const gasCoin = coins[0];
+
+    // Reference price for build via raw JSON-RPC.
+    const gasPriceRes = await fetch('https://sui-rpc.publicnode.com', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getReferenceGasPrice', params: [] }),
+    });
+    const gasPriceJson = await gasPriceRes.json() as { result?: string };
+    const gasPrice = BigInt(gasPriceJson.result ?? '1000');
+
+    // Build the split tx. setGasPayment + setGasPrice + setGasBudget
+    // pin everything explicitly so the SDK doesn't try to do a network
+    // discovery round trip during build (which is what was failing
+    // through the GraphQL transport).
+    const tx = new Transaction();
+    tx.setSender(ultronAddr);
+    tx.setGasPayment([{ objectId: gasCoin.coinObjectId, version: gasCoin.version, digest: gasCoin.digest }]);
+    tx.setGasPrice(gasPrice);
+    tx.setGasBudget(50_000_000n); // 0.05 SUI for split tx
+    const splits: Array<bigint> = [];
+    for (let i = 0; i < count; i++) splits.push(sizeMist);
+    const newCoins = tx.splitCoins(tx.gas, splits.map(s => tx.pure.u64(s)));
+    const recipients: unknown[] = [];
+    for (let i = 0; i < count; i++) recipients.push(newCoins[i]);
+    tx.transferObjects(recipients as never[], tx.pure.address(ultronAddr));
+    const txBytes = await tx.build();
+    const { signature } = await keypair.signTransaction(txBytes);
+    // Submit via JSON-RPC executeTransactionBlock — the blessed exception
+    // for tx submit per CLAUDE.md.
+    const submitRes = await fetch('https://sui-rpc.publicnode.com', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'sui_executeTransactionBlock',
+        params: [toBase64(txBytes), [signature], { showEffects: true }, 'WaitForLocalExecution'],
+      }),
+    });
+    const submitJson = await submitRes.json() as { result?: { digest?: string; effects?: { status?: { status?: string; error?: string } } }; error?: { message?: string } };
+    if (submitJson.error) {
+      return c.json({ error: `submit failed: ${submitJson.error.message}` }, 500);
+    }
+    const status = submitJson.result?.effects?.status?.status;
+    if (status !== 'success') {
+      return c.json({ error: `tx status ${status}: ${submitJson.result?.effects?.status?.error ?? ''}` }, 500);
+    }
+    return c.json({
+      ok: true,
+      digest: submitJson.result?.digest ?? '',
+      ultronAddr,
+      count,
+      sizeMist: sizeMist.toString(),
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
   }
 });
 
@@ -2817,7 +2977,7 @@ app.post('/api/cache/quest-bounty', async (c) => {
 // execute through the happy path.
 app.post('/api/cache/shade-cancel-stable', async (c) => {
   try {
-    const body = await c.req.json() as { objectId: string; noForward?: boolean };
+    const body = await c.req.json() as { objectId: string; noForward?: boolean; forwardToAddress?: string };
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-cancel-stable', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },

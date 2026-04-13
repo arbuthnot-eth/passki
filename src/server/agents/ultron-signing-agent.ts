@@ -604,18 +604,25 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       }
 
       // Find ultron's IKA + SUI coins to pay for the presign request.
-      // The presign request charges a fee from the IKA coin and uses SUI
-      // for gas. Both must be owned by the tx sender (ultron).
-      const coinsRes = await fetch('https://sui-rpc.publicnode.com', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 1, method: 'suix_getCoins',
-          params: [ultronAddress, '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA'],
-        }),
-      });
-      const coinsJson = await coinsRes.json() as { result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> } };
-      const ikaCoins = coinsJson.result?.data ?? [];
+      // Both `paymentIka` and `paymentSui` are passed as Move object
+      // arguments, so they need to be real on-chain coin objects rather
+      // than splitCoins outputs (which the IKA coordinator's payment
+      // helper rejects as "Unused result without the drop ability"
+      // because it consumes them by value rather than by reference).
+      const fetchCoins = async (coinType: string) => {
+        const res = await fetch('https://sui-rpc.publicnode.com', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0', id: 1, method: 'suix_getCoins',
+            params: [ultronAddress, coinType],
+          }),
+        });
+        const j = await res.json() as { result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> } };
+        return (j.result?.data ?? []).filter(c => BigInt(c.balance) > 0n)
+          .sort((a, b) => Number(BigInt(b.balance) - BigInt(a.balance)));
+      };
+      const ikaCoins = await fetchCoins('0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA');
       if (ikaCoins.length === 0) {
         return {
           ok: false,
@@ -624,13 +631,30 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
           durationMs: Date.now() - t0,
         };
       }
-      // Pick the largest IKA coin.
-      const ikaCoin = ikaCoins.sort((a, b) => Number(BigInt(b.balance) - BigInt(a.balance)))[0];
+      const suiCoinsAll = await fetchCoins('0x2::sui::SUI');
+      // Need at least 2 SUI coins: one for gas, one for the presign
+      // payment arg. If ultron only has one we have to split — but that
+      // brings back the "Unused result" error, so make sure the keeper
+      // SUI is split to multiple coins beforehand. For now, refuse with
+      // a clear error so the operator knows to send a small SUI coin
+      // to ultron explicitly.
+      if (suiCoinsAll.length < 2) {
+        return {
+          ok: false,
+          error: `ultron needs at least 2 SUI coin objects (one for gas, one for presign payment); has ${suiCoinsAll.length}. Send a small standalone SUI coin to ${ultronAddress.slice(0, 10)}…`,
+          curve,
+          durationMs: Date.now() - t0,
+        };
+      }
+      const ikaCoin = ikaCoins[0];
+      // Use the SMALLEST SUI coin for the presign payment (avoid burning
+      // ultron's main gas reserve), and let the builder pick a different
+      // coin for gas automatically by NOT calling tx.setGasPayment.
+      const suiPaymentCoin = [...suiCoinsAll].sort((a, b) => Number(BigInt(a.balance) - BigInt(b.balance)))[0];
 
       // Build the presign PTB: requestPresign returns an UnverifiedPresignCap
       // which we transfer to ultron so it persists past the tx for the
-      // sign step. SUI is split from gas inside the PTB the same way the
-      // DKG flow does it.
+      // sign step.
       const tx = new Transaction();
       tx.setSender(ultronAddress);
       const ikaCoinArg = tx.objectRef({
@@ -638,7 +662,11 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
         version: ikaCoin.version,
         digest: ikaCoin.digest,
       });
-      const suiCoinArg = tx.splitCoins(tx.gas, [tx.pure.u64(50_000_000)]); // 0.05 SUI
+      const suiCoinArg = tx.objectRef({
+        objectId: suiPaymentCoin.coinObjectId,
+        version: suiPaymentCoin.version,
+        digest: suiPaymentCoin.digest,
+      });
 
       const ikaTx = new IkaTransaction({
         ikaClient: ika,
@@ -652,7 +680,7 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
         dWallet: dwallet as never,
         signatureAlgorithm: 'ECDSASecp256k1' as never,
         ikaCoin: ikaCoinArg,
-        suiCoin: suiCoinArg[0],
+        suiCoin: suiCoinArg,
       });
       // Persist the cap to ultron so Increment D can fetch it later.
       tx.transferObjects([unverifiedPresignCap], tx.pure.address(ultronAddress));

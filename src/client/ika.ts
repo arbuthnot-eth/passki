@@ -705,9 +705,12 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
       // leaves us stuck in limbo.
       const stateOuter = (dw as any)?.data?.content?.fields?.state;
       const stateVariant: string = stateOuter?.variant ?? '';
+      // AwaitingKeyHolderSignature has a valid public_output we can
+      // derive addresses from — it just can't sign yet. Display the
+      // address so the user can see what's provisioned; signing flow
+      // gates on state separately.
       if (stateVariant === 'AwaitingKeyHolderSignature') {
-        console.warn('[ika:status] dwallet', capDwalletId, 'is in AwaitingKeyHolderSignature — skipping, not yet usable');
-        continue;
+        console.warn('[ika:status] dwallet', capDwalletId, 'AwaitingKeyHolderSignature — display only, cannot sign');
       }
       const state = stateOuter?.fields;
       const publicOutput = state?.public_output;
