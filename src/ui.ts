@@ -43,7 +43,7 @@ import {
   getActiveSponsoredList,
   resolveNameToAddress,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildCreateStableShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildCancelStableShadeOrderTx, buildCancelRefundStableShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, findCreatedStableShadeOrderRef, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildCreateStableShadeOrderTx, buildCreateStableShadeOrderAutoTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildCancelStableShadeOrderTx, buildCancelRefundStableShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, findCreatedStableShadeOrderRef, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
 import { connectShadeExecutor, scheduleShadeExecution, scheduleStableShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, pokeIouSweeper, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import { ethToTron } from './client/chains.js';
@@ -8594,61 +8594,42 @@ function renderSkiMenu() {
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
     const effectiveMs = executeAfterMs ?? nsGraceEndMs;
     try {
-      // Preferred path: user-funded StableShadeOrder<iUSD>. User owns the
-      // order on-chain, so cancel refunds flow back to them naturally —
-      // no ultron-forwarding hack needed.
+      // Three-path Shade builder via Porygon-Z Barrier auto-dispatcher:
+      //   1. iUSD on Sui ≥ deposit → user signs, user owns.
+      //   2. iUSD short but SUI present → swap SUI → iUSD in-PTB, user
+      //      still signs and owns the resulting order.
+      //   3. Neither iUSD nor SUI → throw with an Agility hint pointing
+      //      the user at the cross-chain bridge (Solana → Sui iUSD).
+      // ALL THREE paths produce a brando-owned order. The legacy
+      // ultron-funded /api/cache/shade-proxy fallback is gone — it
+      // created ultron-owned orders that the user couldn't cancel and
+      // didn't show up in /api/shade/orders/:address for brando. Agility
+      // (#140) is the long-term answer for users with zero Sui-side
+      // liquidity.
       let txBytes: Uint8Array;
       let orderInfo: Omit<ShadeOrderInfo, 'objectId'> & { coinType?: string };
       try {
-        const result = await buildCreateStableShadeOrderTx(address, label, effectiveMs);
+        // Pre-compute the deposit target in iUSD mist (9 decimals + 10%
+        // slippage buffer). The auto dispatcher uses this as the swap
+        // target when routing through SUI; it ignores it when iUSD is
+        // already sufficient (case 1) since the legacy builder
+        // recomputes its own.
+        const priceUsd = await fetchDomainPriceUsd(label);
+        const targetStableMist = BigInt(Math.ceil(priceUsd * 1.10 * 1e9));
+        const result = await buildCreateStableShadeOrderAutoTx(
+          address, label, effectiveMs, targetStableMist,
+        );
         txBytes = result.txBytes;
         orderInfo = result.orderInfo;
       } catch (buildErr) {
         const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
-        if (msg.includes('Insufficient iUSD') || msg.includes('insufficient')) {
-          // Fallback: ultron-funded shade-proxy. KNOWN OWNERSHIP GAP —
-          // the resulting order is owned by ultron (tx_context::sender =
-          // ultron since ultron signs), NOT by brando. Consequences:
-          //   • /api/shade/orders/:address returns zero for brando even
-          //     though brando initiated the shade
-          //   • brando cannot cancel the order directly (only ultron can)
-          //   • the registered name DOES still land at brando (executor
-          //     decrypts target from sealed payload), so no funds lost
-          // Long-term fix: Agility v2+ lets users bridge iUSD from
-          // Solana → Sui, eliminating the need for this fallback. Or
-          // a Move v6 upgrade with a `recipient: address` arg on
-          // create_stable so ultron can sign while naming brando as owner.
-          // See #140 "Crunch" or "Aqua Tail" for the tracking moves.
-          console.warn('[shade] falling back to ultron-funded proxy — order ownership will be ultron, not brando. Consider funding Sui iUSD or using Agility.');
-          showToast(`\u26a1 Ultron fronting shade deposit for ${label}.sui\u2026`);
-          const proxyRes = await fetch('/api/cache/shade-proxy', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ label, targetAddress: address, graceEndMs: effectiveMs || undefined }),
-          });
-          const proxyJson = await proxyRes.json() as { digest?: string; orderId?: string; depositMist?: string; depositUsd?: number; error?: string };
-          if (proxyJson.error) throw new Error(proxyJson.error);
-          const proxyOrder: ShadeOrderInfo = {
-            objectId: proxyJson.orderId || `proxy:${proxyJson.digest}`,
-            domain: label,
-            owner: address,
-            depositMist: BigInt(proxyJson.depositMist || '0'),
-            executeAfterMs: effectiveMs,
-            targetAddress: address,
-            salt: '',
-          };
-          addShadeOrder(address, proxyOrder);
-          nsShadeOrder = proxyOrder;
-          nsShadeOrders.push({ ...proxyOrder });
-          _patchNsStatus();
-          _patchNsPrice();
-          _patchNsRoute();
-          _patchNsOwnedList();
-          showToast(`${label}.sui shaded via cache \u2713 (ultron deposit: $${(proxyJson.depositUsd ?? 0).toFixed(2)})`);
-          if (btn) { btn.disabled = false; btn.textContent = 'Shade'; }
-          return;
+        if (/no\s+iusd\s+or\s+sui/i.test(msg) || /fund.*agility/i.test(msg)) {
+          showToast(`\u26a1 Need iUSD or SUI on Sui side to shade ${label}.sui. Bridge from Solana via Agility.`);
+        } else {
+          showToast(`Shade failed: ${msg.length > 80 ? msg.slice(0, 80) + '\u2026' : msg}`);
         }
-        throw buildErr;
+        if (btn) { btn.disabled = false; btn.textContent = 'Shade'; }
+        return;
       }
       if (btn) btn.textContent = '\u270f';
       const { digest } = await signAndExecuteTransaction(txBytes);
