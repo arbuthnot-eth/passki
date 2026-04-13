@@ -25,7 +25,10 @@ import {
   IkaTransaction,
   UserShareEncryptionKeys,
   Curve,
+  Hash,
+  SignatureAlgorithm,
   getNetworkConfig,
+  parseSignatureFromSignOutput,
 } from '@ika.xyz/sdk';
 
 // The .js bindings are pure ES module — they export `initSync(module)`
@@ -202,6 +205,36 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       return new Response(JSON.stringify(result), {
         headers: { 'content-type': 'application/json' },
       });
+    }
+    if (url.pathname.endsWith('/request-sign') || url.searchParams.has('request-sign')) {
+      try {
+        const body = await request.json() as {
+          curve?: 'ed25519' | 'secp256k1';
+          presignObjectId?: string;
+          presignCapId?: string;
+          messageHex?: string;
+          hashScheme?: string;
+        };
+        const curve = body.curve ?? 'secp256k1';
+        const presignObjectId = body.presignObjectId ?? '';
+        const presignCapId = body.presignCapId ?? '';
+        const hashScheme = body.hashScheme ?? 'KECCAK256';
+        const hex = (body.messageHex ?? '').replace(/^0x/, '');
+        const message = new Uint8Array(hex.length / 2);
+        for (let i = 0; i < message.length; i++) {
+          message[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+        }
+        const result = await this._requestSign({ curve, presignObjectId, presignCapId, message, hashScheme });
+        return new Response(JSON.stringify(result), {
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        const error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        return new Response(JSON.stringify({ ok: false, error }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
     }
     return new Response(JSON.stringify({ error: 'Unknown route' }), {
       status: 404,
@@ -767,5 +800,229 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       state: lastState,
       durationMs: Date.now() - t0,
     };
+  }
+
+  /**
+   * Increment D step 2: build + submit the sign PTB. Takes a completed
+   * Presign object (caller is responsible for polling to Completed first),
+   * the unverified/verified presign cap that was transferred to ultron
+   * by the Increment C request_presign PTB, and a message to sign.
+   *
+   * The PTB layout:
+   *   1. Read ultron's encrypted user share (for the zero-trust path)
+   *   2. approveMessage(dWalletCap, curve, algo, hashScheme, message)
+   *   3. verifyPresignCap(unverifiedPresignCap) → verifiedCap
+   *   4. requestSign(dWallet, messageApproval, verifiedCap, presign,
+   *      encryptedUserShare, message, algo, ikaCoin, suiCoin)
+   *   5. sign with ultron's Ed25519 keypair, submit via core.executeTransaction
+   *
+   * Returns the digest + the SignSession object ID parsed out of
+   * objectChanges so step 3 can poll it.
+   */
+  private async _requestSign(params: {
+    curve: 'ed25519' | 'secp256k1';
+    presignObjectId: string;
+    presignCapId: string;
+    message: Uint8Array;
+    hashScheme: string;
+  }): Promise<{
+    ok: boolean;
+    error?: string;
+    digest?: string;
+    signSessionId?: string;
+    curve?: string;
+    durationMs: number;
+  }> {
+    const t0 = Date.now();
+    try {
+      if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
+        return { ok: false, error: 'SHADE_KEEPER_PRIVATE_KEY not configured', durationMs: Date.now() - t0 };
+      }
+      const { curve, presignObjectId, presignCapId, message, hashScheme } = params;
+      if (!presignObjectId || !presignCapId) {
+        return { ok: false, error: 'presignObjectId and presignCapId required', durationMs: Date.now() - t0 };
+      }
+      if (!message || message.length === 0) {
+        return { ok: false, error: 'empty message', durationMs: Date.now() - t0 };
+      }
+
+      const spec = ULTRON_DWALLETS[curve];
+      const ikaCurve = curve === 'ed25519' ? Curve.ED25519 : Curve.SECP256K1;
+      const signatureAlgorithm = curve === 'ed25519'
+        ? SignatureAlgorithm.EdDSA
+        : SignatureAlgorithm.ECDSASecp256k1;
+      // Accept loose string inputs and cast to the Hash enum — the SDK's
+      // runtime validator rejects invalid combos, which is the real
+      // contract. We're not relying on TS to narrow.
+      const hashEnum = (Hash as Record<string, string>)[hashScheme] ?? hashScheme;
+
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddress = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+
+      const seed = await deriveUltronSeed(
+        this.env.SHADE_KEEPER_PRIVATE_KEY,
+        ultronAddress,
+        curve,
+      );
+      const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seed, ikaCurve);
+
+      const { ika, sui } = await getIkaClient();
+
+      // Fetch the dwallet + the completed presign + the encrypted user share
+      // in parallel — all three are inputs the SDK needs to build the sign PTB.
+      const [dwallet, presign, encryptedUserShare] = await Promise.all([
+        ika.getDWallet(spec.dwalletId),
+        ika.getPresign(presignObjectId),
+        ika.getEncryptedUserSecretKeyShare(spec.encryptedShareId),
+      ]);
+      const dwAny = dwallet as unknown as { state?: Record<string, unknown>; dwallet_cap_id?: string };
+      const stateKeys = dwAny.state ? Object.keys(dwAny.state) : [];
+      if (stateKeys[0] !== 'Active') {
+        return {
+          ok: false,
+          error: `dWallet not Active (current: ${stateKeys[0] ?? 'Unknown'})`,
+          curve,
+          durationMs: Date.now() - t0,
+        };
+      }
+      const dWalletCapId = dwAny.dwallet_cap_id;
+      if (!dWalletCapId) {
+        return {
+          ok: false,
+          error: 'dwallet_cap_id not present on dwallet object',
+          curve,
+          durationMs: Date.now() - t0,
+        };
+      }
+
+      // Find ultron's IKA coin for the sign fee. Same pattern as
+      // _requestPresign (Increment C).
+      const coinsRes = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'suix_getCoins',
+          params: [ultronAddress, '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA'],
+        }),
+      });
+      const coinsJson = await coinsRes.json() as {
+        result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> };
+      };
+      const ikaCoins = coinsJson.result?.data ?? [];
+      if (ikaCoins.length === 0) {
+        return {
+          ok: false,
+          error: `ultron has no IKA coins to pay for sign (address ${ultronAddress})`,
+          curve,
+          durationMs: Date.now() - t0,
+        };
+      }
+      const ikaCoin = ikaCoins.sort((a, b) => Number(BigInt(b.balance) - BigInt(a.balance)))[0];
+
+      // Build the sign PTB.
+      const tx = new Transaction();
+      tx.setSender(ultronAddress);
+      const ikaCoinArg = tx.objectRef({
+        objectId: ikaCoin.coinObjectId,
+        version: ikaCoin.version,
+        digest: ikaCoin.digest,
+      });
+      const suiCoinArg = tx.splitCoins(tx.gas, [tx.pure.u64(50_000_000)]); // 0.05 SUI
+
+      const ikaTx = new IkaTransaction({
+        ikaClient: ika,
+        transaction: tx,
+        userShareEncryptionKeys,
+      });
+
+      // approveMessage creates a MessageApproval object binding the
+      // dwalletCap + the message bytes + hash scheme. Runtime validates
+      // curve/algo/hash combo, we cast away the strict union.
+      const messageApproval = ikaTx.approveMessage({
+        dWalletCap: dWalletCapId,
+        curve: ikaCurve as never,
+        signatureAlgorithm: signatureAlgorithm as never,
+        hashScheme: hashEnum as never,
+        message,
+      });
+
+      // verifyPresignCap takes the unverified cap ID and returns the
+      // verified cap (usable in requestSign). Must be in the same PTB.
+      const verifiedPresignCap = ikaTx.verifyPresignCap({
+        unverifiedPresignCap: presignCapId,
+      });
+
+      // requestSign closes the loop: it consumes the verified cap, the
+      // completed presign, the encrypted user share, and the message,
+      // and emits a SignSession object the network will fill with the
+      // final signature bytes.
+      await ikaTx.requestSign({
+        dWallet: dwallet as never,
+        messageApproval,
+        hashScheme: hashEnum as never,
+        verifiedPresignCap,
+        presign: presign as never,
+        encryptedUserSecretKeyShare: encryptedUserShare,
+        message,
+        signatureScheme: signatureAlgorithm as never,
+        ikaCoin: ikaCoinArg,
+        suiCoin: suiCoinArg[0],
+      });
+
+      const txBytes = await tx.build({ client: sui as never });
+      const { signature } = await keypair.signTransaction(txBytes);
+      const execResult = await sui.core.executeTransaction({
+        transaction: txBytes,
+        signatures: [signature],
+      });
+      const execInner = execResult.$kind === 'Transaction'
+        ? execResult.Transaction
+        : execResult.FailedTransaction;
+      const digest = execInner?.digest ?? '';
+      console.log(`[request-sign:${curve}] tx submitted, digest=${digest}`);
+
+      // Pull the tx to extract the SignSession object ID from
+      // objectChanges. Give the indexer a beat.
+      await new Promise((r) => setTimeout(r, 2000));
+      const txDetailRes = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'sui_getTransactionBlock',
+          params: [digest, { showObjectChanges: true, showEffects: true }],
+        }),
+      });
+      const txDetailJson = await txDetailRes.json() as {
+        result?: {
+          objectChanges?: Array<{ type: string; objectType?: string; objectId?: string }>;
+          effects?: { status?: { status?: string; error?: string } };
+        };
+      };
+      const status = txDetailJson.result?.effects?.status?.status;
+      if (status !== 'success') {
+        return {
+          ok: false,
+          error: `sign tx status: ${status} ${txDetailJson.result?.effects?.status?.error ?? ''}`,
+          digest,
+          curve,
+          durationMs: Date.now() - t0,
+        };
+      }
+      const changes = txDetailJson.result?.objectChanges ?? [];
+      const signChange = changes.find((c) => c.objectType?.includes('::coordinator_inner::SignSession'));
+      const signSessionId = signChange?.objectId;
+      console.log(`[request-sign:${curve}] signSession=${signSessionId}`);
+
+      return {
+        ok: true,
+        digest,
+        signSessionId,
+        curve,
+        durationMs: Date.now() - t0,
+      };
+    } catch (err) {
+      const error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      return { ok: false, error, durationMs: Date.now() - t0 };
+    }
   }
 }
