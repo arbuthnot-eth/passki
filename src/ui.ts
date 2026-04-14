@@ -43,7 +43,7 @@ import {
   getActiveSponsoredList,
   resolveNameToAddress,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildCreateStableShadeOrderTx, buildCreateStableShadeOrderAutoTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildCancelStableShadeOrderTx, buildCancelRefundStableShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, findCreatedStableShadeOrderRef, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildCreateStableShadeOrderTx, buildCreateStableShadeOrderAutoTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildCancelStableShadeOrderTx, buildCancelRefundStableShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, buildIusdBurnAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, findCreatedStableShadeOrderRef, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
 import { connectShadeExecutor, scheduleShadeExecution, scheduleStableShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, pokeIouSweeper, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import { ethToTron } from './client/chains.js';
@@ -3589,17 +3589,25 @@ let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
 let nsLabel = (() => {
   try {
-    // Prefer the last-typed label so hard refresh is stable. If a
-    // user was looking at `great.sui` and reloads, they expect to
-    // land right back on great — not get kicked over to their own
-    // primary name. Only restore if it wasn't an 'available' stub
-    // (half-typed shopping).
+    // Prefer the last-typed/searched label unconditionally so hard
+    // refresh is stable. If the user was looking at `great.sui` and
+    // reloads, they expect to land right back on great — not get
+    // kicked over to their own primary.
+    //
+    // Previously we gated this behind a `wasAvailable` check to
+    // avoid restoring a half-typed registration stub. But the SuiNS
+    // resolver sometimes returns `avail: 'available'` for names
+    // that are actually Tradeport-kiosk-listed (the wrap defeats
+    // the resolver), so the gate ended up dropping real searches
+    // for listed names. Dropped the gate entirely — if there's a
+    // saved label, we trust it. The initial page load never
+    // auto-mints anything, so the worst case of restoring a stale
+    // 'available' value is a harmless blank card until the user
+    // types or triggers another resolve.
     const saved = localStorage.getItem('ski:ns-label') || '';
-    const savedAvail = sessionStorage.getItem('ski:ns-resolve');
-    const wasAvailable = savedAvail ? JSON.parse(savedAvail)?.avail === 'available' : false;
-    if (saved && !wasAvailable) return saved;
-    // No usable saved label → fall back to the connected wallet's
-    // primary SuiNS name if it's cached locally.
+    if (saved) return saved;
+    // No saved label → fall back to the connected wallet's primary
+    // SuiNS name if it's cached locally.
     const ws = getState();
     if (ws.address) {
       const cached = localStorage.getItem(`ski:suins:${ws.address}`);
@@ -10121,25 +10129,33 @@ function bindEvents() {
       };
 
       // NS cache banner: show whenever the user holds non-dust NS.
-      // Label reads "Cache $X.XX NS" where $X.XX is the live USD
-      // value of their NS holdings (nsBalance × nsPriceUsd). Tapping
-      // the banner runs ski.sweepNsToCache() which atomically swaps
-      // NS → iUSD and sends the iUSD right back to the user's own
-      // wallet (not ultron's cache — the user is the cache).
+      // Label reads "Cache $X NS" where $X is the live USD market
+      // value of the wallet's NS **token** holdings — what a sweep
+      // through the DeepBook NS/USDC pool would actually return.
+      //
+      // Prior bug: multiplied nsBalance by `nsPriceUsd`, which is the
+      // DOMAIN REGISTRATION price of whatever name the user is
+      // currently viewing. Two unrelated units — e.g. 6.6 NS tokens ×
+      // $10 "superteam.sui" registration = $66 phantom. Dollars shown
+      // would change just by searching a different name.
+      //
+      // Correct source: getTokenPrice('NS') — the NS token's market
+      // price, same function that feeds the portfolio's tokensUsd
+      // aggregate at ui.ts:3158.
       const _updateNsSweepBanner = () => {
         const banner = _idleOverlay?.querySelector('#ski-idle-ns-sweep') as HTMLElement | null;
         const amtEl = _idleOverlay?.querySelector('#ski-idle-ns-sweep-amt') as HTMLElement | null;
         if (!banner || !amtEl) return;
         const ns = app.nsBalance ?? 0;
-        // Dust floor: 0.01 NS. Below that, no banner.
-        if (ns < 0.01) {
+        const nsTokenUsd = getTokenPrice('NS') ?? 0;
+        const usd = ns * nsTokenUsd;
+        // USD dust floor: < $1 of NS isn't worth a sweep tx's gas.
+        // Hides the banner entirely for dust holdings.
+        if (usd < 1) {
           banner.setAttribute('hidden', '');
           return;
         }
-        const nsPrice = nsPriceUsd ?? 0;
-        const usd = ns * nsPrice;
-        // Sub-dollar → show two decimals ("0.05"), ≥ $1 → no decimals.
-        amtEl.textContent = usd >= 1 ? Math.round(usd).toLocaleString() : usd.toFixed(2);
+        amtEl.textContent = Math.round(usd).toLocaleString();
         banner.removeAttribute('hidden');
       };
 
@@ -11565,13 +11581,61 @@ function bindEvents() {
               const purchase = nsKioskListing
                 ? { type: 'kiosk' as const, kioskId: nsKioskListing.kioskId, nftId: nsKioskListing.nftId, priceMist: priceMistStr }
                 : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: priceMistStr };
-              // Let the function auto-source: SUI first, then swap
-              // USDC→SUI for any shortfall via the DeepBook SUI/USDC
-              // pool. selectedCoinType=null means SUI is the primary
-              // input, outputCoinType=USDC engages the fallback swap.
+
+              // Pre-compute how much iUSD to burn via Volcarodon PSM.
+              // PSM is 1:1 minus fee, capped by the reserve's USDC
+              // balance. Query live state so the PTB can't abort on
+              // EInsufficientReserve.
+              const IUSD_TYPE_UI = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
               const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
-              const suiUsdBalance = (app.sui ?? 0) * freshSuiP;
-              const txBytes = await buildSwapAndPurchaseTx(ws.address, purchase, null, suiUsdBalance, USDC_TYPE, freshSuiP);
+              const PSM_RESERVE_ID = '0x62fcd184ef68d7267e4cf45f8af5ff7f23511c4741f26674875e691389ca264c';
+              const addrN = (await import('@mysten/sui/utils')).normalizeSuiAddress(ws.address);
+              const rpcBody = (id: number, method: string, params: any[]) =>
+                JSON.stringify({ jsonrpc: '2.0', id, method, params });
+              const [suiRes, usdcRes, iusdRes, reserveRes] = await Promise.all([
+                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(1, 'suix_getBalance', [addrN, '0x2::sui::SUI']) }),
+                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(2, 'suix_getBalance', [addrN, USDC_TYPE]) }),
+                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(3, 'suix_getBalance', [addrN, IUSD_TYPE_UI]) }),
+                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(4, 'sui_getObject', [PSM_RESERVE_ID, { showContent: true }]) }),
+              ]);
+              const suiBal = BigInt(((await suiRes.json()) as { result?: { totalBalance?: string } }).result?.totalBalance ?? '0');
+              const usdcBal = BigInt(((await usdcRes.json()) as { result?: { totalBalance?: string } }).result?.totalBalance ?? '0');
+              const iusdBal = BigInt(((await iusdRes.json()) as { result?: { totalBalance?: string } }).result?.totalBalance ?? '0');
+              const reserveFields = ((await reserveRes.json()) as { result?: { data?: { content?: { fields?: { s_balance?: string; fee_bps?: string } } } } }).result?.data?.content?.fields;
+              const reserveUsdc = BigInt(reserveFields?.s_balance ?? '0');
+              const psmFeeBps = BigInt(reserveFields?.fee_bps ?? '50');
+
+              // Compute SUI shortfall, then USDC needed to swap to cover it.
+              const priceMistBig = BigInt(priceMistStr);
+              const gasBuf = 100_000_000n; // 0.1 SUI
+              const suiAccum = suiBal > gasBuf ? suiBal - gasBuf : 0n;
+              const suiShortfall = suiAccum < priceMistBig ? (priceMistBig - suiAccum) : 0n;
+              const suiShortfallWithBuf = suiShortfall + (suiShortfall * 200n / 10000n); // 2% slippage
+              const usdcNeededForSwap = BigInt(Math.ceil((Number(suiShortfallWithBuf) / 1e9) * freshSuiP * 1e6));
+
+              // Extra USDC we need to source from iUSD PSM burn.
+              let iusdBurnMist = 0n;
+              if (usdcBal < usdcNeededForSwap) {
+                const usdcShortfall = usdcNeededForSwap - usdcBal;
+                if (usdcShortfall > reserveUsdc) {
+                  showToast(`PSM reserve too small: need $${(Number(usdcShortfall) / 1e6).toFixed(2)} more USDC, reserve has $${(Number(reserveUsdc) / 1e6).toFixed(2)}`);
+                  return;
+                }
+                // iUSD needed to produce `usdcShortfall` USDC net of fee.
+                // gross_usdc = usdcShortfall × 10000 / (10000 - fee_bps)
+                // iusd_mist = gross_usdc × 1000  (USDC 6dp → iUSD 9dp)
+                const grossUsdc = (usdcShortfall * 10000n) / (10000n - psmFeeBps) + 1n;
+                iusdBurnMist = grossUsdc * 1000n;
+                if (iusdBurnMist > iusdBal) {
+                  showToast(`Insufficient iUSD: need ${(Number(iusdBurnMist) / 1e9).toFixed(2)}, have ${(Number(iusdBal) / 1e9).toFixed(2)}`);
+                  return;
+                }
+                if (iusdBurnMist > 0n) {
+                  showToast(`\u{1F525} Burning ${(Number(iusdBurnMist) / 1e9).toFixed(2)} iUSD via PSM + swapping USDC \u2192 SUI \u2026`);
+                }
+              }
+
+              const txBytes = await buildIusdBurnAndPurchaseTx(ws.address, purchase, freshSuiP, iusdBurnMist);
               _idleActionBtn!.textContent = '\u270f';
               const { digest } = await signAndExecuteTransaction(txBytes);
               nsAvail = 'owned'; nsTargetAddress = ws.address; nsLastDigest = digest ?? '';
@@ -16813,16 +16877,27 @@ export function initUI() {
 
       // Lapras Lv.10 Water Pulse (#150) — on wallet-change, auto-load
       // the new wallet's primary SuiNS into the overlay name card +
-      // NS input. Gated on "different address than last time" so a
-      // same-wallet refresh still restores the user's last-typed
-      // label (see nsLabel initializer above).
+      // NS input.
+      //
+      // Gates (all must pass before we touch nsLabel):
+      //   1. "Different address than last adopt" — so a same-wallet
+      //      refresh doesn't re-trigger.
+      //   2. "No active typed search" — if nsLabel already holds a
+      //      valid label the user was searching for (e.g. great.sui
+      //      for a trade), we respect it. Lapras only populates into
+      //      a blank input; it never overwrites a live search.
       try {
         const _prevLapras = localStorage.getItem('ski:lapras-last-addr') || '';
         const _isNewAddr = _prevLapras !== ws.address;
-        if (_isNewAddr) {
+        const _hasActiveSearch = !!nsLabel && isValidNsLabel(nsLabel);
+        if (_isNewAddr && !_hasActiveSearch) {
           const _adopt = () => {
             const primary = (app.suinsName || '').replace(/\.sui$/, '');
             if (!primary || !isValidNsLabel(primary)) return;
+            // Guard again inside the async path — user may have
+            // typed something between the synchronous first call
+            // and the ski:balance-updated follow-up.
+            if (nsLabel && isValidNsLabel(nsLabel)) return;
             nsLabel = primary;
             try { localStorage.setItem('ski:ns-label', primary); } catch {}
             try { localStorage.setItem('ski:lapras-last-addr', ws.address); } catch {}
@@ -16843,6 +16918,11 @@ export function initUI() {
             _adopt();
           };
           window.addEventListener('ski:balance-updated', _onFresh);
+        } else if (_isNewAddr && _hasActiveSearch) {
+          // New address but user is mid-search. Record the address
+          // so Lapras doesn't keep re-attempting on every reconnect
+          // of this same wallet; the user's typed label stands.
+          try { localStorage.setItem('ski:lapras-last-addr', ws.address); } catch {}
         }
       } catch { /* non-fatal */ }
 
