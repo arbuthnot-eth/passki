@@ -439,16 +439,17 @@ window.addEventListener('ski:request-suiami', async (e) => {
     // Write SUIAMI attestation on-chain (Roster v3). Always writes — even
     // if the user hasn't rumbled cross-chain addresses yet — so their
     // IdentityRecord (name + Sui address) exists on-chain. If cross-chain
-    // addresses are present, they're uploaded to Walrus as an
-    // AES-256-GCM encrypted blob and the blob id + AES IV are included
-    // in the on-chain record. The raw AES key lives in the owner's
-    // localStorage (`ski:roster-key:<addr>`) — never touches a server.
+    // addresses are present, they're Seal-encrypted (policy-gated on
+    // `suiami::seal_roster::seal_approve_roster_reader`) and uploaded to
+    // Walrus. The decrypt path requires the reader to be a SUIAMI
+    // member themselves — mutual-membership model.
     //
-    // Claydol Lv.20 (#156) — encrypted Walrus upload. Prior version
-    // uploaded plaintext squid addresses, which defeated the privacy
-    // promise of the roster entry.
+    // Bronzong Lv.20 (#157) — Seal upload replaces the AES+localStorage
+    // path shipped in Claydol (#156). The Seal-encrypted ciphertext
+    // carries everything needed for threshold decrypt; nothing needs
+    // to live in localStorage.
     try {
-      const { uploadRosterBlob } = await import('./client/roster.js');
+      const { encryptSquidsToWalrus } = await import('./client/suiami-seal.js');
       const { maybeAppendRoster } = await import('./suins.js');
       const appSt = getAppState();
       const blobData: Record<string, string> = {};
@@ -459,23 +460,11 @@ window.addEventListener('ski:request-suiami', async (e) => {
       let sealNonce: number[] = [];
       if (Object.keys(blobData).length > 0) {
         try {
-          const uploadResult = await uploadRosterBlob(blobData, { encrypt: true });
-          if (typeof uploadResult === 'string') {
-            blobId = uploadResult;
-          } else {
-            blobId = uploadResult.blobId;
-            sealNonce = uploadResult.nonce;
-            try {
-              localStorage.setItem(
-                `ski:roster-key:${ws.address}`,
-                JSON.stringify(uploadResult.keyRaw),
-              );
-            } catch (keyErr) {
-              console.warn('[suiami] failed to persist roster key locally:', keyErr);
-            }
-          }
+          const { blobId: bId, sealId } = await encryptSquidsToWalrus(blobData, name);
+          blobId = bId;
+          sealNonce = Array.from(sealId);
         } catch (walErr) {
-          console.warn('[suiami] Walrus blob upload failed, proceeding without cross-chain:', walErr);
+          console.warn('[suiami] Seal/Walrus upload failed, writing identity without cross-chain:', walErr);
         }
       }
       const { Transaction } = await import('@mysten/sui/transactions');
@@ -772,31 +761,37 @@ const _suiamiAudit = async () => {
 (globalThis as unknown as { suiamiAudit: typeof _suiamiAudit }).suiamiAudit = _suiamiAudit;
 console.log('[ski] suiamiAudit hook installed — call suiamiAudit() to check current roster state');
 
-// ── Claydol Lv.40 Rapid Spin — retroactive SUIAMI upgrade (#156) ──
+// ── Bronzong — Seal-gated SUIAMI upgrade (#157) ──
 //
-// One-shot sequencer that: (1) uploads an AES-256-GCM encrypted blob
-// of the wallet's cross-chain squid addresses to Walrus, (2) stores
-// the raw AES key in localStorage so the owner can decrypt later,
-// (3) writes a SUIAMI Roster entry for the primary + any extra names
-// passed in, using a single PTB that chains `set_identity` calls and
-// optional `setTargetAddress` calls. Idempotent — calling twice just
-// overwrites the same entries with a fresh blob upload (Walrus dedupes
-// identical ciphertexts under different AES keys naturally).
+// Retroactive SUIAMI upgrade using Seal threshold encryption instead
+// of plain AES. Bound to the on-chain access policy
+// `suiami::seal_roster::seal_approve_roster_reader`, which enforces:
 //
-// Privacy (current — owner-decrypt only):
-//   - AES key never leaves the browser. Stored only in localStorage.
-//   - Walrus sees ciphertext. Zero trust in Walrus.
-//   - On-chain fields: name, sui_address, walrus_blob_id, seal_nonce
-//     (12-byte AES IV), chains=['sui'], dwallet_caps=[], verified=false.
-//   - `setDefault` deliberately skipped — the primary stays the primary.
+//   (1) caller has their own SUIAMI Roster entry
+//   (2) caller's entry has a non-empty walrus_blob_id
 //
-// Known limitation: only the owner can decrypt their own squid blob.
-// Cross-SUIAMI decrypt ("anyone with their own SUIAMI roster entry can
-// resolve anyone else's squids") requires Seal threshold key sharing +
-// an on-chain `roster::has_address(caller)` access policy and is being
-// tracked separately as the follow-up Pokemon. The current AES-in-
-// localStorage model is strictly better than the prior empty-blob state
-// but does not yet enable peer resolution.
+// Mutual-membership model: to read anyone else's squids, you must
+// have written your own. No key distribution ceremony, no keyring,
+// no AES key in localStorage — Seal key servers hold decrypt shares
+// under the policy, and the client just asks them.
+//
+// Sequence:
+//   1. Pull btc/eth/sol from app state (rumbled squids).
+//   2. `encryptSquidsToWalrus(squids, primaryBare)` — Seal encrypt
+//      scoped to the suiami package, upload the encryptedObject
+//      ciphertext to Walrus, return blobId + 40-byte seal identity.
+//   3. Derive the same blob for any additional names (or reuse the
+//      primary's blob — all of the user's owned names reference the
+//      same encrypted payload since the content is identical per
+//      identity).
+//   4. Build one PTB via buildFullSuiamiWriteTx that chains
+//      setTargetAddress(nft, sender) + set_identity for each name.
+//      seal_nonce field stores the seal identity bytes so readers
+//      can reconstruct them without round-tripping the Walrus blob.
+//   5. Sign and execute.
+//
+// Idempotent: calling twice re-uploads and re-writes. Walrus dedupes
+// identical ciphertexts so the second upload is a no-op.
 const _upgradeSuiami = async (extraNames: string[] = []) => {
   const ws = getState();
   if (ws.status !== 'connected' || !ws.address) {
@@ -815,24 +810,6 @@ const _upgradeSuiami = async (extraNames: string[] = []) => {
       return { error: 'no-squids' };
     }
 
-    showToast('\u{1F300} Encrypting squids to Walrus\u2026');
-    const { uploadRosterBlob } = await import('./client/roster.js');
-    const uploadResult = await uploadRosterBlob(squids, { encrypt: true });
-    if (typeof uploadResult === 'string') {
-      // Unexpected — we requested encryption, should have gotten an object.
-      console.error('[upgradeSuiami] upload returned plain string; encryption did not engage');
-      return { error: 'upload-unencrypted' };
-    }
-    const { blobId, nonce, keyRaw } = uploadResult;
-    try {
-      localStorage.setItem(`ski:roster-key:${ws.address}`, JSON.stringify(keyRaw));
-    } catch (keyErr) {
-      console.warn('[upgradeSuiami] failed to persist AES key:', keyErr);
-    }
-    console.log(`[upgradeSuiami] walrus blob: ${blobId}`);
-    console.log(`[upgradeSuiami] seal_nonce (12B IV): ${nonce.length} bytes`);
-    console.log(`[upgradeSuiami] AES key persisted to localStorage ski:roster-key:${ws.address}`);
-
     const primaryBare = (appSt.suinsName || '').replace(/\.sui$/, '').toLowerCase();
     const nameSet = new Set<string>();
     if (primaryBare) nameSet.add(primaryBare);
@@ -845,6 +822,17 @@ const _upgradeSuiami = async (extraNames: string[] = []) => {
       console.error('[upgradeSuiami] no names to write — wallet has no primary and no extras provided');
       return { error: 'no-names' };
     }
+
+    showToast('\u{1F300} Seal-encrypting squids to Walrus\u2026');
+    const { encryptSquidsToWalrus } = await import('./client/suiami-seal.js');
+    // Anchor the Seal identity to the primary name. All owned names
+    // get their roster entries linked to the same blob; the 40-byte
+    // seal id written on-chain is primary-scoped so `decryptSquidsForName`
+    // can reconstruct it deterministically without an extra lookup.
+    const anchorName = primaryBare || names[0];
+    const { blobId, sealId } = await encryptSquidsToWalrus(squids, anchorName);
+    console.log(`[upgradeSuiami] walrus blob: ${blobId}`);
+    console.log(`[upgradeSuiami] seal id (40B): ${Array.from(sealId).map(b => b.toString(16).padStart(2, '0')).join('')}`);
 
     const { fetchOwnedDomains, buildFullSuiamiWriteTx } = await import('./suins.js');
     const owned = await fetchOwnedDomains(ws.address);
@@ -863,16 +851,20 @@ const _upgradeSuiami = async (extraNames: string[] = []) => {
       sender: ws.address,
       entries,
       walrusBlobId: blobId,
-      sealNonce: nonce,
+      // seal_nonce field now carries the 40-byte Seal identity that
+      // decrypt callers need. Field name kept for Move ABI stability
+      // but semantically it's a Seal id, not an AES IV.
+      sealNonce: Array.from(sealId),
       setTargetForNfts: true,
     });
     const { digest } = await signAndExecuteTransaction(bytes);
-    const summary = `\u2713 SUIAMI upgraded \u2014 ${names.length} name${names.length > 1 ? 's' : ''} linked to encrypted squid blob`;
+    const summary = `\u2713 SUIAMI upgraded \u2014 ${names.length} name${names.length > 1 ? 's' : ''} Seal-gated on the roster policy`;
     showToast(summary);
     console.log(`[upgradeSuiami] digest: ${digest}`);
     console.log(`[upgradeSuiami] names: ${names.join(', ')}`);
-    console.log(`[upgradeSuiami] run suiamiAudit() to verify`);
-    return { ok: true, digest, names, walrusBlobId: blobId, sealNonce: nonce };
+    console.log(`[upgradeSuiami] anchor: ${anchorName}`);
+    console.log(`[upgradeSuiami] run suiamiAudit() to verify, or fetchSquidsForName("<name>") to test decrypt`);
+    return { ok: true, digest, names, walrusBlobId: blobId, anchorName };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[upgradeSuiami] failed:', err);
@@ -884,7 +876,85 @@ const _upgradeSuiami = async (extraNames: string[] = []) => {
 };
 (window as unknown as { upgradeSuiami: typeof _upgradeSuiami }).upgradeSuiami = _upgradeSuiami;
 (globalThis as unknown as { upgradeSuiami: typeof _upgradeSuiami }).upgradeSuiami = _upgradeSuiami;
-console.log('[ski] upgradeSuiami hook installed — call upgradeSuiami(["great"]) to upgrade primary + extras with encrypted squid blob');
+console.log('[ski] upgradeSuiami hook installed — call upgradeSuiami(["great"]) to Seal-encrypt squids + write primary + extras roster entries');
+
+// ── Bronzong Lv.30 Gyro Ball — cross-SUIAMI decrypt (#157) ──
+//
+// Fetch and decrypt the cross-chain squid addresses for any name in
+// the SUIAMI Roster. Requires the CALLER to be a SUIAMI member with
+// their own encrypted roster entry (enforced by the on-chain
+// `seal_approve_roster_reader` policy during Seal's fetchKeys call).
+//
+// Prompts for one Seal SessionKey personal-message signature on the
+// first call per 30-minute window. Cached across hard refreshes in
+// localStorage.ski:suiami-seal-sk:v1:<addr>.
+const _fetchSquidsForName = async (nameOrDomain: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[fetchSquids] not connected');
+    return { error: 'not connected' };
+  }
+  const bare = (nameOrDomain || '').replace(/\.sui$/i, '').toLowerCase();
+  if (!bare) {
+    console.error('[fetchSquids] empty name');
+    return { error: 'empty-name' };
+  }
+  try {
+    const { readRoster } = await import('./suins.js');
+    const rosterChains = await readRoster(`${bare}.sui`);
+    if (!rosterChains) {
+      console.error(`[fetchSquids] ${bare}.sui has no SUIAMI roster entry`);
+      showToast(`${bare}.sui \u2014 not in SUIAMI roster`);
+      return { error: 'not-in-roster' };
+    }
+    // readRoster's simple shape doesn't return walrus_blob_id. Use
+    // the richer byName GraphQL query for the blob metadata.
+    const { keccak_256 } = await import('@noble/hashes/sha3.js');
+    const nh = keccak_256(new TextEncoder().encode(bare));
+    const nhB64 = btoa(String.fromCharCode(...nh));
+    const gqlRes = await fetch('https://graphql.mainnet.sui.io/graphql', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address: "0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d") { dynamicField(name: { type: "vector<u8>", bcs: "${nhB64}" }) { value { ... on MoveValue { json } } } } }`,
+      }),
+    });
+    const gqlJson = await gqlRes.json() as any;
+    const record = gqlJson?.data?.object?.dynamicField?.value?.json;
+    const walrusBlobId: string = record?.walrus_blob_id ?? '';
+    if (!walrusBlobId) {
+      console.error(`[fetchSquids] ${bare}.sui has no walrus_blob_id on-chain`);
+      showToast(`${bare}.sui \u2014 no encrypted squids on-chain`);
+      return { error: 'no-blob' };
+    }
+    showToast(`\u{1F513} Decrypting ${bare}.sui squids\u2026`);
+    const { decryptSquidsForName } = await import('./client/suiami-seal.js');
+    const squids = await decryptSquidsForName({
+      name: bare,
+      blobId: walrusBlobId,
+      address: ws.address,
+      signPersonalMessage: async (msg: Uint8Array) => {
+        const { signPersonalMessage } = await import('./wallet.js');
+        return await signPersonalMessage(msg);
+      },
+    });
+    console.log(`[fetchSquids] ${bare}.sui decrypted:`, squids);
+    showToast(`\u2713 ${bare}.sui squids: ${Object.keys(squids).join(', ')}`);
+    return { ok: true, name: bare, squids };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[fetchSquids] failed:', err);
+    if (/NoAccess|NotRegistered|NoEncryptedData/i.test(msg)) {
+      showToast(`${bare}.sui \u2014 decrypt denied (caller needs own SUIAMI)`);
+    } else if (!msg.toLowerCase().includes('reject')) {
+      showToast(`Decrypt failed: ${msg.slice(0, 100)}`);
+    }
+    return { error: msg };
+  }
+};
+(window as unknown as { fetchSquidsForName: typeof _fetchSquidsForName }).fetchSquidsForName = _fetchSquidsForName;
+(globalThis as unknown as { fetchSquidsForName: typeof _fetchSquidsForName }).fetchSquidsForName = _fetchSquidsForName;
+console.log('[ski] fetchSquidsForName hook installed — call fetchSquidsForName("<name>") to decrypt cross-chain squids for any SUIAMI-registered name (requires own SUIAMI entry)');
 
 // Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
 // Pass the recipient address explicitly (typically the new sol@ultron
