@@ -16768,6 +16768,41 @@ export function initUI() {
         detail: { address: ws.address, walletName: ws.walletName },
       }));
 
+      // Lapras Lv.10 Water Pulse (#150) — on wallet-change, auto-load
+      // the new wallet's primary SuiNS into the overlay name card +
+      // NS input. Gated on "different address than last time" so a
+      // same-wallet refresh still restores the user's last-typed
+      // label (see nsLabel initializer above).
+      try {
+        const _prevLapras = localStorage.getItem('ski:lapras-last-addr') || '';
+        const _isNewAddr = _prevLapras !== ws.address;
+        if (_isNewAddr) {
+          const _adopt = () => {
+            const primary = (app.suinsName || '').replace(/\.sui$/, '');
+            if (!primary || !isValidNsLabel(primary)) return;
+            nsLabel = primary;
+            try { localStorage.setItem('ski:ns-label', primary); } catch {}
+            try { localStorage.setItem('ski:lapras-last-addr', ws.address); } catch {}
+            _lastNftCardDomain = `${primary}.sui`;
+            try { sessionStorage.setItem('ski:nft-card-domain', `${primary}.sui`); } catch {}
+            // If the overlay is already mounted (e.g. restored after
+            // refresh), re-render so input + card flip to the new
+            // primary immediately instead of waiting for an idle tick.
+            if (_idleOverlay) _showIdleOverlay();
+          };
+          // Cache may already have the primary; adopt synchronously.
+          _adopt();
+          // Also adopt once fresh portfolio data resolves — covers
+          // the "wallet with no cached primary" case and picks up
+          // SuiNS names registered after the last session.
+          const _onFresh = () => {
+            window.removeEventListener('ski:balance-updated', _onFresh);
+            _adopt();
+          };
+          window.addEventListener('ski:balance-updated', _onFresh);
+        }
+      } catch { /* non-fatal */ }
+
       // Initialize Thunder Timestream client (Seal 2-of-3 + Timestream DO).
       // Immediately warm the Seal session key so the first convo open doesn't
       // stall on a signature round-trip — on refresh this restores from
