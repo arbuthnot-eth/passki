@@ -7965,13 +7965,114 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         // calls won't double-send. A prior attempt may have
         // already landed the pre-fund on-chain, in which case
         // we reuse it.
+        //
+        // When ultron's cache is dry (common during listings >
+        // 10 SUI), fall through to a user-signed direct swap PTB:
+        //   iUSD → USDC (DeepBook DB_IUSD_USDC_POOL)
+        //   USDC → SUI (DeepBook DB_SUI_USDC_POOL)
+        //   Buy from Tradeport in the same tx.
+        // No ultron involvement. The buyer pays DeepBook spread
+        // instead of the ultron pre-fund spread, which is fine.
         let prefundDigest = '(already funded)';
+        let useDirectSwap = false;
         if (availSui < totalNeeded) {
           const suiToSend = totalNeeded + 50_000_000n; // + 0.05 SUI gas buffer
           const prefund = await this._ultronSendsSwapSui(buyerAddr, suiToSend, transport);
-          if (prefund.error) return { error: prefund.error };
-          prefundDigest = prefund.digest ?? '(no digest)';
-          await new Promise(r => setTimeout(r, CHAIN_PROPAGATION_MS));
+          if (prefund.error) {
+            // Cache dry → try user-direct swap path instead of failing.
+            // Only works if the buyer holds enough iUSD + USDC to
+            // cover totalNeeded worth of SUI via two DeepBook hops.
+            console.warn('[Infer] Ultron pre-fund failed, attempting user-direct swap:', prefund.error);
+            useDirectSwap = true;
+          } else {
+            prefundDigest = prefund.digest ?? '(no digest)';
+            await new Promise(r => setTimeout(r, CHAIN_PROPAGATION_MS));
+          }
+        }
+
+        // ── User-direct swap path — no ultron prefund ───────────
+        // Build a single user-signed PTB that:
+        //   1. Swaps iUSD → USDC (DeepBook)
+        //   2. Swaps that USDC (+ buyer's existing USDC) → SUI (DeepBook)
+        //   3. Merges swapped SUI into gas
+        //   4. Splits payment from gas
+        //   5. Tradeport buy
+        // Fetches pool objects inline. Uses the same DB pools the
+        // shade-executor uses for iUSD routing.
+        if (useDirectSwap) {
+          const DB_IUSD_USDC_POOL = '0x38df72f5d07607321d684ed98c9a6c411c0b8968e100a1cd90a996f912cd6ce1';
+          const DB_IUSD_USDC_POOL_ISV = 832866334;
+          const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+
+          const targetSuiShortfall = totalNeeded > availSui ? totalNeeded - availSui : 0n;
+          if (targetSuiShortfall === 0n) return { error: 'Direct swap not needed (buyer has enough SUI)' };
+
+          // USD value needed = shortfall SUI × price. Convert to iUSD
+          // with 3% buffer for DeepBook slippage across two hops.
+          const suiPrice = suiPriceUsd ?? 0.9;
+          const usdNeeded = (Number(targetSuiShortfall) / 1e9) * suiPrice * 1.03;
+          const iusdToSwapMist = BigInt(Math.ceil(usdNeeded * 1e9));
+          if (iusdToSwapMist > realIusdBal) {
+            return { error: `Need ~${usdNeeded.toFixed(2)} iUSD (have ${(Number(realIusdBal)/1e9).toFixed(2)})` };
+          }
+
+          let lastErr: unknown = null;
+          for (const v2 of [false, true]) {
+            try {
+              const swapTx = new Transaction();
+              swapTx.setSender(buyerAddr);
+              // Merge all iUSD coins into primary, split the swap amount
+              const iusdPrimary = swapTx.objectRef({ objectId: iusdCoins[0].coinObjectId, version: String(iusdCoins[0].version), digest: iusdCoins[0].digest });
+              if (iusdCoins.length > 1) {
+                swapTx.mergeCoins(iusdPrimary, iusdCoins.slice(1).map(c =>
+                  swapTx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest }),
+                ));
+              }
+              const [iusdForSwap] = swapTx.splitCoins(iusdPrimary, [swapTx.pure.u64(iusdToSwapMist.toString())]);
+              // 1) iUSD → USDC via DeepBook. Verified via on-chain
+              // sui_getNormalizedMoveFunction: swap_exact_base_for_quote
+              // <B, Q> returns (Coin<B>, Coin<Q>, Coin<DEEP>) —
+              // BASE REMAINDER first, quote output SECOND.
+              const [zeroDeepA] = swapTx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+              const [iusdChange, usdcOut, deepChangeA] = swapTx.moveCall({
+                target: `${DB_PKG}::pool::swap_exact_base_for_quote`,
+                typeArguments: [IUSD_TYPE, USDC_TYPE],
+                arguments: [
+                  swapTx.sharedObjectRef({ objectId: DB_IUSD_USDC_POOL, initialSharedVersion: DB_IUSD_USDC_POOL_ISV, mutable: true }),
+                  iusdForSwap, zeroDeepA, swapTx.pure.u64(1), swapTx.object('0x6'),
+                ],
+              });
+              // 2) USDC → SUI. swap_exact_quote_for_base<B, Q>
+              // returns (Coin<B>, Coin<Q>, Coin<DEEP>) — BASE OUTPUT
+              // (SUI) first, quote remainder (USDC change) second.
+              const minSuiOut = targetSuiShortfall * 95n / 100n;
+              const [zeroDeepB] = swapTx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+              const [suiOut, usdcChange, deepChangeB] = swapTx.moveCall({
+                target: `${DB_PKG}::pool::swap_exact_quote_for_base`,
+                typeArguments: [SUI_TYPE, USDC_TYPE],
+                arguments: [
+                  swapTx.sharedObjectRef({ objectId: DB_SUI_USDC, initialSharedVersion: DB_SUI_USDC_ISV, mutable: true }),
+                  usdcOut, zeroDeepB, swapTx.pure.u64(minSuiOut.toString()), swapTx.object('0x6'),
+                ],
+              });
+              // 3) Merge swapped SUI into gas; dust returned last.
+              swapTx.mergeCoins(swapTx.gas, [suiOut]);
+              swapTx.transferObjects([iusdChange, deepChangeA, usdcChange, deepChangeB], swapTx.pure.address(buyerAddr));
+              // 4) Split payment from gas + buy
+              const payment = swapTx.splitCoins(swapTx.gas, [swapTx.pure.u64(totalNeeded.toString())]);
+              addTradeportBuy(swapTx, buyId, payment, v2);
+              const txBytes = await swapTx.build({ client: transport as never });
+              return {
+                txBase64: uint8ToBase64(txBytes),
+                description: `Direct swap ${(Number(iusdToSwapMist) / 1e9).toFixed(2)} iUSD → SUI + buy ${Number(totalNeeded) / 1e9} SUI listing via Tradeport ${v2 ? 'v2' : 'v1'} (no cache prefund)`,
+              };
+            } catch (err) {
+              lastErr = err;
+              if (v2 || !String(err).includes('MoveAbort')) break;
+              console.warn('[Tradeport-direct-swap] v1 failed, retrying v2:', err instanceof Error ? err.message : err);
+            }
+          }
+          return { error: `Direct swap build failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}` };
         }
 
         // Step 2: Build user TX — send iUSD (+ USDC top-up when
@@ -8033,7 +8134,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
             const userTx = new Transaction();
             userTx.setSender(buyerAddr);
 
-            // Send iUSD to ultron
+            // Send iUSD to ultron. The primary iUSD coin is already
+            // owned by the buyer — after splitCoins the remainder
+            // stays owned by the sender (buyer) automatically, no
+            // explicit transferObjects needed. Re-transferring the
+            // Input arg after splitCoins consumed it is a known
+            // source of 8th-command resolve aborts on Tradeport buys.
             const iusdCoinRef = userTx.objectRef({ objectId: iusdCoins[0].coinObjectId, version: String(iusdCoins[0].version), digest: iusdCoins[0].digest });
             if (iusdCoins.length > 1) {
               userTx.mergeCoins(iusdCoinRef, iusdCoins.slice(1).map(c =>
@@ -8042,7 +8148,6 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
             }
             const [iusdPayment] = userTx.splitCoins(iusdCoinRef, [userTx.pure.u64(iusdCapped.toString())]);
             userTx.transferObjects([iusdPayment], userTx.pure.address(ultronAddr));
-            userTx.transferObjects([iusdCoinRef], userTx.pure.address(buyerAddr));
 
             if (usdcTopUpMist > 0n && usdcCoins.length > 0) {
               const usdcPrimary = userTx.objectRef({ objectId: usdcCoins[0].coinObjectId, version: String(usdcCoins[0].version), digest: usdcCoins[0].digest });
@@ -8053,7 +8158,6 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
               }
               const [usdcPayment] = userTx.splitCoins(usdcPrimary, [userTx.pure.u64(usdcTopUpMist.toString())]);
               userTx.transferObjects([usdcPayment], userTx.pure.address(ultronAddr));
-              userTx.transferObjects([usdcPrimary], userTx.pure.address(buyerAddr));
             }
 
             const payment = userTx.splitCoins(userTx.gas, [userTx.pure.u64(totalNeeded.toString())]);

@@ -2533,10 +2533,30 @@ body {
 .ski-idle-thunder-quick-amts:hover {
   opacity: 1;
 }
-/* Top row: $1 and $7.50 side by side */
+/* Top row: $0.01 is the collapsed parent. $1 and $7.50 are hidden
+ * by default and pop out of the row when the user taps $0.01.
+ * JS toggles `--expanded` on this container.
+ *
+ * row-reverse keeps $0.01 anchored to the right edge — $1 and $7.50
+ * appear to its LEFT when expanded, so the row grows leftward while
+ * $0.01's on-screen position stays put. */
 .ski-idle-thunder-quick-amts-top {
   display: flex;
+  flex-direction: row-reverse;
   gap: 4px;
+}
+.ski-idle-thunder-quick-amts-top .ski-idle-thunder-quick-amt[data-amt="1"],
+.ski-idle-thunder-quick-amts-top .ski-idle-thunder-quick-amt[data-amt="7.5"] {
+  display: none;
+}
+.ski-idle-thunder-quick-amts-top--expanded .ski-idle-thunder-quick-amt[data-amt="1"],
+.ski-idle-thunder-quick-amts-top--expanded .ski-idle-thunder-quick-amt[data-amt="7.5"] {
+  display: inline-flex;
+  animation: ski-idle-quick-amt-pop 160ms ease-out;
+}
+@keyframes ski-idle-quick-amt-pop {
+  from { transform: scale(0.7); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
 }
 /* Bottom row: $0.01 and ↩ recall side by side */
 .ski-idle-thunder-quick-amts-bottom {
@@ -3266,7 +3286,14 @@ body {
   align-self: center !important;
   margin-right: 0 !important;
   box-shadow: 0 0 28px -2px var(--addr-qr-color, #4da2ff);
-  z-index: 5;
+  z-index: 30;
+}
+/* When the QR is expanded, raise the entire address row's stacking
+ * context above the BASMR audio toggle and other overlay controls.
+ * Without this the QR's local z-index is trapped inside
+ * `.ski-idle-addr-row`'s z:3 context. */
+.ski-idle-addr-row:has(.ski-idle-addr-qr-top--expanded) {
+  z-index: 50 !important;
 }
 /* Muted ski-idle video background: shift QR to the right edge of the row. */
 .ski-idle-overlay[data-bg="ski-idle"] .ski-idle-addr-qr-top {

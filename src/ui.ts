@@ -10022,11 +10022,11 @@ function bindEvents() {
           <div class="ski-idle-ns-sweep" id="ski-idle-ns-sweep" hidden><button class="ski-idle-ns-sweep-btn" id="ski-idle-ns-sweep-btn" type="button" title="Swap NS to iUSD in your wallet"><span class="ski-idle-ns-sweep-icon">\u{1F9F9}</span><span class="ski-idle-ns-sweep-label">Cache $<span id="ski-idle-ns-sweep-amt">0</span> NS</span></button></div>
           <div class="ski-idle-thunder-quick-amts" id="ski-idle-thunder-quick-amts">
             <div class="ski-idle-thunder-quick-amts-top">
+              <button class="ski-idle-thunder-quick-amt" data-amt="0.01" type="button" title="Send $0.01">$0.01</button>
               <button class="ski-idle-thunder-quick-amt" data-amt="1" type="button" title="Send $1">$1</button>
               <button class="ski-idle-thunder-quick-amt" data-amt="7.5" type="button" title="Send $7.50">$7.50</button>
             </div>
             <div class="ski-idle-thunder-quick-amts-bottom">
-              <button class="ski-idle-thunder-quick-amt" data-amt="0.01" type="button" title="Send $0.01">$0.01</button>
               <button class="ski-idle-thunder-quick-amt ski-idle-thunder-quick-amt--recall" id="ski-idle-recall-btn" type="button" title="Recall all unclaimed vaults">\u21A9</button>
             </div>
           </div>
@@ -11506,14 +11506,57 @@ function bindEvents() {
           if (!name) return;
           window.dispatchEvent(new CustomEvent('ski:request-suiami', { detail: { name } }));
         } else if (btnText === 'TRADE') {
-          // Marketplace purchase via /api/infer — server reads real on-chain balances
+          // TRADE on a listed name = direct marketplace purchase using SUI.
+          // Tradeport/kiosk listings mean the NFT is owned and kiosk-wrapped;
+          // /api/infer's resolver sometimes returns `nameStatus: available`
+          // for these (it can't see through the wrap), which used to make
+          // us fall through to the NS registration path and abort with
+          // "Rumble Balance" errors. Short-circuit that: if we resolved
+          // a listing while rendering, buy it directly — no infer, no NS.
           e.stopPropagation();
           const ws = getState();
           if (!ws.address) { showToast('Connect wallet first'); return; }
           _idleActionBtn!.disabled = true;
           _idleActionBtn!.textContent = '\u2026';
+
+          if (nsTradeportListing || nsKioskListing) {
+            try {
+              const domain = `${label}.sui`;
+              const priceMistStr = (nsKioskListing ?? nsTradeportListing)!.priceMist;
+              const priceSui = Number(BigInt(priceMistStr)) / 1e9;
+              const suiP = suiPriceCache?.price ?? 0;
+              const priceUsd = suiP > 0 ? priceSui * suiP : 0;
+              showToast(`\u{1F6CD}\u{FE0F} Buying ${domain} for ${priceSui.toFixed(2)} SUI${priceUsd ? ` (~$${priceUsd.toFixed(2)})` : ''}\u2026`);
+              const purchase = nsKioskListing
+                ? { type: 'kiosk' as const, kioskId: nsKioskListing.kioskId, nftId: nsKioskListing.nftId, priceMist: priceMistStr }
+                : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: priceMistStr };
+              // null selectedCoinType + null outputCoinType = SUI-through-SUI.
+              // selectedBalance is a hint for estimation; pass the user's current SUI.
+              const suiBal = app.sui ?? 0;
+              const txBytes = await buildSwapAndPurchaseTx(ws.address, purchase, null, suiBal, null, suiP);
+              _idleActionBtn!.textContent = '\u270f';
+              const { digest } = await signAndExecuteTransaction(txBytes);
+              nsAvail = 'owned'; nsTargetAddress = ws.address; nsLastDigest = digest ?? '';
+              nsKioskListing = null; nsTradeportListing = null;
+              app.suinsName = app.suinsName || domain;
+              showToast(`\u{1F6CD}\u{FE0F} ${domain} traded for ${priceSui.toFixed(2)} SUI${priceUsd ? ` (~$${priceUsd.toFixed(2)})` : ''} \u2713`);
+              _updateIdleStatus();
+              setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
+            } catch (err) {
+              const raw = err instanceof Error ? err.message : String(err);
+              if (!raw.toLowerCase().includes('reject')) {
+                const { display, full } = parseNsError(raw);
+                showCopyableToast(display, full);
+              }
+            } finally {
+              _idleActionBtn!.disabled = false;
+              _idleActionBtn!.textContent = 'TRADE';
+            }
+            return;
+          }
+
           try {
-            // Ask infer engine for the best action + pre-built TX
+            // No resolved listing — fall back to /api/infer.
             const inferRes = await fetch('/api/infer', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -11523,6 +11566,9 @@ function bindEvents() {
               recommended?: { action: string; confidence: number; reason: string; route?: string };
               tx?: { base64: string; description: string } | null;
               balances?: { sui?: { usd: number }; usdc?: { usd: number }; iusd?: { usd: number }; total_usd?: number };
+              listing?: { priceMist: string; priceUsd?: number | null } | null;
+              nameStatus?: 'available' | 'taken';
+              purchased?: { digest: string };
               error?: string;
             };
 
@@ -12413,29 +12459,71 @@ function bindEvents() {
         }
       });
 
-      // Quick-amount chips: one tap fills `@name$amount` into the
-      // thunder input, marks the compose stage as 'confirmed', and
-      // fires `_sendIdleThunder` so the transaction builds + the
-      // wallet popup opens immediately. Zero extra taps.
+      // Quick-amount chips with popout:
+      //   • $0.01 anchors right (row-reverse) and is always visible.
+      //   • First tap on $0.01 pops out $1 + $7.50 to its left.
+      //   • Second tap on $0.01 (while expanded) sends $0.01 and collapses.
+      //   • Tapping $1 or $7.50 sends and collapses.
+      //   • Clicking anywhere outside the quick-amt row while expanded collapses.
+      const _topRow = _idleOverlay?.querySelector('.ski-idle-thunder-quick-amts-top') as HTMLElement | null;
+      const EXPANDED_CLS = 'ski-idle-thunder-quick-amts-top--expanded';
+
+      const _qaSend = (amt: string) => {
+        const name = _cardCurrentName
+          || _activeStormCounterparty
+          || nsLabel.trim().toLowerCase()
+          || (app.suinsName?.replace(/\.sui$/, '') || '');
+        if (!name) { showToast('Search a name first'); return; }
+        const value = `@${name}$${amt}`;
+        _setThunderInputWithCursorAtEnd(value);
+        setTimeout(() => {
+          _thunderComposeStage = 'confirmed';
+          _thunderComposeConfirmedRaw = value;
+          _sendIdleThunder();
+        }, 120);
+      };
+
+      let _qaOutsideHandler: ((ev: Event) => void) | null = null;
+      const _qaCollapse = () => {
+        _topRow?.classList.remove(EXPANDED_CLS);
+        if (_qaOutsideHandler) {
+          document.removeEventListener('click', _qaOutsideHandler, true);
+          _qaOutsideHandler = null;
+        }
+      };
+      const _qaExpand = () => {
+        _topRow?.classList.add(EXPANDED_CLS);
+        // Bind on next tick so the current click doesn't immediately collapse us.
+        setTimeout(() => {
+          _qaOutsideHandler = (ev: Event) => {
+            const target = ev.target as HTMLElement | null;
+            if (!target) return;
+            if (target.closest('#ski-idle-thunder-quick-amts')) return;
+            _qaCollapse();
+          };
+          document.addEventListener('click', _qaOutsideHandler, true);
+        }, 0);
+      };
+
       _idleOverlay.querySelectorAll<HTMLButtonElement>('.ski-idle-thunder-quick-amt').forEach((btn) => {
         btn.addEventListener('click', (ev) => {
           ev.stopPropagation();
           const amt = btn.dataset.amt ?? '';
           if (!amt) return;
-          const name = _cardCurrentName
-            || _activeStormCounterparty
-            || nsLabel.trim().toLowerCase()
-            || (app.suinsName?.replace(/\.sui$/, '') || '');
-          if (!name) { showToast('Search a name first'); return; }
-          const value = `@${name}$${amt}`;
-          _setThunderInputWithCursorAtEnd(value);
-          // Auto-send after a short delay so the input value
-          // has settled and the preview/tag sync has fired.
-          setTimeout(() => {
-            _thunderComposeStage = 'confirmed';
-            _thunderComposeConfirmedRaw = value;
-            _sendIdleThunder();
-          }, 120);
+          const isExpanded = _topRow?.classList.contains(EXPANDED_CLS) ?? false;
+          // $0.01 — first click expands, second click (while expanded) sends.
+          if (amt === '0.01') {
+            if (isExpanded) {
+              _qaCollapse();
+              _qaSend('0.01');
+            } else {
+              _qaExpand();
+            }
+            return;
+          }
+          // $1 / $7.50 — send + collapse (only reachable while expanded).
+          _qaCollapse();
+          _qaSend(amt);
         });
       });
 
@@ -14468,12 +14556,19 @@ function bindEvents() {
         // On hard refresh the wallet address can take a moment to land
         // (dappkit reconnect is async). Wait up to ~3s for it before
         // giving up — otherwise the restore path silently bails and
-        // leaves the storm closed.
-        let myAddr = (getState().address || '').toLowerCase();
+        // leaves the storm closed. Normalize so leading-zero variants
+        // (`0x2b…` vs `0x002b…`) compare equal; unnormalized Sui
+        // addresses mis-classify own bubbles as incoming.
+        let myAddr = (() => {
+          const a = getState().address || '';
+          try { return a ? normalizeSuiAddress(a).toLowerCase() : ''; } catch { return a.toLowerCase(); }
+        })();
         if (!myAddr) {
           for (let i = 0; i < 30 && !myAddr; i++) {
             await new Promise(r => setTimeout(r, 100));
-            myAddr = (getState().address || '').toLowerCase();
+            const a = getState().address || '';
+            try { myAddr = a ? normalizeSuiAddress(a).toLowerCase() : ''; }
+            catch { myAddr = a.toLowerCase(); }
           }
         }
         if (!myAddr) {

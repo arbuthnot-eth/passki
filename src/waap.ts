@@ -92,17 +92,36 @@ export async function purgeWaaPState(): Promise<void> {
 export async function registerWaaP(): Promise<void> {
   if (registered || typeof window === 'undefined') return;
   registered = true;
+  console.log('[.SKI] WaaP registration starting…');
 
-  // Preflight: bail early if WaaP servers are unreachable
+  // Preflight: bail early if WaaP servers are unreachable. Wrapped in a
+  // 3-second timeout because the underlying `fetch` has no built-in
+  // timeout — if waap.xyz is stalling (slow, partially broken, or
+  // reverse-proxy hung), a plain fetch waits forever and leaves
+  // registration in limbo: not failed, not succeeded, just never done.
+  // When the preflight times out we still try initWaaPSui — the SDK has
+  // its own iframe-creation path and might succeed even when the
+  // HEAD probe doesn't come back.
   try {
-    const res = await fetch('https://waap.xyz/iframe', { method: 'HEAD', mode: 'no-cors' });
-    // mode: no-cors gives opaque response — type 'opaque' means server responded
-    // If the fetch itself rejects, server is down
-    void res;
-  } catch {
-    registered = false;
-    console.warn('[.SKI] WaaP servers unreachable, skipping registration');
-    return;
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 3000);
+    try {
+      await fetch('https://waap.xyz/iframe', {
+        method: 'HEAD',
+        mode: 'no-cors',
+        signal: controller.signal,
+      });
+      console.log('[.SKI] WaaP preflight ok');
+    } finally {
+      clearTimeout(abortTimer);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[.SKI] WaaP preflight failed/timed out, attempting registration anyway:', msg);
+    // Don't bail — let initWaaPSui try on its own. The preflight is a
+    // nice-to-have, not a hard gate. The old code returned early here
+    // which meant any transient network hiccup permanently broke WaaP
+    // registration for the page.
   }
 
   try {
@@ -118,6 +137,7 @@ export async function registerWaaP(): Promise<void> {
     // Override the built-in icon with our custom branded SVG
     Object.defineProperty(wallet, 'icon', { value: WAAP_ICON, writable: false, enumerable: true, configurable: true });
     registerWallet(wallet as unknown as Parameters<typeof registerWallet>[0]);
+    console.log('[.SKI] WaaP wallet registered');
   } catch (err) {
     registered = false;
     console.warn('[.SKI] WaaP registration failed:', err);
