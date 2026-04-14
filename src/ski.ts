@@ -439,8 +439,14 @@ window.addEventListener('ski:request-suiami', async (e) => {
     // Write SUIAMI attestation on-chain (Roster v3). Always writes — even
     // if the user hasn't rumbled cross-chain addresses yet — so their
     // IdentityRecord (name + Sui address) exists on-chain. If cross-chain
-    // addresses are present, they're uploaded to Walrus first and the blob
-    // ID is included in the record.
+    // addresses are present, they're uploaded to Walrus as an
+    // AES-256-GCM encrypted blob and the blob id + AES IV are included
+    // in the on-chain record. The raw AES key lives in the owner's
+    // localStorage (`ski:roster-key:<addr>`) — never touches a server.
+    //
+    // Claydol Lv.20 (#156) — encrypted Walrus upload. Prior version
+    // uploaded plaintext squid addresses, which defeated the privacy
+    // promise of the roster entry.
     try {
       const { uploadRosterBlob } = await import('./client/roster.js');
       const { maybeAppendRoster } = await import('./suins.js');
@@ -450,8 +456,25 @@ window.addEventListener('ski:request-suiami', async (e) => {
       if (appSt.ethAddress) blobData.eth = appSt.ethAddress;
       if (appSt.solAddress) blobData.sol = appSt.solAddress;
       let blobId = '';
+      let sealNonce: number[] = [];
       if (Object.keys(blobData).length > 0) {
-        try { blobId = await uploadRosterBlob(blobData); } catch (walErr) {
+        try {
+          const uploadResult = await uploadRosterBlob(blobData, { encrypt: true });
+          if (typeof uploadResult === 'string') {
+            blobId = uploadResult;
+          } else {
+            blobId = uploadResult.blobId;
+            sealNonce = uploadResult.nonce;
+            try {
+              localStorage.setItem(
+                `ski:roster-key:${ws.address}`,
+                JSON.stringify(uploadResult.keyRaw),
+              );
+            } catch (keyErr) {
+              console.warn('[suiami] failed to persist roster key locally:', keyErr);
+            }
+          }
+        } catch (walErr) {
           console.warn('[suiami] Walrus blob upload failed, proceeding without cross-chain:', walErr);
         }
       }
@@ -465,7 +488,7 @@ window.addEventListener('ski:request-suiami', async (e) => {
       // the signing account. Always normalize for WaaP addresses that
       // may not be zero-padded.
       tx.setSender(normalizeSuiAddress(ws.address));
-      maybeAppendRoster(tx, ws.address, name, undefined, blobId);
+      maybeAppendRoster(tx, ws.address, name, undefined, blobId, sealNonce);
       const { digest } = await signAndExecuteTransaction(tx);
       console.log('[suiami] roster attestation written:', digest);
       showToast(`\u2713 SUIAMI on-chain for ${name}.sui`);
@@ -699,6 +722,169 @@ const _configureNameRecords = async (nameOrDomain: string) => {
 (window as unknown as { configureNameRecords: typeof _configureNameRecords }).configureNameRecords = _configureNameRecords;
 (globalThis as unknown as { configureNameRecords: typeof _configureNameRecords }).configureNameRecords = _configureNameRecords;
 console.log('[ski] configureNameRecords hook installed — call configureNameRecords("<bare-name>") to set target + SUIAMI roster for an owned name');
+
+// ── Claydol Lv.10 Confusion — SUIAMI roster audit (#156) ──
+//
+// Browser-console diagnostic. Reads the connected wallet's current
+// SUIAMI Roster entry via the address-keyed dynamic field, prints the
+// full state with a clear "cross-chain resolvable: yes | NO" summary,
+// and returns the structured record for programmatic use.
+const _suiamiAudit = async () => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[suiamiAudit] not connected');
+    return { error: 'not connected' };
+  }
+  try {
+    const { readRosterByAddress } = await import('./suins.js');
+    const record = await readRosterByAddress(ws.address);
+    if (!record) {
+      console.log(`[suiamiAudit] no roster entry for ${ws.address}`);
+      console.log('  → run upgradeSuiami() to write one');
+      return { ok: false, reason: 'no-entry', address: ws.address };
+    }
+    const hasWalrus = !!record.walrus_blob_id;
+    const hasNonce = !!(record.seal_nonce?.length);
+    const hasKey = (() => {
+      try { return !!localStorage.getItem(`ski:roster-key:${ws.address}`); }
+      catch { return false; }
+    })();
+    const resolvable = hasWalrus && hasNonce;
+    console.log(`[suiamiAudit] roster entry for ${ws.address}:`);
+    console.log(`  name:                 ${record.name}`);
+    console.log(`  sui_address:          ${record.sui_address}`);
+    console.log(`  walrus_blob_id:       ${record.walrus_blob_id || '(empty — needs upgrade)'}`);
+    console.log(`  seal_nonce:           ${record.seal_nonce?.length ?? 0} bytes`);
+    console.log(`  chains on-chain:      ${Object.keys(record.chains).join(', ') || '(none)'}`);
+    console.log(`  verified:             ${record.verified}`);
+    console.log(`  dwallet_caps:         ${record.dwallet_caps.length}`);
+    console.log(`  updated_ms:           ${record.updated_ms}`);
+    console.log(`  local AES key:        ${hasKey ? 'present' : 'MISSING — decrypt unavailable'}`);
+    console.log(`  cross-chain resolvable: ${resolvable ? 'yes' : 'NO — run upgradeSuiami()'}`);
+    return { ok: true, record, resolvable, hasKey };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[suiamiAudit] query failed:', err);
+    return { error: msg };
+  }
+};
+(window as unknown as { suiamiAudit: typeof _suiamiAudit }).suiamiAudit = _suiamiAudit;
+(globalThis as unknown as { suiamiAudit: typeof _suiamiAudit }).suiamiAudit = _suiamiAudit;
+console.log('[ski] suiamiAudit hook installed — call suiamiAudit() to check current roster state');
+
+// ── Claydol Lv.40 Rapid Spin — retroactive SUIAMI upgrade (#156) ──
+//
+// One-shot sequencer that: (1) uploads an AES-256-GCM encrypted blob
+// of the wallet's cross-chain squid addresses to Walrus, (2) stores
+// the raw AES key in localStorage so the owner can decrypt later,
+// (3) writes a SUIAMI Roster entry for the primary + any extra names
+// passed in, using a single PTB that chains `set_identity` calls and
+// optional `setTargetAddress` calls. Idempotent — calling twice just
+// overwrites the same entries with a fresh blob upload (Walrus dedupes
+// identical ciphertexts under different AES keys naturally).
+//
+// Privacy (current — owner-decrypt only):
+//   - AES key never leaves the browser. Stored only in localStorage.
+//   - Walrus sees ciphertext. Zero trust in Walrus.
+//   - On-chain fields: name, sui_address, walrus_blob_id, seal_nonce
+//     (12-byte AES IV), chains=['sui'], dwallet_caps=[], verified=false.
+//   - `setDefault` deliberately skipped — the primary stays the primary.
+//
+// Known limitation: only the owner can decrypt their own squid blob.
+// Cross-SUIAMI decrypt ("anyone with their own SUIAMI roster entry can
+// resolve anyone else's squids") requires Seal threshold key sharing +
+// an on-chain `roster::has_address(caller)` access policy and is being
+// tracked separately as the follow-up Pokemon. The current AES-in-
+// localStorage model is strictly better than the prior empty-blob state
+// but does not yet enable peer resolution.
+const _upgradeSuiami = async (extraNames: string[] = []) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return { error: 'not connected' };
+  }
+  try {
+    const appSt = getAppState();
+    const squids: Record<string, string> = {};
+    if (appSt.btcAddress) squids.btc = appSt.btcAddress;
+    if (appSt.ethAddress) squids.eth = appSt.ethAddress;
+    if (appSt.solAddress) squids.sol = appSt.solAddress;
+    if (Object.keys(squids).length === 0) {
+      console.error('[upgradeSuiami] no squids in app state — run rumbleUltron() or finish DKG first');
+      showToast('No squids to upgrade \u2014 rumble first');
+      return { error: 'no-squids' };
+    }
+
+    showToast('\u{1F300} Encrypting squids to Walrus\u2026');
+    const { uploadRosterBlob } = await import('./client/roster.js');
+    const uploadResult = await uploadRosterBlob(squids, { encrypt: true });
+    if (typeof uploadResult === 'string') {
+      // Unexpected — we requested encryption, should have gotten an object.
+      console.error('[upgradeSuiami] upload returned plain string; encryption did not engage');
+      return { error: 'upload-unencrypted' };
+    }
+    const { blobId, nonce, keyRaw } = uploadResult;
+    try {
+      localStorage.setItem(`ski:roster-key:${ws.address}`, JSON.stringify(keyRaw));
+    } catch (keyErr) {
+      console.warn('[upgradeSuiami] failed to persist AES key:', keyErr);
+    }
+    console.log(`[upgradeSuiami] walrus blob: ${blobId}`);
+    console.log(`[upgradeSuiami] seal_nonce (12B IV): ${nonce.length} bytes`);
+    console.log(`[upgradeSuiami] AES key persisted to localStorage ski:roster-key:${ws.address}`);
+
+    const primaryBare = (appSt.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+    const nameSet = new Set<string>();
+    if (primaryBare) nameSet.add(primaryBare);
+    for (const n of extraNames) {
+      const bare = (n || '').replace(/\.sui$/i, '').toLowerCase();
+      if (bare) nameSet.add(bare);
+    }
+    const names = [...nameSet];
+    if (names.length === 0) {
+      console.error('[upgradeSuiami] no names to write — wallet has no primary and no extras provided');
+      return { error: 'no-names' };
+    }
+
+    const { fetchOwnedDomains, buildFullSuiamiWriteTx } = await import('./suins.js');
+    const owned = await fetchOwnedDomains(ws.address);
+    const entries = names.map(bare => {
+      const full = `${bare}.sui`;
+      const match = owned.find(d => d.name === full && d.kind === 'nft');
+      return { domain: full, nftId: match?.objectId };
+    });
+    const missingNftIds = entries.filter(e => !e.nftId).map(e => e.domain);
+    if (missingNftIds.length > 0) {
+      console.warn(`[upgradeSuiami] no NFT id found for: ${missingNftIds.join(', ')} — writing roster entries without setTargetAddress`);
+    }
+
+    showToast(`\u{1F300} Writing SUIAMI for ${names.length} name${names.length > 1 ? 's' : ''}\u2026`);
+    const bytes = await buildFullSuiamiWriteTx({
+      sender: ws.address,
+      entries,
+      walrusBlobId: blobId,
+      sealNonce: nonce,
+      setTargetForNfts: true,
+    });
+    const { digest } = await signAndExecuteTransaction(bytes);
+    const summary = `\u2713 SUIAMI upgraded \u2014 ${names.length} name${names.length > 1 ? 's' : ''} linked to encrypted squid blob`;
+    showToast(summary);
+    console.log(`[upgradeSuiami] digest: ${digest}`);
+    console.log(`[upgradeSuiami] names: ${names.join(', ')}`);
+    console.log(`[upgradeSuiami] run suiamiAudit() to verify`);
+    return { ok: true, digest, names, walrusBlobId: blobId, sealNonce: nonce };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[upgradeSuiami] failed:', err);
+    if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
+      showToast(`Upgrade failed: ${msg.slice(0, 100)}`);
+    }
+    return { error: msg };
+  }
+};
+(window as unknown as { upgradeSuiami: typeof _upgradeSuiami }).upgradeSuiami = _upgradeSuiami;
+(globalThis as unknown as { upgradeSuiami: typeof _upgradeSuiami }).upgradeSuiami = _upgradeSuiami;
+console.log('[ski] upgradeSuiami hook installed — call upgradeSuiami(["great"]) to upgrade primary + extras with encrypted squid blob');
 
 // Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
 // Pass the recipient address explicitly (typically the new sol@ultron

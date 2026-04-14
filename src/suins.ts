@@ -2203,6 +2203,92 @@ export async function fetchExistingSquidConfig(
   }
 }
 
+// ─── Claydol — SUIAMI multi-name roster writer (#156) ───────────────
+//
+// `buildFullSuiamiWriteTx` writes one or more SUIAMI Roster entries in a
+// single PTB, with optional `setTargetAddress` for names the caller wants
+// to repoint at the sender simultaneously. Purpose-built for the upgrade
+// flow that seeds `superteam.sui` with an encrypted Walrus blob AND
+// retroactively configures `great.sui` (or any owned name) to reference
+// that same blob in one atomic signature.
+//
+// Why this exists separately from `maybeAppendRoster`:
+//
+//   - `maybeAppendRoster` debounces on `ski:roster:${addr}` (address-only
+//     cache key) — calling it N times for N names in the same tx returns
+//     true once and short-circuits the rest. That helper is correct for
+//     "write the roster entry for whichever name the user is currently
+//     acting as" during normal flows; it is wrong for "write entries for
+//     N names in one atomic tx." We inline here instead.
+//   - This helper always writes. It's the caller's job to decide when.
+//
+// Privacy model is identical to `buildPostTradeConfigureTx`:
+//
+//   - Only (name, sui_address) is public on-chain.
+//   - dwallet_caps is empty — IKA squid caps are not linked on-chain.
+//   - walrus_blob_id references an AES-256-GCM encrypted payload; the
+//     12-byte AES IV lives in `seal_nonce` on-chain (field name kept for
+//     contract compatibility). Decryption requires the raw AES key,
+//     which the caller is responsible for persisting locally — only
+//     the owner should ever have it.
+//   - setDefault is deliberately NOT called; the existing primary stays.
+export async function buildFullSuiamiWriteTx(opts: {
+  sender: string;
+  entries: Array<{ domain: string; nftId?: string }>;
+  walrusBlobId: string;
+  sealNonce: number[];
+  /** If true and `nftId` is provided on an entry, chains a
+   *  `setTargetAddress` call to repoint that name at the sender. */
+  setTargetForNfts?: boolean;
+}): Promise<Uint8Array & { tx?: InstanceType<typeof Transaction> }> {
+  if (!isMainnet()) throw new Error('buildFullSuiamiWriteTx: mainnet only');
+  if (!opts.entries.length) throw new Error('buildFullSuiamiWriteTx: no entries');
+
+  const walletAddress = normalizeSuiAddress(opts.sender);
+  const transport = gqlClient;
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
+
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+  const suinsTx = new SuinsTransaction(suinsClient, tx);
+
+  for (const entry of opts.entries) {
+    const bareName = entry.domain.replace(/\.sui$/i, '').toLowerCase();
+    if (!bareName) continue;
+
+    // Optional setTargetAddress — skipped unless caller supplies an NFT
+    // id and flips the flag. For a fresh upgrade on a long-standing
+    // primary the target is probably already correct; flipping it for
+    // `great.sui` is the actual reason this lives here.
+    if (opts.setTargetForNfts && entry.nftId) {
+      suinsTx.setTargetAddress({ nft: tx.object(entry.nftId), address: walletAddress });
+    }
+
+    const nameHash = Array.from(keccak_256(new TextEncoder().encode(bareName)));
+    tx.moveCall({
+      package: ROSTER_PKG,
+      module: 'roster',
+      function: 'set_identity',
+      arguments: [
+        tx.object(ROSTER_OBJ),
+        tx.pure.string(bareName),
+        tx.pure.vector('u8', nameHash),
+        tx.pure.vector('string', ['sui']),
+        tx.pure.vector('string', [walletAddress]),
+        tx.pure.vector('address', []),
+        tx.pure.string(opts.walrusBlobId),
+        tx.pure.vector('u8', opts.sealNonce),
+        tx.object('0x6'),
+      ],
+    });
+  }
+
+  const bytes = await buildWithTx(tx, transport);
+  const out = bytes as Uint8Array & { tx?: InstanceType<typeof Transaction> };
+  out.tx = tx;
+  return out;
+}
+
 // ─── Shade — privacy-preserving grace-period escrow ──────────────────
 //
 // Uses a commitment-reveal pattern + Seal encryption so that on-chain
