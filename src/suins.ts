@@ -2084,6 +2084,141 @@ export async function buildIusdBurnAndPurchaseTx(
   }
 }
 
+// ─── Cold-start SUI → iUSD via DeepBook + Volcarodon PSM ────────────
+//
+// Single-PTB path for a user who holds SUI but zero USDC and zero
+// iUSD on Sui. Swaps SUI → USDC via the DeepBook SUI/USDC pool (the
+// only liquid stable pool on Sui right now), then mints USDC → iUSD
+// via Volcarodon PSM at 1:1 minus 50 bps. Both legs execute in one
+// signature, so the user never has to manage intermediate USDC.
+//
+// Crucially: `mint_from_usdc` is an `entry` function (not a
+// composable returns-Coin variant), so its output can't be chained
+// further in the same PTB. That's fine for this flow — mint is the
+// terminal step and the iUSD auto-transfers to the sender.
+//
+// Every successful call grows the Volcarodon reserve's `s_balance`
+// by the full USDC amount (not just the fee), so this path also
+// acts as permissionless self-funding for the reserve. A user
+// cold-starting from SUI with no bridging simultaneously unlocks
+// more PSM burn capacity for future trades.
+//
+// Slippage budget:
+//   - DeepBook SUI/USDC: 2% min floor on USDC output
+//   - PSM mint: 10 bps on top of the contract's own 50 bps fee
+//                (gives a tiny rounding-tolerance buffer)
+export async function buildSuiToIusdTx(opts: {
+  sender: string;
+  suiAmountMist: bigint;
+  suiPriceUsd: number;
+}): Promise<Uint8Array & { tx?: InstanceType<typeof Transaction> }> {
+  if (opts.suiAmountMist <= 0n) throw new Error('buildSuiToIusdTx: amount must be > 0');
+  if (!opts.suiPriceUsd || opts.suiPriceUsd <= 0) throw new Error('buildSuiToIusdTx: invalid SUI price');
+
+  const walletAddress = normalizeSuiAddress(opts.sender);
+  const transport = gqlClient;
+
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  // Step 1 — split the requested SUI amount off the gas coin. gas
+  // keeps whatever's left over to pay for the tx itself.
+  const [suiForSwap] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.suiAmountMist)]);
+
+  // Step 2 — DeepBook SUI/USDC swap. swap_exact_base_for_quote
+  // returns (base_change=SUI, quote_out=USDC, deep_change=DEEP) —
+  // base_change is whatever SUI the pool couldn't consume and
+  // deep_change is unused DEEP gas (we passed zero so it'll be zero).
+  //
+  // DeepBook SUI/USDC constraints (verified on-chain 2026-04-14):
+  //   lot_size : 0.1 SUI  (100_000_000 mist)
+  //   min_size : 1.0 SUI  (1_000_000_000 mist)
+  //   asks len : 1127 / bids len : 1218 — deeply liquid
+  //
+  // Slippage floor is intentionally min_quote_out = 1 mist (accept
+  // any positive output). Reasons:
+  //   1. The caller's suiPriceUsd is an oracle hint, not a book
+  //      midpoint. Applying a 2% floor against a stale hint can
+  //      abort with DeepBook error 12 even when the pool would
+  //      happily serve a slightly-wider spread. We saw exactly
+  //      that in the pre-deploy dry-run.
+  //   2. The downstream PSM mint enforces its own min_iusd_out,
+  //      so slippage protection isn't actually missing — it's
+  //      just moved to the terminal op where the numbers we're
+  //      comparing are on the same scale.
+  //   3. Cold-start UX prioritizes "works on the first try" over
+  //      "catches exotic MEV sandwich attacks" — a user running
+  //      this path is converting ~$1-50 of SUI, not ripping whales.
+  const USDC_TYPE = suinsCfg().coins.USDC.type;
+
+  const [zeroDeep] = tx.moveCall({
+    target: '0x2::coin::zero',
+    typeArguments: [DB_DEEP_TYPE],
+  });
+  const [suiChange, usdcOut, deepChange] = tx.moveCall({
+    target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+    typeArguments: [SUI_TYPE, USDC_TYPE],
+    arguments: [
+      tx.sharedObjectRef({
+        objectId: DB_SUI_USDC_POOL,
+        initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION,
+        mutable: true,
+      }),
+      suiForSwap,
+      zeroDeep,
+      tx.pure.u64(1),
+      tx.object.clock(),
+    ],
+  });
+
+  // Step 3 — return any SUI change + DEEP dust to the sender.
+  tx.transferObjects([suiChange, deepChange], tx.pure.address(walletAddress));
+
+  // Step 4 — Volcarodon PSM mint_from_usdc. Consumes the usdcOut
+  // by value, grows reserve.s_balance by the full USDC amount, and
+  // auto-transfers freshly-minted iUSD to the sender. No further
+  // PTB commands needed after this — it's the terminal op.
+  //
+  // We use the v1 mint_from_usdc (entry, self-transferring) because
+  // v2 does not ship a composable mint_from_usdc_coin variant; only
+  // burn was upgraded to return Coin<S>.
+  //
+  // Slippage floor uses the contract's convert_s_to_t math minus
+  // 10 bps to tolerate any u64 rounding on tiny amounts.
+  const PSM_PKG = '0xe0e0113e44c38ef5cfbbac826cfff0cf0438109b0358b0039aca8d183065f5af';
+  const PSM_RESERVE = '0x62fcd184ef68d7267e4cf45f8af5ff7f23511c4741f26674875e691389ca264c';
+  const PSM_RESERVE_INITIAL_SHARED_VERSION = 843442664;
+  const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+
+  // PSM mint slippage floor is 1 mist — accept whatever iUSD the
+  // contract produces from the actual post-swap USDC balance. The
+  // Move function enforces `s_out >= min_s_out` against its own
+  // convert_t_to_s math, so even with a 1-mist floor the output
+  // is always 1:1 minus the contract's fee_bps. Reusing a
+  // pre-computed floor here would be double-accounting: the DeepBook
+  // swap's real USDC output is unknown at PTB build time, so any
+  // derived iUSD floor would be an oracle-based guess against an
+  // already-unknown quantity.
+  tx.moveCall({
+    target: `${PSM_PKG}::psm::mint_from_usdc`,
+    typeArguments: [IUSD_TYPE, USDC_TYPE],
+    arguments: [
+      tx.sharedObjectRef({
+        objectId: PSM_RESERVE,
+        initialSharedVersion: PSM_RESERVE_INITIAL_SHARED_VERSION,
+        mutable: true,
+      }),
+      usdcOut,
+      tx.pure.u64(1),
+    ],
+  });
+
+  const bytes = await buildWithTx(tx, transport);
+  const out = bytes as Uint8Array & { tx?: InstanceType<typeof Transaction> };
+  out.tx = tx;
+  return out;
+}
+
 // ─── Post-trade configure — privacy-preserving records for a newly acquired name ─────
 //
 // After a Tradeport buy lands, the purchased SuinsRegistration NFT sits in

@@ -12385,7 +12385,19 @@ function bindEvents() {
           // 2026-04-14: $0.006 quote balance, zero bids). PSM bypasses
           // it entirely by minting from a wrapped TreasuryCap inside a
           // shared Reserve. First mint self-seeds the reserve, so
-          // there's no cold-start liquidity requirement.
+          // there's no cold-start liquidity requirement on the PSM
+          // side.
+          //
+          // Two paths picked automatically:
+          //   (a) wallet holds USDC → direct PSM mint (buildPsmMintTx)
+          //   (b) wallet holds zero USDC but has SUI → single-PTB
+          //       cold start via buildSuiToIusdTx: DeepBook
+          //       swap_exact_base_for_quote(SUI, USDC) → feeds the
+          //       resulting Coin<USDC> straight into the PSM's
+          //       mint_from_usdc entry call, auto-transferring the
+          //       fresh iUSD to the sender. One signature, no
+          //       intermediate USDC to manage, and the reserve grows
+          //       by the full USDC amount.
           const { normalizeSuiAddress } = await import('@mysten/sui/utils');
           const addr = normalizeSuiAddress(ws.address);
           const { USDC_TYPE, queryReserveState, quoteMintOutIusdMist, buildPsmMintTx } = await import('./client/psm.js');
@@ -12395,8 +12407,57 @@ function bindEvents() {
           });
           const rpcData = await rpc.json() as any;
           const coins = (rpcData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
-          if (!coins.length) { showToast('No USDC to swap for iUSD'); return; }
           const totalUsdc = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
+
+          if (coins.length === 0 || totalUsdc === 0n) {
+            // ── Cold-start path: zero USDC on-chain ──
+            //
+            // DeepBook SUI/USDC enforces min_size=1 SUI / lot_size=0.1
+            // SUI (verified on-chain). Anything below the minimum
+            // silently returns zero USDC and tanks the downstream PSM
+            // mint with EZeroAmount. Enforce 1.1 SUI minimum swap so
+            // we're comfortably above the floor and aligned to lots.
+            //
+            // Total wallet SUI needed:
+            //   0.2 SUI gas buffer + 1.1 SUI minimum swap = 1.3 SUI
+            //
+            // For wallets with more headroom, scale up: use max of
+            // (1.1 SUI, 80% of spendable) so users who hold a lot of
+            // SUI put more of it to work per click.
+            const GAS_BUFFER_MIST = 200_000_000n;      // 0.2 SUI reserved for gas
+            const MIN_SWAP_MIST = 1_100_000_000n;      // 1.1 SUI — clears DB 1 SUI min_size
+            const suiBal = BigInt(Math.floor((app.sui ?? 0) * 1e9));
+            const spendable = suiBal > GAS_BUFFER_MIST ? suiBal - GAS_BUFFER_MIST : 0n;
+            if (spendable < MIN_SWAP_MIST) {
+              showToast(`Need at least 1.3 SUI to cold-start mint (have ${(Number(suiBal) / 1e9).toFixed(3)})`);
+              return;
+            }
+            // Use 80% of spendable for wallets with plenty, bounded
+            // below by the 1.1 SUI minimum.
+            const scaledMist = (spendable * 80n) / 100n;
+            const swapMist = scaledMist > MIN_SWAP_MIST ? scaledMist : MIN_SWAP_MIST;
+            const freshSuiP = (await fetchSuiPrice()) ?? suiPriceCache?.price ?? 0;
+            if (!freshSuiP || freshSuiP <= 0) {
+              showToast('SUI price unavailable \u2014 try again in a moment');
+              return;
+            }
+            const expectedUsd = (Number(swapMist) / 1e9) * freshSuiP;
+            // 2% DeepBook slippage floor × (1 - 50 bps PSM fee).
+            const expectedIusd = expectedUsd * 0.98 * 0.995;
+            showToast(`\u{1F4B5} Cold-start: ${(Number(swapMist) / 1e9).toFixed(3)} SUI \u2192 \u2248${expectedIusd.toFixed(2)} iUSD (DeepBook + PSM)\u2026`);
+            const { buildSuiToIusdTx } = await import('./suins.js');
+            const bytes = await buildSuiToIusdTx({
+              sender: addr,
+              suiAmountMist: swapMist,
+              suiPriceUsd: freshSuiP,
+            });
+            await signAndExecuteTransaction(bytes);
+            showToast(`\u2728 \u2248${expectedIusd.toFixed(2)} iUSD minted \u2014 reserve +$${expectedUsd.toFixed(2)}`);
+            refreshPortfolio(true);
+            return;
+          }
+
+          // ── Normal path: wallet already holds USDC ──
           // Reserve pre-flight — read fee_bps so we can quote the
           // expected iUSD out and set a realistic slippage floor.
           const state = await queryReserveState();
