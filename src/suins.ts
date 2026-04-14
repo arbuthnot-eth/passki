@@ -1183,7 +1183,8 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     // Merge any pre-existing NS coins so `register` can draw on
     // everything if the Pyth-priced NS charge overshoots the swap.
     let finalNsCoin: any = nsCoinOut;
-    if (nsCoins.length > 0) {
+    const hadExistingNs = nsCoins.length > 0;
+    if (hadExistingNs) {
       tx.mergeCoins(finalNsCoin, nsCoins.map(c => tx.objectRef(c)));
     }
 
@@ -1199,8 +1200,10 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     if (setAsDefault) suinsTx.setDefault(domain);
     tx.transferObjects([nft], tx.pure.address(walletAddress));
 
-    // Return everything leftover to the user
-    tx.transferObjects([finalNsCoin, iusdChange, iusdCoin, usdcChange, deepChangeIusd, deepChangeNs], tx.pure.address(walletAddress));
+    // NS remainder: burn swap dust, return if user's pre-existing NS was merged in
+    tx.transferObjects([finalNsCoin], tx.pure.address(hadExistingNs ? walletAddress : '0x0'));
+    // Return other leftover coins to the user
+    tx.transferObjects([iusdChange, iusdCoin, usdcChange, deepChangeIusd, deepChangeNs], tx.pure.address(walletAddress));
 
     // 5% of full price → iUSD treasury
     addRegistrationFee(tx, basePriceUsd, suiPrice);
@@ -1330,10 +1333,14 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     }
 
     // Step 4: Merge any existing NS coins with swapped NS
+    // Track whether user had pre-existing NS so we know if the post-register
+    // remainder is pure swap dust (burnable) or includes user funds (must return).
     let finalNsCoin: any = null;
+    let hadExistingNs = false;
     if (nsCoins.length > 0 && nsCoinFromSwap) {
       finalNsCoin = nsCoinFromSwap;
       tx.mergeCoins(finalNsCoin, nsCoins.map(c => tx.objectRef(c)));
+      hadExistingNs = true;
     } else if (nsCoinFromSwap) {
       finalNsCoin = nsCoinFromSwap;
     } else if (nsCoins.length > 0) {
@@ -1341,6 +1348,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
       if (nsCoins.length > 1) {
         tx.mergeCoins(finalNsCoin, nsCoins.slice(1).map(c => tx.objectRef(c)));
       }
+      hadExistingNs = true;
     }
 
     // If we have NS (from swap or existing), register with NS (25% discount)
@@ -1358,8 +1366,8 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
       suinsTx.setTargetAddress({ nft, address: walletAddress });
       if (setAsDefault) suinsTx.setDefault(domain);
       tx.transferObjects([nft], tx.pure.address(walletAddress));
-      // Return NS remainder
-      tx.transferObjects([finalNsCoin], tx.pure.address(walletAddress));
+      // Remainder handling: burn pure swap dust, return merged coin if it includes user's pre-existing NS
+      tx.transferObjects([finalNsCoin], tx.pure.address(hadExistingNs ? walletAddress : '0x0'));
       return buildWithTx(tx, transport);
     }
 

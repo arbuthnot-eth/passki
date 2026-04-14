@@ -3118,6 +3118,35 @@ body {
   border: 1px solid rgba(34, 197, 94, 0.5);
   color: #86efac;
 }
+.ski-idle-ns-action--signing {
+  background: linear-gradient(135deg, rgba(22, 101, 52, 0.4), rgba(34, 197, 94, 0.3));
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  color: #86efac;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ski-idle-ns-action--signing::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: ski-mint-spin 0.7s linear infinite;
+}
+.ski-idle-ns-action--signing .ski-signing-cancel { display: none; }
+.ski-idle-ns-action--signing:hover {
+  background: linear-gradient(135deg, rgba(127, 29, 29, 0.5), rgba(220, 38, 38, 0.4));
+  border-color: rgba(248, 113, 113, 0.75);
+  color: #fca5a5;
+}
+.ski-idle-ns-action--signing:hover::before { display: none; }
+.ski-idle-ns-action--signing:hover .ski-signing-text { display: none; }
+.ski-idle-ns-action--signing:hover .ski-signing-cancel { display: inline; }
+@keyframes ski-mint-spin { to { transform: rotate(360deg); } }
 .ski-idle-ns-action--quest-bounty {
   background: linear-gradient(135deg, rgba(59, 130, 246, 0.3), rgba(77, 162, 255, 0.25));
   border: 1px solid rgba(77, 162, 255, 0.5);

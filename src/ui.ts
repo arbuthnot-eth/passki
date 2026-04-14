@@ -9204,10 +9204,49 @@ function renderSkiMenu() {
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
 
+    // Mirror signing state onto the idle overlay MINT button so users
+    // see feedback while the wallet popup is awaiting their signature.
+    // Hover reveals a Cancel affordance that resets UI state (the wallet
+    // popup itself must still be dismissed by the user — WaaP/Phantom
+    // don't honor AbortController).
+    const idleBtn = document.getElementById('ski-idle-action') as HTMLButtonElement | null;
+    let signingCancelled = false;
+    let signingTimeout: number | null = null;
+    const resetSigning = () => {
+      if (!idleBtn || idleBtn.dataset.signing !== '1') return;
+      delete idleBtn.dataset.signing;
+      idleBtn.className = idleBtn.dataset.signingPrevClass || 'ski-idle-ns-action ski-idle-ns-action--mint';
+      idleBtn.textContent = idleBtn.dataset.signingPrevText || 'MINT';
+      delete idleBtn.dataset.signingPrevClass;
+      delete idleBtn.dataset.signingPrevText;
+      if (signingTimeout != null) { window.clearTimeout(signingTimeout); signingTimeout = null; }
+      idleBtn.removeEventListener('click', onCancelClick, true);
+    };
+    const onCancelClick = (ev: Event) => {
+      if (!idleBtn || idleBtn.dataset.signing !== '1') return;
+      ev.stopPropagation();
+      ev.preventDefault();
+      signingCancelled = true;
+      resetSigning();
+      showToast('Mint cancelled — dismiss the wallet popup if still open');
+    };
+    if (idleBtn) {
+      idleBtn.dataset.signingPrevText = idleBtn.textContent || 'MINT';
+      idleBtn.dataset.signingPrevClass = idleBtn.className;
+      idleBtn.dataset.signing = '1';
+      idleBtn.className = 'ski-idle-ns-action ski-idle-ns-action--signing';
+      idleBtn.innerHTML = '<span class="ski-signing-text">Signing\u2026</span><span class="ski-signing-cancel">Cancel</span>';
+      idleBtn.disabled = false;
+      idleBtn.title = 'Signing — hover to cancel';
+      idleBtn.addEventListener('click', onCancelClick, true);
+      signingTimeout = window.setTimeout(() => { resetSigning(); }, 30000);
+    }
+
     try {
       // Force fresh price — stale localStorage price causes insufficient coin splits
       const freshPrice = await fetchSuiPrice() ?? suiPriceCache?.price;
       const result = await buildRegisterSplashNsTx(ws2.address, domain, freshPrice, !app.suinsName, selectedCoinSymbol ?? undefined);
+      if (signingCancelled) throw new Error('cancelled');
       if (btn) btn.textContent = '\u270f';
       let digest: string;
       if (result.sponsorAddress) {
@@ -9218,6 +9257,7 @@ function renderSkiMenu() {
         const { digest: d } = await signAndExecuteTransaction(result.txBytes);
         digest = d;
       }
+      if (signingCancelled) throw new Error('cancelled');
       // Update NS row: blue square status + show tx digest
       nsAvail = 'owned';
       nsTargetAddress = ws2.address;
@@ -9236,12 +9276,13 @@ function renderSkiMenu() {
       refreshPortfolio(true);
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
-      if (!raw.toLowerCase().includes('reject')) {
+      if (!raw.toLowerCase().includes('reject') && raw !== 'cancelled') {
         const { display, full } = parseNsError(raw);
         showCopyableToast(display, full);
       }
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '\u2192'; }
+      resetSigning();
     }
   });
 
@@ -16604,7 +16645,7 @@ export function initUI() {
       // Immediately warm the Seal session key so the first convo open doesn't
       // stall on a signature round-trip — on refresh this restores from
       // localStorage with zero prompts.
-      import('./client/thunder.js').then(({ initThunderClient, warmThunderSession }) => {
+      import('./client/thunder.js').then(({ initThunderClient, warmThunderSession, createStorm, stormExists }) => {
         initThunderClient({
           address: ws.address,
           signPersonalMessage: async (msg: Uint8Array) => signPersonalMessage(msg),
@@ -16619,6 +16660,52 @@ export function initUI() {
           },
         });
         warmThunderSession().catch(() => {});
+
+        // Magneton Lv.10 Thunder Wave (#153) — silently create the
+        // user's `thunder-ultron` relay Storm if it doesn't already
+        // exist. Once live, every future conversation can piggyback
+        // through this one Storm without paying pair-creation gas.
+        //
+        // Silent: no toast, no modal, no visible creation prompt.
+        // Sponsored by ultron for non-WaaP wallets (zero SUI cost).
+        // Idempotent: stormExists cache hit short-circuits repeats.
+        // Per-session guard: only attempt once per wallet connect.
+        const _magnetonSessionKey = `ski:magneton-lv10:${ws.address}`;
+        const _magnetonAlreadyTried = (() => {
+          try { return sessionStorage.getItem(_magnetonSessionKey) === '1'; } catch { return false; }
+        })();
+        if (!_magnetonAlreadyTried) {
+          try { sessionStorage.setItem(_magnetonSessionKey, '1'); } catch {}
+          // Wait a tick so warmThunderSession can establish Seal
+          // before we try to create a Storm.
+          setTimeout(async () => {
+            try {
+              const RELAY_UUID = 'thunder-ultron';
+              const exists = await stormExists(RELAY_UUID);
+              if (exists) return;
+              const ULTRON_ADDR = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+              const tx = createStorm({
+                uuid: RELAY_UUID,
+                name: 'ultron relay',
+                members: [ws.address, ULTRON_ADDR],
+              });
+              const _isWaaP = /waap/i.test(getState().walletName || '');
+              // Pre-build to bytes (+augment) for the non-WaaP sponsored path;
+              // pass the unbuilt Transaction for WaaP per feedback_waap_holy_grail.
+              if (!_isWaaP && isSponsorActive()) {
+                const bytes = await tx.build({ client: grpcClient as never });
+                await signAndExecuteSponsoredTx(bytes);
+              } else {
+                await signAndExecuteTransaction(tx as never);
+              }
+              console.log('[magneton] Lv.10 Thunder Wave: thunder-ultron relay Storm created');
+            } catch (err) {
+              // Silent per-spec — log only. Retry on next wallet-connect.
+              console.warn('[magneton] Lv.10 Thunder Wave: storm creation deferred —', err instanceof Error ? err.message : err);
+              try { sessionStorage.removeItem(_magnetonSessionKey); } catch {}
+            }
+          }, 1500);
+        }
       }).catch(() => {});
 
       // Sableye — warm the encrypted private-interaction cache.
