@@ -162,12 +162,16 @@ module volcarodon::psm {
     // ─── Burn T for S ──────────────────────────────────────────────
     /// Permissionless. Caller burns Coin<T>, receives Coin<S> from the
     /// reserve at 1:1 minus fee. Aborts if reserve is short.
-    public entry fun burn_for_usdc<T, S>(
+    /// PTB-composable variant: burns T for S at 1:1 minus fee and
+    /// RETURNS the Coin<S> instead of transferring it. Lets callers
+    /// chain the output into a later PTB command (e.g. DeepBook
+    /// swap USDC→SUI → Tradeport purchase) in a single signature.
+    public fun burn_for_usdc_coin<T, S>(
         reserve: &mut Reserve<T, S>,
         t_in: Coin<T>,
         min_s_out: u64,
         ctx: &mut TxContext,
-    ) {
+    ): Coin<S> {
         let t_amount = coin::value(&t_in);
         assert!(t_amount > 0, EZeroAmount);
 
@@ -181,9 +185,6 @@ module volcarodon::psm {
         reserve.total_s_out = reserve.total_s_out + s_out_amount;
 
         // Split fee from the outflow and retain it in `collected_fee`.
-        // Fee is the DIFFERENCE between gross 1:1 and what the user
-        // gets — we already subtracted it in convert_t_to_s, so the
-        // difference is the fee_bps portion of the gross.
         let gross = if (reserve.t_decimals >= reserve.s_decimals) {
             t_amount / pow10(reserve.t_decimals - reserve.s_decimals)
         } else {
@@ -200,6 +201,19 @@ module volcarodon::psm {
             t_amount,
             s_out: s_out_amount,
         });
+        s_coin
+    }
+
+    /// Entry wrapper — preserves the original transfer-to-sender
+    /// behaviour for standalone PSM burns. Delegates to the
+    /// composable `burn_for_usdc_coin` variant.
+    public entry fun burn_for_usdc<T, S>(
+        reserve: &mut Reserve<T, S>,
+        t_in: Coin<T>,
+        min_s_out: u64,
+        ctx: &mut TxContext,
+    ) {
+        let s_coin = burn_for_usdc_coin<T, S>(reserve, t_in, min_s_out, ctx);
         transfer::public_transfer(s_coin, tx_context::sender(ctx));
     }
 
