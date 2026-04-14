@@ -12619,6 +12619,69 @@ function bindEvents() {
         }, 120);
       };
 
+      // Self-card context = quick amounts become PSM mint actions
+      // instead of thunder sends. Sending a thunder to yourself is
+      // nonsensical, so this reclaims the otherwise-dead interaction
+      // for something useful: minting iUSD from USDC via Volcarodon.
+      //
+      // Detection: no active storm counterparty AND the currently-
+      // displayed card name matches the connected wallet's primary
+      // (what Lapras Lv.10 auto-loads). If the user types a different
+      // name to search/trade, the card moves off the primary and the
+      // quick amounts revert to thunder-send behavior.
+      const _isSelfCardContext = (): boolean => {
+        if (_activeStormCounterparty) return false;
+        const primary = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+        if (!primary) return false;
+        const current = (_cardCurrentName || nsLabel.trim()).replace(/\.sui$/, '').toLowerCase();
+        return current === primary;
+      };
+
+      // PSM mint of `amtUsd` USD worth of USDC → iUSD via Volcarodon.
+      // Used by the quick-amount buttons when the card is showing the
+      // user's own primary. Each mint grows the Reserve's s_balance by
+      // the full USDC amount and grows burn capacity for future trades.
+      const _qaMint = async (amtUsd: string) => {
+        const ws = getState();
+        if (!ws.address) { showToast('Connect wallet first'); return; }
+        const usd = Number(amtUsd);
+        if (!Number.isFinite(usd) || usd <= 0) { showToast('Invalid amount'); return; }
+        try {
+          const usdcAmountMist = BigInt(Math.round(usd * 1e6));
+          const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+          const addr = normalizeSuiAddress(ws.address);
+          const { USDC_TYPE, queryReserveState, quoteMintOutIusdMist, buildPsmMintTx } = await import('./client/psm.js');
+          const rpc = await fetch('https://sui-rpc.publicnode.com', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, USDC_TYPE] }),
+          });
+          const rpcData = await rpc.json() as any;
+          const coins = (rpcData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
+          if (!coins.length) { showToast('No USDC in wallet'); return; }
+          const totalUsdc = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
+          if (usdcAmountMist > totalUsdc) {
+            showToast(`Need $${usd.toFixed(2)} USDC — wallet has $${(Number(totalUsdc) / 1e6).toFixed(2)}`);
+            return;
+          }
+          const state = await queryReserveState();
+          const expectedIusd = quoteMintOutIusdMist(usdcAmountMist, state.feeBps);
+          const minIusdOut = (expectedIusd * 9990n) / 10000n;
+          showToast(`\u{1F4B5} Minting $${usd.toFixed(2)} USDC \u2192 \u2248${(Number(expectedIusd) / 1e9).toFixed(4)} iUSD via PSM\u2026`);
+          const { bytes } = await buildPsmMintTx({
+            sender: addr,
+            usdcCoinIds: coins.map((c: any) => c.coinObjectId),
+            usdcAmountMist,
+            minIusdOutMist: minIusdOut,
+          });
+          await signAndExecuteTransaction(bytes);
+          showToast(`\u2728 ${(Number(expectedIusd) / 1e9).toFixed(4)} iUSD minted \u2014 reserve +$${usd.toFixed(2)}`);
+          refreshPortfolio(true);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Mint failed';
+          if (!msg.toLowerCase().includes('reject')) showToast(msg.slice(0, 200));
+        }
+      };
+
       let _qaOutsideHandler: ((ev: Event) => void) | null = null;
       const _qaCollapse = () => {
         _topRow?.classList.remove(EXPANDED_CLS);
@@ -12647,20 +12710,43 @@ function bindEvents() {
           const amt = btn.dataset.amt ?? '';
           if (!amt) return;
           const isExpanded = _topRow?.classList.contains(EXPANDED_CLS) ?? false;
-          // $0.01 — first click expands, second click (while expanded) sends.
+          // Context-sensitive dispatch. If the card is on the user's
+          // own primary (self-context), the quick amounts become PSM
+          // mint actions (USDC → iUSD). Otherwise they keep the
+          // original thunder-send behavior.
+          const action = _isSelfCardContext() ? _qaMint : _qaSend;
+          // $0.01 — first click expands, second click (while expanded) fires.
           if (amt === '0.01') {
             if (isExpanded) {
               _qaCollapse();
-              _qaSend('0.01');
+              void action('0.01');
             } else {
               _qaExpand();
             }
             return;
           }
-          // $1 / $7.50 — send + collapse (only reachable while expanded).
+          // $1 / $7.50 — fire + collapse (only reachable while expanded).
           _qaCollapse();
-          _qaSend(amt);
+          void action(amt);
         });
+      });
+
+      // Dynamic titles on the quick-amount buttons so hover tells the
+      // user whether they're about to send a thunder or mint iUSD.
+      const _updateQaTitles = () => {
+        const mint = _isSelfCardContext();
+        _idleOverlay?.querySelectorAll<HTMLButtonElement>('.ski-idle-thunder-quick-amt').forEach((btn) => {
+          const amt = btn.dataset.amt ?? '';
+          if (!amt || btn.id === 'ski-idle-recall-btn') return;
+          btn.title = mint ? `Mint $${amt} USDC \u2192 iUSD` : `Send $${amt}`;
+        });
+      };
+      _updateQaTitles();
+      // Keep titles in sync with context changes. Cheap — runs a few
+      // querySelectorAlls and attribute writes per event.
+      window.addEventListener('ski:balance-updated', () => {
+        if (_isStaleIdleMount()) return;
+        _updateQaTitles();
       });
 
       // Hang the helper off the overlay so the identity card's
