@@ -23,6 +23,12 @@ import { grpcClient } from '../rpc.js';
 
 export const PSM_PACKAGE = '0xe0e0113e44c38ef5cfbbac826cfff0cf0438109b0358b0039aca8d183065f5af';
 export const PSM_RESERVE = '0x62fcd184ef68d7267e4cf45f8af5ff7f23511c4741f26674875e691389ca264c';
+/** Initial shared version of the Reserve, verified on-chain via
+ *  sui_getObject showOwner. Hardcoded so PTB builds don't need a
+ *  network round-trip to resolve the shared object ref, which lets
+ *  both browser and worker callers build offline (including ultron's
+ *  keeper-signed round-trip smoke test). */
+export const PSM_RESERVE_INITIAL_SHARED_VERSION = 843442664;
 export const PSM_MODULE  = 'psm';
 
 export const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
@@ -147,7 +153,7 @@ export async function buildPsmBurnTx(opts: {
     target: `${PSM_PACKAGE}::${PSM_MODULE}::burn_for_usdc`,
     typeArguments: PSM_TYPE_ARGS,
     arguments: [
-      tx.object(PSM_RESERVE),
+      tx.sharedObjectRef({ objectId: PSM_RESERVE, initialSharedVersion: PSM_RESERVE_INITIAL_SHARED_VERSION, mutable: true }),
       burnCoin,
       tx.pure.u64(opts.minUsdcOutMist),
     ],
@@ -186,7 +192,7 @@ export async function buildPsmMintTx(opts: {
     target: `${PSM_PACKAGE}::${PSM_MODULE}::mint_from_usdc`,
     typeArguments: PSM_TYPE_ARGS,
     arguments: [
-      tx.object(PSM_RESERVE),
+      tx.sharedObjectRef({ objectId: PSM_RESERVE, initialSharedVersion: PSM_RESERVE_INITIAL_SHARED_VERSION, mutable: true }),
       mintCoin,
       tx.pure.u64(opts.minIusdOutMist),
     ],
@@ -222,7 +228,10 @@ export async function buildPsmTopUpTx(opts: {
   tx.moveCall({
     target: `${PSM_PACKAGE}::${PSM_MODULE}::top_up`,
     typeArguments: PSM_TYPE_ARGS,
-    arguments: [tx.object(PSM_RESERVE), contribCoin],
+    arguments: [
+      tx.sharedObjectRef({ objectId: PSM_RESERVE, initialSharedVersion: PSM_RESERVE_INITIAL_SHARED_VERSION, mutable: true }),
+      contribCoin,
+    ],
   });
 
   const bytes = await tx.build({ client: grpcClient as never }) as PsmTxResult['bytes'];

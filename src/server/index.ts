@@ -2375,6 +2375,195 @@ app.post('/api/cache/ultron-transfer-iusd', async (c) => {
   }
 });
 
+// ── Volcarodon PSM round-trip smoke test (ultron-signed) ──────────────
+// Mints a tiny amount of USDC → iUSD via psm::mint_from_usdc, waits for
+// propagation, then burns the minted iUSD back via psm::burn_for_usdc.
+// Uses ultron's keeper key (SHADE_KEEPER_PRIVATE_KEY) so the round-trip
+// happens without any user signature. Returns both digests, the reserve
+// state before and after, and the net cost in USDC for the two 50 bps
+// fees. Default amount is 10,000 USDC mist ($0.01). Not admin-gated —
+// ultron is funding the test itself; worst case it loses ~0.01% of its
+// $0.371 USDC balance per call.
+app.post('/api/cache/psm-smoke', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json().catch(() => ({})) as { amountMist?: string };
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
+
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
+
+    const PSM_PKG     = '0xe0e0113e44c38ef5cfbbac826cfff0cf0438109b0358b0039aca8d183065f5af';
+    const PSM_RESERVE = '0x62fcd184ef68d7267e4cf45f8af5ff7f23511c4741f26674875e691389ca264c';
+    const PSM_RESERVE_INITIAL_SHARED_VERSION = 843442664;
+    const IUSD_TYPE   = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+    const USDC_TYPE   = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+    const TYPE_ARGS   = [IUSD_TYPE, USDC_TYPE];
+
+    const rpcCall = async (method: string, params: unknown[]) => {
+      const r = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      return r.json() as Promise<{ result?: any; error?: { message?: string } }>;
+    };
+
+    // Snapshot reserve state before.
+    const reserveBeforeJ = await rpcCall('sui_getObject', [PSM_RESERVE, { showContent: true }]);
+    const rbFields = reserveBeforeJ.result?.data?.content?.fields;
+    const reserveBefore = {
+      sBalanceMist:    String(rbFields?.s_balance ?? '0'),
+      totalTMinted:    String(rbFields?.total_t_minted ?? '0'),
+      totalTBurned:    String(rbFields?.total_t_burned ?? '0'),
+      totalSIn:        String(rbFields?.total_s_in ?? '0'),
+      totalSOut:       String(rbFields?.total_s_out ?? '0'),
+      feeBps:          Number(rbFields?.fee_bps ?? '50'),
+    };
+    const feeBps = reserveBefore.feeBps;
+
+    const usdcAmountMist = BigInt(body.amountMist ?? '10000'); // $0.01 default
+
+    // Pull ultron's SUI + USDC.
+    const suiJ = await rpcCall('suix_getCoins', [ultronAddr, '0x2::sui::SUI']);
+    const suiCoins = (suiJ.result?.data ?? []).sort((a: any, b: any) => Number(BigInt(b.balance) - BigInt(a.balance)));
+    if (!suiCoins.length) return c.json({ error: 'ultron has no SUI for gas' }, 400);
+
+    const usdcJ = await rpcCall('suix_getCoins', [ultronAddr, USDC_TYPE]);
+    const usdcCoins = (usdcJ.result?.data ?? []) as Array<{ coinObjectId: string; version: string; digest: string; balance: string }>;
+    if (!usdcCoins.length) return c.json({ error: 'ultron has no USDC' }, 400);
+    const totalUsdc = usdcCoins.reduce((s, c2) => s + BigInt(c2.balance), 0n);
+    if (usdcAmountMist > totalUsdc) return c.json({ error: `requested ${usdcAmountMist} > ultron USDC ${totalUsdc}` }, 400);
+
+    const gasPriceJ = await rpcCall('suix_getReferenceGasPrice', []);
+    const gasPrice = BigInt(gasPriceJ.result ?? '1000');
+
+    // ─── Step 1: MINT ─────────────────────────────────────────────
+    const mintTx = new Transaction();
+    mintTx.setSender(ultronAddr);
+    mintTx.setGasPayment([{ objectId: suiCoins[0].coinObjectId, version: suiCoins[0].version, digest: suiCoins[0].digest }]);
+    mintTx.setGasPrice(gasPrice);
+    mintTx.setGasBudget(50_000_000n);
+
+    const usdcRefs = usdcCoins.map(cc => mintTx.objectRef({ objectId: cc.coinObjectId, version: cc.version, digest: cc.digest }));
+    const primaryUsdc = usdcRefs[0];
+    if (usdcRefs.length > 1) mintTx.mergeCoins(primaryUsdc, usdcRefs.slice(1));
+    const [usdcContribution] = mintTx.splitCoins(primaryUsdc, [mintTx.pure.u64(usdcAmountMist)]);
+
+    // Mirror the on-chain convert_s_to_t math: base = usdc * 1000
+    // (scaling to 9 decimals), then minus fee_bps. Slippage floor at
+    // 10 bps below contract output to absorb any rounding.
+    const expectedIusdMist = (usdcAmountMist * 1000n * BigInt(10000 - feeBps)) / 10000n;
+    const minIusdOut = (expectedIusdMist * 9990n) / 10000n;
+
+    mintTx.moveCall({
+      target: `${PSM_PKG}::psm::mint_from_usdc`,
+      typeArguments: TYPE_ARGS,
+      arguments: [
+        mintTx.sharedObjectRef({ objectId: PSM_RESERVE, initialSharedVersion: PSM_RESERVE_INITIAL_SHARED_VERSION, mutable: true }),
+        usdcContribution,
+        mintTx.pure.u64(minIusdOut),
+      ],
+    });
+
+    const mintBytes = await mintTx.build();
+    const { signature: mintSig } = await keypair.signTransaction(mintBytes);
+    const mintSubmitJ = await rpcCall('sui_executeTransactionBlock', [toBase64(mintBytes), [mintSig], { showEffects: true, showBalanceChanges: true, showEvents: true }, 'WaitForLocalExecution']);
+    if (mintSubmitJ.error) return c.json({ error: `mint submit failed: ${mintSubmitJ.error.message}` }, 500);
+    const mintStatus = mintSubmitJ.result?.effects?.status?.status;
+    if (mintStatus !== 'success') {
+      return c.json({ error: `mint tx status ${mintStatus}: ${mintSubmitJ.result?.effects?.status?.error ?? ''}` }, 500);
+    }
+    const mintDigest = mintSubmitJ.result?.digest ?? '';
+
+    // Propagation — give the indexer a beat before re-fetching coins.
+    await new Promise(r => setTimeout(r, 2000));
+
+    // ─── Step 2: BURN the minted iUSD back ───────────────────────
+    const suiJ2 = await rpcCall('suix_getCoins', [ultronAddr, '0x2::sui::SUI']);
+    const suiCoins2 = (suiJ2.result?.data ?? []).sort((a: any, b: any) => Number(BigInt(b.balance) - BigInt(a.balance)));
+    if (!suiCoins2.length) return c.json({ error: 'ultron lost all SUI between mint and burn (impossible)' }, 500);
+
+    const iusdJ = await rpcCall('suix_getCoins', [ultronAddr, IUSD_TYPE]);
+    const iusdCoins = (iusdJ.result?.data ?? []) as Array<{ coinObjectId: string; version: string; digest: string; balance: string }>;
+    if (!iusdCoins.length) return c.json({ error: 'mint succeeded but no iUSD visible — indexer lag?', mintDigest }, 500);
+    const totalIusd = iusdCoins.reduce((s, c2) => s + BigInt(c2.balance), 0n);
+
+    // Only burn the amount the mint produced, in case ultron had any
+    // stray iUSD from another path we don't want to touch.
+    const burnAmount = expectedIusdMist > totalIusd ? totalIusd : expectedIusdMist;
+
+    const burnTx = new Transaction();
+    burnTx.setSender(ultronAddr);
+    burnTx.setGasPayment([{ objectId: suiCoins2[0].coinObjectId, version: suiCoins2[0].version, digest: suiCoins2[0].digest }]);
+    burnTx.setGasPrice(gasPrice);
+    burnTx.setGasBudget(50_000_000n);
+
+    const iusdRefs = iusdCoins.map(cc => burnTx.objectRef({ objectId: cc.coinObjectId, version: cc.version, digest: cc.digest }));
+    const primaryIusd = iusdRefs[0];
+    if (iusdRefs.length > 1) burnTx.mergeCoins(primaryIusd, iusdRefs.slice(1));
+    const [iusdContribution] = burnTx.splitCoins(primaryIusd, [burnTx.pure.u64(burnAmount)]);
+
+    const expectedUsdcOut = (burnAmount / 1000n) * BigInt(10000 - feeBps) / 10000n;
+    const minUsdcOut = (expectedUsdcOut * 9990n) / 10000n;
+
+    burnTx.moveCall({
+      target: `${PSM_PKG}::psm::burn_for_usdc`,
+      typeArguments: TYPE_ARGS,
+      arguments: [
+        burnTx.sharedObjectRef({ objectId: PSM_RESERVE, initialSharedVersion: PSM_RESERVE_INITIAL_SHARED_VERSION, mutable: true }),
+        iusdContribution,
+        burnTx.pure.u64(minUsdcOut),
+      ],
+    });
+
+    const burnBytes = await burnTx.build();
+    const { signature: burnSig } = await keypair.signTransaction(burnBytes);
+    const burnSubmitJ = await rpcCall('sui_executeTransactionBlock', [toBase64(burnBytes), [burnSig], { showEffects: true, showBalanceChanges: true, showEvents: true }, 'WaitForLocalExecution']);
+    if (burnSubmitJ.error) return c.json({ error: `burn submit failed: ${burnSubmitJ.error.message}`, mintDigest }, 500);
+    const burnStatus = burnSubmitJ.result?.effects?.status?.status;
+    if (burnStatus !== 'success') {
+      return c.json({ error: `burn tx status ${burnStatus}: ${burnSubmitJ.result?.effects?.status?.error ?? ''}`, mintDigest }, 500);
+    }
+    const burnDigest = burnSubmitJ.result?.digest ?? '';
+
+    // Snapshot reserve state after.
+    await new Promise(r => setTimeout(r, 1500));
+    const reserveAfterJ = await rpcCall('sui_getObject', [PSM_RESERVE, { showContent: true }]);
+    const raFields = reserveAfterJ.result?.data?.content?.fields;
+    const reserveAfter = {
+      sBalanceMist:    String(raFields?.s_balance ?? '0'),
+      totalTMinted:    String(raFields?.total_t_minted ?? '0'),
+      totalTBurned:    String(raFields?.total_t_burned ?? '0'),
+      totalSIn:        String(raFields?.total_s_in ?? '0'),
+      totalSOut:       String(raFields?.total_s_out ?? '0'),
+      collectedFeeMist: String(raFields?.collected_fee ?? '0'),
+    };
+
+    const netCostMist = usdcAmountMist - BigInt(reserveAfter.totalSOut) + BigInt(reserveBefore.totalSOut);
+    return c.json({
+      ok: true,
+      ultronAddr,
+      mintDigest,
+      burnDigest,
+      usdcInMist: usdcAmountMist.toString(),
+      iusdMintedMist: expectedIusdMist.toString(),
+      iusdBurnedMist: burnAmount.toString(),
+      usdcOutMist: expectedUsdcOut.toString(),
+      netCostUsdcMist: netCostMist.toString(),
+      netCostUsd: Number(netCostMist) / 1e6,
+      feeBps,
+      reserveBefore,
+      reserveAfter,
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
 // ── Sweep old sol@ultron → new IKA-derived sol@ultron ─────────────────
 // Drains all SOL + SPL balances from the legacy raw-keypair address
 // (old sol@ultron = base58(suiPubkey)) to a recipient — in practice
