@@ -9921,10 +9921,21 @@ function bindEvents() {
   // Idle screensaver — show SKI pixel art over menu
   let _idleTimer: ReturnType<typeof setTimeout> | null = null;
   const IDLE_MS = 15_000; // 15 seconds
+  // Snorlax #144 — every _showIdleOverlay() call re-attaches window
+  // listeners that close over that mount's `_cardCurrentName` and
+  // other local state. Without a generation guard, old listeners
+  // from prior mounts survive the remount and fire on later events
+  // (balance poll, ownership-changed, etc.) with stale captured
+  // names — clobbering the current card back to a previously-typed
+  // name. Listeners now capture `_myGen` at mount time and early-
+  // return unless `_idleOverlayGen` still matches.
+  let _idleOverlayGen = 0;
 
   const _showIdleOverlay = () => {
       if (!app.skiMenuOpen && !getState().address && !localStorage.getItem('ski:last-address')) return;
       if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
+      const _myGen = ++_idleOverlayGen;
+      const _isStaleIdleMount = () => _idleOverlayGen !== _myGen;
       // Ensure menu is open
       if (!app.skiMenuOpen && getState().address) {
         app.skiMenuOpen = true;
@@ -11903,8 +11914,12 @@ function bindEvents() {
       _updateIdleStatus(); // immediate render from cached state
       const _initLabel = nsLabel.trim();
       if (_initLabel.length >= 3 && isValidNsLabel(_initLabel)) {
-        // Show card immediately from cached state
-        if (nsAvail) _updateIdleCard(_initLabel);
+        // Show card immediately — don't wait for nsAvail to load.
+        // On hard refresh, nsAvail is empty until fetchAndShowNsPrice
+        // resolves, which made the card stick on the wallet's primary
+        // while the input showed the restored label. Commit the card
+        // to the restored label up front; the fetch will refine it.
+        _updateIdleCard(_initLabel);
         // Force re-fetch even if cached — ensures _updateIdleStatus sees fresh ownership
         nsPriceFetchFor = '';
         fetchAndShowNsPrice(_initLabel).then(async () => {
@@ -16184,6 +16199,7 @@ function bindEvents() {
 
       // Primary SuiNS changed — update card + invalidate roster cache
       window.addEventListener('ski:primary-changed', (e) => {
+        if (_isStaleIdleMount()) return;
         const name = ((e as CustomEvent).detail?.name ?? '').replace(/\.sui$/, '');
         if (name) {
           _rosterCache = null;
@@ -16223,6 +16239,7 @@ function bindEvents() {
       // Balance or owned domains updated — refresh card with new data
       // Ownership changed (e.g. purchased name now in roster)
       window.addEventListener('ski:ownership-changed', () => {
+        if (_isStaleIdleMount()) return;
         _updateIdleStatus();
         _cardCacheKey = '';
         const cardName = app.suinsName?.replace(/\.sui$/, '') || nsLabel || '';
@@ -16230,6 +16247,7 @@ function bindEvents() {
       });
 
       window.addEventListener('ski:balance-updated', () => {
+        if (_isStaleIdleMount()) return;
         _cardCacheKey = ''; // invalidate so it re-renders with new balance
         // Use current card name (not primary) to avoid overwriting resolved card
         const cardName = _cardCurrentName || app.suinsName?.replace(/\.sui$/, '') || '';
