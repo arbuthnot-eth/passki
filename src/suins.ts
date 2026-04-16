@@ -109,6 +109,7 @@ export function maybeAppendRoster(
   crossChain?: { btc?: string; eth?: string; sol?: string },
   walrusBlobId?: string,
   sealNonce?: number[],
+  dwalletCaps?: string[],
 ): boolean {
   // Roster is a mainnet-only Move package — silently skip on testnet hosts
   // so testnet PTBs don't reference nonexistent package IDs.
@@ -121,9 +122,14 @@ export function maybeAppendRoster(
   // Only SUI address goes on-chain; cross-chain addresses live in the Walrus blob
   const chains: [string, string][] = [['sui', addr]];
 
-  // Skip if unchanged since last write
+  // Caps drive the on-chain `verified` flag (non-empty → true). The debounce
+  // below keys on both the chain list AND the caps so a cap-population
+  // write isn't suppressed just because the chain list is unchanged.
+  const caps = (dwalletCaps ?? []).filter(c => typeof c === 'string' && c.startsWith('0x'));
+
+  // Skip if unchanged since last write (address list + cap list together)
   const rosterKey = `ski:roster:${addr}`;
-  const currentRoster = JSON.stringify(chains);
+  const currentRoster = JSON.stringify({ chains, caps });
   try { if (localStorage.getItem(rosterKey) === currentRoster) return false; } catch {}
 
   // keccak256(bare_name_bytes) — same hash as Thunder nameHash
@@ -140,7 +146,7 @@ export function maybeAppendRoster(
       tx.pure.vector('u8', nh),
       tx.pure.vector('string', chains.map(c => c[0])),
       tx.pure.vector('string', chains.map(c => c[1])),
-      tx.pure.vector('address', []), // dwallet_caps — TODO: populate from IKA state
+      tx.pure.vector('address', caps),
       tx.pure.string(walrusBlobId || ''),
       tx.pure.vector('u8', sealNonce || []),
       tx.object('0x6'),
@@ -162,7 +168,13 @@ export async function readRoster(name: string): Promise<Record<string, string> |
   if (!isMainnet()) return null;
   const bare = name.replace(/\.sui$/i, '').toLowerCase();
   const nh = keccak_256(new TextEncoder().encode(bare));
-  const nhB64 = btoa(String.fromCharCode(...nh));
+  // GraphQL `dynamicField(name: { type: "vector<u8>", bcs: … })` expects
+  // the BCS-encoded vector<u8> — ULEB128 length prefix + raw bytes. The
+  // hash is 32 bytes so the prefix fits in one byte (0x20).
+  const prefixed = new Uint8Array(nh.length + 1);
+  prefixed[0] = nh.length;
+  prefixed.set(nh, 1);
+  const nhB64 = btoa(String.fromCharCode(...prefixed));
   try {
     const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
       method: 'POST',
@@ -226,6 +238,62 @@ export async function readRosterByAddress(address: string): Promise<RosterRecord
       for (const { key, value } of record.chains.contents) {
         chains[key] = value;
       }
+    }
+    return {
+      name: record.name ?? '',
+      sui_address: record.sui_address ?? '',
+      chains,
+      walrus_blob_id: record.walrus_blob_id ?? '',
+      seal_nonce: record.seal_nonce ?? [],
+      verified: record.verified ?? false,
+      dwallet_caps: record.dwallet_caps ?? [],
+      updated_ms: record.updated_ms ?? '0',
+    };
+  } catch { return null; }
+}
+
+/**
+ * Reverse-lookup the SUIAMI Roster by a chain:address key.
+ *
+ * Key format matches the Move contract's third index: `"<chain>:<addr>"`
+ * — e.g. `"sui:0xa84c…"`, `"btc:bc1q…"`, `"eth:0x…"`. The Sui-chain key
+ * works for every roster entry today because the default `set_identity`
+ * call always writes the sender's Sui address under the `sui` key. Other
+ * chains are only reverse-resolvable if the owner opted to write them
+ * plaintext on-chain (BTC/ETH/SOL normally live Seal-encrypted in the
+ * Walrus blob and are *not* indexed here).
+ *
+ * Returns the full IdentityRecord, or null if the key isn't registered.
+ */
+export async function readRosterByChain(chainKey: string): Promise<RosterRecord | null> {
+  if (!isMainnet()) return null;
+  const key = (chainKey || '').trim();
+  if (!key.includes(':')) return null;
+  // GraphQL dynamic_field(name: { type: "0x1::string::String", bcs: <utf-8 len-prefixed> })
+  // needs ULEB128 length prefix + raw UTF-8 bytes, BCS-encoded.
+  const utf8 = new TextEncoder().encode(key);
+  const lenPrefix: number[] = [];
+  let n = utf8.length;
+  while (n >= 0x80) { lenPrefix.push((n & 0x7f) | 0x80); n >>>= 7; }
+  lenPrefix.push(n & 0x7f);
+  const bcs = new Uint8Array(lenPrefix.length + utf8.length);
+  bcs.set(lenPrefix, 0);
+  bcs.set(utf8, lenPrefix.length);
+  const b64 = btoa(String.fromCharCode(...bcs));
+  try {
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address: "${ROSTER_OBJ}") { dynamicField(name: { type: "0x1::string::String", bcs: "${b64}" }) { value { ... on MoveValue { json } } } } }`,
+      }),
+    });
+    const gql = await res.json() as any;
+    const record = gql?.data?.object?.dynamicField?.value?.json;
+    if (!record) return null;
+    const chains: Record<string, string> = {};
+    if (record.chains?.contents) {
+      for (const { key: ck, value } of record.chains.contents) chains[ck] = value;
     }
     return {
       name: record.name ?? '',
@@ -871,6 +939,7 @@ export async function buildSetDefaultNsTx(rawAddress: string, domain: string): P
     ],
   });
   maybeAppendRoster(tx);
+  appendWaapDeterministicEcdsaJitter(tx, walletAddress);
   const bytes = await tx.build({ client: transport as never });
   return { bytes, tx };
 }
@@ -2257,6 +2326,9 @@ export async function buildPostTradeConfigureTx(opts: {
   walrusBlobId?: string;    // reuse existing encrypted squid blob if available
   sealNonce?: number[];     // matching nonce for the blob
   writeRoster?: boolean;    // default true; set false to skip roster entry
+  /** DWalletCap object IDs owned by the buyer. Flips the roster
+   *  `verified` flag to true when non-empty. */
+  dwalletCaps?: string[];
 }): Promise<Uint8Array & { tx?: InstanceType<typeof Transaction> }> {
   const walletAddress = normalizeSuiAddress(opts.sender);
   const bareName = opts.domain.replace(/\.sui$/i, '').toLowerCase();
@@ -2286,6 +2358,7 @@ export async function buildPostTradeConfigureTx(opts: {
   const shouldWriteRoster = opts.writeRoster !== false && isMainnet();
   if (shouldWriteRoster) {
     const nameHash = Array.from(keccak_256(new TextEncoder().encode(bareName)));
+    const caps = (opts.dwalletCaps ?? []).filter(c => typeof c === 'string' && c.startsWith('0x'));
     tx.moveCall({
       package: ROSTER_PKG,
       module: 'roster',
@@ -2298,10 +2371,7 @@ export async function buildPostTradeConfigureTx(opts: {
         // BTC / ETH / SOL are in the Walrus blob, not here.
         tx.pure.vector('string', ['sui']),
         tx.pure.vector('string', [walletAddress]),
-        // dwallet_caps — empty for now; IKA cap ownership is intentionally
-        // not exposed in this entry so the squid dWallets aren't linkable
-        // to the name on-chain.
-        tx.pure.vector('address', []),
+        tx.pure.vector('address', caps),
         tx.pure.string(opts.walrusBlobId ?? ''),
         tx.pure.vector('u8', opts.sealNonce ?? []),
         tx.object('0x6'),
@@ -2313,6 +2383,7 @@ export async function buildPostTradeConfigureTx(opts: {
   // may already have a primary they want to keep (e.g. superteam.sui).
   // Making great.sui the new default is an explicit, separate action.
 
+  appendWaapDeterministicEcdsaJitter(tx, walletAddress);
   const bytes = await buildWithTx(tx, transport);
   const out = bytes as Uint8Array & { tx?: InstanceType<typeof Transaction> };
   out.tx = tx;
@@ -2372,6 +2443,12 @@ export async function buildFullSuiamiWriteTx(opts: {
   entries: Array<{ domain: string; nftId?: string }>;
   walrusBlobId: string;
   sealNonce: number[];
+  /** DWalletCap object IDs owned by the sender. Non-empty flips the
+   *  roster's `verified` flag to true on-chain, which is what every
+   *  verified-tier gate (Chronicom, decrypt-as-a-service, agent
+   *  provisioning) reads from. Passed as `vector<address>` — Move
+   *  treats object IDs as addresses. */
+  dwalletCaps?: string[];
   /** If true and `nftId` is provided on an entry, chains a
    *  `setTargetAddress` call to repoint that name at the sender. */
   setTargetForNfts?: boolean;
@@ -2386,6 +2463,8 @@ export async function buildFullSuiamiWriteTx(opts: {
   const tx = new Transaction();
   tx.setSender(walletAddress);
   const suinsTx = new SuinsTransaction(suinsClient, tx);
+
+  const caps = (opts.dwalletCaps ?? []).filter(c => typeof c === 'string' && c.startsWith('0x'));
 
   for (const entry of opts.entries) {
     const bareName = entry.domain.replace(/\.sui$/i, '').toLowerCase();
@@ -2410,7 +2489,7 @@ export async function buildFullSuiamiWriteTx(opts: {
         tx.pure.vector('u8', nameHash),
         tx.pure.vector('string', ['sui']),
         tx.pure.vector('string', [walletAddress]),
-        tx.pure.vector('address', []),
+        tx.pure.vector('address', caps),
         tx.pure.string(opts.walrusBlobId),
         tx.pure.vector('u8', opts.sealNonce),
         tx.object('0x6'),

@@ -470,15 +470,20 @@ window.addEventListener('ski:request-suiami', async (e) => {
       const { Transaction } = await import('@mysten/sui/transactions');
       const { normalizeSuiAddress } = await import('@mysten/sui/utils');
       const tx = new Transaction();
-      // Tx sender MUST be set explicitly. WaaP and other wallets that
-      // pre-build with their own SDK fail with "Failed to build
-      // transaction: Missing transaction sender" when sender is unset
-      // even though signAndExecuteTransaction will eventually attach
-      // the signing account. Always normalize for WaaP addresses that
-      // may not be zero-padded.
       tx.setSender(normalizeSuiAddress(ws.address));
-      maybeAppendRoster(tx, ws.address, name, undefined, blobId, sealNonce);
-      const { digest } = await signAndExecuteTransaction(tx);
+      // Attach dwallet caps so the roster entry flips verified:true
+      // when the user has already rumbled. If not, caps array is empty
+      // and the entry stays unverified — same behavior as before.
+      let dwalletCaps: string[] = [];
+      try {
+        const { getCrossChainStatus } = await loadIka();
+        dwalletCaps = (await getCrossChainStatus(ws.address)).dwalletCaps ?? [];
+      } catch {}
+      maybeAppendRoster(tx, ws.address, name, undefined, blobId, sealNonce, dwalletCaps);
+      // Pre-build to bytes so WaaP's v1 SDK doesn't crash reading
+      // gasConfig.price (v2 uses gasData, v1 reads gasConfig).
+      const rosterBytes = await tx.build({ client: grpcClient as never });
+      const { digest } = await signAndExecuteTransaction(rosterBytes);
       console.log('[suiami] roster attestation written:', digest);
       showToast(`\u2713 SUIAMI on-chain for ${name}.sui`);
     } catch (rosterErr) {
@@ -761,6 +766,60 @@ const _suiamiAudit = async () => {
 (globalThis as unknown as { suiamiAudit: typeof _suiamiAudit }).suiamiAudit = _suiamiAudit;
 console.log('[ski] suiamiAudit hook installed — call suiamiAudit() to check current roster state');
 
+// ── who(key) — SUIAMI reverse lookup by chain:address ──
+//
+// SUIAMI is the pronoun — `who` is the question. Given any chain-keyed
+// address, return the Roster entry that owns it. Uses the
+// `lookup_by_chain` dynamic field the contract maintains as a third
+// index alongside name_hash and address.
+//
+// Accepts:
+//   who("0xa84c…")       → bare 64-hex address
+//   who("eth:0xd8…")     → Ethereum
+//   who("btc:bc1q…")     → Bitcoin
+//   who("sol:5Kz…")      → Solana
+//
+// Caveat: non-native chains are only reverse-resolvable when the owner
+// opted to write the address plaintext on-chain. The default Roster
+// write keeps BTC/ETH/SOL Seal-encrypted in the Walrus blob and does
+// not index them here — a deliberate privacy choice. `who` will miss
+// those entries and that's expected.
+const _who = async (input: string) => {
+  if (!input || typeof input !== 'string') {
+    console.error('[who] usage: who("<chain>:<address>") or who("<bare-0x-address>")');
+    return { error: 'bad-input' };
+  }
+  let key = input.trim();
+  // Bare 0x-prefixed 64-hex address → auto-wrap
+  if (!key.includes(':') && /^0x[0-9a-f]{64}$/i.test(key)) key = `sui:${key.toLowerCase()}`;
+  if (!key.includes(':')) {
+    console.error('[who] key must be "<chain>:<address>" (chain ∈ sui/eth/btc/sol/…)');
+    return { error: 'bad-format' };
+  }
+  try {
+    const { readRosterByChain } = await import('./suins.js');
+    const record = await readRosterByChain(key);
+    if (!record) {
+      console.log(`[who] no SUIAMI entry for ${key}`);
+      return { ok: false, key };
+    }
+    console.log(`[who] ${key} →`);
+    console.log(`  name:            ${record.name}`);
+    console.log(`  address:         ${record.sui_address}`);
+    console.log(`  verified:        ${record.verified}`);
+    console.log(`  dwallet_caps:    ${record.dwallet_caps.length}`);
+    console.log(`  chains on-chain: ${Object.keys(record.chains).join(', ') || '(none)'}`);
+    console.log(`  walrus_blob_id:  ${record.walrus_blob_id || '(none)'}`);
+    return { ok: true, key, record };
+  } catch (err) {
+    console.error('[who] query failed:', err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+(window as unknown as { who: typeof _who }).who = _who;
+(globalThis as unknown as { who: typeof _who }).who = _who;
+console.log('[ski] who hook installed — call who("<chain>:<address>") or who("<bare-0x-addr>") for reverse roster lookup');
+
 // ── Bronzong — Seal-gated SUIAMI upgrade (#157) ──
 //
 // Retroactive SUIAMI upgrade using Seal threshold encryption instead
@@ -846,6 +905,21 @@ const _upgradeSuiami = async (extraNames: string[] = []) => {
       console.warn(`[upgradeSuiami] no NFT id found for: ${missingNftIds.join(', ')} — writing roster entries without setTargetAddress`);
     }
 
+    // Gather DWalletCap object IDs so Roster's `verified` flips to true
+    // on-chain for this batch of names. Non-fatal if the wallet hasn't
+    // rumbled yet — caps array is just empty and verified stays false.
+    let dwalletCaps: string[] = [];
+    try {
+      const { getCrossChainStatus } = await loadIka();
+      const ccs = await getCrossChainStatus(ws.address);
+      dwalletCaps = ccs.dwalletCaps ?? [];
+      if (dwalletCaps.length) {
+        console.log(`[upgradeSuiami] attaching ${dwalletCaps.length} dwallet cap(s) — roster will mark verified:true`);
+      }
+    } catch (ccsErr) {
+      console.warn('[upgradeSuiami] getCrossChainStatus failed, writing unverified entries:', ccsErr);
+    }
+
     showToast(`\u{1F300} Writing SUIAMI for ${names.length} name${names.length > 1 ? 's' : ''}\u2026`);
     const bytes = await buildFullSuiamiWriteTx({
       sender: ws.address,
@@ -856,6 +930,7 @@ const _upgradeSuiami = async (extraNames: string[] = []) => {
       // but semantically it's a Seal id, not an AES IV.
       sealNonce: Array.from(sealId),
       setTargetForNfts: true,
+      dwalletCaps,
     });
     const { digest } = await signAndExecuteTransaction(bytes);
     const summary = `\u2713 SUIAMI upgraded \u2014 ${names.length} name${names.length > 1 ? 's' : ''} Seal-gated on the roster policy`;

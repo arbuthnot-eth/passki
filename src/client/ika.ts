@@ -274,6 +274,10 @@ export interface CrossChainStatus {
   ika: boolean;
   dwalletCount: number;
   dwalletId: string;
+  /** Object IDs of every DWalletCap the wallet currently owns. Populated
+   *  for the SUIAMI Roster's `dwallet_caps: vector<address>` field —
+   *  non-empty caps flip `IdentityRecord.verified` to true on-chain. */
+  dwalletCaps: string[];
   btcAddress: string;
   ethAddress: string;
   solAddress: string;
@@ -664,6 +668,7 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
   let solAddress = '';
   let addresses: Array<{ chain: string; name: string; address: string }> = [];
   let dwalletId = '';
+  const dwalletCaps: string[] = [];
   let hasDWallet = false;
   let dwalletCount = 0;
 
@@ -687,6 +692,11 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
       if (!cap) continue;
       const capDwalletId = cap.content?.fields?.dwallet_id ?? '';
       if (!capDwalletId) continue;
+
+      // Collect the DWalletCap object ID for the roster's `dwallet_caps`
+      // vector — Move stores object IDs as addresses.
+      const capObjectId = cap.objectId ?? cap.content?.fields?.id?.id ?? '';
+      if (capObjectId) dwalletCaps.push(capObjectId);
 
       // Use first cap's dwalletId as the primary
       if (!dwalletId) dwalletId = capDwalletId;
@@ -744,6 +754,7 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
     ika: hasDWallet,
     dwalletCount,
     dwalletId,
+    dwalletCaps,
     btcAddress,
     ethAddress,
     solAddress,

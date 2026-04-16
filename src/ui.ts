@@ -360,15 +360,13 @@ function fmtStable(n: number): string {
 
 let toastSeq = 0;
 
-export function showToast(msg: string, isHtml = false) {
+export function showToast(msg: string, isHtml = false, persistent = false) {
   const text = msg.trim();
   if (!text) return;
-  // All toasts use copyable behavior: first click copies, second dismisses
   if (isHtml) {
-    // HTML toasts (rare) — still use copyable with raw text extraction
-    showCopyableToast(text, text.replace(/<[^>]*>/g, ''));
+    showCopyableToast(text, text.replace(/<[^>]*>/g, ''), 8000, persistent);
   } else {
-    showCopyableToast(text, text);
+    showCopyableToast(text, text, 8000, persistent);
   }
 }
 
@@ -415,7 +413,7 @@ function toggleAddrRow(el: HTMLElement, fullAddr: string, color: string) {
   }, ADDR_RESTORE_MS));
 }
 
-function showCopyableToast(display: string, fullText: string, durationMs = 8000) {
+function showCopyableToast(display: string, fullText: string, durationMs = 8000, persistent = false) {
   const text = display.trim();
   if (!text) return;
   let root = document.getElementById('app-toast-root');
@@ -438,6 +436,77 @@ function showCopyableToast(display: string, fullText: string, durationMs = 8000)
 
   const hint = document.createElement('div');
   hint.className = 'app-toast-copy-hint';
+  hint.textContent = persistent ? 'click to dismiss' : 'click to copy';
+  toast.appendChild(hint);
+
+  root.appendChild(toast);
+  requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
+
+  let copied = false;
+  let removed = false;
+  const remove = () => {
+    if (removed) return;
+    removed = true;
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), TOAST_ANIMATION_MS);
+  };
+  const _autoTimer = persistent ? null : setTimeout(remove, 4500);
+  toast.addEventListener('click', () => {
+    if (persistent && !copied) { copied = true; remove(); return; }
+    if (copied) { if (_autoTimer) clearTimeout(_autoTimer); remove(); return; }
+    copied = true;
+    navigator.clipboard.writeText(fullText).catch(() => {});
+    hint.textContent = '\u2713 Copied — click again to dismiss';
+    hint.style.color = '#4ade80';
+  });
+}
+
+const SUINS_REG_TYPE = '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::suins_registration::SuinsRegistration';
+
+function _extractNftId(effects: unknown): string {
+  if (!effects || typeof effects !== 'object') return '';
+  const eff = effects as Record<string, unknown>;
+  const created = (eff.created ?? eff.createdObjects ?? []) as Array<Record<string, unknown>>;
+  for (const obj of created) {
+    const ref = (obj.reference ?? obj) as Record<string, unknown>;
+    const id = (ref.objectId ?? ref.objectID ?? obj.objectId ?? '') as string;
+    const type = (obj.objectType ?? obj.type ?? ref.objectType ?? '') as string;
+    if (id && type.includes('SuinsRegistration')) return id;
+    if (id && !type) return id;
+  }
+  return '';
+}
+
+function showMintToast(name: string, digest: string, effects?: unknown) {
+  const bare = name.replace(/\.sui$/i, '');
+  const nftId = _extractNftId(effects);
+  const display = `<span class="app-toast-mint-check">\u2713</span> ${bare} SUIAMI proof generated`;
+  const full = [
+    `${bare}.sui minted`,
+    `Digest: ${digest || '(pending)'}`,
+    nftId ? `NFT: ${nftId}` : '',
+  ].filter(Boolean).join('\n');
+
+  let root = document.getElementById('app-toast-root');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'app-toast-root';
+    root.className = 'app-toast-root';
+    document.body.appendChild(root);
+  }
+  const toast = document.createElement('div');
+  const id = 'app-toast-' + ++toastSeq;
+  toast.className = 'app-toast app-toast--copyable';
+  toast.id = id;
+  toast.setAttribute('role', 'status');
+
+  const msgEl = document.createElement('div');
+  msgEl.className = 'app-toast-copy-msg';
+  msgEl.innerHTML = display;
+  toast.appendChild(msgEl);
+
+  const hint = document.createElement('div');
+  hint.className = 'app-toast-copy-hint';
   hint.textContent = 'click to copy';
   toast.appendChild(hint);
 
@@ -452,16 +521,13 @@ function showCopyableToast(display: string, fullText: string, durationMs = 8000)
     toast.classList.remove('show');
     setTimeout(() => toast.remove(), TOAST_ANIMATION_MS);
   };
-  // Auto-dismiss after 4.5s regardless of interaction state. Click still
-  // copies; the copy state just sticks around until the timer fires or
-  // the user clicks again to dismiss early.
-  const _autoTimer = setTimeout(remove, 4500);
   toast.addEventListener('click', () => {
-    if (copied) { clearTimeout(_autoTimer); remove(); return; }
+    if (copied) { remove(); return; }
     copied = true;
-    navigator.clipboard.writeText(fullText).catch(() => {});
-    hint.textContent = '\u2713 Copied — click again to dismiss';
+    navigator.clipboard.writeText(full).catch(() => {});
+    hint.textContent = '\u2713 Copied — click to dismiss';
     hint.style.color = '#4ade80';
+    hint.style.opacity = '1';
   });
 }
 
@@ -3746,6 +3812,72 @@ function _toggleThunderConvo() {
   try { localStorage.setItem('ski:thunder-card-open', _thunderConvoOpen ? '1' : '0'); } catch {}
 }
 
+/** In-memory SUIAMI roster cache keyed by lowercased Sui address.
+ *  `null` means a verified lookup came back empty (no entry / network
+ *  blip) and we should retry after the TTL, rather than pummeling the
+ *  GraphQL endpoint every bubble. */
+const _suiamiAddrCache = new Map<string, { name: string; verified: boolean; expires: number }>();
+const SUIAMI_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Enrich Thunder bubbles post-render: swap truncated addresses for
+ *  SUIAMI names and un-hide the verified tick when `verified: true`
+ *  comes back from the roster. Dedupes by address so N bubbles from
+ *  the same sender cost one lookup. Silent on failure — bubbles just
+ *  stay address-only, which matches pre-change behavior. */
+async function _enrichThunderBubblesWithSuiami(container: HTMLElement) {
+  const nodes = Array.from(
+    container.querySelectorAll<HTMLElement>('.wk-thunder-bubble-sender[data-sender-addr]'),
+  );
+  if (!nodes.length) return;
+  const byAddr = new Map<string, HTMLElement[]>();
+  for (const node of nodes) {
+    const addr = node.dataset.senderAddr?.toLowerCase();
+    if (!addr) continue;
+    const list = byAddr.get(addr) ?? [];
+    list.push(node);
+    byAddr.set(addr, list);
+  }
+  const now = Date.now();
+  const needLookup: string[] = [];
+  for (const addr of byAddr.keys()) {
+    const cached = _suiamiAddrCache.get(addr);
+    if (!cached || cached.expires < now) needLookup.push(addr);
+  }
+
+  if (needLookup.length > 0) {
+    const { readRosterByAddress } = await import('./suins.js');
+    await Promise.all(needLookup.map(async (addr) => {
+      try {
+        const record = await readRosterByAddress(addr);
+        _suiamiAddrCache.set(addr, {
+          name: record?.name ?? '',
+          verified: !!record?.verified,
+          expires: Date.now() + SUIAMI_CACHE_TTL_MS,
+        });
+      } catch {
+        _suiamiAddrCache.set(addr, { name: '', verified: false, expires: Date.now() + 30_000 });
+      }
+    }));
+  }
+
+  for (const [addr, elList] of byAddr) {
+    const entry = _suiamiAddrCache.get(addr);
+    if (!entry) continue;
+    for (const el of elList) {
+      const textEl = el.querySelector<HTMLElement>('.wk-thunder-bubble-sender-text');
+      const badge = el.querySelector<HTMLElement>('.wk-thunder-bubble-verified');
+      if (entry.name && textEl) {
+        textEl.textContent = entry.name;
+        el.dataset.sender = entry.name;
+      }
+      if (badge) {
+        if (entry.verified) badge.removeAttribute('hidden');
+        else badge.setAttribute('hidden', '');
+      }
+    }
+  }
+}
+
 /** Render the conversation view for a counterparty in the thunder received area. */
 async function _renderConversation(counterparty: string, force = false) {
   const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
@@ -3775,10 +3907,19 @@ async function _renderConversation(counterparty: string, force = false) {
   const myAddr = ws.address?.toLowerCase() || '';
   const rows = doMessages.map(m => {
     const isOut = m.senderAddress.toLowerCase() === myAddr;
-    const sender = isOut ? '' : m.senderAddress.slice(0, 8);
+    const senderDisplay = isOut ? '' : m.senderAddress.slice(0, 8);
+    const senderAddrLc = m.senderAddress.toLowerCase();
     const cls = isOut ? 'wk-thunder-bubble--out' : 'wk-thunder-bubble--in';
     const selCls = _selectedThunderTs.has(m.createdAt) ? ' wk-thunder-bubble--selected' : '';
-    const label = isOut ? '' : (sender ? `<span class="wk-thunder-bubble-sender" data-sender="${esc(sender)}">${esc(sender)}</span> ` : '');
+    // Sender label carries the full address in data-sender-addr so the
+    // post-render SUIAMI resolver can find the bubble without having to
+    // re-query the DO. The visible text is the truncated preview; it
+    // gets overwritten with the SUIAMI name once the roster lookup
+    // lands. The verified tick is hidden until `verified: true` comes
+    // back from the chain.
+    const label = isOut ? '' : (senderDisplay
+      ? `<span class="wk-thunder-bubble-sender" data-sender="${esc(senderDisplay)}" data-sender-addr="${esc(senderAddrLc)}"><span class="wk-thunder-bubble-sender-text">${esc(senderDisplay)}</span><span class="wk-thunder-bubble-verified" hidden title="SUIAMI verified \u2014 dWallet-backed identity">\u2713</span></span> `
+      : '');
     // Render @mentions as clickable
     const msgHtml = esc(m.text).replace(/@([a-z0-9-]{3,63})(\.sui)?/gi, (_, name: string) => {
       const b = name.toLowerCase();
@@ -3792,6 +3933,12 @@ async function _renderConversation(counterparty: string, force = false) {
     : '';
 
   receivedEl.innerHTML = rows + deleteBtn;
+
+  // ── SUIAMI enrichment — resolve each unique sender's roster entry in
+  // the background and patch the rendered bubbles with SUIAMI name +
+  // verified mark. Runs deduped across a conversation so N bubbles
+  // from the same sender cost exactly one GraphQL roundtrip.
+  void _enrichThunderBubblesWithSuiami(receivedEl);
 
   // Show decrypt bar OR reply input — never both
   const unquestedEl = document.getElementById('wk-thunder-unquested');
