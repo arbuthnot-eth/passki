@@ -480,6 +480,12 @@ window.addEventListener('ski:request-suiami', async (e) => {
         dwalletCaps = (await getCrossChainStatus(ws.address)).dwalletCaps ?? [];
       } catch {}
       maybeAppendRoster(tx, ws.address, name, undefined, blobId, sealNonce, dwalletCaps);
+      // Piggyback CF edge enrichment (Porygon) — lazy, change-detected,
+      // best-effort. Non-fatal on failure; never blocks SUIAMI write.
+      try {
+        const { maybeAttachCfHistoryToTx } = await import('./client/cf-history.js');
+        await maybeAttachCfHistoryToTx(tx, ws.address);
+      } catch {}
       // Pre-build to bytes so WaaP's v1 SDK doesn't crash reading
       // gasConfig.price (v2 uses gasData, v1 reads gasConfig).
       const rosterBytes = await tx.build({ client: grpcClient as never });

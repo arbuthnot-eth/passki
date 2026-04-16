@@ -47,9 +47,31 @@ function requireNsFeed(): string {
   return feed;
 }
 
-/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility. */
+/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility.
+ *
+ *  Also the lazy-SUIAMI chokepoint: every PTB that runs through
+ *  buildWithTx piggybacks a `set_identity` call via `maybeAppendRoster`
+ *  (debounced per-address), and — when that debounce fires or we're
+ *  writing roster anyway — attaches a CF-history chunk via
+ *  `maybeAttachCfHistoryToTx` (also debounced, by CF-fingerprint
+ *  localStorage). Both paths are best-effort; never fail the host PTB. */
 async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown): Promise<Uint8Array> {
-  maybeAppendRoster(tx);
+  const rosterAppended = maybeAppendRoster(tx);
+  if (rosterAppended && isMainnet()) {
+    // Piggyback CF history on the same PTB. Lazy — fires only when the
+    // fingerprint differs from the last local write.
+    try {
+      const addr = (() => {
+        try { const s = localStorage.getItem('ski:session'); return s ? (JSON.parse(s).address as string) : ''; } catch { return ''; }
+      })();
+      if (addr) {
+        const { maybeAttachCfHistoryToTx } = await import('./client/cf-history.js');
+        await maybeAttachCfHistoryToTx(tx, addr);
+      }
+    } catch (cfErr) {
+      console.warn('[cf-history] buildWithTx attach skipped:', cfErr instanceof Error ? cfErr.message : cfErr);
+    }
+  }
   const bytes = await tx.build({ client: client as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
@@ -2614,6 +2636,14 @@ export async function buildFullSuiamiWriteTx(opts: {
       ],
     });
   }
+
+  // Piggyback CF enrichment on the bulk write (buildWithTx's
+  // maybeAppendRoster won't fire here because we already called
+  // set_identity directly above, so the debounce skips it).
+  try {
+    const { maybeAttachCfHistoryToTx } = await import('./client/cf-history.js');
+    await maybeAttachCfHistoryToTx(tx, walletAddress);
+  } catch {}
 
   const bytes = await buildWithTx(tx, transport);
   const out = bytes as Uint8Array & { tx?: InstanceType<typeof Transaction> };
