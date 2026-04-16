@@ -25,43 +25,17 @@ import { DappKitSigner, type SignPersonalMessageFn } from './dapp-kit-signer.js'
 // ─── Constants ──────────────────────────────────────────────────────
 const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 
-/**
- * Global SUIAMI Storm — public identity directory. Anyone with a SuiNS name can join.
- * Deterministic UUID: 'suiami-global' -> derived via @mysten/sui-stack-messaging derive.
- * Deploy: bun scripts/deploy-suiami-storm.ts
- */
-export const GLOBAL_SUIAMI_STORM = '0xfe23aad02ff15935b09249b4c5369bcd85f02ce157f54f94a3e7cc6dfa10a6e8';
-export const GLOBAL_SUIAMI_STORM_UUID = 'suiami-global';
-
-// DeepBook v3 SUI/USDC pool — used to swap SUI → USDC in the Thunder $ transfer
-// path. USDC is the canonical Thunder stable: it's dollar-pegged, every wallet
-// renders it as "≈ $N" on the confirm screen, and the SUI/USDC pool has deep
-// two-sided liquidity. iUSD was considered as the destination asset but its
-// Treasury is currently undercollateralized and the collateral-management
-// functions are all PRIVATE, so minting is blocked. Revisit iUSD-as-canonical
-// once the mint path is healthy and the iUSD/USDC pool is seeded two-sided.
-// Thunder IOU — self-contained shared escrow objects used by the
-// transfer-in-storm flow. See contracts/thunder-iou/sources/iou.move.
-// Sender locks SUI with `iou::create`; recipient claims before expiry;
-// sender (or any keeper) recalls after expiry.
-//
-// Two variants live side by side:
-//   THUNDER_IOU_PACKAGE          — legacy cleartext metadata Iou
+// Thunder IOU — shared escrow objects for the transfer-in-storm flow.
+// See contracts/thunder-iou/sources/iou.move. Sender locks SUI with
+// `iou::create`; recipient claims before expiry; sender (or any keeper)
+// recalls after expiry. Two variants:
+//   THUNDER_IOU_PACKAGE          — cleartext Iou (dust path)
 //   THUNDER_IOU_SHIELDED_PACKAGE — Pedersen-committed ShieldedVault
-//
-// New sends use the shielded package. The legacy package is kept
-// around so pre-existing Iou objects can still be claimed / recalled
-// via the claim/recall helpers below.
 const THUNDER_IOU_PACKAGE = '0x5a80b9753d6ccce11dc1f9a5039d9430d3e43a216f82f957ef11df9cb5c4dc79';
 const THUNDER_IOU_SHIELDED_PACKAGE = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782';
-// 7 days — gives the recipient a week to claim before the sender
-// (or a keeper bot) can sweep the balance back. Short enough that
-// unredeemed funds don't sit forever; long enough for anyone on a
-// vacation to catch up.
-// 10 minutes — short enough that unclaimed vaults auto-expire
-// quickly and ultron's sweep picks them up. The old 7-day TTL
-// locked funds for a week if the recipient didn't claim (and
-// WaaP wallets can't recall due to dry-run sender mismatch).
+// 10 minutes — short enough that unclaimed vaults auto-expire and
+// ultron's sweep picks them up. WaaP wallets can't recall due to
+// dry-run sender mismatch, so we keep TTL tight.
 const IOU_DEFAULT_TTL_MS = 10 * 60 * 1000;
 
 // Diglett Lv.18 — dust threshold. Below this mist amount, a shielded
@@ -76,13 +50,6 @@ const IOU_DEFAULT_TTL_MS = 10 * 60 * 1000;
 // path turns out cheaper than expected, lower if users complain
 // about $0.01 sends leaking recipient address on-chain.
 const SHIELDED_DUST_THRESHOLD_MIST = 3_000_000n;
-
-const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
-const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
-const DB_SUI_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
-const DB_USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
-const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
-const DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION = 389750322;
 
 // Walrus mainnet publisher / aggregator for Thunder file attachments.
 // Attached files are encrypted client-side by the SDK's AttachmentsManager
@@ -1328,41 +1295,6 @@ export async function isVaultLive(objectId: string): Promise<boolean> {
   } catch { return false; }
 }
 
-/** Look up the first Thunder IOU object created by a given tx digest. */
-export async function lookupIouFromDigest(digest: string): Promise<{ objectId: string; initialSharedVersion: number } | null> {
-  if (!digest) return null;
-  try {
-    const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-    const query = `query($d: String!) {
-      transactionBlock(digest: $d) {
-        effects {
-          objectChanges { nodes { address idCreated outputState { asMoveObject { contents { type { repr } } } } } }
-        }
-      }
-    }`;
-    const res = await (gql as any).query({ query, variables: { d: digest } });
-    const nodes = res?.data?.transactionBlock?.effects?.objectChanges?.nodes || [];
-    for (const n of nodes) {
-      if (!n?.idCreated) continue;
-      const repr: string = n?.outputState?.asMoveObject?.contents?.type?.repr || '';
-      if (!repr.includes('::iou::Iou')) continue;
-      const addr: string = n.address || '';
-      if (!addr) continue;
-      // Fetch the initial shared version via a second query since the
-      // GraphQL schema above doesn't surface it directly.
-      const obj = await (gql as any).query({
-        query: `query($a: SuiAddress!) { object(address: $a) { version } }`,
-        variables: { a: addr },
-      });
-      const version = Number(obj?.data?.object?.version || 0);
-      return { objectId: addr, initialSharedVersion: version };
-    }
-    return null;
-  } catch (e) {
-    console.warn('[iou] lookupIouFromDigest failed:', e instanceof Error ? e.message : e);
-    return null;
-  }
-}
 
 /** Shared sponsor-gas shape passed to claim/recall builders. */
 export interface ThunderSponsor {
