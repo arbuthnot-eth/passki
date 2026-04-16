@@ -1064,6 +1064,48 @@ async function encryptWithRetry(
  * Seal envelope uses the same key version as the original so
  * participants can decrypt it. Attachments are left unchanged.
  */
+// ─── Prism auto-detect ──────────────────────────────────────────────
+//
+// Fires `ski:prism-received` as each Thunder carrying a Prism manifest
+// comes in, one event per prismId seen. SUIAMI + IKA dWallets make
+// downstream action automatic (receiver is already provisioned); this
+// helper does detection + dedup only. Broadcast / claim handlers live
+// outside thunder-stack.
+const _prismSeen = new Set<string>();
+async function _emitPrismEvents(messages: DecryptedMessage[]): Promise<void> {
+  if (!Array.isArray(messages) || messages.length === 0) return;
+  let prismMod: typeof import('./prism.js') | null = null;
+  for (const dm of messages) {
+    const atts = (dm as unknown as { attachments?: unknown[] }).attachments;
+    if (!Array.isArray(atts) || atts.length === 0) continue;
+    if (!prismMod) {
+      try { prismMod = await import('./prism.js'); } catch { return; }
+    }
+    if (!prismMod.isPrism(dm)) continue;
+    const parsed = await prismMod.extractPrismFromMessage(dm);
+    if (!parsed) continue;
+    // Skip self-authored Prisms — the sender is on the receive feed too.
+    if (_address && dm.senderAddress &&
+        dm.senderAddress.toLowerCase() === _address.toLowerCase()) continue;
+    if (_prismSeen.has(parsed.manifest.prismId)) continue;
+    _prismSeen.add(parsed.manifest.prismId);
+    try {
+      window.dispatchEvent(new CustomEvent('ski:prism-received', {
+        detail: {
+          prismId: parsed.manifest.prismId,
+          manifest: parsed.manifest,
+          messageId: dm.messageId,
+          senderAddress: dm.senderAddress,
+          hasPayload: parsed.payloadHandle !== null,
+          resolvePayload: parsed.payloadHandle
+            ? (() => parsed.payloadHandle!.data())
+            : null,
+        },
+      }));
+    } catch { /* non-blocking */ }
+  }
+}
+
 export async function editThunder(opts: {
   groupRef: GroupRef;
   messageId: string;
@@ -1144,6 +1186,15 @@ export async function getThunders(opts: {
           senderVerified: dm.senderVerified,
           attachments: dm.attachments,
         }));
+        // Prism auto-detect — fire `ski:prism-received` for each Thunder
+        // carrying a Prism manifest. SUIAMI makes this automatic: the
+        // receiver's wallet + dWallet caps are already provisioned, so
+        // downstream handlers (UI claim button, agent auto-broadcast)
+        // can act without extra user setup. Kept best-effort; if the
+        // prism module isn't loaded, this path silently no-ops.
+        if (typeof window !== 'undefined') {
+          void _emitPrismEvents(sdkResult.messages).catch(() => {});
+        }
         return { messages: sdkMessages, hasNext: sdkResult.hasNext };
       }
       const messages: ThunderMessage[] = [];
@@ -1211,6 +1262,11 @@ export async function getThunders(opts: {
     afterOrder: opts.afterOrder,
     limit: opts.limit,
   });
+
+  // Prism auto-detect on the fallback SDK path too.
+  if (typeof window !== 'undefined') {
+    void _emitPrismEvents(result.messages).catch(() => {});
+  }
 
   return {
     messages: result.messages.map(m => ({
