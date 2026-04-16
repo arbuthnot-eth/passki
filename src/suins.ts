@@ -115,7 +115,7 @@ export function encodeIusdAmount(usdAmount: number, signalId: number): bigint {
 // These Move packages are mainnet-only — no testnet deployment exists, so
 // every code path that touches ROSTER_* or IUSD_* must early-exit on testnet
 // hosts. The `isMainnet()` gates below enforce that.
-const ROSTER_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa'; // v3: +walrus_blob_id, seal_nonce, verified
+const ROSTER_PKG = '0x7bf4438feaf953e94b98dfc2aab0cf1aaad2250ee4e0fe87c9cc251965987de8'; // v3: +walrus_blob_id, seal_nonce, verified
 const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 
 /**

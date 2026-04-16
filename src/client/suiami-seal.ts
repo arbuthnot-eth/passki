@@ -53,7 +53,7 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, GQL_URL } from '../rpc.js';
 
-export const SUIAMI_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
+export const SUIAMI_PKG = '0x7bf4438feaf953e94b98dfc2aab0cf1aaad2250ee4e0fe87c9cc251965987de8';
 export const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 export const ROSTER_INITIAL_SHARED_VERSION = 839068132;
 
