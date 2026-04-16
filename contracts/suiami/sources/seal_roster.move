@@ -19,9 +19,20 @@ entry fun seal_approve_roster_reader(
     ctx: &TxContext,
 ) {
     assert!(id.length() == 40, EInvalidIdentity);
-    assert!(roster::has_address(roster, ctx.sender()), ENotRegistered);
-    let record = roster::lookup_by_address(roster, ctx.sender());
+    let sender = ctx.sender();
+    assert!(roster::has_address(roster, sender), ENotRegistered);
+    let record = roster::lookup_by_address(roster, sender);
     assert!(roster::record_walrus_blob_id(record).length() > 0, ENoEncryptedData);
+    // Tightened: id prefix must match caller's address bytes so a
+    // holder can't sign decrypt on a Seal id scoped to a different
+    // member. Harmless today (mutual policy still lets them in) but
+    // future-proofs if mutual semantics ever narrow.
+    let addr_bytes = sui::address::to_bytes(sender);
+    let mut i = 0u64;
+    while (i < 32) {
+        assert!(*id.borrow(i) == *addr_bytes.borrow(i), EInvalidIdentity);
+        i = i + 1;
+    };
 }
 
 /// Personal CF-history decrypt policy. Only the record owner can

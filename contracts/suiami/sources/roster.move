@@ -267,3 +267,123 @@ public fun has_cf_history(roster: &Roster, addr: address): bool {
     let key = CfHistoryKey { addr };
     dynamic_field::exists_<CfHistoryKey>(&roster.id, key)
 }
+
+// ─── Granular mutators ──────────────────────────────────────────────
+//
+// Update a single field without rewriting the whole record via
+// `set_identity`. Callers pass `name_hash` because it's not stored on
+// the record but is needed to locate the by_name index copy. Every
+// mutator propagates to all three dynamic-field indexes to prevent
+// drift.
+
+/// Rewrites name_hash / sui_address / chain:addr indexes with the same
+/// record bytes. Internal — mutators call this after updating fields.
+fun rewrite_indexes(roster_id: &mut UID, record: &IdentityRecord, name_hash: vector<u8>) {
+    if (dynamic_field::exists_<vector<u8>>(roster_id, name_hash)) {
+        dynamic_field::remove<vector<u8>, IdentityRecord>(roster_id, name_hash);
+    };
+    dynamic_field::add(roster_id, name_hash, *record);
+
+    let addr = record.sui_address;
+    if (dynamic_field::exists_<address>(roster_id, addr)) {
+        dynamic_field::remove<address, IdentityRecord>(roster_id, addr);
+    };
+    dynamic_field::add(roster_id, addr, *record);
+
+    let keys = record.chains.keys();
+    let len = keys.length();
+    let mut i = 0;
+    while (i < len) {
+        let chain_key = keys[i];
+        let chain_value = *record.chains.get(&chain_key);
+        let mut composite = chain_key;
+        composite.append_utf8(b":");
+        composite.append(chain_value);
+        if (dynamic_field::exists_<String>(roster_id, composite)) {
+            dynamic_field::remove<String, IdentityRecord>(roster_id, composite);
+        };
+        dynamic_field::add(roster_id, composite, *record);
+        i = i + 1;
+    };
+}
+
+/// Rotate Walrus blob id + Seal nonce. Caller must own the by_address
+/// record. Propagates to all three indexes.
+public fun set_walrus_blob(
+    roster: &mut Roster,
+    name_hash: vector<u8>,
+    blob_id: String,
+    seal_nonce: vector<u8>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let current: &IdentityRecord = dynamic_field::borrow<address, IdentityRecord>(&roster.id, sender);
+    assert!(current.sui_address == sender, ENotOwner);
+    let mut updated: IdentityRecord = *current;
+    updated.walrus_blob_id = blob_id;
+    updated.seal_nonce = seal_nonce;
+    updated.updated_ms = clock.timestamp_ms();
+    rewrite_indexes(&mut roster.id, &updated, name_hash);
+}
+
+/// Replace dWallet caps (flips `verified` based on non-emptiness).
+/// Caller must own the by_address record.
+public fun set_dwallet_caps(
+    roster: &mut Roster,
+    name_hash: vector<u8>,
+    caps: vector<address>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let current: &IdentityRecord = dynamic_field::borrow<address, IdentityRecord>(&roster.id, sender);
+    assert!(current.sui_address == sender, ENotOwner);
+    let mut updated: IdentityRecord = *current;
+    updated.dwallet_caps = caps;
+    updated.verified = !updated.dwallet_caps.is_empty();
+    updated.updated_ms = clock.timestamp_ms();
+    rewrite_indexes(&mut roster.id, &updated, name_hash);
+}
+
+/// Feint the identity — removes all three index copies + any
+/// cf_history store. Decrements the global count. Caller must own the
+/// by_address record.
+public fun revoke_identity(
+    roster: &mut Roster,
+    name_hash: vector<u8>,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let record: IdentityRecord = dynamic_field::remove<address, IdentityRecord>(&mut roster.id, sender);
+    assert!(record.sui_address == sender, ENotOwner);
+
+    if (dynamic_field::exists_<vector<u8>>(&roster.id, name_hash)) {
+        dynamic_field::remove<vector<u8>, IdentityRecord>(&mut roster.id, name_hash);
+    };
+
+    let keys = record.chains.keys();
+    let len = keys.length();
+    let mut i = 0;
+    while (i < len) {
+        let chain_key = keys[i];
+        let chain_value = *record.chains.get(&chain_key);
+        let mut composite = chain_key;
+        composite.append_utf8(b":");
+        composite.append(chain_value);
+        if (dynamic_field::exists_<String>(&roster.id, composite)) {
+            dynamic_field::remove<String, IdentityRecord>(&mut roster.id, composite);
+        };
+        i = i + 1;
+    };
+
+    let cf_key = CfHistoryKey { addr: sender };
+    if (dynamic_field::exists_<CfHistoryKey>(&roster.id, cf_key)) {
+        dynamic_field::remove<CfHistoryKey, CfHistory>(&mut roster.id, cf_key);
+    };
+
+    roster.count = roster.count - 1;
+}
