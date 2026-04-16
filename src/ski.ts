@@ -903,6 +903,60 @@ const _cfHistory = async () => {
 (globalThis as unknown as { cfHistory: typeof _cfHistory }).cfHistory = _cfHistory;
 console.log('[ski] cfHistory hook installed — call cfHistory() to decrypt your CF-edge timeline');
 
+// ── sendPrism() — rich cross-chain Thunder via Prism manifest ──
+//
+// Usage:
+//   sendPrism("alice.sui", {
+//     targetChain: "solana",
+//     recipient: "5Kz...", amount: "1000000", mint: "EPjFWdd5...USDC",
+//     note: "USDC on Solana — claim via your IKA dWallet"
+//   }, "hey alice, heads up — prism inbound")
+const _sendPrism = async (
+  recipientNameOrAddr: string,
+  spec: {
+    targetChain: 'solana' | 'ethereum' | 'bitcoin' | 'sui';
+    recipient: string;
+    amount: string;
+    mint?: string;
+    dwalletCapRef?: string;
+    note?: string;
+  },
+  textBody = '',
+  payload?: Uint8Array,
+) => {
+  try {
+    const ws = getState();
+    if (ws.status !== 'connected' || !ws.address) {
+      console.error('[prism] no wallet connected');
+      return;
+    }
+    const { sendThunder, lookupRecipientAddress } = await import('./client/thunder.js');
+    const { buildPrismAttachments } = await import('./client/prism.js');
+    const recipientAddress = recipientNameOrAddr.startsWith('0x')
+      ? recipientNameOrAddr
+      : (await lookupRecipientAddress(recipientNameOrAddr));
+    if (!recipientAddress) {
+      console.error('[prism] could not resolve recipient', recipientNameOrAddr);
+      return;
+    }
+    const files = buildPrismAttachments(spec, payload);
+    console.log('[prism] sending', { recipient: recipientAddress, manifest: JSON.parse(new TextDecoder().decode(files[0].data)) });
+    const res = await sendThunder({
+      senderAddress: ws.address,
+      recipientAddress,
+      text: textBody,
+      files,
+    } as never);
+    console.log('[prism] sent:', res);
+    return res;
+  } catch (err) {
+    console.error('[prism] send failed:', err);
+  }
+};
+(window as unknown as { sendPrism: typeof _sendPrism }).sendPrism = _sendPrism;
+(globalThis as unknown as { sendPrism: typeof _sendPrism }).sendPrism = _sendPrism;
+console.log('[ski] sendPrism hook installed — sendPrism("alice.sui", { targetChain, recipient, amount, mint? }, textBody?, payload?)');
+
 // ── Bronzong — Seal-gated SUIAMI upgrade (#157) ──
 //
 // Retroactive SUIAMI upgrade using Seal threshold encryption instead
