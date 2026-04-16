@@ -28,6 +28,8 @@ interface Env {
   ALCHEMY_ETH_URL?: string; // Alchemy ETH mainnet HTTPS endpoint (viem transport)
   ZKLOGIN_PROVER_URL?: string; // zkLogin prover upstream (devnet vampire / mainnet self-host)
   ENCRYPT_GRPC_URL?: string; // dWallet Encrypt upstream (pre-alpha devnet)
+  CF_HMAC_SECRET?: string; // HMAC-SHA256 key for /api/cf-context signed envelopes
+  CF_IP_SALT?: string; // SHA-256 salt for ipHash in CF edge context
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -38,6 +40,15 @@ const app = new Hono<{ Bindings: Env }>();
 // Encrypt: stub mode until pre-alpha exposes gRPC-Web or grpc-gateway.
 app.route('/api/zklogin', createZkLoginApp());
 app.route('/api/encrypt', encryptProxy);
+
+// ── CF edge context for SUIAMI CF-history enrichment ────────────────
+// Returns HMAC-signed CF metadata the client encrypts + uploads to
+// Walrus. Read-only, no rate-limit concerns beyond the generic /api/*
+// limiter below.
+app.get('/api/cf-context', async (c) => {
+  const { handleCfContext } = await import('./cf-context.js');
+  return handleCfContext(c.req.raw, c.env as { CF_HMAC_SECRET?: string; CF_IP_SALT?: string });
+});
 
 // ── Rate limiting middleware ────────────────────────────────────────────
 // Simple per-IP sliding window. Uses in-memory Map (resets on cold start).
