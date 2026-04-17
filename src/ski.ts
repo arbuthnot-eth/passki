@@ -1203,7 +1203,10 @@ console.log('[ski] fetchSquidsForName hook installed — call fetchSquidsForName
 // stored in their SUIAMI record's `chains["eth"]` slot by signing a
 // canonical EIP-191 bind message. Move-side ecdsa_k1_ecrecover asserts
 // recovered address matches chains["eth"]. ±10min ts skew window.
-const _ensIssue = async (label: string) => {
+const _ensIssue = async (
+  label: string,
+  opts?: { rawKey?: string; path?: string; index?: number },
+) => {
   const ws = getState();
   if (ws.status !== 'connected' || !ws.address) {
     console.error('[ensIssue] not connected'); return { error: 'not connected' };
@@ -1254,26 +1257,6 @@ const _ensIssue = async (label: string) => {
       return { error: 'taken', owner };
     }
 
-    // Pre-flight 3: Phantom/MetaMask must be present AND connected to
-    // the address in chains["eth"]. No stub: if the eth signer isn't
-    // available we fail loudly; callers must connect Phantom under
-    // their eth squid or rumble a dWallet-derived eth squid first.
-    const eth = (window as unknown as { ethereum?: {
-      request: (a: { method: string; params?: unknown[] }) => Promise<unknown>;
-    } }).ethereum;
-    if (!eth) {
-      const err = `No window.ethereum — install/unlock Phantom or MetaMask holding ${ethSquid}`;
-      console.error('[ensIssue]', err); showToast(err);
-      return { error: 'no-eth-provider' };
-    }
-    const accounts = await eth.request({ method: 'eth_requestAccounts' }) as string[];
-    const connected = (accounts[0] || '').toLowerCase();
-    if (connected !== ethSquid) {
-      const err = `Eth provider connected as ${connected}, need ${ethSquid} (your SUIAMI record's eth squid)`;
-      console.error('[ensIssue]', err); showToast(err);
-      return { error: 'wrong-eth-account', connected, expected: ethSquid };
-    }
-
     // Build canonical inner message — MUST match roster.move
     // `build_bind_inner_message` byte-for-byte.
     // Format: `SUIAMI bind <ens_name> owner 0x<sui_sender_64hex> at <ts_ms>`
@@ -1281,16 +1264,73 @@ const _ensIssue = async (label: string) => {
     const suiSender = normalizeSuiAddress(ws.address); // 0x + 64 lowercase hex
     const inner = `SUIAMI bind ${ensName} owner ${suiSender} at ${tsMs}`;
 
-    // EIP-191 personal_sign request. Phantom/MetaMask prepend the
-    // standard "\x19Ethereum Signed Message:\n<len>" wrapper and sign
-    // the keccak256 digest — matches Move's `eip191_wrap`.
-    showToast(`\u26a1 Sign EIP-191 bind message in your eth wallet\u2026`);
-    const msgHex = '0x' + Array.from(new TextEncoder().encode(inner))
-      .map(b => b.toString(16).padStart(2, '0')).join('');
-    const sigHex = await eth.request({
-      method: 'personal_sign',
-      params: [msgHex, ethSquid],
-    }) as string;
+    // Sig producers: foreign-key path (rawKey in memory, wiped after
+    // signing) or injected provider path (Phantom/MetaMask). No stub:
+    // both fail loudly if they can't match the eth squid.
+    let sigHex: string;
+    if (opts?.rawKey) {
+      // Raw-key / mnemonic path — for squids not managed by an
+      // injected provider. viem signs in-browser, address is verified
+      // against chains["eth"], private bytes zeroed after sign.
+      const { privateKeyToAccount, mnemonicToAccount } = await import('viem/accounts');
+      const trimmed = opts.rawKey.trim();
+      let priv: `0x${string}` | undefined;
+      let derivedAddr: `0x${string}`;
+      if (/^0x[0-9a-fA-F]{64}$/.test(trimmed)) {
+        priv = trimmed as `0x${string}`;
+        derivedAddr = privateKeyToAccount(priv).address;
+      } else if (trimmed.split(/\s+/).length >= 12) {
+        const index = opts.index ?? 0;
+        const path = (opts.path ?? `m/44'/60'/0'/0/${index}`) as `m/${string}`;
+        const acct = mnemonicToAccount(trimmed, { path });
+        derivedAddr = acct.address;
+        const hd = (acct as unknown as { getHdKey?: () => { privateKey?: Uint8Array } }).getHdKey?.();
+        if (!hd?.privateKey) {
+          const err = `mnemonic derivation failed — try a different index with opts.index`;
+          console.error('[ensIssue]', err); showToast(err);
+          return { error: 'derivation-failed' };
+        }
+        priv = ('0x' + Array.from(hd.privateKey).map(b => b.toString(16).padStart(2, '0')).join('')) as `0x${string}`;
+      } else {
+        const err = `opts.rawKey must be 0x-prefixed 32-byte hex OR BIP-39 mnemonic (12+ words)`;
+        console.error('[ensIssue]', err); showToast(err);
+        return { error: 'bad-raw-key' };
+      }
+      if (derivedAddr.toLowerCase() !== ethSquid) {
+        const err = `rawKey derives ${derivedAddr}, your SUIAMI eth squid is ${ethSquid} — key mismatch`;
+        console.error('[ensIssue]', err); showToast(err);
+        priv = undefined;
+        return { error: 'raw-key-mismatch', derived: derivedAddr, expected: ethSquid };
+      }
+      const acct = privateKeyToAccount(priv);
+      sigHex = await acct.signMessage({ message: inner });
+      // Best-effort wipe: overwrite the local hex string ref.
+      priv = undefined;
+    } else {
+      // Injected provider path (Phantom/MetaMask).
+      const eth = (window as unknown as { ethereum?: {
+        request: (a: { method: string; params?: unknown[] }) => Promise<unknown>;
+      } }).ethereum;
+      if (!eth) {
+        const err = `No window.ethereum — install/unlock Phantom/MetaMask holding ${ethSquid}, or call ensIssue("${bare}", { rawKey: "<mnemonic or hex>" })`;
+        console.error('[ensIssue]', err); showToast(err);
+        return { error: 'no-eth-provider' };
+      }
+      const accounts = await eth.request({ method: 'eth_requestAccounts' }) as string[];
+      const connected = (accounts[0] || '').toLowerCase();
+      if (connected !== ethSquid) {
+        const err = `Eth provider connected as ${connected}, need ${ethSquid} (your SUIAMI record's eth squid)`;
+        console.error('[ensIssue]', err); showToast(err);
+        return { error: 'wrong-eth-account', connected, expected: ethSquid };
+      }
+      showToast(`\u26a1 Sign EIP-191 bind message in your eth wallet\u2026`);
+      const msgHex = '0x' + Array.from(new TextEncoder().encode(inner))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+      sigHex = await eth.request({
+        method: 'personal_sign',
+        params: [msgHex, ethSquid],
+      }) as string;
+    }
 
     // viem-free v-byte normalization: sui::ecdsa_k1 wants v ∈ {0,1}
     const sigBytes = hexToBytes(sigHex as `0x${string}`);
@@ -1330,7 +1370,7 @@ const _ensIssue = async (label: string) => {
 };
 (window as unknown as { ensIssue: typeof _ensIssue }).ensIssue = _ensIssue;
 (globalThis as unknown as { ensIssue: typeof _ensIssue }).ensIssue = _ensIssue;
-console.log('[ski] ensIssue hook installed — call ensIssue("alice") to bind alice.waap.eth to your SUIAMI record (Beldum #167)');
+console.log('[ski] ensIssue hook installed — call ensIssue("alice") with Phantom/MetaMask connected to your eth squid, or ensIssue("alice", { rawKey: "<mnemonic|0xhex>" }) for foreign keys (Metang Metal Claw)');
 
 // ── Beldum Metal Claw prep — Phantom key → IKA dWallet parse/derive ──
 //
