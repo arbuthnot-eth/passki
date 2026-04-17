@@ -58,8 +58,11 @@ proc.on('exit', (code) => {
     }
     console.log('');
     console.log(`New Ultron public Sui address: ${address}`);
-    console.log('Next steps:');
-    console.log('  1. Delete legacy binding:  npx wrangler secret delete SHADE_KEEPER_PRIVATE_KEY');
-    console.log('  2. Sweep references to the old Ultron address in docs/memory.');
-    console.log('  3. Run the Regigigas rumble ceremony in brando.sui\u2019s browser session.');
+    console.log('');
+    console.log('Next steps (DO NOT delete SHADE_KEEPER_PRIVATE_KEY yet — old address still holds assets):');
+    console.log('  1. Sweep assets from old Ultron address \u2192 new one (SUI, NS, IKA, iUSD, USDC, DWalletCaps, IOUs).');
+    console.log('  2. Repoint ultron.sui SuiNS \u2192 new address (suinsTx.setTargetAddress + setDefault).');
+    console.log('  3. Sweep hardcoded address references in docs/memory/code.');
+    console.log('  4. Run the Regigigas rumble ceremony in brando.sui\u2019s browser session.');
+    console.log('  5. Only then, after parallel-run confirms new-address signing works: delete SHADE_KEEPER_PRIVATE_KEY.');
 });
