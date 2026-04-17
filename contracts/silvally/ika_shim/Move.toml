@@ -1,0 +1,13 @@
+[package]
+name = "ika_dwallet_2pc_mpc"
+edition = "2024.beta"
+version = "0.0.1"
+# Mainnet IKA dWallet 2PC-MPC package — ORIGINAL (pre-upgrade) address.
+# From @ika.xyz/sdk network-configs.js:
+#   ikaDwallet2pcMpcOriginalPackage = "0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317"
+published-at = "0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317"
+
+[dependencies]
+
+[addresses]
+ika_dwallet_2pc_mpc = "0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317"
