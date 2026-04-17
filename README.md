@@ -160,7 +160,7 @@ The `.SKI` header bar renders four elements:
 
 ### Idle Overlay
 
-After 15s of inactivity (or via SKI button cycle), the menu collapses into a compact overlay with:
+After 5 minutes of inactivity (or via SKI button cycle), the menu collapses into a compact overlay with:
 - Pixel art video (cached via Cache API for instant replay)
 - Name search input with full SuiNS resolution
 - Squids rows — styled SUI/BTC/SOL/ETH/Base/Tron address rows with chain-colored icons, per-row USD balances, toggle-select to copy
@@ -381,6 +381,9 @@ See `docs/superpowers/specs/2026-04-11-openclob-bundle-tags.md`.
 
 .SKI runs a Pokedex coordinator Durable Object that watches GitHub issues, branches, and PRs as a live swarm. Per the naming convention: legendary Pokemon are releases, regular Pokemon with level tags are commits and issues, merged PRs are evolutions (canon forms first — Mega, Gigantamax — otherwise Pokemon Infinite Fusion cross-species forms). Recent evolutions include:
 
+- **Silvally RKS** (#192) — IKA dWallet + Move policy for delegated subname issuance. Load-bearing for SuiNS Crowds.
+- **Machamp** (#193) — Fighting trainer driving the Silvally de-risking spike. Focus Punch → Bulk Up → Cross Chop → Agility → Close Combat (9/9 Move tests passing).
+- **Klinklang Gear Grind** (#191) — Steel Jacket shipped, first jacket composing on Silvally base. Auto-prune-on-expiry via Mysten #356.
 - **Mega Sableye** (#148) — Seal-encrypted private interaction set; black-diamond roster glyphs; Chronicom ciphertext slice
 - **Regizapdos** (#147, Zapdos × Registeel fusion) — Thunder attachment hardening; cache hydration of attachment refs; SDK-aligned size limits (2 MB/file, 4 files, 5 MB total)
 - **Raichu Lv.40** — ultron-sponsored thunder gas
@@ -393,6 +396,42 @@ See `docs/superpowers/specs/2026-04-11-openclob-bundle-tags.md`.
 **gitcatch** — the full commit → evolve → deploy cycle. `gitcatch Pokemon` commits outstanding moves as Pokemon-named commits, lands the PR as an evolution (canon Mega / Gigantamax first, then Infinite Fusion cross-species naming), and deploys to mainnet. Memory: `feedback_gitcatch.md`.
 
 The Pokedex DO is bound as `PokedexAgent` and exposes `/api/pokedex/*` routes. See `docs/superpowers/specs/2026-04-11-pokemon-swarm-agents.md`.
+
+## SuiNS Crowds — Silvally + Jackets (Vercel Buenos Aires, 2026-04-24)
+
+**Crowds** is SKI's delegated-subname primitive — what SuiNS Communities, ENS subnames, DNS, and Unstoppable Domains collectively failed to ship. A single SuiNS name becomes a chartered on-chain body whose members hold bounded, time-locked, revocable caps to mint subnames under it. Built for the Vercel Buenos Aires hackathon on 2026-04-24 and landing as a son PR atop [MystenLabs/suins-contracts#364](https://github.com/MystenLabs/suins-contracts/pull/364).
+
+### Silvally RKS — IKA dWallet with subname-creation policy
+
+The load-bearing primitive. An IKA dWallet owns the `SuinsRegistration` NFT via a Move policy object (`ski::dwallet_subname_policy::SubnamePolicy`). The policy's typed entry functions are the only path to `coordinator::approve_message`, and IKA's `request_sign` refuses to sign without a `MessageApproval`. That makes the `DWalletCap` held inside a shared Move object the canonical signing authority — content-aware signing via the Move object graph, not via an IKA protocol feature.
+
+Owner retains all rights through the `OwnerCap` path. Delegates get a quota- and expiration-bounded `delegate_approve_spike` path. First Commandment holds: no private keys anywhere, no user-wallet custody transfer.
+
+**Status:** scaffold in `contracts/silvally/`, 9/9 Move unit tests passing, real-IKA signatures pulled from `@ika.xyz/sdk@0.3.1` generated BCS. Runtime-spike on mainnet is the one remaining unknown — publish + Rumble + `delegate_approve_spike` → `request_sign` runbook at `contracts/silvally/PRESS_GO.md`. See `scripts/silvally-press-go.ts` for the one-shot helper (`--publish` / `--rumble` / `--spike`).
+
+### Jackets — composable variants over the base
+
+Jackets are SKI's composition primitive for extending `SubnamePolicy`. The base module exposes `public(package)` hooks like `reclaim_quota` that only sibling jacket modules in the `ski` package can call, so external callers can't forge policy-side state changes. Each jacket attaches via the policy's `OwnerCap` and gates its own admin ops through a jacket-specific capability.
+
+| Jacket | Pokemon | Behavior |
+|---|---|---|
+| Steel | Klinklang Gear Grind (#191) | Auto-prune-on-expiry via [MystenLabs/suins-contracts#356](https://github.com/MystenLabs/suins-contracts/pull/356). Records prune events, reclaims quota slots. **Shipped in `ski::steel_jacket`.** |
+| Fire | Garchomp Dragon Rush (#175) | Hackathon-burst issuance, rate-limited |
+| Ghost | Lunala Moongeist (#173) | Seal-gated issuance, opaque roster |
+| Electric | Magnezone Magnet Rise (#189) | Cross-crowd alliance issuance via `getAgentByName` |
+| Water | Suicune Aurora Beam (#174) | Auto-Roster cross-chain registration on each issue |
+| Psychic | Cresselia Lunar Ballot (#180) | Issuance gated by Seal-encrypted member quorum |
+
+### Upstream status
+
+- **[suins-contracts#356](https://github.com/MystenLabs/suins-contracts/pull/356)** — Prune expired subdomains by parent authority. **Merged 2026-04-17.** Enables every timelocked-ticket pattern in the Crowds arc.
+- **[suins-contracts#364](https://github.com/MystenLabs/suins-contracts/pull/364)** — SubnameCap delegation. Open. Silvally decouples Crowds from its merge — our `dwallet_subname_policy` module doesn't wait on upstream review. When #364 lands, jackets migrate to mint native `SubnameCap` objects.
+
+### Pokemon evolution line for the arc
+
+Parent pitches: `#172 Solgaleo` (flagship daylight) · `#173 Lunala` (sealed shadow) · `#174 Suicune` (cross-chain flow) · `#175 Garchomp` (5-min stage demo) · `#176 Metagross` (four-brain architecture). 14 move sub-issues (#177–#191). `#192 Silvally RKS` is the unlock; `#193 Machamp` is the Fighting trainer driving the spike through Focus Punch → Bulk Up → Cross Chop → Agility → Close Combat.
+
+---
 
 ## Upcoming — Ghost Line for Colosseum Frontier
 
