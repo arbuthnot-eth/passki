@@ -20,8 +20,8 @@
 
 module ski::dwallet_subname_policy;
 
-use ika_dwallet_2pc_mpc::coordinator::{Self, DWalletCoordinator, MessageApproval};
-use ika_dwallet_2pc_mpc::coordinator_inner::DWalletCap;
+use ika_dwallet_2pc_mpc::coordinator::{Self, DWalletCoordinator};
+use ika_dwallet_2pc_mpc::coordinator_inner::{DWalletCap, MessageApproval};
 use sui::clock::Clock;
 use sui::event;
 
@@ -43,8 +43,8 @@ const E_NOT_OWNER: u64 = 3;
 // Curve is implied by the DWalletCap (set at DKG time).
 // ------------------------------------------------------------------
 
-const SIG_ALG_ECDSA_SECP256K1: u8 = 0;
-const HASH_KECCAK256: u8 = 0;
+const SIG_ALG_ECDSA_SECP256K1: u32 = 0;
+const HASH_KECCAK256: u32 = 0;
 
 // ------------------------------------------------------------------
 // State

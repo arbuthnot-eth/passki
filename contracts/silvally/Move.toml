@@ -3,15 +3,11 @@ name = "silvally"
 edition = "2024.beta"
 version = "0.0.1"
 
-# De-risking spike: local IKA shim declares just the DWalletCap +
-# approve_message surface we need, with `published-at` pointing at the
-# real IKA mainnet package. This lets the spike module compile without
-# pulling private IKA source. At publish time we'll verify the shim
-# bytecode layout matches the real package (if not, we'll regenerate
-# the shim from disassembled on-chain bytecode).
+# Depend on the real IKA Move source. ika is open source; the shim
+# approach broke Sui 1.69.2's upgrade-graph resolution.
 
 [dependencies]
-ika_dwallet_2pc_mpc = { local = "./ika_shim" }
+ika_dwallet_2pc_mpc = { git = "https://github.com/dwallet-labs/ika.git", subdir = "deployed_contracts/mainnet/ika_dwallet_2pc_mpc", rev = "mainnet-v1.1.8" }
 
 [addresses]
 ski = "0x0"
