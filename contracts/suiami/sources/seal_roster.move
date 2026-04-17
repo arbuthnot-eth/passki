@@ -35,6 +35,45 @@ entry fun seal_approve_roster_reader(
     };
 }
 
+/// v2 of the roster-reader Seal policy. Two fixes vs v1:
+///
+/// 1. **Argument order** — Seal key servers require `id: vector<u8>`
+///    as the first user-visible parameter. v1 had `roster` first,
+///    which trips `Invalid first parameter for seal_approve` on every
+///    decrypt.
+/// 2. **Identity check** — v1 compared id prefix to `sender_address`,
+///    but the client encrypts with `keccak256(bare_name)` ids
+///    (`deriveSuiamiSealId` in `src/client/suiami-seal.ts`). They
+///    never matched, so no blob was ever decryptable. v2 looks up
+///    the name directly: the id's first 32 bytes are the name hash,
+///    and the sender must be the on-chain owner of that name.
+///
+/// Structured for ENS extensibility — adding a parallel
+/// `roster::has_ens_name(ens_hash)` lookup is a compatible upgrade
+/// (see `project_ens_waap_extension.md`).
+entry fun seal_approve_roster_reader_v2(
+    id: vector<u8>,
+    roster: &Roster,
+    ctx: &TxContext,
+) {
+    assert!(id.length() == 40, EInvalidIdentity);
+    let sender = ctx.sender();
+
+    // Extract the 32-byte name hash (id prefix).
+    let mut name_hash = vector::empty<u8>();
+    let mut i = 0u64;
+    while (i < 32) {
+        name_hash.push_back(*id.borrow(i));
+        i = i + 1;
+    };
+
+    // Name must be registered and owned by sender.
+    assert!(roster::has_name(roster, name_hash), ENotRegistered);
+    let record = roster::lookup_by_name(roster, name_hash);
+    assert!(roster::record_sui_address(record) == sender, ENotRegistered);
+    assert!(roster::record_walrus_blob_id(record).length() > 0, ENoEncryptedData);
+}
+
 /// Personal CF-history decrypt policy. Only the record owner can
 /// decrypt their own CF chunks — not mutual-decrypt like the roster
 /// reader policy. Seal id layout: 32-byte sender address ‖ 8-byte nonce.

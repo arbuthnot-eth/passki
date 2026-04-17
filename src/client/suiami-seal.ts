@@ -53,7 +53,19 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, GQL_URL } from '../rpc.js';
 
-export const SUIAMI_PKG = '0x7bf4438feaf953e94b98dfc2aab0cf1aaad2250ee4e0fe87c9cc251965987de8';
+// Original package ID (first-publish address) — required by Seal's
+// SessionKey.create. Seal strictly validates SessionKey packageId
+// against original-id; upgrade addresses here produce
+// `Package ID used in PTB is invalid` on decrypt.
+export const SUIAMI_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
+
+// Latest published-at — use for PTB `target:` strings. Seal key
+// servers resolve the Move function at the target address directly
+// (not via original→latest redirection), so new entry functions
+// added in upgrades (`_v2`, etc.) MUST be called at the latest
+// published-at or Seal returns `FunctionNotFound`. Bump this on every
+// SUIAMI upgrade (Published.toml → published-at).
+export const SUIAMI_PKG_LATEST = '0xef428692d67e53319c70b28747f3851683dff4062f0e104105754a988b99900d';
 export const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 export const ROSTER_INITIAL_SHARED_VERSION = 839068132;
 
@@ -284,15 +296,18 @@ export async function decryptSquidsForName(opts: {
   const { bytes: sealIdBytes } = deriveSuiamiSealId(opts.name);
 
   const tx = new Transaction();
+  // v2 policy: `id` first per Seal convention; name-hash-keyed identity
+  // check (v1 compared id prefix to sender_address, which never matched
+  // the name-hash prefix the encrypt path uses).
   tx.moveCall({
-    target: `${SUIAMI_PKG}::seal_roster::seal_approve_roster_reader`,
+    target: `${SUIAMI_PKG_LATEST}::seal_roster::seal_approve_roster_reader_v2`,
     arguments: [
+      tx.pure.vector('u8', Array.from(sealIdBytes)),
       tx.sharedObjectRef({
         objectId: ROSTER_OBJ,
         initialSharedVersion: ROSTER_INITIAL_SHARED_VERSION,
         mutable: false,
       }),
-      tx.pure.vector('u8', Array.from(sealIdBytes)),
     ],
   });
   // `onlyTransactionKind: true` omits gas/sender so Seal key servers

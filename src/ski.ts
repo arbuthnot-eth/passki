@@ -1139,7 +1139,24 @@ const _fetchSquidsForName = async (nameOrDomain: string) => {
     });
     const gqlJson = await gqlRes.json() as any;
     const record = gqlJson?.data?.object?.dynamicField?.value?.json;
-    const walrusBlobId: string = record?.walrus_blob_id ?? '';
+    let walrusBlobId: string = record?.walrus_blob_id ?? '';
+    // Dual-key drift fallback: some roster entries wrote the blob only
+    // to the address-keyed dynamic field, not the name-keyed one. If the
+    // name lookup comes back empty, pivot to the connected address's
+    // entry — the Seal identity is name-scoped so decrypt still works
+    // as long as the caller owns the name (policy unchanged).
+    if (!walrusBlobId) {
+      try {
+        const { readRosterByAddress } = await import('./suins.js');
+        const byAddr = await readRosterByAddress(ws.address);
+        if (byAddr?.walrus_blob_id && byAddr.name === bare) {
+          walrusBlobId = byAddr.walrus_blob_id;
+          console.log(`[fetchSquids] fell back to address-keyed blob: ${walrusBlobId}`);
+        }
+      } catch (fallbackErr) {
+        console.warn('[fetchSquids] address-keyed fallback failed:', fallbackErr);
+      }
+    }
     if (!walrusBlobId) {
       console.error(`[fetchSquids] ${bare}.sui has no walrus_blob_id on-chain`);
       showToast(`${bare}.sui \u2014 no encrypted squids on-chain`);
