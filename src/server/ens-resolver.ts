@@ -146,6 +146,47 @@ async function lookupRosterUncached(bareLabel: string): Promise<RosterRecord | n
 // Cache wrapper for lookupRoster. Uses caches.default so every CF
 // colo serves a fresh copy; coordinating across colos via KV isn't
 // worth the latency hit for a 60s window.
+// v6 PublicChains whitelist — per-address dynamic field under
+// `PublicChainsKey { addr }`. If the key exists, the record's ENS
+// exposure is intersected with `visible`; chains outside the
+// whitelist return null. If absent, v5 fallback applies and the full
+// `record.chains` is exposed.
+async function lookupPublicChains(suiAddress: string): Promise<Record<string, string> | null> {
+  // BCS for PublicChainsKey { addr: address } = 32-byte address only
+  const addrBytes = new Uint8Array(32);
+  const hex = suiAddress.replace(/^0x/, '').padStart(64, '0');
+  for (let i = 0; i < 32; i++) addrBytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  const typeStr = `${SUIAMI_ORIGINAL_ID}::roster::PublicChainsKey`;
+  const raw = await queryDf(typeStr, addrBytes);
+  if (!raw) return null;
+  const out: Record<string, string> = {};
+  for (const { key, value } of raw.visible?.contents ?? []) out[key] = value;
+  return out;
+}
+
+// v6 Guest lookup. BCS for GuestKey { parent_hash: vector<u8>, label: vector<u8> } =
+// ULEB128(parent_len) || parent_bytes || ULEB128(label_len) || label_bytes.
+// Both parent_hash and label are caller-defined byte vectors.
+async function lookupGuest(parentHash: Uint8Array, label: string): Promise<{ target: string; chain: string; expires_ms: number } | null> {
+  const labelBytes = new TextEncoder().encode(label);
+  // ULEB128 encode length (our values are always small — single byte)
+  const bcs = new Uint8Array(1 + parentHash.length + 1 + labelBytes.length);
+  bcs[0] = parentHash.length;
+  bcs.set(parentHash, 1);
+  bcs[1 + parentHash.length] = labelBytes.length;
+  bcs.set(labelBytes, 1 + parentHash.length + 1);
+  const typeStr = `${SUIAMI_ORIGINAL_ID}::roster::GuestKey`;
+  const raw = await queryDf(typeStr, bcs);
+  if (!raw) return null;
+  const expires_ms = Number(raw.expires_ms);
+  if (Date.now() >= expires_ms) return null; // TTL enforced at read
+  return {
+    target: raw.target ?? '',
+    chain: raw.chain ?? '',
+    expires_ms,
+  };
+}
+
 async function lookupRoster(bareLabel: string): Promise<RosterRecord | null> {
   const key = new Request(`https://cache.internal/ens-resolver/roster/${bareLabel}`);
   const cache = caches.default;
@@ -340,20 +381,90 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
   ) as [`0x${string}`, `0x${string}`];
 
   const labels = decodeDnsName(hexToBytes(dnsName));
-  // Expect `<label>.waap.eth`.
+  // Expect `<label>.waap.eth` or `<guest>.<parent>.waap.eth`.
   if (labels.length < 3 || labels[labels.length - 2] !== WAAP_ETH_LABEL
       || labels[labels.length - 1] !== WAAP_ETH_TLD) {
     return c.json({ error: 'not a waap.eth subname', labels }, 400);
   }
-  const bareLabel = labels[0];
 
-  const record = await lookupRoster(bareLabel);
   const innerBytes = hexToBytes(innerCall);
   const innerSel = bytesToHex(innerBytes.slice(0, 4)).toLowerCase();
 
+  // v6 Guest subname branch — if labels.length === 4
+  // (e.g. ['pay','brando','waap','eth']), try GuestKey first.
+  // Parent hash = keccak256("<parent>.waap.eth"); label = bytes of
+  // labels[0]. Expired guests return null from lookupGuest.
+  if (labels.length >= 4) {
+    const guestLabel = labels[0];
+    const parentFull = labels.slice(1).join('.');
+    const parentHash = keccak_256(new TextEncoder().encode(parentFull));
+    const guest = await lookupGuest(parentHash, guestLabel);
+    if (guest) {
+      let result: Uint8Array;
+      if (innerSel === SEL_ADDR) {
+        // addr(bytes32) — only makes sense if guest targets eth.
+        result = encodeAddrResult(guest.chain === 'eth' ? guest.target : null);
+      } else if (innerSel === SEL_ADDR_COINTYPE) {
+        const [, coinType] = decodeAbiParameters(
+          [{ type: 'bytes32' }, { type: 'uint256' }],
+          bytesToHex(innerBytes.slice(4)),
+        ) as [`0x${string}`, bigint];
+        const chainOk =
+          (coinType === COIN_ETH && guest.chain === 'eth') ||
+          (coinType === COIN_BTC && guest.chain === 'btc') ||
+          (coinType === COIN_SOL && guest.chain === 'sol');
+        if (!chainOk) {
+          result = encodeAddrCoinTypeResult(null);
+        } else if (coinType === COIN_ETH) {
+          result = encodeAddrCoinTypeResult(guest.target);
+        } else {
+          result = encodeAddrCoinTypeResult(bytesToHex(new TextEncoder().encode(guest.target)));
+        }
+      } else if (innerSel === SEL_TEXT) {
+        const [, key] = decodeAbiParameters(
+          [{ type: 'bytes32' }, { type: 'string' }],
+          bytesToHex(innerBytes.slice(4)),
+        ) as [`0x${string}`, string];
+        result = encodeTextResult(key === 'name' ? `${guestLabel}.${parentFull}` : key === guest.chain ? guest.target : '');
+      } else {
+        return c.json({ error: `unsupported inner selector ${innerSel}` }, 400);
+      }
+      const expires = BigInt(Math.floor(Date.now() / 1000)) + SIG_TTL_SEC;
+      const privKey = privateKeyBytes(signerHex);
+      const signature = signResolverMessage(privKey, sender, expires, data, result);
+      const encoded = encodeAbiParameters(
+        [{ type: 'bytes' }, { type: 'uint64' }, { type: 'bytes' }],
+        [bytesToHex(result), expires, bytesToHex(signature)],
+      );
+      return c.json({ data: encoded, guest: true });
+    }
+    // Guest not bound or expired → fall through to parent lookup so
+    // `pay.brando.waap.eth` still resolves to brando's canonical chains
+    // when no guest is active. Deliberate design (graceful fallback).
+  }
+
+  const bareLabel = labels[labels.length - 3]; // parent label before .waap.eth
+  const record = await lookupRoster(bareLabel);
+
+  // v6: intersect chain exposure with PublicChains whitelist when set.
+  // If the record owner opted into whitelist mode, serve only chains in
+  // `visible`. v5 fallback (no whitelist key) exposes full record.chains.
+  let publicChainsFilter: Record<string, string> | null = null;
+  if (record?.sui_address) {
+    publicChainsFilter = await lookupPublicChains(record.sui_address);
+  }
+  const chainKey = (key: string): string | null => {
+    if (!record) return null;
+    if (publicChainsFilter) {
+      // Whitelist mode: key must exist in `visible`.
+      return publicChainsFilter[key] ?? null;
+    }
+    return record.chains?.[key] ?? null;
+  };
+
   let result: Uint8Array;
   if (innerSel === SEL_ADDR) {
-    result = encodeAddrResult(record?.chains?.eth ?? null);
+    result = encodeAddrResult(chainKey('eth'));
   } else if (innerSel === SEL_ADDR_COINTYPE) {
     // addr(bytes32,uint256): second param is SLIP-44 coinType.
     const [, coinType] = decodeAbiParameters(
@@ -363,15 +474,15 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
     if (!record) {
       result = encodeAddrCoinTypeResult(null);
     } else if (coinType === COIN_ETH) {
-      result = encodeAddrCoinTypeResult(record.chains.eth ?? null);
+      result = encodeAddrCoinTypeResult(chainKey('eth'));
     } else if (coinType === COIN_BTC) {
-      // BTC: address string → UTF-8 bytes wrapped as `bytes`.
-      const btc = record.chains.btc ?? null;
+      const btc = chainKey('btc');
       result = encodeAddrCoinTypeResult(btc ? bytesToHex(new TextEncoder().encode(btc)) : null);
     } else if (coinType === COIN_SOL) {
-      // SOL: roster stores plaintext if present; else derive from dWallet cap (curve=2).
-      let sol = record.chains.sol ?? null;
-      if (!sol && record.dwallet_caps.length > 0) {
+      let sol = chainKey('sol');
+      if (!sol && !publicChainsFilter && record.dwallet_caps.length > 0) {
+        // v5 fallback: derive SOL from dWallet cap. With whitelist
+        // mode, only publish what the owner explicitly listed.
         sol = await resolveSolFromCaps(record.dwallet_caps);
       }
       result = encodeAddrCoinTypeResult(sol ? bytesToHex(new TextEncoder().encode(sol)) : null);
@@ -383,12 +494,14 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
       [{ type: 'bytes32' }, { type: 'string' }],
       bytesToHex(innerBytes.slice(4)),
     ) as [`0x${string}`, string];
-    // `text("sui")` returns the Sui address; `text("name")` the bare label.
     let value = '';
     if (record) {
       if (key === 'sui') value = record.sui_address;
       else if (key === 'name') value = record.name || bareLabel;
-      else if (key in record.chains) value = record.chains[key];
+      else {
+        const v = chainKey(key);
+        if (v) value = v;
+      }
     }
     result = encodeTextResult(value);
   } else {
