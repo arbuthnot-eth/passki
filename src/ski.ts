@@ -1534,7 +1534,32 @@ const _whelm = async (ensName: string, opts?: {
     console.error('[whelm] invalid ENS name; use a-z, 0-9, hyphens only');
     return { error: 'bad-ens-name' };
   }
-  const dwalletAddress = opts?.dwalletAddress ?? '0xCE3e9733aB9e78aB6e9F13B7FC6aC5a45D711763';
+  // Resolve dwalletAddress — accepts either a raw 0x… hex address or a
+  // chain@name identifier (e.g. "eth@superteam") which looks up the
+  // target's IKA-derived address via the SUIAMI roster.
+  let dwalletAddress = opts?.dwalletAddress ?? 'eth@superteam';
+  if (/^eth@/i.test(dwalletAddress)) {
+    const bareName = dwalletAddress.replace(/^eth@/i, '').toLowerCase();
+    try {
+      const { readByName } = await import('suiami/roster');
+      const record = await readByName(bareName);
+      const resolved = record?.chains?.eth;
+      if (!resolved) {
+        const err = `eth@${bareName} — no eth squid in SUIAMI roster (pass a raw 0x… address instead)`;
+        console.error('[whelm]', err);
+        return { error: 'resolve-failed', identifier: dwalletAddress };
+      }
+      console.log(`[whelm] resolved eth@${bareName} → ${resolved}`);
+      dwalletAddress = resolved;
+    } catch (err) {
+      console.error('[whelm] roster lookup failed:', err);
+      return { error: 'resolve-failed', identifier: dwalletAddress };
+    }
+  }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(dwalletAddress)) {
+    console.error(`[whelm] dwalletAddress must be 0x-prefixed 20-byte hex, got ${dwalletAddress}`);
+    return { error: 'bad-dwallet-address' };
+  }
   const ethWei = opts?.ethAmountWei ?? 2_000_000_000_000_000n; // 0.002 ETH dust
 
   const eth = (window as unknown as { ethereum?: {
@@ -1702,7 +1727,7 @@ const _moveWaapEthToDwallet = async (opts?: {
 (globalThis as unknown as { whelm: typeof _whelm }).whelm = _whelm;
 (window as unknown as { moveWaapEthToDwallet: typeof _moveWaapEthToDwallet }).moveWaapEthToDwallet = _moveWaapEthToDwallet;
 (globalThis as unknown as { moveWaapEthToDwallet: typeof _moveWaapEthToDwallet }).moveWaapEthToDwallet = _moveWaapEthToDwallet;
-console.log('[ski] whelm hook installed — call whelm("whelm") to engulf whelm.eth into superteam.sui\'s IKA dWallet. Pass { skipTransfer:true } to dry-run. Legacy moveWaapEthToDwallet() still aliases to whelm("waap").');
+console.log('[ski] whelm hook installed — call whelm("whelm") to engulf whelm.eth into eth@superteam\'s IKA dWallet. Pass { dwalletAddress: "eth@<name>" } to target another SUIAMI-Rumbled address, or { skipTransfer:true } to dry-run. Legacy moveWaapEthToDwallet() still aliases to whelm("waap").');
 
 // Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
 // Pass the recipient address explicitly (typically the new sol@ultron
