@@ -24,7 +24,7 @@ pub struct VaultConfig {
     pub bump: u8,
 }
 
-#[account(discriminator = 2)]
+#[account(discriminator = 2, set_inner)]
 #[seeds(b"nullifier", prism_id: [u8; 16])]
 pub struct Nullifier {
     /// The 16-byte UUID of the Prism manifest this nullifier consumes.
