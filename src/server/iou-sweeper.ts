@@ -20,6 +20,7 @@
  */
 
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { ultronKeypair } from './ultron-key.js';
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
@@ -178,7 +179,7 @@ export async function sweepExpiredIous(env: SweeperEnv): Promise<{ scanned: numb
     console.warn('[iou-sweeper] no SHADE_KEEPER_PRIVATE_KEY — skipping');
     return { scanned: 0, expired: 0, recalled: 0, failed: 0 };
   }
-  const keypair = Ed25519Keypair.fromSecretKey(env.SHADE_KEEPER_PRIVATE_KEY);
+  const keypair = ultronKeypair(env);
   const now = Date.now();
 
   let live: IouSnapshot[] = [];

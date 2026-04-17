@@ -19,6 +19,7 @@ import { Agent } from 'agents';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { ultronKeypair } from '../ultron-key.js';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import {
   IkaClient,
@@ -389,7 +390,7 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       const ikaCurve = curve === 'ed25519' ? Curve.ED25519 : Curve.SECP256K1;
 
       // Ultron's Sui address — derived from the keeper keypair.
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddress = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
       // Reconstruct the same deterministic seed the browser used during DKG.
@@ -574,7 +575,7 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       const spec = ULTRON_DWALLETS[curve];
       const ikaCurve = curve === 'ed25519' ? Curve.ED25519 : Curve.SECP256K1;
 
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddress = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
       // Reconstruct the same deterministic seed used for accept-share so
@@ -891,7 +892,7 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       // contract. We're not relying on TS to narrow.
       const hashEnum = (Hash as Record<string, string>)[hashScheme] ?? hashScheme;
 
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddress = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
       const seed = await deriveUltronSeed(

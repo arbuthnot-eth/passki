@@ -20,6 +20,7 @@ import { Agent, callable } from 'agents';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { ultronKeypair } from '../ultron-key.js';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 import { raceExecuteTransaction, TxFailureError, GQL_URL } from '../rpc.js';
@@ -395,7 +396,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     }
     try {
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY); // ultron.sui signing key
+      const keypair = ultronKeypair(this.env); // ultron.sui signing key
       const ultronAddr = keypair.toSuiAddress();
 
       const tx = new Transaction();
@@ -564,7 +565,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     // Pre-flight: verify ultron has gas before building routes
     try {
       const gqlCheck = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-      const keypairCheck = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY); // ultron.sui signing key
+      const keypairCheck = ultronKeypair(this.env); // ultron.sui signing key
       const ultronAddr = keypairCheck.toSuiAddress();
       const balResult = await gqlCheck.query({
         query: `{ address(address: "${ultronAddr}") { balance(coinType: "0x2::sui::SUI") { totalBalance } } }`,
@@ -614,7 +615,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     try {
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY); // ultron.sui signing key
+      const keypair = ultronKeypair(this.env); // ultron.sui signing key
       const ultronAddr = keypair.toSuiAddress();
 
       const domainBytes = Array.from(new TextEncoder().encode(order.domain));
@@ -746,7 +747,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     try {
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY!);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
 
       const domainBytes = Array.from(new TextEncoder().encode(order.domain));
@@ -1162,7 +1163,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     }
     try {
       console.log(`[ShadeExecutor] sweeping storm for ${sweep.domain}`);
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY); // ultron.sui signing key
+      const keypair = ultronKeypair(this.env); // ultron.sui signing key
       const ultronAddr = keypair.getPublicKey().toSuiAddress();
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 

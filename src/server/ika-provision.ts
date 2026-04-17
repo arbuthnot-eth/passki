@@ -15,6 +15,7 @@
 
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { ultronKeypair } from './ultron-key.js';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import {
   IkaClient, IkaTransaction, getNetworkConfig,

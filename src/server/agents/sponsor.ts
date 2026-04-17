@@ -14,6 +14,7 @@
 import { Agent, callable } from 'agents';
 import { verifyPersonalMessageSignature } from '@mysten/sui/verify';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { ultronKeypair } from '../ultron-key.js';
 
 export interface GasCoin {
   objectId: string;
@@ -155,7 +156,7 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
       return { success: false, error: 'No ultron private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)' };
     }
 
-    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(this.env);
     const ultronAddress = keypair.toSuiAddress();
 
     // Fetch ultron gas coins via GraphQL so getGasCoins() returns them
@@ -220,7 +221,7 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     if (req.sponsorSig) return;
 
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const txBytes = Uint8Array.from(atob(req.txBytes), c => c.charCodeAt(0));
       const { signature: sponsorSig } = await keypair.signTransaction(txBytes);
 

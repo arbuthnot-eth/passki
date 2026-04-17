@@ -16,6 +16,7 @@ import { Agent, callable } from 'agents';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { ultronKeypair } from '../ultron-key.js';
 import { normalizeSuiAddress, toBase64 } from '@mysten/sui/utils';
 import { raceExecuteTransaction, raceJsonRpc, GQL_URL } from '../rpc.js';
 import { createSplMint, mintSplTokens, deriveATA, b58decode, b58encode, type SolanaRpcConfig } from '../solana-spl.js';
@@ -292,7 +293,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (this._ultronAddress) return this._ultronAddress;
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return '';
     this._ultronAddress = normalizeSuiAddress(
-      Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY).getPublicKey().toSuiAddress(),
+      ultronKeypair(this.env).getPublicKey().toSuiAddress(),
     );
     return this._ultronAddress;
   }
@@ -392,7 +393,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           return new Response(JSON.stringify({ error: 'suiAddress and suiTxDigest required' }), { status: 400, headers: { 'content-type': 'application/json' } });
         }
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
         const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -514,7 +515,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const body = await request.json() as { recipient: string; amountMist?: string };
         if (!body.recipient) return new Response(JSON.stringify({ error: 'recipient required' }), { status: 400 });
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
         const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
         const tx = new Transaction();
@@ -554,7 +555,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       try {
         const body = await request.json() as { usdCents: number; recipient?: string; pkg?: string };
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
         const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
         const pkg = body.pkg || TreasuryAgents.IUSD_PKG;
@@ -673,7 +674,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (objectId && this.env.SHADE_KEEPER_PRIVATE_KEY) {
           try {
             const SHADE_V5_PKG = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
-            const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+            const keypair = ultronKeypair(this.env);
             const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
             const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -699,7 +700,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         let bamMintSig: string | undefined;
         if (cancelDigest && iusdRecovered !== '0') {
           try {
-            const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+            const keypair = ultronKeypair(this.env);
             // For now, use ultron's own SOL address as recipient (user claims later)
             // TODO: resolve sol@holder via IKA dWallet / SUIAMI roster
             const solAddr = ULTRON_SOL_ADDRESS;
@@ -809,7 +810,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       try {
         const body = await request.json() as { objectId: string; noForward?: boolean; forwardToAddress?: string };
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
         const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -1125,7 +1126,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // Deposit addresses — derive cross-chain addresses from ultron's ed25519 key
     if ((url.pathname.endsWith('/rumble') || url.searchParams.has('rumble')) && request.method === 'GET') {
       if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const suiAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       return new Response(JSON.stringify({
         sui: suiAddr,
@@ -1154,7 +1155,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         };
         if (!body.suiAddress || !body.amountUsd) throw new Error('Missing suiAddress or amountUsd');
 
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const solAddr = ULTRON_SOL_ADDRESS;
 
         // Validate route/action against the schema. Default both to
@@ -1308,7 +1309,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       try {
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
 
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const ultronSolAddr = ULTRON_SOL_ADDRESS;
 
         const txs = await request.json() as Array<{
@@ -1409,7 +1410,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           return new Response(JSON.stringify({ error: 'valueUsdCents required' }), { status: 400, headers: { 'content-type': 'application/json' } });
         }
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
         const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
         // cents -> 9-dec USD mist: cents * 10^7
@@ -1482,7 +1483,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (url.pathname.endsWith('/debug-sol-watch') && request.method === 'POST') {
       try {
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const solAddr = ULTRON_SOL_ADDRESS;
         const intents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
         const pending = intents.filter(i => i.status === 'pending');
@@ -1595,7 +1596,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const solPrice = await this._fetchSolPrice();
         if (!solPrice) throw new Error('Sibyl could not determine SOL price');
 
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const solAddr = ULTRON_SOL_ADDRESS;
 
         // Sub-cent tag from address
@@ -1712,7 +1713,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       try {
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) throw new Error('No keeper key');
         const amountParam = parseFloat(url.searchParams.get('amount') || '0');
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const solAddr = ULTRON_SOL_ADDRESS;
         // Accept explicit amount via query param or try to auto-detect balance
         let depositAmt = amountParam;
@@ -1741,7 +1742,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (!body.to) return new Response(JSON.stringify({ error: 'to address required' }), { status: 400, headers: { 'content-type': 'application/json' } });
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
 
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
         const toAddr = normalizeSuiAddress(body.to);
         const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
@@ -1796,7 +1797,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (!body.newKeeper) return new Response(JSON.stringify({ error: 'newKeeper required' }), { status: 400, headers: { 'content-type': 'application/json' } });
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
 
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
         const newAddr = normalizeSuiAddress(body.newKeeper);
         const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
@@ -2301,7 +2302,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       try {
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 503, headers: { 'content-type': 'application/json' } });
         const body = await request.json().catch(() => ({})) as { lamports?: string; slippageBps?: number };
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const keypair = ultronKeypair(this.env);
         // Decode the private key properly. getSecretKey() may
         // return a bech32 string or typed array depending on
         // SDK version. Use decodeSuiPrivateKey if available,
@@ -2557,7 +2558,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // 3. Sell SUI on expensive venue
       // 4. Repay flash loan
       // 5. Keep profit
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = keypair.getPublicKey().toSuiAddress();
 
       const arbAmount = 100_000_000n; // 100 USDC (start small)
@@ -2681,7 +2682,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
 
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const treasuryAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -2721,7 +2722,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   async lendUsdcToNavi(): Promise<{ digest?: string; amount?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
       // Get USDC balance
@@ -2824,7 +2825,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   async lendUsdcToScallop(amount?: bigint): Promise<{ digest?: string; amount?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
       // Get USDC balance
@@ -2898,7 +2899,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   async lendSuiToScallop(amount: bigint): Promise<{ digest?: string; amount?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -2962,7 +2963,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   async unwindAllScallopSui(): Promise<{ digest?: string; sSuiIn?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const coins = await transport.listCoins({ owner: ultronAddr, coinType: SCALLOP.sSuiType });
@@ -3034,7 +3035,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -3156,7 +3157,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -3298,7 +3299,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           ratioBeforeBps: ratioBefore,
         };
       }
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -3347,7 +3348,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   async zeroDustCollateralRecord(): Promise<{ digest?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const tx = new Transaction();
@@ -3410,7 +3411,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // 4. Convert surplus to deployable amount
       //    Surplus is in MIST (SUI-denominated). For USDC venues, convert at SUI price.
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
       // Check what ultron actually has available to deploy
@@ -3553,7 +3554,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { swept: false };
 
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -3764,7 +3765,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         // Report profit on-chain if significant (> $0.01 iUSD)
         if (agentShare > 10_000_000n && this.env.SHADE_KEEPER_PRIVATE_KEY) {
           try {
-            const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+            const keypair = ultronKeypair(this.env);
             const ultronAddr = keypair.getPublicKey().toSuiAddress();
             const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
             const T2000_PKG = '0x1a160f225ae758173f0ab7bf42db0f8d658a13c728051763754204219828f3ca';
@@ -3957,7 +3958,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const authErr = this.requireUltronCaller(params.callerAddress);
     if (authErr) return { error: authErr };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const tx = new Transaction();
@@ -3995,7 +3996,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const authMsgBytes = Uint8Array.from(atob(params.authMsg), c => c.charCodeAt(0));
       await verifyPersonalMessageSignature(authMsgBytes, params.authSig, { address: params.senderAddress });
 
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -4074,7 +4075,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const authErr = this.requireUltronCaller(params.callerAddress);
     if (authErr) return { error: authErr };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -4151,7 +4152,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'no keeper' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const recipient = normalizeSuiAddress(params.recipient);
@@ -4312,7 +4313,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'no keeper' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const iusdQty = BigInt(params.iusdQtyMist);
@@ -4510,7 +4511,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   async attestSolCollateral(params: { valueUsdCents: number }): Promise<{ digest?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'no keeper' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const valueMist = BigInt(params.valueUsdCents) * 10_000_000n;
@@ -4571,7 +4572,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
 
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -4652,7 +4653,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     this.setState({ ...this.state, quest_bounties: bounties } as any);
 
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -4839,7 +4840,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const pendingKamino = kaminoIntents.filter(i => i.status === 'pending');
     if (pending.length === 0 && pendingKamino.length === 0) return;
 
-    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(this.env);
     const solAddr = ULTRON_SOL_ADDRESS;
 
     // Fetch recent Solana transactions to ultron's address
@@ -5268,7 +5269,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           // can use it for create_stable<IUSD>.
           const keys = chainToAssetKey[deposit.sourceChain] ?? { assetKey: 'SUI', chainKey: 'sui' };
           try {
-            const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY!);
+            const keypair = ultronKeypair(this.env);
             const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
             const r = await this.mintIusdForDeposit({
               recipient: ultronAddr, // mint to ULTRON, not depositor
@@ -5405,7 +5406,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const mintAddress = (this.state as any).iusd_sol_mint as string | undefined;
     if (!mintAddress) return { error: 'iUSD SOL mint not created yet' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const pubRaw = keypair.getPublicKey().toRawBytes();
       const mintPub = b58decode(mintAddress);
       const recipPub = b58decode(params.recipientSolAddress);
@@ -5433,7 +5434,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     target: string,
   ): Promise<void> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return;
-    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(this.env);
     const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
     try {
       const tx = new Transaction();
@@ -5736,7 +5737,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   /** Sweep NS → USDC → iUSD. Ultron should never hold NS — always convert back to iUSD (backed by XAUM + USDC + SUI). */
   private async _sweepNsToIusd(): Promise<void> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return;
-    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(this.env);
     const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
     // Check if ultron has any NS tokens
@@ -5986,7 +5987,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   /** Deposit SOL into Kamino Lend. Returns Solana tx signature. */
   private async _depositToKamino(solAmount: number): Promise<string> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) throw new Error('No keeper key');
-    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(this.env);
     const solAddr = ULTRON_SOL_ADDRESS;
 
     // 1. Get unsigned deposit tx from Kamino REST API
@@ -6089,7 +6090,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   /** Deposit USDC into Kamino Lend. Amount in USDC units (6 decimals). Returns Solana tx signature. */
   private async _depositUsdcToKamino(usdcAmount: number): Promise<string> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) throw new Error('No keeper key');
-    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(this.env);
     const solAddr = ULTRON_SOL_ADDRESS;
 
     // 1. Get unsigned deposit tx from Kamino REST API
@@ -6241,7 +6242,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (existingMint) return { mintAddress: existingMint, error: 'Mint already exists' };
 
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const pubRaw = keypair.getPublicKey().toRawBytes();
 
       const signFn = async (msg: Uint8Array) => {
@@ -6370,7 +6371,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (!mintAddress) return { error: 'iUSD SOL mint not created yet — call createIusdSolMint first' };
 
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const pubRaw = keypair.getPublicKey().toRawBytes();
       const mintPub = b58decode(mintAddress);
       const recipPub = b58decode(params.recipientSolAddress);
@@ -6432,7 +6433,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (!recipient || !collateralValueMist || !domainPriceUsd) return { error: 'Missing params' };
 
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -6571,7 +6572,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -6754,7 +6755,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -6862,7 +6863,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const authErr = this.requireUltronCaller(params?.callerAddress); if (authErr) return { error: authErr };
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -7118,7 +7119,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // Call ignite_resp on-chain to close the request
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -7195,7 +7196,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       };
     }
 
-    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(this.env);
     const ultronAddress = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
     console.log(`[TreasuryAgents:rumble] Ultron: ${ultronAddress}`);
 
@@ -7341,7 +7342,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (!name) return { error: 'Missing name' };
 
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const userAddress = params.userAddress || ultronAddr; // default to ultron for pre-trade provisioning
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
@@ -7504,7 +7505,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     const SHARED_BM = params.bmId || '0x8be5690bd1335e5f7b4f7cd46dd6ae9bebeba7f325b93abe6cd4d386d78cc765';
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const recipientAddr = normalizeSuiAddress(params.recipient);
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
@@ -7553,7 +7554,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (!label || !targetAddress) return { error: 'Missing label or targetAddress' };
 
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
       const { SuinsClient } = await import('@mysten/suins');
@@ -8119,7 +8120,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           }
         }
 
-        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY!);
+        const keypair = ultronKeypair(this.env);
         const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
         const payLabel = usdcTopUpMist > 0n
@@ -8229,7 +8230,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     if (iusdAmount <= 0n) return { error: 'Amount must be positive' };
 
-    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(this.env);
     const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
     const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
@@ -8311,7 +8312,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private async _refillSui(): Promise<{ digest?: string; suiReceived?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
-      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keypair = ultronKeypair(this.env);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
       const coinData = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
@@ -8373,7 +8374,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     amountMist: bigint,
     _transport: SuiGraphQLClient,
   ): Promise<{ digest?: string; suiSent?: string; error?: string }> {
-    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY!);
+    const keypair = ultronKeypair(this.env);
     const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
     const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 

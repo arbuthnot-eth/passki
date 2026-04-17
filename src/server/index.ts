@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { ultronKeypair } from './ultron-key.js';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
 import { createZkLoginApp } from './zklogin-proxy.js';
@@ -202,7 +203,7 @@ let _treasuryAuthCache: string | null = null;
 function getTreasuryAuth(env: Env): string {
   if (_treasuryAuthCache !== null) return _treasuryAuthCache;
   if (!env.SHADE_KEEPER_PRIVATE_KEY) { _treasuryAuthCache = ''; return ''; }
-  const kp = Ed25519Keypair.fromSecretKey(env.SHADE_KEEPER_PRIVATE_KEY);
+  const kp = ultronKeypair(env);
   _treasuryAuthCache = normalizeSuiAddress(kp.getPublicKey().toSuiAddress()).slice(0, 34);
   return _treasuryAuthCache;
 }
@@ -1911,7 +1912,7 @@ app.post('/api/cache/ultron-roster', async (c) => {
     const { keccak_256 } = await import('@noble/hashes/sha3.js');
     const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
 
-    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(c.env);
     const ultronSuiAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
     // IKA-derived addresses from the DKG ceremonies. Hardcoded because
@@ -2163,7 +2164,7 @@ app.get('/api/cache/ultron-sol-probe', async (c) => {
     if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
     const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
     const { b58encode } = await import('./solana-spl.js');
-    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(c.env);
     const oldSolAddress = b58encode(keypair.getPublicKey().toRawBytes());
 
     const SOL_RPCS = [
@@ -2238,7 +2239,7 @@ app.post('/api/cache/ultron-split-sui', async (c) => {
     const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
     const { Transaction } = await import('@mysten/sui/transactions');
     const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
-    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(c.env);
     const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
 
     // Pull ultron's largest SUI coin to use as gas via raw JSON-RPC.
@@ -2328,7 +2329,7 @@ app.post('/api/cache/ultron-transfer-iusd', async (c) => {
     const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
     const { Transaction } = await import('@mysten/sui/transactions');
     const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
-    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(c.env);
     const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
     const recipient = normalizeSuiAddress(body.recipient);
 
@@ -2417,7 +2418,7 @@ app.post('/api/cache/psm-smoke', async (c) => {
     const { Transaction } = await import('@mysten/sui/transactions');
     const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
 
-    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(c.env);
     const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
 
     const PSM_PKG     = '0xe0e0113e44c38ef5cfbbac826cfff0cf0438109b0358b0039aca8d183065f5af';
@@ -2633,7 +2634,7 @@ app.post('/api/cache/sweep-sol-ultron', async (c) => {
     const { b58encode, b58decode, sweepSplAccount, sweepNativeSol } = await import('./solana-spl.js');
     type SolanaRpcConfig = import('./solana-spl.js').SolanaRpcConfig;
 
-    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const keypair = ultronKeypair(c.env);
     const ownerPub = keypair.getPublicKey().toRawBytes();
     const oldSolAddress = b58encode(ownerPub);
     const recipientPub = b58decode(body.recipient);
@@ -3375,7 +3376,7 @@ app.post('/api/cache/create-iusd-sol-mint', async (c) => {
     if (!c.env.SHADE_KEEPER_PRIVATE_KEY) {
       return c.json({ error: 'No keeper key configured' }, 500);
     }
-    const kp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const kp = ultronKeypair(c.env);
     const ultronAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
 
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?create-iusd-sol-mint', {
@@ -3394,7 +3395,7 @@ app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
   try {
     if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key configured' }, 500);
     const body = await c.req.json() as { recipientSolAddress: string; amount: string };
-    const kp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const kp = ultronKeypair(c.env);
     const callerAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
       method: 'POST',
@@ -3441,7 +3442,7 @@ app.post('/api/cache/bam-mint-v2', async (c) => {
     // Signature is valid, nonce is fresh, intent is not expired.
     // Ultron now acts as a pure relayer: calls the existing BAM mint
     // flow with no ability to alter recipient or amount.
-    const kp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const kp = ultronKeypair(c.env);
     const callerAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
       method: 'POST',

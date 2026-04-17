@@ -152,9 +152,9 @@ export async function verifyVectorIntent<TIntent extends Record<string, unknown>
     // (first 34 chars of ultron's normalized Sui address).
     let auth = '';
     if (env.SHADE_KEEPER_PRIVATE_KEY) {
-      const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
       const { normalizeSuiAddress } = await import('@mysten/sui/utils');
-      const kp = Ed25519Keypair.fromSecretKey(env.SHADE_KEEPER_PRIVATE_KEY);
+      const { ultronKeypair } = await import('./ultron-key.js');
+      const kp = ultronKeypair(env);
       auth = normalizeSuiAddress(kp.getPublicKey().toSuiAddress()).slice(0, 34);
     }
     const nonceRes = await stub.fetch(new Request('https://treasury-do/?magnemite-nonce', {
