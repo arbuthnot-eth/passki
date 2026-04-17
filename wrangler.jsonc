@@ -136,6 +136,15 @@
   // hot path without needing a co-located KV store.
   "placement": { "mode": "smart" },
 
+  // Enable built-in CF Workers observability — metrics, invocations,
+  // error rates, and tail logs in the dashboard. Head-sampled at 100%
+  // so cache-miss rates + ratelimit 429s are visible for the
+  // /ens-resolver hot path. Zero code changes required.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
   // Rate limiter for the CCIP-read gateway. 60 req/min per source IP
   // cap keeps a DoS burst from spending our signer time + upstream
   // Sui quota, while leaving plenty of headroom for legitimate
