@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>.SKI — SuiNS Portfolio Snapshot</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#12151d; --panel2:#171b25; --ink:#e7ecf3; --mute:#8a93a6;
+    --accent:#6ee7ff; --warn:#ffd166; --ok:#8affb0; --err:#ff7a7a; --line:#232836;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Inter,sans-serif}
+  header{padding:28px 32px 16px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0d1018,#0b0d12)}
+  header h1{margin:0;font-size:22px;letter-spacing:.3px}
+  header p{margin:6px 0 0;color:var(--mute);font-size:13px}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--mute);font-size:11px;margin-left:8px;vertical-align:middle}
+  .pill.warn{color:#111;background:var(--warn);border-color:var(--warn)}
+  .pill.ok{color:#0b2016;background:var(--ok);border-color:var(--ok)}
+  main{padding:20px 32px 80px;max-width:1180px;margin:0 auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(520px,1fr));gap:18px;margin-top:18px}
+  .owner{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .owner h2{margin:0;padding:14px 16px;font-size:15px;border-bottom:1px solid var(--line);background:var(--panel2);display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .owner h2 small{color:var(--mute);font-weight:400;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .owner .meta{color:var(--mute);font-size:12px;padding:8px 16px;border-bottom:1px solid var(--line);background:#10131a}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 16px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--mute);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px;background:#10131a}
+  tr:last-child td{border-bottom:0}
+  tr:hover td{background:#141824}
+  .name{font-weight:600;color:var(--accent)}
+  .listed{color:var(--ok)}
+  .expired{color:var(--err)}
+  .offer{color:var(--warn)}
+  .muted{color:var(--mute)}
+  footer{margin:40px 32px 60px;padding:20px;border:1px dashed var(--line);border-radius:12px;background:var(--panel);max-width:1180px;margin-left:auto;margin-right:auto}
+  footer h3{margin:0 0 8px;font-size:13px;color:var(--mute);text-transform:uppercase;letter-spacing:.5px}
+  pre{margin:0;padding:14px;background:#0a0c11;border:1px solid var(--line);border-radius:8px;overflow:auto;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#cfd6e4}
+  .banner{margin:14px 0;padding:12px 14px;border-radius:10px;background:#2a1d10;border:1px solid #4a3418;color:#ffd89a;font-size:13px}
+  .banner code{background:#0a0c11;padding:1px 6px;border-radius:4px;color:#ffe7b0}
+  .totals{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-width:160px}
+  .stat .v{font-size:20px;font-weight:600;color:var(--accent)}
+  .stat .l{font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.5px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>.SKI — SuiNS Portfolio Snapshot <span class="pill warn">stub — needs TRADEPORT_API_KEY</span></h1>
+  <p>Rolls up every SuiNS name held across four addresses (encrypt.sui, superteam.sui, plankton.sui, portal.sui) with listing status, top offer, and expiration.</p>
+</header>
+
+<main>
+
+<div class="banner">
+  <strong>Live data not fetched.</strong> The TradePort / Indexer.xyz GraphQL endpoint (<code>https://api.indexer.xyz/graphql</code>) requires
+  the headers <code>x-api-user</code> + <code>x-api-key</code>. The docs site (<code>docs.indexer.xyz</code>) is currently 404 on Vercel; the
+  schema below was recovered from <code>tradeport.xyz/docs/nft-data-api</code>. Request a key at
+  <code>tradeport.xyz/docs</code> -> "Request API Key", then drop it into a <code>fetch()</code> next to this page and re-render — the query below works as-is.
+</div>
+
+<div class="totals">
+  <div class="stat"><div class="v">4</div><div class="l">Addresses</div></div>
+  <div class="stat"><div class="v">~100+</div><div class="l">Names (est.)</div></div>
+  <div class="stat"><div class="v">TBD</div><div class="l">Listed</div></div>
+  <div class="stat"><div class="v">TBD</div><div class="l">Top-offer $</div></div>
+</div>
+
+<div class="grid">
+
+  <section class="owner">
+    <h2>encrypt.sui / brando <small>0x2b35...ee28</small></h2>
+    <div class="meta">Expected ~50 names. Primary brando.sui wallet.</div>
+    <table>
+      <thead><tr><th>Name</th><th>Expires</th><th>Listed</th><th>Top offer</th></tr></thead>
+      <tbody>
+        <tr><td class="name muted">(awaiting API key)</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="owner">
+    <h2>superteam.sui <small>0x3ca0...222b</small></h2>
+    <div class="meta">Expected 50+ names. Phantom-seed sanity wallet.</div>
+    <table>
+      <thead><tr><th>Name</th><th>Expires</th><th>Listed</th><th>Top offer</th></tr></thead>
+      <tbody>
+        <tr><td class="name muted">(awaiting API key)</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="owner">
+    <h2>plankton.sui <small>0x3db4...bb57</small></h2>
+    <div class="meta">Holds SUIAMI UpgradeCap (0x0d6439f1...). Keeper-adjacent.</div>
+    <table>
+      <thead><tr><th>Name</th><th>Expires</th><th>Listed</th><th>Top offer</th></tr></thead>
+      <tbody>
+        <tr><td class="name muted">(awaiting API key)</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="owner">
+    <h2>portal.sui <small>0xf0d0...c306</small></h2>
+    <div class="meta">Guest-Protocol parent wallet. Known holdings include expired <em>sunspot.sui</em>.</div>
+    <table>
+      <thead><tr><th>Name</th><th>Expires</th><th>Listed</th><th>Top offer</th></tr></thead>
+      <tbody>
+        <tr><td class="name">sunspot.sui</td><td class="expired">expired (grace)</td><td class="muted">—</td><td class="muted">—</td></tr>
+        <tr><td class="name muted">(awaiting API key)</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</div>
+
+</main>
+
+<footer>
+  <h3>Bulk query — paste into GraphiQL at api.indexer.xyz/graphql</h3>
+  <pre># POST https://api.indexer.xyz/graphql
+# Headers:
+#   Content-Type: application/json
+#   x-api-user: &lt;your username&gt;
+#   x-api-key:  &lt;your api key&gt;
+
+query SkiPortfolio($owners: [String!]!) {
+  sui {
+    nfts(
+      where: {
+        owner: { _in: $owners },
+        collection: { slug: { _eq: "suins" } }     # SuiNS collection on indexer
+        # alt: nft_type: { _eq: "0x...::suins_registration::SuinsRegistration" }
+      }
+      order_by: [{ name: asc }]
+      limit: 500
+    ) {
+      id
+      name
+      owner
+      version
+      staked
+      burned
+      collection { id slug title floor }
+      listings(where: { listed: { _eq: true } }, order_by: { price: asc }, limit: 1) {
+        id price price_str market_name
+      }
+      bids(where: { status: { _eq: "active" } }, order_by: { price: desc }, limit: 1) {
+        id price price_str bidder
+      }
+    }
+    # Floor per-collection (single call, same chain)
+    collections(where: { slug: { _eq: "suins" } }) {
+      id slug title floor supply
+    }
+  }
+}
+
+# Variables
+{
+  "owners": [
+    "0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28",
+    "0x3ca0da71d19d9a1837ad3da155f03aab776aa33963864064eb81569f10e5222b",
+    "0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57",
+    "0xf0d0________________________________________________________c306"
+  ]
+}
+</pre>
+
+  <h3 style="margin-top:18px">API discovery (2026-04-17)</h3>
+  <pre>Endpoint:    https://api.indexer.xyz/graphql      (Hasura, one POST for all chains)
+Auth:        x-api-user + x-api-key  (no Bearer, no anonymous tier)
+Free tier:   Must request a key at tradeport.xyz/docs -> "Request API Key"
+Schema:      root wraps chains: { aptos { ... }, sui { ... }, iota { ... } }
+Tables:      nfts, collections, listings, bids, actions, wallet_stats,
+             wallet_holdings, wallet_trades, crypto_rates
+Bulk owners: YES, native Hasura filter:  where: { owner: { _in: [...] } }
+Joinable:    YES, listings / bids / collection / actions are all nested relations
+             (single POST returns names + listing + top offer + floor)
+Live test:   api.indexer.xyz responded { errors:[{message:"Access to resource denied"}] }
+             to anonymous/dummy headers -> key required, but endpoint is up.
+Docs site:   docs.indexer.xyz returns Vercel 404 (DEPLOYMENT_NOT_FOUND).
+             Use www.tradeport.xyz/docs/nft-data-api/* instead (mirror).</pre>
+
+  <h3 style="margin-top:18px">Bulk-renew feasibility</h3>
+  <pre>TradePort:   No bulk-renew endpoint. Trading SDK covers list/buy/bid only.
+SuiNS SDK:   SuinsTransaction exposes .renew(...) per name. Sui PTBs allow many
+             moveCalls in ONE Transaction -> call suinsTx.renew() per name
+             against the same gas coin, single signature, single on-chain tx.
+Gas trick:   build one tx, split gas once via tx.gas, pass to each renew().
+             Pyth priceInfoObject is fetched ONCE with tx.gas and reused across
+             every renew() call (see buildRegisterSplashNsTx pattern in src/suins.ts).
+             Rumble-balance pricing (82.5% list) applies if paying in NS.
+Ceiling:     Sui tx size cap ~128KB and ~1024 commands -> ~200+ renewals per tx
+             is comfortably safe. Chunk to 50/tx for faster finality + clearer UX.</pre>
+
+  <h3 style="margin-top:18px">Generated</h3>
+  <pre id="ts">2026-04-17 (static snapshot) — drop TRADEPORT_API_KEY into a fetch() to render live data</pre>
+</footer>
+
+<script>
+  // When TRADEPORT_API_KEY is available, uncomment and wire:
+  // const r = await fetch('https://api.indexer.xyz/graphql', {
+  //   method:'POST',
+  //   headers:{'content-type':'application/json','x-api-user':USER,'x-api-key':KEY},
+  //   body: JSON.stringify({ query: QUERY, variables: { owners: OWNERS } })
+  // }).then(r=>r.json());
+  // Then groupBy owner and render into the four <tbody> slots above.
+  document.getElementById('ts').textContent =
+    'Generated ' + new Date().toISOString() + ' — stub render. Drop TRADEPORT_API_KEY into a fetch() to render live data.';
+</script>
+
+</body>
+</html>

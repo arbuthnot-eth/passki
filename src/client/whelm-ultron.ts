@@ -22,6 +22,8 @@ export const ADMIN_ADDRESSES: ReadonlySet<string> = new Set([
     '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28',
     // brando.sui — Phantom (new)
     '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057',
+    // superteam.sui — brando's Phantom builder wallet
+    '0x3ca0da71d19d9a1837ad3da155f03aab776aa33963864064eb81569f10e5222b',
 ]);
 
 export function isAdminAddress(address: string | undefined | null): boolean {

@@ -6343,6 +6343,7 @@ const _SKI_ADMIN_ADDRS = new Set([
   '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57',
   '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28',
   '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057',
+  '0x3ca0da71d19d9a1837ad3da155f03aab776aa33963864064eb81569f10e5222b',
 ]);
 function _skiAdminGroupHtml(): string {
   const ws = getState();

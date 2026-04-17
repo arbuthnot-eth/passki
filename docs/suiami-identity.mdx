@@ -1,0 +1,342 @@
+# SUIAMI — SUI-Auth-Msg-ID
+
+## SUIAMI? IAM...
+
+SUIAMI (SUI-Auth-Msg-ID) is a cross-chain identity resolver that links SuiNS names to IKA-derived BTC/ETH/SOL addresses. It has two layers:
+
+- **On-chain Roster** — a shared Move object acting as a public directory, triple-indexed by name hash, Sui address, and chain:address reverse lookup
+- **Off-chain proof** — a portable `suiami:<base64msg>.<sig>` credential that any verifier can check without an RPC call
+
+Cross-chain addresses are Seal-encrypted and stored on Walrus. Only other SUIAMI members can decrypt — the mutual-membership model means reading someone's identity auto-registers yours. The Roster grows passively because every Thunder send piggybacks a `set_identity` call in the same PTB.
+
+---
+
+## The Record Base
+
+SUIAMI is the identity substrate for the entire .SKI stack. Every system reads from or writes to the Roster:
+
+| System | Relationship to SUIAMI |
+|--------|----------------------|
+| **Thunder/Storm** | Every message send writes a roster entry. `suiami_verified` field on every signal event. |
+| **Rumble** | DKG ceremony derives all cross-chain addresses — roster is the destination for those addresses. |
+| **Shade** | Commitment-reveal sniping can gate on roster membership. |
+| **Satellites** | Flash loan eligibility can check `has_address()` on the roster. |
+| **Hunters** | Offer matching resolves counterparties via `lookup_by_chain`. |
+| **Prisms** | Sender identity layer embeds SUIAMI proof as `sender_cipher`. |
+| **Chronicom Leaderboard** | Agent ranking gates on `dwallet_caps` non-empty (dWallet-verified). |
+| **iUSD** | Collateral attestations reference roster entries for cross-chain position tracking. |
+
+---
+
+## On-Chain Data Model
+
+**Contract:** `contracts/suiami/sources/roster.move`
+
+```
+IdentityRecord {
+  name:           String           // bare SuiNS name
+  sui_address:    address           // wallet
+  chains:         VecMap<String, String>  // "sui" → addr (BTC/ETH/SOL are in the Walrus blob)
+  dwallet_caps:   vector<address>   // IKA DWalletCap IDs — proves key derivation
+  walrus_blob_id: String           // Seal-encrypted cross-chain address blob
+  seal_nonce:     vector<u8>       // 40-byte Seal identity for decrypt
+  verified:       bool             // true if dwallet_caps is non-empty
+  updated_ms:     u64              // Clock timestamp
+}
+```
+
+**Seal policy** (`seal_roster.move`): `seal_approve_roster_reader` enforces that the caller (1) has a Roster entry and (2) that entry has a non-empty `walrus_blob_id`. Seal key servers dry-run this before releasing decrypt shares.
+
+---
+
+## How SUIAMI Compares to ENS and UD
+
+### The Core Difference
+
+Every other naming service stores user-supplied addresses with no proof of ownership. Someone can claim any BTC address in their ENS record and there is no way to verify they control it. SUIAMI is the only system where cross-chain addresses are **cryptographically derived from the same identity** via IKA dWallets — and the privacy layer means the address graph is not public by default.
+
+### ENS (Ethereum Name Service)
+
+ENS is the market leader. ENSv2 deployed on Ethereum mainnet with sub-$0.01 gas fees via ZK proofs. Key features:
+
+- **ENSIP-9 multichain resolution** — any ENS name can store any blockchain address via SLIP-0044 coin types. `addr(namehash, coinType)` returns raw bytes.
+- **Sui coin type is 784** (0x310) — already works today via ENSIP-9. Any ENS name can set a Sui address record. No Sui-specific EIP was needed.
+- **`on.eth` chain registry** — enables interoperable names like `vitalik.eth@base` for cross-chain addressing.
+- **ENS → Sui resolution** — wallets call `addr(namehash("brando.eth"), 784)` to resolve a Sui address. The address is stored as raw bytes in the resolver contract.
+
+**What ENS has that SUIAMI does not (yet):**
+- Broad wallet integration (MetaMask, Rainbow, Coinbase, Binance)
+- Standardized resolution protocol (ENSIP/SLIP-0044/ERC-7828)
+- DNS bridge (ENS names can resolve from traditional DNS)
+
+**What SUIAMI has that ENS does not:**
+- Cryptographic proof of cross-chain address ownership (dWallet derivation vs self-declared)
+- Privacy by default (Seal-encrypted vs fully public records)
+- Integrated encrypted messaging (Thunder/Storm)
+- Reciprocal discovery (reading someone's identity auto-registers yours)
+
+### UD
+
+UD mints on Ethereum, Polygon, Base, Solana, and Sonic. They are pursuing ICANN gTLD applications:
+
+- **.wallet** — 625K+ registrations, applying in ICANN's 2026 gTLD round
+- **.agent** — announced as a "bi-registry TLD" for AI agents
+- **MetaMask Snap** — cross-chain resolution across 23 chains (desktop only)
+- **No Sui support** — Sui is not among the 23 Snap-resolved chains
+
+### ICANN gTLD Landscape
+
+The 2026 ICANN gTLD round is attracting multiple web3 players:
+
+- **UD** — pursuing `.wallet`, `.agent`, and others. Furthest along, already offering refunds for TLDs they won't submit.
+- **Mysten Labs / Sui Foundation** — have signaled intent to pursue a `.sui` ICANN TLD, though no formal application has been confirmed. If it happens, SuiNS names could resolve in every browser natively. If it doesn't, SuiNS remains on-chain only.
+- **Brave browser** — operates its own `.brave` namespace. We hold several `.brave` names including `agent.brave`, which are relevant as Brave expands its Web3 wallet and identity features.
+
+**Where SUIAMI fits:** SUIAMI does not compete on DNS — it competes on verified cross-chain identity, which is orthogonal to ICANN resolution. If `.sui` gets ICANN approval, SUIAMI roster entries become the identity layer behind every browser-resolvable `.sui` name. If it doesn't, SUIAMI still works as the on-chain identity substrate regardless of DNS status. The `.brave` names give us a foothold in Brave's ecosystem for agent identity (`agent.brave` → SUIAMI-backed agent with real IKA dWallet signing capability).
+
+---
+
+## SuiNS Communities vs Building Our Own
+
+SuiNS Communities launched April 15, 2026 — a social discovery app built on SuiNS subnames. Format: `yourname@community` (leaf subname under the community's root `.sui` name). Anyone with a SuiNS name can create a community. Members claim subnames, contributing to aggregate holdings dashboards, demographics, and social signal. Live at `suins.io/communities`.
+
+### What They Offer
+
+- **Real-time dashboard** — aggregate member token holdings, protocol usage, demographics
+- **Configurable entry** — asset-gating or fee-based joining
+- **Associated tokens** — communities anchor around specific tokens, linked to Slush for trading
+- **Social integration** — connected social accounts surface on community pages
+- **On-chain membership** — leaf subnames (parent-controlled, revocable, no separate NFT)
+
+### The Question: Do We Want What They're Selling?
+
+SuiNS Communities is a **social analytics product** — it answers "what does this community hold?" It's built on the existing SuiNS subname system (`SubDomainRegistration` for node subnames, leaf subnames for members). The `SubnameCap` delegation capability controls who can mint subnames under a root.
+
+We already own the root `.sui` names. The subname infrastructure is permissionless — we don't need SuiNS Communities' app to use it. The question is whether their specific product (dashboards, social signal, demographics) adds value to SUIAMI, or whether we build our own subname layer with different semantics.
+
+### What We Could Build Instead
+
+SUIAMI subnames would have different semantics than SuiNS Communities:
+
+| | SuiNS Communities | SUIAMI Subnames |
+|--|-------------------|-----------------|
+| **Purpose** | Social discovery, token-gated membership | Cross-chain identity attestation |
+| **Membership proof** | Leaf subname (revocable by parent) | SUIAMI roster entry + Seal-encrypted blob |
+| **What members see** | Aggregate holdings dashboard | Each other's cross-chain addresses (encrypted) |
+| **Entry criteria** | Asset-gating, fees | Rumble (DKG ceremony) — proves you control real keys |
+| **Privacy** | All holdings visible on-chain | Addresses encrypted, only members decrypt |
+| **Revenue** | Joining fees set by community owner | Roster write fees, decrypt offerings → iUSD cache |
+
+A SUIAMI subname system built directly off the original SuinsRegistration NFT would:
+
+1. **Use node subnames** (not leaf) — members get their own transferable NFT, not a revocable leaf
+2. **Gate on Rumble** — you join by running DKG, proving you control real cross-chain keys, not just holding tokens
+3. **Write to the Roster** — subname creation triggers `set_identity` with the derived addresses
+4. **Encrypt per-community** — each community gets its own Seal policy, so members of `thunder.sui` can see each other's addresses but `nozomi.sui` members can't
+5. **Skip the dashboard** — we don't need aggregate holdings analytics. We need cross-chain routing.
+
+### Crowds, Not Communities
+
+We don't call them communities. They're **crowds** — identity-verified groups anchored to a root `.sui` name. Each crowd is a namespace where members get node subnames (transferable NFTs, not revocable leaves) backed by SUIAMI roster entries with real cross-chain keys.
+
+Initial crowds and their name portfolios:
+
+**encrypt.sui** (`0x2b35...ee28`) — the privacy crowd. 50 names including encrypt, thunder, brando, shade, iusd, suiami, splash, prism, t2000, questfi, bounty, squids, ignite, zenith, nebula, beacon, lockin, attest, approve, bytes, keystore, policy, swift, settlement, invincible, and more. The default crowd for anyone who cares about Seal-gated identity. Members run Rumble, get all-chain addresses, encrypt everything.
+
+**superteam.sui** (`0x3ca0...222b`) — the builder crowd. 50+ names including satellite, sibyl, agents, cache, stables, signal, passkey, kamino, nautilus, infer, govt, shelby, command, alert, cross, struct, indie, libre, mystic, nation, oauth, score, spirit, and more. Members are project contributors and operators. Already referenced in the codebase as the canonical "existing primary" example.
+
+**portal.sui** (`0xf0d0...c306`) — the gateway crowd. 3 names: portal, sunspot, acct. Entry point for new users discovering cross-chain identity. Lowest barrier, subsidized Rumble.
+
+**gulf.sui** — not registered yet. Available for the whale crowd — high-value identity attestations, premium Seal policies, priority Satellite access.
+
+### Subsidized Rumbles for Crew Members
+
+Rumble (DKG ceremony) is the real gate — it proves you control cross-chain keys, not just that you hold tokens. But DKG costs gas across multiple transactions. For crowd subname holders, Rumble should be **free or subsidized**:
+
+- **Crew owner sponsors gas** — the root name holder (e.g. owner of `encrypt.sui`) can pre-fund a gas pool. Subname members claim a sponsored Rumble.
+- **iUSD cache subsidizes** — Rumble gas costs are tiny ($0.01-0.05). The iUSD surplus from Satellite spreads, Shade deposits, and Thunder fees easily covers this. Every subsidized Rumble adds a verified identity to the roster, which increases the value of every other feature.
+- **Batch Rumble per crowd** — instead of individual DKG ceremonies, a crowd-wide batch Rumble provisions all members in one wave. "Rumble your squids" at crowd scale.
+
+The economics work: a subsidized Rumble costs fractions of a cent in gas but produces a verified SUIAMI identity that can generate roster write fees, decrypt offerings, inference charges, and Satellite spreads over its lifetime. The ROI on subsidizing Rumbles is enormous.
+
+### Recommendation
+
+Use the raw SuiNS subname contracts directly (`SubnameCap` + `SubDomainRegistration`). Don't depend on SuiNS Communities' app layer. Their product is a social dashboard — ours is an identity substrate. The on-chain primitives are the same; the semantics are completely different. If their dashboard becomes useful later, our subnames are compatible since they sit on the same contracts.
+
+---
+
+## ENS Domains as a Bridge
+
+We own ENS domains that bridge traditional Ethereum identity into the SUIAMI graph:
+
+- **iusd.eth** — canonical ENS reference for iUSD. With Sui coin type 784 set, any Ethereum wallet resolving `iusd.eth` can discover the Sui address, which then resolves to the full SUIAMI roster entry.
+- **Any `.eth` domain with a Sui address record** becomes a SUIAMI entry point. The flow: ENS resolver returns Sui address → client reads SUIAMI roster by that address → full cross-chain identity graph is available.
+
+This is a one-way bridge today: ENS → Sui → SUIAMI. The reverse (SUIAMI → ENS) works via the `eth` field in the encrypted Walrus blob — decrypt a SUIAMI entry and you get the ETH address, which can be reverse-resolved to an ENS name.
+
+---
+
+## Cloudflare Integration
+
+sui.ski runs on Cloudflare Workers + Durable Objects. Every request to sui.ski passes through Cloudflare's edge, which means every SUIAMI interaction has access to Cloudflare's full request context — headers, geolocation, threat score, ASN, device fingerprint — before it ever touches our code.
+
+### Edge-Enriched Identity
+
+Cloudflare injects `cf-ipcountry`, `cf-connecting-ip`, ASN, and other request metadata on every hit. We encrypt this into the SUIAMI Walrus blob alongside the cross-chain addresses, gated by the same Seal policy (`seal_approve_roster_reader`) — only other SUIAMI members can see it.
+
+This turns every SUIAMI entry from a static address map into a **living identity signal**:
+
+- **Country** — `cf-ipcountry` at time of attestation. Encrypted, visible only to other SUIAMI members. Useful for: compliance gating (OFAC check before cross-chain routing), regional Satellite pricing, Thunder delivery hints.
+- **ASN / ISP** — distinguishes residential users from VPN/datacenter. Agents running on Cloudflare Workers have ASN 13335; real users don't. Helps Sibyl weight oracle readings.
+- **Threat score** — Cloudflare's bot/threat classification. High-threat attestations get flagged in the roster. Chronicom leaderboard can deprioritize agents with suspicious origins.
+- **Timestamp + IP hash** — not the raw IP, but a salted hash. Proves the attestation came from a real browser session, not a replayed request.
+
+The Walrus blob structure extends from:
+```
+{ btc: "bc1q...", eth: "0x...", sol: "..." }
+```
+to:
+```
+{
+  btc: "bc1q...", eth: "0x...", sol: "...",
+  cf: {
+    country: "US",
+    asn: 7922,
+    threatScore: 0,
+    attestedAt: 1713225600000,
+    ipHash: "a3f8..."
+  }
+}
+```
+
+All of `cf` is Seal-encrypted. Public chain — only the name and Sui address are visible on-chain. Everything else requires mutual SUIAMI membership to decrypt.
+
+### Agents SDK (Agents Week 2026)
+
+Cloudflare shipped major agent infrastructure that maps directly onto SUIAMI:
+
+**Project Think** (`@cloudflare/think`):
+- **Durable Execution with Fibers** — crash recovery, checkpointing, automatic keepalive for long-running agents
+- **Sub-agents** — isolated child DOs with own SQLite + typed RPC. Maps to t2000 agent spawning.
+- **Persistent Sessions** — tree-structured messages, forking, compaction, full-text search. Maps to Storm conversation history.
+- **Sandboxed Code Execution** — Dynamic Workers + runtime npm resolution. Maps to agent strategy execution.
+- **DO Facets** — Dynamic Workers can spawn DOs with isolated SQLite on the fly. Maps to per-wallet Chronicom DOs.
+
+### SUIAMI-Gated Agent Access
+
+SUIAMI membership becomes the access control layer for Cloudflare agent infrastructure:
+
+- **Pay for inference** — SUIAMI users pay in iUSD for AI inference routed through Cloudflare's AI Gateway. Unified Billing lets us route OpenAI/Anthropic/Google costs through one CF account. The SUIAMI roster entry is the billing identity.
+- **Agent provisioning** — batch DKG ("Rumble your squids") provisions IKA dWallet-backed agent identities that can sign on any chain. Each agent gets a Durable Object via Project Think, a roster entry, and inference credits.
+- **Browser Run for human-in-the-loop** — agents that need user approval (large trades, cross-chain transfers) use Browser Run's Live View to present confirmation UIs. SUIAMI proof authenticates the human.
+
+### Pricing Model
+
+- AI Gateway: free on all plans
+- Workers AI: pay-per-inference (neuron-based)
+- Unified Billing: all third-party model costs (OpenAI, Anthropic, Google) on one Cloudflare invoice
+- SUIAMI markup: small spread on inference costs → iUSD cache
+
+---
+
+## Current Gaps and Immediate Fixes
+
+### Broken Now
+
+| Issue | Impact | Fix |
+|-------|--------|-----|
+| `maybeAppendRoster()` commented out | Passive roster growth disabled — no piggyback on Thunder sends | Fix v1/v2 contract mismatch, re-enable |
+| Walrus endpoints on testnet | Seal encrypt/decrypt hitting testnet publisher | Flip to `publisher.walrus.space` |
+| No Rumble → Roster auto-write | DKG completes but addresses sit in app state, not on-chain | Wire `buildFullSuiamiWriteTx` into post-DKG callback |
+| `suiami_verified` not rendered | Thunder signals carry verification status but UI ignores it | Read field, render badge in message bubble |
+
+### Underutilized Contract Features
+
+| Feature | Status | Opportunity |
+|---------|--------|-------------|
+| `lookup_by_chain("btc:bc1q...")` | On-chain, no UI | Reverse-lookup: "who owns this BTC address?" |
+| `dwallet_caps` field | Always empty | Fill during Rumble. Gates verified tier + Chronicom leaderboard. |
+| `verified` boolean | Never true | Flip when `dwallet_caps` is populated. Visual badge in UI. |
+| `seal_approve_roster_reader` | Enforces mutual membership | Natural toll gate for decrypt-as-a-service revenue |
+
+---
+
+## Opportunities
+
+### Verified Address Ownership as an Open Standard
+
+No naming service today proves you control the address you claim. SUIAMI's dWallet derivation is cryptographic proof. Packaging this as a standard (analogous to ENSIP but with ownership verification) would be genuinely differentiated. The contract already has the `verified` field and `dwallet_caps` storage — it just needs to be populated during Rumble.
+
+### SUIAMI-Gated Features
+
+Once the roster is the identity substrate, every feature can gate on it:
+
+- **Satellite flash loans** require roster membership → cheapest registration path requires SUIAMI
+- **Shade commitment-reveal** requires roster membership → privacy sniping requires SUIAMI
+- **Chronicom leaderboard** requires `dwallet_caps` non-empty → agent competition requires verified identity
+- **Inference credits** require roster membership → AI agent capabilities require SUIAMI
+
+### Revenue Tied to SUIAMI
+
+| Mechanism | Flow |
+|-----------|------|
+| Roster write fee on `set_identity` | Every Rumble, every name purchase → iUSD cache |
+| Decrypt offering via Sibyl | Each cross-chain squid decrypt costs a micro-fee → iUSD cache |
+| Inference markup | AI Gateway costs + small spread → iUSD cache |
+| Agent provisioning | Batch DKG + DO spawn fee → iUSD cache |
+| Cross-chain payment routing | Send to `brando.sui`, route to correct chain, take spread → iUSD cache |
+
+### Cross-Chain Thunder via Roster
+
+When sending a Thunder to `eth@brando`, resolve via `lookup_by_chain("eth:0x...")` to find the SuiNS name, gate Seal decryption to that name's NFT holder. The contract supports this today. The client code does not exist yet.
+
+---
+
+## Architecture Reference
+
+```
+ENS (iusd.eth)                    SuiNS (brando.sui)
+    │                                  │
+    │ addr(namehash, 784)              │ NameRecord
+    │                                  │
+    ▼                                  ▼
+Sui Address ◄──────────────────► SUIAMI Roster
+    │                                  │
+    │ readRosterByAddress()            │ IdentityRecord
+    │                                  │
+    ▼                                  ▼
+┌─────────────────────────────────────────────┐
+│  Seal-Encrypted Walrus Blob                 │
+│  { btc: "bc1q...", eth: "0x...", sol: "..." }│
+│  Policy: seal_approve_roster_reader         │
+│  Threshold: 2-of-3 key servers              │
+└─────────────────────────────────────────────┘
+    │
+    │ decrypt (requires own SUIAMI entry)
+    │
+    ▼
+Full Cross-Chain Identity Graph
+    │
+    ├── Thunder / Storm messaging
+    ├── Satellite flash loans
+    ├── Shade commitment-reveal
+    ├── Hunter offer routing
+    ├── Prism sender identity
+    ├── Chronicom agent ranking
+    ├── iUSD collateral attestation
+    └── CF Agent inference billing
+```
+
+---
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `contracts/suiami/sources/roster.move` | On-chain data model, `set_identity` entry |
+| `contracts/suiami/sources/seal_roster.move` | Seal access policy |
+| `packages/suiami/src/index.ts` | Off-chain proof types, `buildMessage`, `createProof` |
+| `src/client/suiami-seal.ts` | Seal encrypt/decrypt, Walrus upload, session key management |
+| `src/suins.ts` | `maybeAppendRoster`, `readRoster`, `buildFullSuiamiWriteTx` |
+| `src/ski.ts` | Console hooks, `ski:request-suiami` handler |
+| `src/client/roster.ts` | Legacy AES-GCM path (superseded by Seal) |
