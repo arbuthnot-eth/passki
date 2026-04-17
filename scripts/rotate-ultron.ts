@@ -19,18 +19,19 @@ const kp = Ed25519Keypair.generate();
 const bech32 = kp.getSecretKey();
 const address = kp.getPublicKey().toSuiAddress();
 
+const childEnv = {
+    ...process.env,
+    PATH: `/usr/local/bin:${process.env.PATH}`,
+    // When bun is installed as a snap, XDG_CONFIG_HOME is redirected
+    // into ~/snap/bun-js/<rev>/.config, which hides the wrangler OAuth
+    // token at ~/.config/.wrangler/. Force the spawned wrangler back
+    // to the user's host config.
+    XDG_CONFIG_HOME: `${process.env.HOME}/.config`,
+};
+
 const proc = spawn(WRANGLER, ['secret', 'put', 'ULTRON_PRIVATE_KEY'], {
     stdio: ['pipe', 'inherit', 'inherit'],
-    env: {
-        ...process.env,
-        PATH: `/usr/local/bin:${process.env.PATH}`,
-        // When bun is installed as a snap, XDG_CONFIG_HOME is
-        // redirected into ~/snap/bun-js/<rev>/.config, which hides the
-        // wrangler OAuth token stored by `wrangler login` at the real
-        // ~/.config/.wrangler/. Force the spawned wrangler back to the
-        // user's host config so it sees the login.
-        XDG_CONFIG_HOME: `${process.env.HOME}/.config`,
-    },
+    env: childEnv,
 });
 proc.stdin.write(bech32);
 proc.stdin.end();

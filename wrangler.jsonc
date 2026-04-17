@@ -1,5 +1,6 @@
 {
   "name": "dotski",
+  "account_id": "6a10ee79fe9d21b5e2c3155ce8690742",
   "main": "src/server/index.ts",
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
