@@ -23,8 +23,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write
+      contents: write   # tag + release write; push chore commits on auto-bump
+      id-token: write   # npm provenance
     defaults:
       run:
         working-directory: packages/suiami
