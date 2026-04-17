@@ -29,8 +29,10 @@
 
 use quasar_lang::prelude::*;
 
+mod ed25519;
 mod instructions;
 mod state;
+pub use ed25519::*;
 pub use instructions::*;
 pub use state::*;
 
