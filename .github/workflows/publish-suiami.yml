@@ -6,6 +6,12 @@ name: Publish suiami SDK
 # suiami SDK" → Run workflow.
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - 'packages/suiami/**'
+      - 'contracts/suiami/**'
+      - '.github/workflows/publish-suiami.yml'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -71,6 +77,37 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Configure git
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # Pokemon-BST-driven version bump. Reads commit subjects since
+      # the most recent `suiami-v*` tag, maps named Pokemon to a
+      # base-stat-total, and picks patch/minor/major. Skipped on
+      # dry-run and on workflow_dispatch (manual publishes keep the
+      # hand-edited version).
+      - name: Pokemon BST bump
+        if: ${{ github.event_name == 'push' && github.event.inputs.dry_run != 'true' }}
+        working-directory: .
+        id: bst
+        run: |
+          # Scope "since" to the last suiami tag so we don't count
+          # sui.ski-only commits.
+          SINCE=$(git tag --list 'suiami-v*' --sort=-v:refname | head -n1)
+          if [ -z "$SINCE" ]; then
+            echo "No prior suiami-v* tag; using root."
+            SINCE=""
+          else
+            echo "Bumping relative to $SINCE"
+          fi
+          TIER=$(bun scripts/pokemon-bump.ts --since="$SINCE" --cwd=packages/suiami)
+          echo "Selected bump tier: $TIER"
+          cd packages/suiami
+          npm version "$TIER" --no-git-tag-version --workspace=false
+          echo "tier=$TIER" >> "$GITHUB_OUTPUT"
+
       - name: Read version
         id: version
         run: echo "value=$(npm pkg get version | tr -d '"')" >> "$GITHUB_OUTPUT"
@@ -87,8 +124,24 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
-      - name: Tag release
-        if: ${{ github.event.inputs.dry_run != 'true' }}
+      - name: Commit version bump and tag
+        if: ${{ github.event_name == 'push' && github.event.inputs.dry_run != 'true' }}
+        working-directory: .
+        run: |
+          set -e
+          VERSION="suiami-v${{ steps.version.outputs.value }}"
+          git add packages/suiami/package.json
+          git commit -m "chore(suiami): $VERSION (${{ steps.bst.outputs.tier }}) [skip ci]" || true
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists — skipping."
+          else
+            git tag -a "$VERSION" -m "$VERSION"
+          fi
+          git push origin HEAD:master
+          git push origin "refs/tags/$VERSION"
+
+      - name: Tag manual-dispatch release
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true' }}
         working-directory: .
         run: |
           set -e
