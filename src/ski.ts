@@ -1789,10 +1789,11 @@ async function parseGuestPath(pathLike: string): Promise<{
   return { label, parentName, parentHash, parentNamespace: 'sui' };
 }
 
-const _privatize = async (...chainKeys: string[]) => {
+// Core setter — writes the whitelist of chains to expose via ENS.
+async function _setPublicWhitelist(chainKeys: string[], verb: string): Promise<{ ok?: boolean; digest?: string; chainKeys?: string[]; error?: string }> {
   const ws = getState();
   if (ws.status !== 'connected' || !ws.address) {
-    console.error('[privatize] not connected'); return { error: 'not-connected' };
+    console.error(`[${verb}] not connected`); return { error: 'not-connected' };
   }
   try {
     const { Transaction } = await import('@mysten/sui/transactions');
@@ -1810,23 +1811,55 @@ const _privatize = async (...chainKeys: string[]) => {
         tx.object('0x6'),
       ],
     });
-    showToast(`\u26a1 Privatizing chains: ${chainKeys.join(', ') || '(all)'}\u2026`);
     const { digest } = await signAndExecuteTransaction(tx);
-    console.log(`[privatize] whitelist set — digest: ${digest}`);
-    showToast(`\u2713 Public chains updated`);
+    console.log(`[${verb}] whitelist set to [${chainKeys.join(', ')}] — digest: ${digest}`);
     return { ok: true, digest, chainKeys };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[${verb}] failed:`, err);
+    if (!msg.toLowerCase().includes('reject')) showToast(`${verb} failed: ${msg.slice(0, 100)}`);
+    return { error: msg };
+  }
+}
+
+// publicize(...keys): expose exactly these chains via ENS. Everything
+// else (including chains that were public-by-default under v5) becomes
+// hidden. Pass nothing to hide all from ENS.
+const _publicize = async (...chainKeys: string[]) => {
+  showToast(`\u26a1 Publicizing via ENS: ${chainKeys.join(', ') || '(nothing — all hidden)'}\u2026`);
+  const r = await _setPublicWhitelist(chainKeys, 'publicize');
+  if (r.ok) showToast(`\u2713 Public chains: ${chainKeys.join(', ') || '(none)'}`);
+  return r;
+};
+
+// privatize(...keys): hide exactly these chains. Starts from current
+// record.chains, removes the named keys, writes the remainder as the
+// whitelist. Needs a roster read so the diff is accurate.
+const _privatize = async (...chainKeys: string[]) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[privatize] not connected'); return { error: 'not-connected' };
+  }
+  try {
+    const { readByAddress } = await import('suiami/roster');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+    const record = await readByAddress(normalizeSuiAddress(ws.address));
+    if (!record) {
+      showToast(`No SUIAMI record for this address`);
+      return { error: 'no-record' };
+    }
+    const hide = new Set(chainKeys.map(k => k.toLowerCase()));
+    const remaining = Object.keys(record.chains).filter(k => !hide.has(k.toLowerCase()));
+    showToast(`\u26a1 Privatizing ${chainKeys.join(', ')} → public remains: ${remaining.join(', ') || '(none)'}\u2026`);
+    const r = await _setPublicWhitelist(remaining, 'privatize');
+    if (r.ok) showToast(`\u2713 Hidden: ${chainKeys.join(', ')}`);
+    return r;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[privatize] failed:', err);
     if (!msg.toLowerCase().includes('reject')) showToast(`privatize failed: ${msg.slice(0, 100)}`);
     return { error: msg };
   }
-};
-
-const _publicize = async (...chainKeys: string[]) => {
-  // Same Move call (set_public_chains) — semantically "these are the
-  // chains to expose." Separate verb so console UX matches intent.
-  return _privatize(...chainKeys);
 };
 
 const _publicizeAll = async () => {
