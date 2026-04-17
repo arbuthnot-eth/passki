@@ -10,14 +10,16 @@
 //
 // Usage: `bun run scripts/rotate-ultron.ts`
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+
+const WRANGLER = './node_modules/.bin/wrangler';
 
 const kp = Ed25519Keypair.generate();
 const bech32 = kp.getSecretKey();
 const address = kp.getPublicKey().toSuiAddress();
 
-const proc = spawn('./node_modules/.bin/wrangler', ['secret', 'put', 'ULTRON_PRIVATE_KEY'], {
+const proc = spawn(WRANGLER, ['secret', 'put', 'ULTRON_PRIVATE_KEY'], {
     stdio: ['pipe', 'inherit', 'inherit'],
     env: { ...process.env, PATH: `/usr/local/bin:${process.env.PATH}` },
 });
@@ -25,14 +27,27 @@ proc.stdin.write(bech32);
 proc.stdin.end();
 
 proc.on('exit', (code) => {
-    if (code === 0) {
-        console.log('');
-        console.log(`New Ultron public Sui address: ${address}`);
-        console.log('Next steps:');
-        console.log('  1. Delete legacy binding:  npx wrangler secret delete SHADE_KEEPER_PRIVATE_KEY');
-        console.log('  2. Sweep references to the old Ultron address in docs/memory.');
-        console.log('  3. Run the Regigigas rumble ceremony in brando.sui\u2019s browser session.');
-    } else {
+    if (code !== 0) {
+        console.error('\n[rotate-ultron] wrangler exited non-zero — secret NOT written.');
         process.exit(code ?? 1);
     }
+    // Trust-but-verify: wrangler occasionally prints errors yet exits 0
+    // when a fetch to its telemetry/auth endpoint 400s. Confirm the
+    // binding actually landed before reporting success.
+    const list = spawnSync(WRANGLER, ['secret', 'list'], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `/usr/local/bin:${process.env.PATH}` },
+    });
+    if (list.status !== 0 || !list.stdout.includes('"ULTRON_PRIVATE_KEY"')) {
+        console.error('\n[rotate-ultron] wrangler reported success but ULTRON_PRIVATE_KEY is NOT in `wrangler secret list`.');
+        console.error('[rotate-ultron] Fresh key was generated in-memory only and is now discarded.');
+        console.error('[rotate-ultron] Run `npx wrangler login` (missing OAuth scopes can cause silent failures), then re-run this script.');
+        process.exit(2);
+    }
+    console.log('');
+    console.log(`New Ultron public Sui address: ${address}`);
+    console.log('Next steps:');
+    console.log('  1. Delete legacy binding:  npx wrangler secret delete SHADE_KEEPER_PRIVATE_KEY');
+    console.log('  2. Sweep references to the old Ultron address in docs/memory.');
+    console.log('  3. Run the Regigigas rumble ceremony in brando.sui\u2019s browser session.');
 });
