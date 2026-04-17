@@ -246,6 +246,19 @@ app.use('/agents/*', agentsMiddleware());
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', version: '2.0.0' }));
 
+// ENS CCIP-read gateway — Beldum Iron Defense (#167). Serves
+// wildcard `*.waap.eth` resolver callbacks from the on-chain
+// OffchainResolver (EIP-3668 redirect target). See
+// src/server/ens-resolver.ts.
+app.get('/ens-resolver/:sender/:data', async (c) => {
+  const { handleEnsCcipRead } = await import('./ens-resolver.js');
+  return handleEnsCcipRead(c);
+});
+app.post('/ens-resolver/:sender/:data', async (c) => {
+  const { handleEnsCcipRead } = await import('./ens-resolver.js');
+  return handleEnsCcipRead(c);
+});
+
 // Test: can IKA WASM run in CF Workers?
 app.get('/api/test-ika-wasm', async (c) => {
   const { testIkaWasm } = await import('./test-ika-wasm.js');
