@@ -20,6 +20,7 @@ interface Env {
   NameIndex: DurableObjectNamespace;
   Pokedex: DurableObjectNamespace;
   UltronSigningAgent: DurableObjectNamespace;
+  Aegislash: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key (legacy name — consume via ultronKeypair(env))
@@ -4482,3 +4483,4 @@ export { TimestreamAgent } from './agents/timestream.js';
 export { NameIndex } from './agents/name-index.js';
 export { Pokedex } from './agents/pokedex.js';
 export { UltronSigningAgent } from './agents/ultron-signing-agent.js';
+export { Aegislash } from './agents/aegislash.js';

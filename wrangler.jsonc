@@ -77,6 +77,10 @@
       {
         "name": "UltronSigningAgent",
         "class_name": "UltronSigningAgent"
+      },
+      {
+        "name": "Aegislash",
+        "class_name": "Aegislash"
       }
     ]
   },
@@ -121,6 +125,10 @@
     {
       "tag": "v10",
       "new_sqlite_classes": ["UltronSigningAgent"]
+    },
+    {
+      "tag": "v11",
+      "new_sqlite_classes": ["Aegislash"]
     }
   ],
 
