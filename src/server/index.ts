@@ -1774,19 +1774,43 @@ app.post('/api/sol-rpc', async (c) => {
 // browser combines with CoinGecko prices for USD totals.
 
 // BTC — mempool.space (free, no key). Sums confirmed + unconfirmed.
+// Edge-cache wrapper: CF Workers doesn't honor cache-control for
+// Worker responses automatically, so explicitly put/get the cache for
+// hot read-only endpoints. 30s TTL across balance endpoints matches
+// the cache-control hint and absorbs wallet-UI refresh polling.
+async function edgeCacheBalance(c: Context, ttlSec: number, handler: () => Promise<Response>): Promise<Response> {
+  const url = new URL(c.req.url);
+  const cacheKey = new Request(`https://cache.internal${url.pathname}`);
+  const cache = caches.default;
+  const hit = await cache.match(cacheKey);
+  if (hit) return hit;
+  const fresh = await handler();
+  if (fresh.ok) {
+    const clone = fresh.clone();
+    const cached = new Response(clone.body, {
+      status: clone.status,
+      headers: { ...Object.fromEntries(clone.headers), 'cache-control': `public, max-age=${ttlSec}` },
+    });
+    await cache.put(cacheKey, cached);
+  }
+  return fresh;
+}
+
 app.get('/api/balance/btc/:addr', async (c) => {
   const addr = c.req.param('addr');
   if (!/^(bc1|[13])[a-zA-Z0-9]{20,90}$/.test(addr)) return c.json({ error: 'invalid BTC addr' }, 400);
-  try {
-    const r = await fetch(`https://mempool.space/api/address/${addr}`);
-    if (!r.ok) return c.json({ error: `mempool.space ${r.status}` }, 502);
-    const j = await r.json() as { chain_stats?: { funded_txo_sum?: number; spent_txo_sum?: number }; mempool_stats?: { funded_txo_sum?: number; spent_txo_sum?: number } };
-    const conf = (j.chain_stats?.funded_txo_sum ?? 0) - (j.chain_stats?.spent_txo_sum ?? 0);
-    const unconf = (j.mempool_stats?.funded_txo_sum ?? 0) - (j.mempool_stats?.spent_txo_sum ?? 0);
-    return c.json({ sats: conf + unconf }, 200, { 'cache-control': 'public,max-age=30' });
-  } catch (err) {
-    return c.json({ error: String(err) }, 500);
-  }
+  return edgeCacheBalance(c, 30, async () => {
+    try {
+      const r = await fetch(`https://mempool.space/api/address/${addr}`);
+      if (!r.ok) return c.json({ error: `mempool.space ${r.status}` }, 502);
+      const j = await r.json() as { chain_stats?: { funded_txo_sum?: number; spent_txo_sum?: number }; mempool_stats?: { funded_txo_sum?: number; spent_txo_sum?: number } };
+      const conf = (j.chain_stats?.funded_txo_sum ?? 0) - (j.chain_stats?.spent_txo_sum ?? 0);
+      const unconf = (j.mempool_stats?.funded_txo_sum ?? 0) - (j.mempool_stats?.spent_txo_sum ?? 0);
+      return c.json({ sats: conf + unconf }, 200, { 'cache-control': 'public,max-age=30' });
+    } catch (err) {
+      return c.json({ error: String(err) }, 500);
+    }
+  });
 });
 
 // ETH (mainnet) — viem + Alchemy transport. Native wei + USDC raw (6dp).
@@ -1795,21 +1819,23 @@ app.get('/api/balance/eth/:addr', async (c) => {
   const addr = c.req.param('addr');
   if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) return c.json({ error: 'invalid ETH addr' }, 400);
   if (!c.env.ALCHEMY_ETH_URL) return c.json({ error: 'ALCHEMY_ETH_URL not configured' }, 500);
-  try {
-    const client = createPublicClient({ chain: mainnet, transport: http(c.env.ALCHEMY_ETH_URL) });
-    const [wei, usdcRaw] = await Promise.all([
-      client.getBalance({ address: addr as Address }),
-      client.readContract({
-        address: USDC_MAINNET,
-        abi: erc20Abi,
-        functionName: 'balanceOf',
-        args: [addr as Address],
-      }),
-    ]);
-    return c.json({ wei: wei.toString(), usdcRaw: usdcRaw.toString() }, 200, { 'cache-control': 'public,max-age=30' });
-  } catch (err) {
-    return c.json({ error: String(err) }, 500);
-  }
+  return edgeCacheBalance(c, 30, async () => {
+    try {
+      const client = createPublicClient({ chain: mainnet, transport: http(c.env.ALCHEMY_ETH_URL) });
+      const [wei, usdcRaw] = await Promise.all([
+        client.getBalance({ address: addr as Address }),
+        client.readContract({
+          address: USDC_MAINNET,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [addr as Address],
+        }),
+      ]);
+      return c.json({ wei: wei.toString(), usdcRaw: usdcRaw.toString() }, 200, { 'cache-control': 'public,max-age=30' });
+    } catch (err) {
+      return c.json({ error: String(err) }, 500);
+    }
+  });
 });
 
 // TRON — TronGrid. Returns TRX (sun) + USDT-TRC20 raw.
@@ -1817,21 +1843,23 @@ app.get('/api/balance/eth/:addr', async (c) => {
 app.get('/api/balance/tron/:addr', async (c) => {
   const addr = c.req.param('addr');
   if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(addr)) return c.json({ error: 'invalid TRON addr' }, 400);
-  try {
-    const r = await fetch(`https://api.trongrid.io/v1/accounts/${addr}`);
-    if (!r.ok) return c.json({ error: `trongrid ${r.status}` }, 502);
-    const j = await r.json() as { data?: Array<{ balance?: number; trc20?: Array<Record<string, string>> }> };
-    const acct = j.data?.[0];
-    const sun = acct?.balance ?? 0;
-    let usdtRaw = '0';
-    for (const entry of acct?.trc20 ?? []) {
-      const v = entry['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'];
-      if (v) { usdtRaw = v; break; }
+  return edgeCacheBalance(c, 30, async () => {
+    try {
+      const r = await fetch(`https://api.trongrid.io/v1/accounts/${addr}`);
+      if (!r.ok) return c.json({ error: `trongrid ${r.status}` }, 502);
+      const j = await r.json() as { data?: Array<{ balance?: number; trc20?: Array<Record<string, string>> }> };
+      const acct = j.data?.[0];
+      const sun = acct?.balance ?? 0;
+      let usdtRaw = '0';
+      for (const entry of acct?.trc20 ?? []) {
+        const v = entry['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'];
+        if (v) { usdtRaw = v; break; }
+      }
+      return c.json({ sun, usdtRaw }, 200, { 'cache-control': 'public,max-age=30' });
+    } catch (err) {
+      return c.json({ error: String(err) }, 500);
     }
-    return c.json({ sun, usdtRaw }, 200, { 'cache-control': 'public,max-age=30' });
-  } catch (err) {
-    return c.json({ error: String(err) }, 500);
-  }
+  });
 });
 
 // ── UltronSigningAgent WASM smoke test (Registeel Toxic Spikes) ─────
