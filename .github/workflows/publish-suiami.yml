@@ -30,6 +30,9 @@ jobs:
         working-directory: packages/suiami
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -108,7 +111,7 @@ jobs:
           TIER=$(bun scripts/pokemon-bump.ts --since="$SINCE" --cwd=packages/suiami)
           echo "Selected bump tier: $TIER"
           cd packages/suiami
-          npm version "$TIER" --no-git-tag-version --workspace=false
+          npm version "$TIER" --no-git-tag-version
           echo "tier=$TIER" >> "$GITHUB_OUTPUT"
 
       - name: Read version
