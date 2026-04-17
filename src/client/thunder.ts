@@ -15,7 +15,6 @@ export {
   removeMemberFromStorm,
   getCachedKeyVersion,
   setCachedKeyVersion,
-  lookupIouFromDigest,
   lookupAnyVaultFromDigest,
   isVaultLive,
   buildClaimIouTx,
