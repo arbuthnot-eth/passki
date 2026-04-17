@@ -1,7 +1,7 @@
 {
   "name": "suiami",
-  "version": "0.1.0",
-  "description": "SUIAMI — SUI-Authenticated Message Identity. Cryptographic proof that a wallet owner controls a SuiNS name with cross-chain address attestation.",
+  "version": "2.5.0",
+  "description": "SUIAMI — cross-chain identity resolver on Sui. Proof-carrying messages + on-chain roster mapping SuiNS/ENS names to IKA-derived BTC, ETH, SOL addresses. Seal-encrypted, non-custodial, upgradeable.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

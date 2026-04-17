@@ -7,7 +7,24 @@
 
 import { keccak_256 } from '@noble/hashes/sha3.js';
 
+/**
+ * Original-id of the SUIAMI package. Use this as the `target` prefix
+ * for Move calls and as the type-namespace for dynamic-field type
+ * tags. Sui runtime resolves calls on the original-id to the latest
+ * upgrade automatically; stays stable across every roster upgrade.
+ */
 export const ROSTER_PACKAGE = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
+
+/**
+ * Latest published-at of the SUIAMI package (v5, 2026-04-17). Use
+ * this only when calling entry functions added AFTER the first
+ * publish (e.g. `seal_approve_roster_reader_v3`) — Seal key servers
+ * resolve the module at the target address directly and can't
+ * follow Sui's original→latest redirection. Bump on every upgrade.
+ */
+export const ROSTER_PACKAGE_LATEST = '0xea0b948522bf759ccde5fb10b74bae99b8929495926a53678c9d4cbd0fd4f202';
+
+/** Shared Roster object. Owner of all name_hash / address / chain / ens_hash dynamic fields. */
 export const ROSTER_OBJECT = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 
 export interface RosterRecord {
@@ -87,6 +104,65 @@ export async function readByChain(chain: string, chainAddress: string, opts?: Re
 /** Compute the keccak256 name hash for a bare SuiNS name. */
 export function nameHash(name: string): Uint8Array {
   return keccak_256(new TextEncoder().encode(name.replace(/\.sui$/i, '').toLowerCase()));
+}
+
+/**
+ * Compute the keccak256 ENS hash for a full ENS name (e.g. `alice.waap.eth`).
+ * ENS entries live in a typed `EnsHashKey` dynamic-field namespace
+ * disjoint from the raw `vector<u8>` name-hash namespace — see
+ * `readByEns` below for the correct GraphQL lookup.
+ */
+export function ensHash(ensName: string): Uint8Array {
+  return keccak_256(new TextEncoder().encode(ensName.toLowerCase()));
+}
+
+/**
+ * Read a roster entry by ENS name (e.g. `alice.waap.eth`). Queries
+ * the typed `EnsHashKey` dynamic field — overwrite-protected,
+ * namespace-isolated from Sui-name entries.
+ */
+export async function readByEns(ensName: string, opts?: ReadOptions): Promise<RosterRecord | null> {
+  const gqlUrl = opts?.graphqlUrl ?? DEFAULT_GQL;
+  const hash = ensHash(ensName);
+  // BCS: struct EnsHashKey { hash: vector<u8> } = ULEB128(len=32) || 32 bytes
+  const bcs = new Uint8Array(33);
+  bcs[0] = 32;
+  bcs.set(hash, 1);
+  const bcsB64 = btoa(String.fromCharCode(...bcs));
+  const typeStr = `${ROSTER_PACKAGE}::roster::EnsHashKey`;
+  try {
+    const res = await fetch(gqlUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address: "${ROSTER_OBJECT}") { dynamicField(name: { type: "${typeStr}", bcs: "${bcsB64}" }) { value { ... on MoveValue { json } } } } }`,
+      }),
+    });
+    return parseRosterResponse(await res.json());
+  } catch { return null; }
+}
+
+/**
+ * Build args for the `set_ens_identity` Move call (PTB). Writes an
+ * `EnsHashKey { hash: <ens_hash> }` entry pointing at the caller's
+ * existing RosterRecord. Caller MUST already have a SUIAMI record
+ * (via `set_identity`) or the Move call aborts. First-come-locked:
+ * re-issuing a bound ENS name requires `revoke_ens_identity` from
+ * the current owner first.
+ */
+export function buildSetEnsIdentityArgs(
+  ensName: string,
+  ethOwnerSig: Uint8Array = new Uint8Array(),
+) {
+  return {
+    package: ROSTER_PACKAGE,
+    module: 'roster',
+    function: 'set_ens_identity',
+    rosterObject: ROSTER_OBJECT,
+    ensName,
+    ensHash: Array.from(ensHash(ensName)),
+    ethOwnerSig: Array.from(ethOwnerSig),
+  };
 }
 
 /** Build a set_identity Move call for use in a PTB. */

@@ -118,5 +118,19 @@ export function extractName(message: SuiamiMessage): string {
 
 // ─── Constants ─────────────────────────────────────────────────────
 
-export const ROSTER_PACKAGE = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
-export const ROSTER_OBJECT = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
+// Re-export roster constants + helpers for one-import DX.
+export {
+  ROSTER_PACKAGE,
+  ROSTER_PACKAGE_LATEST,
+  ROSTER_OBJECT,
+  nameHash,
+  ensHash,
+  readByName,
+  readByAddress,
+  readByChain,
+  readByEns,
+  buildSetIdentityArgs,
+  buildSetEnsIdentityArgs,
+  type RosterRecord,
+  type ReadOptions,
+} from './roster.js';
