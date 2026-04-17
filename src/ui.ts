@@ -2742,7 +2742,7 @@ function normalizeSuiAddress(addr: string): string {
   return '0x' + hex;
 }
 
-async function lookupSuiNS(address: string): Promise<string | null> {
+async function lookupSuiNS(address: string, opts?: { authoritativeOnly?: boolean }): Promise<string | null> {
   try {
     const normalized = normalizeSuiAddress(address);
     // Single round-trip: primary + owned SuinsRegistration NFTs.
@@ -2775,6 +2775,13 @@ async function lookupSuiNS(address: string): Promise<string | null> {
     };
     const def = json?.data?.address?.defaultNameRecord?.domain;
     if (def && typeof def === 'string') return def;
+
+    // authoritativeOnly: refuse to fall back to heuristic paths. The
+    // caller (usually refreshPortfolio, writing into app.suinsName)
+    // would rather keep the prior-known primary than let a 120s poll
+    // that randomly misses defaultNameRecord overwrite with a
+    // fallback-ordered alternative (e.g. superteam beating brando).
+    if (opts?.authoritativeOnly) return null;
 
     // Fallback: scan owned SuinsRegistration NFTs. Pick the one with
     // the latest expiration that hasn't already expired. Non-expiring
@@ -3168,7 +3175,7 @@ export async function refreshPortfolio(force = false) {
     // gRPC for all balances + SUI price + token prices + SuiNS + SOL balance + iUSD SPL in parallel
     const [allBalResult, suinsName, suiPrice] = await Promise.all([
       grpcClient.core.listBalances({ owner: fetchedFor }).catch(() => null),
-      lookupSuiNS(fetchedFor),
+      lookupSuiNS(fetchedFor, { authoritativeOnly: true }),
       fetchSuiPrice(),
       fetchTokenPrices(),
       _fetchSolBalance(),
