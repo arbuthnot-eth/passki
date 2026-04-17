@@ -1,6 +1,6 @@
 {
   "name": "suiami",
-  "version": "2.5.1",
+  "version": "2.6.0",
   "description": "SUIAMI — cross-chain identity resolver on Sui. Proof-carrying messages + on-chain roster mapping SuiNS/ENS names to IKA-derived BTC, ETH, SOL addresses. Seal-encrypted, non-custodial, upgradeable.",
   "type": "module",
   "main": "dist/index.js",
