@@ -55,3 +55,32 @@ public fun approve_message(
         message,
     }
 }
+
+// ─── Views (real package has these too) ──────────────────────────────
+
+public fun approval_dwallet_cap_id(a: &MessageApproval): ID { a.dwallet_cap_id }
+public fun approval_message(a: &MessageApproval): &vector<u8> { &a.message }
+
+// ─── Test-only constructors ──────────────────────────────────────────
+
+#[test_only]
+public fun new_coordinator_for_testing(ctx: &mut TxContext): DWalletCoordinator {
+    DWalletCoordinator {
+        id: object::new(ctx),
+        version: 1,
+        package_id: object::id_from_address(@0xDD24),
+        new_package_id: option::none(),
+        migration_epoch: option::none(),
+    }
+}
+
+#[test_only]
+public fun destroy_coordinator_for_testing(c: DWalletCoordinator) {
+    let DWalletCoordinator { id, version: _, package_id: _, new_package_id: _, migration_epoch: _ } = c;
+    id.delete();
+}
+
+#[test_only]
+public fun destroy_approval_for_testing(a: MessageApproval) {
+    let MessageApproval { dwallet_cap_id: _, signature_algorithm: _, hash_scheme: _, message: _ } = a;
+}

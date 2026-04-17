@@ -22,3 +22,21 @@ public struct ImportedKeyDWalletCap has key, store {
     id: UID,
     dwallet_id: ID,
 }
+
+// ─── Test-only constructors ──────────────────────────────────────────
+// The real IKA package mints these via DKG; our tests need a plausible
+// shape without a network ceremony.
+
+#[test_only]
+public fun new_dwallet_cap_for_testing(ctx: &mut TxContext): DWalletCap {
+    DWalletCap {
+        id: object::new(ctx),
+        dwallet_id: object::id_from_address(@0xDEAD),
+    }
+}
+
+#[test_only]
+public fun destroy_dwallet_cap_for_testing(cap: DWalletCap) {
+    let DWalletCap { id, dwallet_id: _ } = cap;
+    id.delete();
+}

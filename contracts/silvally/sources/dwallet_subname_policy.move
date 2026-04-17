@@ -33,6 +33,10 @@ const E_QUOTA_EXCEEDED: u64 = 1;
 const E_EXPIRED: u64 = 2;
 const E_NOT_OWNER: u64 = 3;
 
+#[test_only] public fun err_quota_exceeded(): u64 { E_QUOTA_EXCEEDED }
+#[test_only] public fun err_expired(): u64 { E_EXPIRED }
+#[test_only] public fun err_not_owner(): u64 { E_NOT_OWNER }
+
 // ------------------------------------------------------------------
 // IKA scheme constants
 // Mirror SDK: SignatureAlgorithm.ECDSASecp256k1 / Hash.KECCAK256
