@@ -1494,16 +1494,28 @@ console.log('[ski] importPhantomKey hook installed — call importPhantomKey("<m
 // SUIAMI-verified dWallet target.
 // ── whelm — engulf an ENS name + dust ETH into an IKA dWallet ──
 //
-// "whelm" = relocate ENS registry ownership of <name>.eth into an IKA
-// dWallet, along with a dust ETH allowance so the dWallet can later
-// pay its own gas (resolver deploy, setResolver, subname issuance).
-// After `whelm`, every future op on <name>.eth is PTB-signed through
-// IKA — the Phantom/MetaMask seed that currently controls the name
-// goes dormant. No key import, no hot key migration.
+// "whelm" = fully relocate ENS ownership of <name>.eth into an IKA
+// dWallet, along with dust ETH for the dWallet's own future gas.
+// After `whelm`, every future op on the name is PTB-signed through
+// IKA — the Phantom/MetaMask seed goes dormant. No key import, no
+// hot key migration.
 //
-// Two Phantom prompts:
-//   tx1: value transfer — funds the IKA dWallet with ~0.002 ETH
-//   tx2: ENS.setOwner(namehash(<name>.eth), dwalletAddr)
+// ENS has two ownership layers:
+//   • Registrant = BaseRegistrar ERC-721 NFT holder (.eth 2LDs only).
+//     Ultimate control — can call reclaim() to yank Manager back.
+//   • Manager = Registry.owner — operational (resolver, subdomains).
+//
+// For a 2LD (e.g. whelm.eth): transfer the NFT AND set Manager. The
+// NFT transfer makes the seed impotent; setOwner aligns Manager so
+// the dWallet doesn't need a follow-up reclaim().
+//
+// For a deeper name (e.g. brando.waap.eth): subdomains have no NFT,
+// only Manager. A single Registry.setOwner hands over full control.
+//
+// Phantom prompts:
+//   tx1: value transfer — funds dWallet with ~0.002 ETH
+//   tx2: BaseRegistrar.safeTransferFrom(from, dwallet, labelhash)  // 2LDs only
+//   tx3: Registry.setOwner(namehash, dwallet)
 //
 // First use: whelm.eth. Generalized to any .eth name the connected
 // account owns — whelm('waap'), whelm('whelm'), whelm('brando'), etc.
@@ -1534,9 +1546,13 @@ const _whelm = async (ensName: string, opts?: {
   }
 
   try {
-    const { encodeFunctionData, namehash, toHex } = await import('viem');
-    const node = namehash(`${bare}.eth`);
+    const { encodeFunctionData, namehash, labelhash, toHex, hexToBigInt } = await import('viem');
+    const fullName = `${bare}.eth`;
+    const labels = bare.split('.');
+    const isEthTwoLD = labels.length === 1; // "whelm" → whelm.eth is a 2LD; "foo.bar" → foo.bar.eth is a subdomain
+    const node = namehash(fullName);
     const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e' as const;
+    const ETH_BASE_REGISTRAR = '0x57f1887a8BF19b14fC0dF6Fd9B2acc9Af147eA85' as const;
 
     const setOwnerData = encodeFunctionData({
       abi: [{ name: 'setOwner', type: 'function', inputs: [
@@ -1558,19 +1574,44 @@ const _whelm = async (ensName: string, opts?: {
       }
     }
 
+    // 2LD: also transfer the BaseRegistrar NFT so dWallet becomes the
+    // Registrant, not just the Manager. Without this, the seed can
+    // call reclaim() and yank ownership back.
+    let transferNftData: `0x${string}` | undefined;
+    let tokenId: bigint | undefined;
+    if (isEthTwoLD) {
+      const label = labels[0];
+      tokenId = hexToBigInt(labelhash(label));
+      transferNftData = encodeFunctionData({
+        abi: [{ name: 'safeTransferFrom', type: 'function', inputs: [
+          { name: 'from', type: 'address' },
+          { name: 'to', type: 'address' },
+          { name: 'tokenId', type: 'uint256' },
+        ], outputs: [] }],
+        functionName: 'safeTransferFrom',
+        args: [fromAddress as `0x${string}`, dwalletAddress as `0x${string}`, tokenId],
+      });
+    }
+
     console.log(`[whelm] plan:`);
-    console.log(`  ens name:        ${bare}.eth`);
+    console.log(`  ens name:        ${fullName} (${isEthTwoLD ? '.eth 2LD — full NFT + Manager transfer' : 'subdomain — Manager only'})`);
     console.log(`  namehash:        ${node}`);
     console.log(`  from:            ${fromAddress}`);
     console.log(`  dwallet target:  ${dwalletAddress}`);
     console.log(`  value to send:   ${ethWei.toString()} wei (${Number(ethWei) / 1e18} ETH)`);
     console.log(`  tx1: value transfer to ${dwalletAddress}`);
-    console.log(`  tx2: ENS.setOwner(${node.slice(0, 10)}…, ${dwalletAddress})`);
-    console.log(`  tx2 calldata:    ${setOwnerData}`);
+    if (isEthTwoLD) {
+      console.log(`  tx2: BaseRegistrar.safeTransferFrom(from, dWallet, ${tokenId!.toString()})`);
+      console.log(`       tokenId (labelhash): ${labelhash(labels[0])}`);
+    }
+    console.log(`  tx${isEthTwoLD ? '3' : '2'}: ENS.setOwner(${node.slice(0, 10)}…, dWallet)`);
 
     if (opts?.skipTransfer) {
       console.log('[whelm] skipTransfer=true — stopping before prompts');
-      return { ok: true, dryRun: true, setOwnerData, fromAddress, dwalletAddress, ensName: `${bare}.eth` };
+      return {
+        ok: true, dryRun: true, setOwnerData, transferNftData, tokenId: tokenId?.toString(),
+        fromAddress, dwalletAddress, ensName: fullName, isEthTwoLD,
+      };
     }
 
     // Verify sender matches + on Ethereum mainnet.
@@ -1590,7 +1631,9 @@ const _whelm = async (ensName: string, opts?: {
       return { error: 'wrong-chain', chainId };
     }
 
-    showToast(`\u26a1 Phantom: sign tx 1 of 2 — sending ${Number(ethWei) / 1e18} ETH to dWallet\u2026`);
+    const totalSteps = isEthTwoLD ? 3 : 2;
+
+    showToast(`\u26a1 Phantom: sign tx 1 of ${totalSteps} — sending ${Number(ethWei) / 1e18} ETH to dWallet\u2026`);
     console.log('[whelm] submitting tx1 (value transfer)...');
     const tx1 = await eth.request({
       method: 'eth_sendTransaction',
@@ -1601,11 +1644,28 @@ const _whelm = async (ensName: string, opts?: {
       }],
     }) as string;
     console.log(`[whelm] tx1 submitted: ${tx1}`);
-    showToast(`\u2713 tx 1 submitted: ${tx1.slice(0, 10)}\u2026 — sign tx 2 (setOwner) next`);
+    showToast(`\u2713 tx 1 submitted: ${tx1.slice(0, 10)}\u2026`);
 
-    showToast(`\u26a1 Phantom: sign tx 2 of 2 — ENS.setOwner(${bare}.eth, dWallet)\u2026`);
-    console.log('[whelm] submitting tx2 (ENS setOwner)...');
-    const tx2 = await eth.request({
+    let tx2nft: string | undefined;
+    if (isEthTwoLD && transferNftData) {
+      showToast(`\u26a1 Phantom: sign tx 2 of 3 — transfer ${fullName} NFT to dWallet\u2026`);
+      console.log('[whelm] submitting tx2 (BaseRegistrar.safeTransferFrom)...');
+      tx2nft = await eth.request({
+        method: 'eth_sendTransaction',
+        params: [{
+          from: fromAddress,
+          to: ETH_BASE_REGISTRAR,
+          data: transferNftData,
+        }],
+      }) as string;
+      console.log(`[whelm] tx2 submitted: ${tx2nft}`);
+      showToast(`\u2713 NFT transfer submitted: ${tx2nft.slice(0, 10)}\u2026`);
+    }
+
+    const setOwnerStepNum = isEthTwoLD ? 3 : 2;
+    showToast(`\u26a1 Phantom: sign tx ${setOwnerStepNum} of ${totalSteps} — ENS.setOwner(${fullName}, dWallet)\u2026`);
+    console.log(`[whelm] submitting tx${setOwnerStepNum} (Registry.setOwner)...`);
+    const txSetOwner = await eth.request({
       method: 'eth_sendTransaction',
       params: [{
         from: fromAddress,
@@ -1613,12 +1673,12 @@ const _whelm = async (ensName: string, opts?: {
         data: setOwnerData,
       }],
     }) as string;
-    console.log(`[whelm] tx2 submitted: ${tx2}`);
-    showToast(`\u2713 ${bare}.eth whelmed into dWallet: ${tx2.slice(0, 10)}\u2026`);
-    console.log(`[whelm] done. Once both mine, ${dwalletAddress} owns ${bare}.eth.`);
-    console.log(`  Verify: https://app.ens.domains/${bare}.eth`);
-    console.log(`  Etherscan: https://etherscan.io/tx/${tx2}`);
-    return { ok: true, tx1, tx2, dwalletAddress, ensName: `${bare}.eth` };
+    console.log(`[whelm] tx${setOwnerStepNum} submitted: ${txSetOwner}`);
+    showToast(`\u2713 ${fullName} whelmed into dWallet: ${txSetOwner.slice(0, 10)}\u2026`);
+    console.log(`[whelm] done. Once mined, ${dwalletAddress} ${isEthTwoLD ? 'fully owns' : 'manages'} ${fullName}.`);
+    console.log(`  Verify: https://app.ens.domains/${fullName}`);
+    console.log(`  Etherscan: https://etherscan.io/tx/${txSetOwner}`);
+    return { ok: true, tx1, tx2nft, txSetOwner, dwalletAddress, ensName: fullName, isEthTwoLD };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[whelm] failed:', err);
