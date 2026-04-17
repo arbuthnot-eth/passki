@@ -8,8 +8,7 @@
  * full Seal encryption (wired when the policy contract is published).
  */
 
-const WALRUS_PUBLISHER = 'https://publisher.walrus-testnet.walrus.space';
-const WALRUS_AGGREGATOR = 'https://aggregator.walrus-testnet.walrus.space';
+import { fetchWalrusBlob, putWalrusBlob } from './walrus.js';
 
 /** Result of an encrypted roster blob upload. */
 export interface EncryptedBlobResult {
@@ -60,15 +59,9 @@ export async function uploadRosterBlob(
     body = new Uint8Array(cipherBuf);
   }
 
-  const res = await fetch(`${WALRUS_PUBLISHER}/v1/blobs`, {
-    method: 'PUT',
+  const res = await putWalrusBlob(body, {
     headers: { 'content-type': 'application/octet-stream' },
-    body,
   });
-
-  if (!res.ok) {
-    throw new Error(`Walrus upload failed: ${res.status} ${res.statusText}`);
-  }
 
   const result = await res.json() as any;
   // Walrus returns { newlyCreated: { blobObject: { blobId } } } or { alreadyCertified: { blobId } }
@@ -102,11 +95,7 @@ export async function fetchRosterBlob<T = unknown>(
   blobId: string,
   decryptionOpts?: { keyRaw: number[]; nonce: number[] },
 ): Promise<T> {
-  const res = await fetch(`${WALRUS_AGGREGATOR}/v1/blobs/${blobId}`);
-
-  if (!res.ok) {
-    throw new Error(`Walrus fetch failed: ${res.status} ${res.statusText}`);
-  }
+  const res = await fetchWalrusBlob(blobId);
 
   if (decryptionOpts) {
     const cipherBytes = new Uint8Array(await res.arrayBuffer());

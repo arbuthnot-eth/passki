@@ -181,7 +181,7 @@ app.use('*', async (c, next) => {
     "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
     "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
-    `connect-src 'self' https://*.sui.io https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://aggregator.walrus-testnet.walrus.space ${WAAP_CONNECT}`,
+    `connect-src 'self' https://*.sui.io https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://*.h2o-nodes.com ${WAAP_CONNECT}`,
     `frame-src 'self' ${WAAP_FRAME}`,
     "frame-ancestors 'self' https://*.sui.ski",
     "base-uri 'self'",
@@ -277,7 +277,7 @@ app.get('/squids', async (c) => {
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
 
-  const md = await fetch(`https://aggregator.walrus-testnet.walrus.space/v1/blobs/${SQUIDS_BLOB}`).then(r => r.text());
+  const md = await fetch(`https://aggregator.walrus-mainnet.h2o-nodes.com/v1/blobs/${SQUIDS_BLOB}`).then(r => r.text());
   const html = `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

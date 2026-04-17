@@ -79,8 +79,12 @@ const SEAL_SERVERS_MAINNET = [
   { objectId: '0x4a65b4ff7ba8f4b538895ee35959f982a95f0db7e2a202ec989d261ea927286a', weight: 1 }, // H2O Nodes
 ];
 
-const WALRUS_PUBLISHER = 'https://publisher.walrus-testnet.walrus.space';
-const WALRUS_AGGREGATOR = 'https://aggregator.walrus-testnet.walrus.space';
+// Walrus mainnet reads race across multiple operator aggregators and
+// writes fall through multiple publishers — see src/client/walrus.ts.
+// Several of those operators (H2O Nodes, Studio Mirai, Overclock) also
+// run the Seal key servers used above, so the trust surface collapses
+// to one set of custodians instead of two.
+import { fetchWalrusBlob, putWalrusBlob } from './walrus.js';
 
 const SESSION_KEY_TTL_MIN = 30;
 const SK_STORAGE_PREFIX = 'ski:suiami-seal-sk:v1:';
@@ -255,14 +259,9 @@ export async function encryptSquidsToWalrus(
     }),
   );
 
-  const res = await fetch(`${WALRUS_PUBLISHER}/v1/blobs`, {
-    method: 'PUT',
+  const res = await putWalrusBlob(encryptedObject, {
     headers: { 'content-type': 'application/octet-stream' },
-    body: encryptedObject,
   });
-  if (!res.ok) {
-    throw new Error(`Walrus upload failed: ${res.status} ${res.statusText}`);
-  }
   const result = await res.json() as any;
   const blobId = result?.newlyCreated?.blobObject?.blobId ?? result?.alreadyCertified?.blobId;
   if (!blobId) throw new Error('Walrus upload: no blobId in response');
@@ -284,10 +283,7 @@ export async function decryptSquidsForName(opts: {
   address: string;
   signPersonalMessage: (msg: Uint8Array) => Promise<{ signature: string }>;
 }): Promise<Record<string, string>> {
-  const fetchRes = await fetch(`${WALRUS_AGGREGATOR}/v1/blobs/${opts.blobId}`);
-  if (!fetchRes.ok) {
-    throw new Error(`Walrus fetch: ${fetchRes.status} ${fetchRes.statusText}`);
-  }
+  const fetchRes = await fetchWalrusBlob(opts.blobId);
   const encryptedObject = new Uint8Array(await fetchRes.arrayBuffer());
 
   // Reconstruct the same 40-byte Seal identity that encrypt used.
@@ -374,14 +370,9 @@ export async function encryptCfChunkToWalrus(
     }),
   );
 
-  const res = await fetch(`${WALRUS_PUBLISHER}/v1/blobs`, {
-    method: 'PUT',
+  const res = await putWalrusBlob(encryptedObject, {
     headers: { 'content-type': 'application/octet-stream' },
-    body: encryptedObject,
   });
-  if (!res.ok) {
-    throw new Error(`Walrus upload failed: ${res.status} ${res.statusText}`);
-  }
   const result = (await res.json()) as { newlyCreated?: { blobObject?: { blobId?: string } }; alreadyCertified?: { blobId?: string } };
   const blobId = result?.newlyCreated?.blobObject?.blobId ?? result?.alreadyCertified?.blobId;
   if (!blobId) throw new Error('Walrus upload: no blobId in response');
@@ -395,9 +386,11 @@ export async function decryptCfChunkForAddress(opts: {
   address: string;
   signPersonalMessage: (msg: Uint8Array) => Promise<{ signature: string }>;
 }): Promise<unknown | null> {
-  const fetchRes = await fetch(`${WALRUS_AGGREGATOR}/v1/blobs/${opts.blobId}`);
-  if (!fetchRes.ok) return null;
-  const encryptedObject = new Uint8Array(await fetchRes.arrayBuffer());
+  let encryptedObject: Uint8Array;
+  try {
+    const fetchRes = await fetchWalrusBlob(opts.blobId);
+    encryptedObject = new Uint8Array(await fetchRes.arrayBuffer());
+  } catch { return null; }
   const { bytes: sealIdBytes } = deriveCfHistorySealId(opts.address);
 
   const tx = new Transaction();
