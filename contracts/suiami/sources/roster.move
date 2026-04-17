@@ -657,3 +657,35 @@ public fun revoke_identity(
 
     roster.count = roster.count - 1;
 }
+
+// ─── Test-only accessors (Metal Claw) ───────────────────────────────
+
+#[test_only]
+public fun init_for_testing(ctx: &mut TxContext) {
+    init(ctx);
+}
+
+#[test_only]
+public fun test_build_bind_inner_message(ens_name: &String, sender: address, ts_ms: u64): vector<u8> {
+    build_bind_inner_message(ens_name, sender, ts_ms)
+}
+
+#[test_only]
+public fun test_eip191_wrap(msg: &vector<u8>): vector<u8> {
+    eip191_wrap(msg)
+}
+
+#[test_only]
+public fun test_u64_to_ascii_decimal(n: u64): vector<u8> {
+    u64_to_ascii_decimal(n)
+}
+
+#[test_only]
+public fun test_eth_hex_string_to_bytes(s: &String): vector<u8> {
+    eth_hex_string_to_bytes(s)
+}
+
+#[test_only]
+public fun test_pubkey_to_eth_address(compressed: &vector<u8>): vector<u8> {
+    pubkey_to_eth_address(compressed)
+}
