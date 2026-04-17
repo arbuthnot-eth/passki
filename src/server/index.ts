@@ -1862,6 +1862,44 @@ app.get('/api/balance/tron/:addr', async (c) => {
   });
 });
 
+// SOL (mainnet) — Helius JSON-RPC. Returns SOL lamports + USDC raw (6dp).
+// USDC-SPL mint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+const USDC_SOL_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+app.get('/api/balance/sol/:addr', async (c) => {
+  const addr = c.req.param('addr');
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) return c.json({ error: 'invalid SOL addr' }, 400);
+  if (!c.env.HELIUS_API_KEY) return c.json({ error: 'HELIUS_API_KEY not configured' }, 500);
+  return edgeCacheBalance(c, 30, async () => {
+    try {
+      const url = `https://mainnet.helius-rpc.com/?api-key=${c.env.HELIUS_API_KEY}`;
+      // Batch: getBalance (SOL) + getTokenAccountsByOwner filtered to USDC mint.
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify([
+          { jsonrpc: '2.0', id: 1, method: 'getBalance', params: [addr] },
+          {
+            jsonrpc: '2.0', id: 2, method: 'getTokenAccountsByOwner',
+            params: [addr, { mint: USDC_SOL_MINT }, { encoding: 'jsonParsed' }],
+          },
+        ]),
+      });
+      if (!r.ok) return c.json({ error: `helius ${r.status}` }, 502);
+      const arr = (await r.json()) as Array<{ result?: { value?: unknown } }>;
+      const lamports = (arr[0]?.result?.value as number | undefined) ?? 0;
+      const accounts = (arr[1]?.result?.value as Array<{ account: { data: { parsed: { info: { tokenAmount: { amount: string } } } } } }> | undefined) ?? [];
+      let usdcRaw = '0';
+      for (const acc of accounts) {
+        const amt = acc.account?.data?.parsed?.info?.tokenAmount?.amount;
+        if (amt && amt !== '0') { usdcRaw = amt; break; }
+      }
+      return c.json({ lamports, usdcRaw }, 200, { 'cache-control': 'public,max-age=30' });
+    } catch (err) {
+      return c.json({ error: String(err) }, 500);
+    }
+  });
+});
+
 // ── UltronSigningAgent WASM smoke test (Registeel Toxic Spikes) ─────
 // Spike endpoint to validate that the IKA WASM binary loads inside a
 // Durable Object runtime. Proves/disproves the two claims from the
