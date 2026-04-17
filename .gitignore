@@ -27,3 +27,4 @@ drafts/
 target/
 Cargo.lock.bak
 keys/*.json
+contracts/prism_vault/Cargo.lock
