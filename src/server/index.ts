@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { ultronKeypair, hasUltronKey, requireUltronSig } from './ultron-key.js';
+import { requireUltronAdmin, todayUtc } from './ultron-policy.js';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
 import { createZkLoginApp } from './zklogin-proxy.js';
@@ -2676,32 +2677,19 @@ app.post('/api/cache/sweep-sol-ultron', async (c) => {
   try {
     if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
     const body = await c.req.json() as {
-      recipient: string; // new sol@ultron (base58)
+      recipient: string;
       adminAddress: string;
       signature: string;
-      message: string; // "sweep-sol-ultron:<recipient>:<YYYY-MM-DD>"
+      message: string;
     };
-    if (!body.recipient || !body.adminAddress || !body.signature || !body.message) {
-      return c.json({ error: 'Missing recipient, adminAddress, signature, or message' }, 400);
+    if (!body.recipient) {
+      return c.json({ error: 'Missing recipient' }, 400);
     }
-    const normalizedAdmin = body.adminAddress.toLowerCase();
-    if (!ADMIN_ADDRESSES.has(normalizedAdmin)) {
-      return c.json({ error: `${body.adminAddress} not in admin allowlist` }, 403);
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    const expected = `sweep-sol-ultron:${body.recipient}:${today}`;
-    if (body.message !== expected) {
-      return c.json({ error: `message must be exactly "${expected}"` }, 400);
-    }
-    try {
-      const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
-      const messageBytes = new TextEncoder().encode(body.message);
-      await verifyPersonalMessageSignature(messageBytes, body.signature, {
-        address: normalizedAdmin,
-      });
-    } catch (err) {
-      return c.json({ error: `Invalid signature: ${err instanceof Error ? err.message : String(err)}` }, 403);
-    }
+    const denied = await requireUltronAdmin(c, body, {
+      context: 'sweep-sol-ultron',
+      messageFor: (b) => `sweep-sol-ultron:${b.recipient}:${todayUtc()}`,
+    });
+    if (denied) return denied;
 
     const { ed25519 } = await import('@noble/curves/ed25519.js');
     const { b58encode, b58decode, sweepSplAccount, sweepNativeSol } = await import('./solana-spl.js');
@@ -2832,49 +2820,23 @@ app.post('/api/cache/sweep-sol-ultron', async (c) => {
 //    The seed is effectively a signing credential — never expose without
 //    proof the caller is authorized to act on ultron's behalf.
 const ULTRON_ADDRESS = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
-const ADMIN_ADDRESSES = new Set([
-  // plankton.sui — active local keystore (publishes iUSD, holds UpgradeCap)
-  '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57',
-  // brando.sui — admin session (WaaP)
-  '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28',
-  // brando.sui — admin session (new wallet, 2026-04-13)
-  '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057',
-]);
 app.post('/api/cache/rumble-ultron-seed', async (c) => {
   try {
     if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
     const body = await c.req.json() as {
       curve: 'ed25519' | 'secp256k1';
       adminAddress: string;
-      signature: string; // base64
-      message: string;   // "rumble-ultron:<ultronAddr>:<YYYY-MM-DD>"
+      signature: string;
+      message: string;
     };
-    if (!body.curve || !body.adminAddress || !body.signature || !body.message) {
-      return c.json({ error: 'Missing curve, adminAddress, signature, or message' }, 400);
-    }
     if (body.curve !== 'ed25519' && body.curve !== 'secp256k1') {
       return c.json({ error: 'curve must be ed25519 or secp256k1' }, 400);
     }
-    const normalizedAdmin = body.adminAddress.toLowerCase();
-    if (!ADMIN_ADDRESSES.has(normalizedAdmin)) {
-      return c.json({ error: `${body.adminAddress} not in admin allowlist` }, 403);
-    }
-    // Validate message format + freshness (today's UTC date).
-    const today = new Date().toISOString().slice(0, 10);
-    const expected = `rumble-ultron:${ULTRON_ADDRESS}:${today}`;
-    if (body.message !== expected) {
-      return c.json({ error: `message must be exactly "${expected}"` }, 400);
-    }
-    // Verify the personal message signature.
-    try {
-      const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
-      const messageBytes = new TextEncoder().encode(body.message);
-      await verifyPersonalMessageSignature(messageBytes, body.signature, {
-        address: normalizedAdmin,
-      });
-    } catch (err) {
-      return c.json({ error: `Invalid signature: ${err instanceof Error ? err.message : String(err)}` }, 403);
-    }
+    const denied = await requireUltronAdmin(c, body, {
+      context: 'rumble-ultron-seed',
+      messageFor: () => `rumble-ultron:${ULTRON_ADDRESS}:${todayUtc()}`,
+    });
+    if (denied) return denied;
     // Derive the deterministic seed. The keeper key is the root secret;
     // the curve + ultron address discriminate per-dWallet so we can reuse
     // the same mechanism for secp256k1 later without clobbering ed25519.
@@ -2925,28 +2887,14 @@ app.post('/api/cache/whelm-ultron-fungibles', async (c) => {
       targetAddress: string;
       dryRun?: boolean;
     };
-    if (!body.adminAddress || !body.signature || !body.message || !body.targetAddress) {
-      return c.json({ error: 'Missing adminAddress, signature, message, or targetAddress' }, 400);
-    }
-    const normalizedAdmin = body.adminAddress.toLowerCase();
-    if (!ADMIN_ADDRESSES.has(normalizedAdmin)) {
-      return c.json({ error: `${body.adminAddress} not in admin allowlist` }, 403);
-    }
-    if (!/^0x[0-9a-fA-F]{64}$/.test(body.targetAddress)) {
+    if (!body.targetAddress || !/^0x[0-9a-fA-F]{64}$/.test(body.targetAddress)) {
       return c.json({ error: 'targetAddress must be 32-byte hex' }, 400);
     }
-    const today = new Date().toISOString().slice(0, 10);
-    const expected = `whelm-ultron-fungibles:${body.targetAddress.toLowerCase()}:${today}`;
-    if (body.message !== expected) {
-      return c.json({ error: `message must be exactly "${expected}"` }, 400);
-    }
-    try {
-      const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
-      const messageBytes = new TextEncoder().encode(body.message);
-      await verifyPersonalMessageSignature(messageBytes, body.signature, { address: normalizedAdmin });
-    } catch (err) {
-      return c.json({ error: `Invalid signature: ${err instanceof Error ? err.message : String(err)}` }, 403);
-    }
+    const denied = await requireUltronAdmin(c, body, {
+      context: 'whelm-ultron-fungibles',
+      messageFor: (b) => `whelm-ultron-fungibles:${b.targetAddress.toLowerCase()}:${todayUtc()}`,
+    });
+    if (denied) return denied;
 
     // Build sweep using the LEGACY key explicitly — we want to sign with
     // old Ultron, even though ultronKeypair() now prefers the new one.
