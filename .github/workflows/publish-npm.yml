@@ -3,6 +3,16 @@ name: Publish npm Package
 on:
   push:
     branches: [master]
+    # Monorepo path filtering — publish `sui.ski` ONLY when its own
+    # sources changed. suiami-only changes route to publish-suiami.yml
+    # and don't trigger an unrelated sui.ski patch bump.
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'wrangler.jsonc'
+      - '.github/workflows/publish-npm.yml'
   workflow_dispatch:
 
 jobs:
@@ -81,8 +91,20 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump package version
-        run: npm version patch --no-git-tag-version
+      # Pokemon-BST-driven version bump. Reads commit subjects since
+      # the most recent plain `v*` tag (sui.ski's tag convention —
+      # `suiami-v*` tags belong to the SDK). Maps named Pokemon in
+      # each subject to a base-stat-total and picks patch/minor/major.
+      # See scripts/pokemon-bump.ts for the BST table and rules.
+      - name: Pokemon BST bump
+        id: bst
+        run: |
+          SINCE=$(git tag --list 'v*' --exclude='suiami-v*' --sort=-v:refname | head -n1)
+          if [ -z "$SINCE" ]; then SINCE=""; fi
+          TIER=$(bun scripts/pokemon-bump.ts --since="$SINCE")
+          echo "Selected bump tier: $TIER"
+          npm version "$TIER" --no-git-tag-version
+          echo "tier=$TIER" >> "$GITHUB_OUTPUT"
 
       - name: Read version
         id: version
@@ -105,7 +127,7 @@ jobs:
           VERSION="v${{ steps.version.outputs.value }}"
           git checkout -- .npmrc 2>/dev/null || true
           git add package.json bun.lock
-          git commit -m "chore(release): $VERSION [skip ci]"
+          git commit -m "chore(release): $VERSION (${{ steps.bst.outputs.tier }}) [skip ci]"
           # Annotated tag (-a -m) instead of lightweight. `git push
           # --follow-tags` ONLY pushes annotated tags, not lightweight
           # ones — a lightweight tag here will silently vanish and the
