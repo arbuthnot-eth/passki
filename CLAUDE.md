@@ -32,6 +32,7 @@ When a bug is reported, don't start by trying to fix it. Instead:
 - "SKI Pass" = access/membership proof
 - "Purge" = delete-on-read (not decrypt)
 - "Quest" = the act of reading/opening
+- "Whelm" = relocate ENS ownership + dust ETH into an IKA dWallet (see `whelm()` in `src/ski.ts`). First use: whelm.eth. Engulf, submerge — the Phantom seed goes dormant, the dWallet takes over.
 
 ## DeepBook v3 — BalanceManager Black Hole
 - **NEVER create an owned BalanceManager.** Owned BMs become deposit black holes — funds go in, can't come out.

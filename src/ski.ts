@@ -1492,30 +1492,52 @@ console.log('[ski] importPhantomKey hook installed — call importPhantomKey("<m
 // Defaults are tuned for the waap.eth → superteam.sui IKA dWallet
 // transfer brando flagged; callers can override for any other
 // SUIAMI-verified dWallet target.
-const _moveWaapEthToDwallet = async (opts?: {
-  fromAddress?: string;           // who currently owns waap.eth (default: 0x9e82...3314)
-  dwalletAddress?: string;         // where to send it (default: superteam.sui's secp256k1 dWallet-derived ETH)
-  ensName?: string;                // bare name, no .eth (default: "waap")
+// ── whelm — engulf an ENS name + dust ETH into an IKA dWallet ──
+//
+// "whelm" = relocate ENS registry ownership of <name>.eth into an IKA
+// dWallet, along with a dust ETH allowance so the dWallet can later
+// pay its own gas (resolver deploy, setResolver, subname issuance).
+// After `whelm`, every future op on <name>.eth is PTB-signed through
+// IKA — the Phantom/MetaMask seed that currently controls the name
+// goes dormant. No key import, no hot key migration.
+//
+// Two Phantom prompts:
+//   tx1: value transfer — funds the IKA dWallet with ~0.002 ETH
+//   tx2: ENS.setOwner(namehash(<name>.eth), dwalletAddr)
+//
+// First use: whelm.eth. Generalized to any .eth name the connected
+// account owns — whelm('waap'), whelm('whelm'), whelm('brando'), etc.
+const _whelm = async (ensName: string, opts?: {
+  fromAddress?: string;           // current owner address (default: connected account)
+  dwalletAddress?: string;         // IKA dWallet recipient (default: superteam.sui's secp256k1 dWallet-derived ETH)
   ethAmountWei?: bigint;           // value to send along with ownership transfer (default: 0.002 ETH)
   skipTransfer?: boolean;          // dry-run mode — build + log both txs, don't prompt
 }) => {
-  const fromAddress = (opts?.fromAddress ?? '0x9e825c8DB5758A7B888d281b83e28792233A3314').toLowerCase();
+  if (!ensName || typeof ensName !== 'string') {
+    console.error('[whelm] first arg must be a bare ENS name string (no .eth suffix)');
+    return { error: 'bad-ens-name' };
+  }
+  const bare = ensName.replace(/\.eth$/i, '').toLowerCase().trim();
+  if (!bare || /[^a-z0-9-]/.test(bare)) {
+    console.error('[whelm] invalid ENS name; use a-z, 0-9, hyphens only');
+    return { error: 'bad-ens-name' };
+  }
   const dwalletAddress = opts?.dwalletAddress ?? '0xCE3e9733aB9e78aB6e9F13B7FC6aC5a45D711763';
-  const ensName = opts?.ensName ?? 'waap';
-  const ethWei = opts?.ethAmountWei ?? 2_000_000_000_000_000n; // 0.002 ETH
+  const ethWei = opts?.ethAmountWei ?? 2_000_000_000_000_000n; // 0.002 ETH dust
 
-  const eth = (window as any).ethereum;
+  const eth = (window as unknown as { ethereum?: {
+    request: (a: { method: string; params?: unknown[] }) => Promise<unknown>;
+  } }).ethereum;
   if (!eth) {
-    console.error('[moveWaapEth] no window.ethereum — is Phantom (or MetaMask) installed and unlocked?');
+    console.error('[whelm] no window.ethereum — Phantom/MetaMask not installed or unlocked');
     return { error: 'no-provider' };
   }
 
   try {
     const { encodeFunctionData, namehash, toHex } = await import('viem');
-    const node = namehash(`${ensName}.eth`);
+    const node = namehash(`${bare}.eth`);
     const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e' as const;
 
-    // setOwner(bytes32 node, address owner) — selector 0x5b0fc9c3
     const setOwnerData = encodeFunctionData({
       abi: [{ name: 'setOwner', type: 'function', inputs: [
         { name: 'node', type: 'bytes32' },
@@ -1525,8 +1547,19 @@ const _moveWaapEthToDwallet = async (opts?: {
       args: [node, dwalletAddress as `0x${string}`],
     });
 
-    console.log(`[moveWaapEth] plan:`);
-    console.log(`  ens name:        ${ensName}.eth`);
+    // Auto-detect owner from connected account if not specified.
+    let fromAddress = opts?.fromAddress?.toLowerCase();
+    if (!fromAddress) {
+      const accounts = await eth.request({ method: 'eth_requestAccounts' }) as string[];
+      fromAddress = (accounts[0] || '').toLowerCase();
+      if (!fromAddress) {
+        console.error('[whelm] no account connected in Phantom/MetaMask');
+        return { error: 'no-account' };
+      }
+    }
+
+    console.log(`[whelm] plan:`);
+    console.log(`  ens name:        ${bare}.eth`);
     console.log(`  namehash:        ${node}`);
     console.log(`  from:            ${fromAddress}`);
     console.log(`  dwallet target:  ${dwalletAddress}`);
@@ -1536,29 +1569,29 @@ const _moveWaapEthToDwallet = async (opts?: {
     console.log(`  tx2 calldata:    ${setOwnerData}`);
 
     if (opts?.skipTransfer) {
-      console.log('[moveWaapEth] skipTransfer=true — stopping before prompts');
-      return { ok: true, dryRun: true, setOwnerData };
+      console.log('[whelm] skipTransfer=true — stopping before prompts');
+      return { ok: true, dryRun: true, setOwnerData, fromAddress, dwalletAddress, ensName: `${bare}.eth` };
     }
 
-    // Connect + verify chain + verify sender
+    // Verify sender matches + on Ethereum mainnet.
     const accounts = await eth.request({ method: 'eth_requestAccounts' }) as string[];
     const connected = (accounts[0] || '').toLowerCase();
     if (connected !== fromAddress) {
       const msg = `Phantom connected as ${connected}, need ${fromAddress}. Switch accounts in Phantom and retry.`;
-      console.error('[moveWaapEth]', msg);
+      console.error('[whelm]', msg);
       showToast(msg);
       return { error: 'wrong-account', connected, expected: fromAddress };
     }
     const chainId = await eth.request({ method: 'eth_chainId' }) as string;
     if (chainId !== '0x1') {
       const msg = `Phantom on chain ${chainId}; need 0x1 (Ethereum mainnet). Switch network and retry.`;
-      console.error('[moveWaapEth]', msg);
+      console.error('[whelm]', msg);
       showToast(msg);
       return { error: 'wrong-chain', chainId };
     }
 
     showToast(`\u26a1 Phantom: sign tx 1 of 2 — sending ${Number(ethWei) / 1e18} ETH to dWallet\u2026`);
-    console.log('[moveWaapEth] submitting tx1 (value transfer)...');
+    console.log('[whelm] submitting tx1 (value transfer)...');
     const tx1 = await eth.request({
       method: 'eth_sendTransaction',
       params: [{
@@ -1567,11 +1600,11 @@ const _moveWaapEthToDwallet = async (opts?: {
         value: toHex(ethWei),
       }],
     }) as string;
-    console.log(`[moveWaapEth] tx1 submitted: ${tx1}`);
+    console.log(`[whelm] tx1 submitted: ${tx1}`);
     showToast(`\u2713 tx 1 submitted: ${tx1.slice(0, 10)}\u2026 — sign tx 2 (setOwner) next`);
 
-    showToast(`\u26a1 Phantom: sign tx 2 of 2 — ENS.setOwner(${ensName}.eth, dWallet)\u2026`);
-    console.log('[moveWaapEth] submitting tx2 (ENS setOwner)...');
+    showToast(`\u26a1 Phantom: sign tx 2 of 2 — ENS.setOwner(${bare}.eth, dWallet)\u2026`);
+    console.log('[whelm] submitting tx2 (ENS setOwner)...');
     const tx2 = await eth.request({
       method: 'eth_sendTransaction',
       params: [{
@@ -1580,24 +1613,36 @@ const _moveWaapEthToDwallet = async (opts?: {
         data: setOwnerData,
       }],
     }) as string;
-    console.log(`[moveWaapEth] tx2 submitted: ${tx2}`);
-    showToast(`\u2713 ${ensName}.eth transfer submitted: ${tx2.slice(0, 10)}\u2026`);
-    console.log(`[moveWaapEth] done. Once both mine, ${dwalletAddress} owns ${ensName}.eth.`);
-    console.log(`  Verify: https://app.ens.domains/${ensName}.eth`);
+    console.log(`[whelm] tx2 submitted: ${tx2}`);
+    showToast(`\u2713 ${bare}.eth whelmed into dWallet: ${tx2.slice(0, 10)}\u2026`);
+    console.log(`[whelm] done. Once both mine, ${dwalletAddress} owns ${bare}.eth.`);
+    console.log(`  Verify: https://app.ens.domains/${bare}.eth`);
     console.log(`  Etherscan: https://etherscan.io/tx/${tx2}`);
-    return { ok: true, tx1, tx2, dwalletAddress };
+    return { ok: true, tx1, tx2, dwalletAddress, ensName: `${bare}.eth` };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[moveWaapEth] failed:', err);
+    console.error('[whelm] failed:', err);
     if (!msg.toLowerCase().includes('user reject') && !msg.toLowerCase().includes('user denied')) {
-      showToast(`moveWaapEth failed: ${msg.slice(0, 120)}`);
+      showToast(`whelm failed: ${msg.slice(0, 120)}`);
     }
     return { error: msg };
   }
 };
+
+// Legacy alias for existing bookmarks/docs. Just calls whelm('waap').
+const _moveWaapEthToDwallet = async (opts?: {
+  fromAddress?: string;
+  dwalletAddress?: string;
+  ensName?: string;
+  ethAmountWei?: bigint;
+  skipTransfer?: boolean;
+}) => _whelm(opts?.ensName ?? 'waap', opts);
+
+(window as unknown as { whelm: typeof _whelm }).whelm = _whelm;
+(globalThis as unknown as { whelm: typeof _whelm }).whelm = _whelm;
 (window as unknown as { moveWaapEthToDwallet: typeof _moveWaapEthToDwallet }).moveWaapEthToDwallet = _moveWaapEthToDwallet;
 (globalThis as unknown as { moveWaapEthToDwallet: typeof _moveWaapEthToDwallet }).moveWaapEthToDwallet = _moveWaapEthToDwallet;
-console.log('[ski] moveWaapEthToDwallet hook installed — call moveWaapEthToDwallet() to transfer waap.eth to superteam.sui\'s IKA dWallet via Phantom ETH (Beldum Relocate, #167). Pass { skipTransfer:true } to dry-run.');
+console.log('[ski] whelm hook installed — call whelm("whelm") to engulf whelm.eth into superteam.sui\'s IKA dWallet. Pass { skipTransfer:true } to dry-run. Legacy moveWaapEthToDwallet() still aliases to whelm("waap").');
 
 // Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
 // Pass the recipient address explicitly (typically the new sol@ultron
