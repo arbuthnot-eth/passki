@@ -31,9 +31,11 @@ use quasar_lang::prelude::*;
 
 mod ed25519;
 mod instructions;
+mod manifest;
 mod state;
 pub use ed25519::*;
 pub use instructions::*;
+pub use manifest::*;
 pub use state::*;
 
 // Program ID from keys/prism_vault-keypair.json. Replaceable pre-Z10.
