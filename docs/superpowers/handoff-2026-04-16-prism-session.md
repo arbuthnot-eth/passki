@@ -98,16 +98,34 @@ This is the track the user was pointing at when asking "what about using eitherw
 
 **Why this matters for us:** the iUSD→klend collateral→borrow USDC angle we researched (differentiation 5/5) lands directly in eligibility for $20K. Our Quasar `prism_vault` + SUIAMI already covers "survives beyond the hackathon" because sui.ski is live infra.
 
-**An agent is in-flight at session-pause** (agentId `ae44f26de4b0156fc`) investigating:
-- What Eitherway is + URL + how strict "built with Eitherway" requirement is
-- Track deadline (may be before May 11)
-- Kamino templates inside Eitherway
-- Whether a non-Eitherway backend (sui.ski) paired with an Eitherway-generated dashboard qualifies
+### Eitherway research — agent returned
 
-**Check that agent's output first next session.** Its result will inform whether we:
-- Use Eitherway ONLY for the Kamino dashboard UI, keep our Quasar program + Workers backend as-is
-- Rebuild a slice of sui.ski in Eitherway for submission purposes
-- Skip the track if the "built with Eitherway" rule is too strict
+**Product:** `eitherway.ai` (docs: `docs.eitherway.ai`, X: `@EitherwayAI`). AI prompt-to-production platform on Solana — uses **Claude (Anthropic) for code gen**. Pre-built templates include DeFi Yield Optimizer, Multi-Chain Portfolio Tracker, Token Deployment, NFT Marketplace, DAO Governance, Web3 Escrow. Baked-in infra: Supabase, Stripe, Helius, Pyth, Solflare, Filecoin, Google Cloud. Has a native `$EITHER` SPL token gating premium features/templates.
+
+**Listing URL:** `https://superteam.fun/earn/listing/build-a-live-dapp-with-solflare-kamino-dflow-or-quicknode-with-eitherway-app/`
+
+**Prize:** $20,000 USDC total (breakdown not surfaced in search — confirm on listing). **Winner announcement May 27, 2026**; submission deadline almost certainly aligned with Frontier May 11.
+
+**Verified capabilities:** Phantom + Solflare wallet adapters. External backend (sui.ski Workers) via plain `fetch` = likely OK.
+
+**Unverified (need 30-min trial at eitherway.ai):**
+- Custom program calls to raw Quasar program (8-byte discriminator + Borsh) — not advertised
+- Anchor IDL ingestion path
+- Token-2022 confidential transfers — not mentioned, treat as unsupported-by-default
+- Code export story (does the app survive if Eitherway shuts down?)
+
+**Verdict (from agent):** **Use Eitherway as the Kamino dashboard layer for Prism — don't rebuild the whole frontend.** Narrative: *Prism sealed payments → auto-deposit into iUSD-backed Kamino vault, dashboard built in Eitherway.* Standalone "Kamino collateral cockpit" at `prism.sui.ski/vault` satisfies "deeply integrate Kamino" and "built with Eitherway" without touching the Quasar program path.
+
+**Next-session actions for this track:**
+1. Open listing in browser, screenshot prize breakdown + exact deadline + submission form + check for "100% Eitherway" clause (WebFetch was denied; requires manual verification)
+2. Sign up at eitherway.ai; run the prompt: *"Kamino klend dashboard that deposits USDC via Solflare and displays health factor."* Verify: (a) can edit generated TS, (b) can paste custom IDL, (c) can deploy under custom domain
+3. Ask in Eitherway/Superteam Discord whether hybrid-layer (Eitherway cockpit + external backend) qualifies BEFORE committing
+
+**Red flags:**
+- Prize split unconfirmed (winner-take-all vs tiered affects ROI)
+- "Built with Eitherway" strictness — if fully Eitherway-generated is required, hybrid disqualified
+- `$EITHER` token may gate premium templates (budget for purchase)
+- Opaque code export — "survives beyond hackathon" becomes Eitherway-dependent
 
 ## Don't forget
 
