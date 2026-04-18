@@ -23,6 +23,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
+import { blake2b } from '@noble/hashes/blake2.js';
 
 // ─── Hex helpers ───────────────────────────────────────────────────
 
@@ -206,6 +207,51 @@ function ed25519Scalar(seed: Uint8Array): bigint {
     getExtendedPublicKey(seed: Uint8Array): { scalar: bigint };
   }).getExtendedPublicKey(seed);
   return ext.scalar;
+}
+
+// ─── Sui address encoding ──────────────────────────────────────────
+//
+// Standard Sui spec: an address is blake2b-256(flag || pubkey) truncated
+// to 32 bytes, hex-encoded with 0x prefix. Signature scheme flags
+// follow sui::crypto::SignatureScheme (0 = Ed25519, 1 = Secp256k1,
+// 2 = Secp256r1, 3 = MultiSig, 5 = zkLogin, 6 = Passkey).
+// Reference: Sui docs → "Address" and the sui-types crate.
+
+export const SUI_SIG_FLAG_ED25519 = 0x00;
+export const SUI_SIG_FLAG_SECP256K1 = 0x01;
+
+/** Encode a Sui address from an Ed25519 public key (32 bytes).
+ *  Matches `sui_types::crypto::PublicKey::Ed25519(...).to_address()`. */
+export function suiAddressFromEd25519Pubkey(pubkey32: Uint8Array): string {
+  if (pubkey32.length !== 32) {
+    throw new Error(`[weavile-derive] ed25519 pubkey must be 32 bytes, got ${pubkey32.length}`);
+  }
+  const msg = new Uint8Array(33);
+  msg[0] = SUI_SIG_FLAG_ED25519;
+  msg.set(pubkey32, 1);
+  const digest = blake2b(msg, { dkLen: 32 });
+  return '0x' + toHex(digest);
+}
+
+/** Convenience wrapper over `deriveStealthForEvent` for Sui consumers.
+ *  Returns the stealth pubkey + the Sui-native address string.
+ *  Sui uses the same ed25519 math as the Solana path — only the
+ *  address encoding differs. */
+export function deriveSuiStealthForEvent(params: {
+  ephemeralPub: Uint8Array | string;
+  viewTag: number;
+  viewPriv: Uint8Array | string;
+  spendPub: Uint8Array | string;
+}): (DeriveHit & { suiAddress: string }) | DeriveMiss {
+  const base = deriveStealthForEvent({
+    ...params,
+    curve: 'ed25519',
+  });
+  if (!base.matched) return base;
+  return {
+    ...base,
+    suiAddress: suiAddressFromEd25519Pubkey(base.stealthPub),
+  };
 }
 
 export const __test__ = { hashTweakSecp, hashTweakEd25519, bytesToScalarSecp, bytesToScalarEd, ed25519Scalar };
