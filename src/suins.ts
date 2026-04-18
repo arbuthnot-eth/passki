@@ -11,7 +11,7 @@
 import { coinWithBalance, Transaction } from '@mysten/sui/transactions';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
-import { normalizeSuiAddress } from '@mysten/sui/utils';
+import { normalizeSuiAddress, fromHex } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, GQL_URL, gqlClient } from './rpc.js';
@@ -2686,15 +2686,6 @@ function generateSalt(): string {
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Hex string → Uint8Array. */
-function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  const bytes = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
-}
 
 
 /** BCS-encode a u64 as 8 little-endian bytes (matches Move's bcs::to_bytes). */
@@ -2707,7 +2698,7 @@ function bcsU64(value: number | bigint): Uint8Array {
 
 /** BCS-encode a Sui address as 32 bytes (matches Move's bcs::to_bytes for address). */
 function bcsAddress(addr: string): Uint8Array {
-  return hexToBytes(normalizeSuiAddress(addr));
+  return fromHex(normalizeSuiAddress(addr));
 }
 
 /**
@@ -2723,7 +2714,7 @@ async function buildCommitment(
   const domainBytes = new TextEncoder().encode(domain);
   const msBytes = bcsU64(executeAfterMs);
   const addrBytes = bcsAddress(targetAddress);
-  const saltBytes = hexToBytes(saltHex);
+  const saltBytes = fromHex(saltHex);
 
   // Concatenate: domain || execute_after_ms || target_address || salt
   const preimage = new Uint8Array(domainBytes.length + msBytes.length + addrBytes.length + saltBytes.length);
@@ -3240,7 +3231,7 @@ export async function buildExecuteShadeOrderTx(
 
   // Step 1: Execute shade order → returns released Coin<SUI>
   const domainBytes = Array.from(new TextEncoder().encode(order.domain));
-  const saltBytes = Array.from(hexToBytes(order.salt));
+  const saltBytes = Array.from(fromHex(order.salt));
   const [releasedCoin] = tx.moveCall({
     target: `${SHADE_PACKAGE}::shade::execute`,
     arguments: [

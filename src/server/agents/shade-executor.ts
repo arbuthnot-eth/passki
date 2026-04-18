@@ -21,7 +21,7 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { ultronKeypair } from '../ultron-key.js';
-import { normalizeSuiAddress } from '@mysten/sui/utils';
+import { normalizeSuiAddress, fromHex } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 import { raceExecuteTransaction, TxFailureError, GQL_URL } from '../rpc.js';
 const SHADE_PACKAGE = '0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203';
@@ -115,16 +115,6 @@ function isMainnetEnv(env: Env): boolean {
   return network === 'mainnet';
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────
-
-function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  const bytes = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
-}
 
 function uint8ToBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -619,7 +609,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       const ultronAddr = keypair.toSuiAddress();
 
       const domainBytes = Array.from(new TextEncoder().encode(order.domain));
-      const saltBytes = Array.from(hexToBytes(order.salt));
+      const saltBytes = Array.from(fromHex(order.salt));
       const targetAddr = normalizeSuiAddress(order.targetAddress);
       const fullDomain = `${order.domain}.sui`;
 
@@ -751,7 +741,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
 
       const domainBytes = Array.from(new TextEncoder().encode(order.domain));
-      const saltBytes = Array.from(hexToBytes(order.salt));
+      const saltBytes = Array.from(fromHex(order.salt));
       const targetAddr = normalizeSuiAddress(order.targetAddress);
       const fullDomain = `${order.domain}.sui`;
 
@@ -1170,7 +1160,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       const THUNDER_PKG = '0xab627152bfbafeb06f567c1932f4d2eba11799160042219d2edaa0706c306ee6';
       const STORM_OBJ = '0xebafb2bc3e63664cbf7d9521fca7a809c35d89403fbc3a6669042eacefc34dc1';
 
-      const nameHashBytes = Array.from(hexToBytes(sweep.nameHash));
+      const nameHashBytes = Array.from(fromHex(sweep.nameHash));
       const tx = new Transaction();
       tx.setSender(normalizeSuiAddress(ultronAddr));
       tx.moveCall({
