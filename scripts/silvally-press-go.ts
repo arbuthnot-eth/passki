@@ -39,9 +39,9 @@ const IKA_NETWORK: 'mainnet' = 'mainnet';
 const GRPC_URL = 'https://fullnode.mainnet.sui.io:443';
 
 // ─── Signer ────────────────────────────────────────────────────────
-const PRIVATE_KEY = process.env.SHADE_KEEPER_PRIVATE_KEY;
+const PRIVATE_KEY = process.env.ULTRON_PRIVATE_KEY || process.env.SHADE_KEEPER_PRIVATE_KEY;
 if (!PRIVATE_KEY) {
-  console.error('Set SHADE_KEEPER_PRIVATE_KEY env var (bech32 suiprivkey)');
+  console.error('Set ULTRON_PRIVATE_KEY (or legacy SHADE_KEEPER_PRIVATE_KEY) env var (bech32 suiprivkey)');
   process.exit(1);
 }
 const keypair = Ed25519Keypair.fromSecretKey(PRIVATE_KEY);

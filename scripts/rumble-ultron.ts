@@ -22,11 +22,11 @@ import {
   Curve,
 } from '@ika.xyz/sdk';
 
-// Use new keeper mnemonic or existing SHADE_KEEPER_PRIVATE_KEY
+// Prefer mnemonic, then new ULTRON_PRIVATE_KEY, then legacy SHADE_KEEPER_PRIVATE_KEY
 const ULTRON_MNEMONIC = process.env.ULTRON_MNEMONIC;
-const ULTRON_KEY = process.env.SHADE_KEEPER_PRIVATE_KEY;
+const ULTRON_KEY = process.env.ULTRON_PRIVATE_KEY || process.env.SHADE_KEEPER_PRIVATE_KEY;
 if (!ULTRON_KEY && !ULTRON_MNEMONIC) {
-  console.error('Set ULTRON_MNEMONIC or SHADE_KEEPER_PRIVATE_KEY env var');
+  console.error('Set ULTRON_MNEMONIC or ULTRON_PRIVATE_KEY (or legacy SHADE_KEEPER_PRIVATE_KEY) env var');
   process.exit(1);
 }
 

@@ -32,9 +32,9 @@ const SEAL_SERVERS = [
 ];
 
 // ─── Signer ────────────────────────────────────────────────────────
-const PRIVATE_KEY = process.env.SHADE_KEEPER_PRIVATE_KEY;
+const PRIVATE_KEY = process.env.ULTRON_PRIVATE_KEY || process.env.SHADE_KEEPER_PRIVATE_KEY;
 if (!PRIVATE_KEY) {
-  console.error('Set SHADE_KEEPER_PRIVATE_KEY env var (bech32 suiprivkey)');
+  console.error('Set ULTRON_PRIVATE_KEY (or legacy SHADE_KEEPER_PRIVATE_KEY) env var (bech32 suiprivkey)');
   process.exit(1);
 }
 

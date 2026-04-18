@@ -11,7 +11,11 @@ const DOMAIN = 'ignite';
 const EXECUTE_AFTER_MS = 1772683540687;
 const TARGET = '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28';
 const SALT = 'bc80cdd55a6cfa505c39729ed333baaefce214f8b73b3dba9f856f29f7f07407';
-const KEEPER_KEY = process.env.SHADE_KEEPER_PRIVATE_KEY!;
+const KEEPER_KEY = (process.env.ULTRON_PRIVATE_KEY || process.env.SHADE_KEEPER_PRIVATE_KEY)!;
+if (!KEEPER_KEY) {
+  console.error('Set ULTRON_PRIVATE_KEY (or legacy SHADE_KEEPER_PRIVATE_KEY)');
+  process.exit(1);
+}
 
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
