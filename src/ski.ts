@@ -661,6 +661,53 @@ const _rumbleUltron = async (curves: 'ed25519' | 'secp256k1' | 'both' = 'ed25519
 (globalThis as unknown as { rumbleUltron: typeof _rumbleUltron }).rumbleUltron = _rumbleUltron;
 console.log('[ski] rumbleUltron hook installed — call rumbleUltron("ed25519")');
 
+// ─── Paymaster Squid — Weavile Assurance Move 6 ─────────────────────
+// Dedicated secp256k1 dWallet owned by ultron.sui that signs
+// paymasterAndData for Weavile gas-sponsored sweeps. Rotated weekly
+// by re-running this ceremony and calling `setVerifyingSigner` on the
+// Pimlico paymaster contract with the new ETH address.
+//
+// Distinct from the user-funds secp256k1 ultron dWallet (which owns
+// real ETH balances). Keeping them separate means a compromise of
+// the paymaster signer never touches user funds.
+window.addEventListener('ski:rumble-paymaster-squid', async () => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    window.dispatchEvent(new CustomEvent('ski:rumble-paymaster-squid-complete', {
+      detail: { error: 'not connected' },
+    }));
+    return;
+  }
+  showToast('Paymaster squid \u2014 running DKG (3 rounds, ~30s)\u2026');
+  try {
+    const { provisionDWallet } = await import('./client/ika.js');
+    const { Curve } = await import('@ika.xyz/sdk');
+    const result = await provisionDWallet(ws.address, {
+      onStatus: (stage) => console.log(`[paymaster-squid] ${stage}`),
+      requestedCurve: Curve.SECP256K1,
+      targetOwner: ULTRON_ADDRESS,
+      // No encryptionSeed → fresh random dwallet each call. Rotation
+      // semantics: every click mints a brand-new squid.
+    });
+    const dwalletId = result.dwalletCaps?.[0] ?? '';
+    const ethAddress = result.ethAddress ?? '';
+    if (!dwalletId || !ethAddress) {
+      window.dispatchEvent(new CustomEvent('ski:rumble-paymaster-squid-complete', {
+        detail: { error: 'DKG returned no dwalletId/ethAddress — check console' },
+      }));
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('ski:rumble-paymaster-squid-complete', {
+      detail: { dwalletId, ethAddress },
+    }));
+  } catch (err) {
+    console.error('[paymaster-squid] error:', err);
+    window.dispatchEvent(new CustomEvent('ski:rumble-paymaster-squid-complete', {
+      detail: { error: err instanceof Error ? err.message : String(err) },
+    }));
+  }
+});
+
 // ── Post-trade configure: browser-console repair tool ──
 //
 // If the trade follow-up configure ever fails (rejection, lag, any

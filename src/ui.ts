@@ -6438,6 +6438,10 @@ function _skiAdminGroupHtml(): string {
           <span class="wk-settings-label">Squids</span>
           <button class="wk-settings-value wk-settings-button" id="wk-whelm-ultron-squids" type="button" title="Sweep DWalletCap objects from old Ultron into the new address">Whelm Squids</button>
         </div>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Paymaster Squid</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-rumble-paymaster-squid" type="button" title="Mint the dedicated secp256k1 dWallet that signs paymasterAndData for Weavile stealth sweeps (rotated weekly). Weavile Assurance Move 6.">Rumble Paymaster Squid</button>
+        </div>
       </div>` : '';
 
   return ensGroup + adminGroup;
@@ -7205,6 +7209,57 @@ function renderSkiMenu() {
       btn.disabled = false;
       btn.textContent = original;
     }
+  });
+
+  // Admin — Rumble Paymaster Squid (Weavile Assurance Move 6)
+  // Mints the dedicated secp256k1 dWallet that signs paymasterAndData
+  // for Weavile stealth sweeps. Owner = ultron.sui; brando initiates
+  // the DKG as the connected admin but never owns the DWalletCap.
+  document.getElementById('wk-rumble-paymaster-squid')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    const original = btn.textContent;
+    if (!confirm(
+      'Rumble Paymaster Squid?\n\n'
+      + 'Mints a NEW secp256k1 dWallet owned by ultron.sui, dedicated to signing '
+      + 'paymasterAndData for Weavile gas-sponsored sweeps. ~2 SUI gas.\n\n'
+      + 'On success you will get a dwalletId + ETH address. Paste the dwalletId '
+      + 'into PAYMASTER_SIGNER_DWALLET in src/server/agents/ultron-signing-agent.ts '
+      + 'and redeploy.\n\n'
+      + 'Continue?',
+    )) return;
+    btn.disabled = true;
+    btn.textContent = 'Rumbling\u2026';
+    try {
+      window.dispatchEvent(new CustomEvent('ski:rumble-paymaster-squid'));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Paymaster squid rumble error: ${msg}`, false, true);
+    } finally {
+      // Re-enable optimistically; the ski:rumble-paymaster-squid-complete
+      // listener below will re-toast the final state.
+      setTimeout(() => { btn.disabled = false; btn.textContent = original; }, 800);
+    }
+  });
+
+  window.addEventListener('ski:rumble-paymaster-squid-complete', (ev) => {
+    const detail = (ev as CustomEvent).detail as {
+      dwalletId?: string;
+      ethAddress?: string;
+      error?: string;
+    } | undefined;
+    if (!detail || detail.error) {
+      showToast(`Paymaster squid failed: ${detail?.error ?? 'unknown'}`, false, true);
+      return;
+    }
+    const short = (s?: string) => s ? `${s.slice(0, 10)}\u2026${s.slice(-6)}` : '';
+    showToast(
+      `\u2713 Paymaster squid: ${short(detail.ethAddress)} (dwalletId copied — paste into PAYMASTER_SIGNER_DWALLET)`,
+      false,
+      true,
+    );
+    try { navigator.clipboard?.writeText(detail.dwalletId ?? ''); } catch { /* clipboard blocked — user sees dwalletId in console */ }
+    console.log('[paymaster squid] dwalletId:', detail.dwalletId, 'ethAddress:', detail.ethAddress);
   });
 
   // Admin — Whelm Squids (DWalletCap sweep)
