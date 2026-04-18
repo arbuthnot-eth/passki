@@ -2154,12 +2154,27 @@ app.put('/api/aggron/publish', async (c) => {
     // epochs = how many Walrus epochs (~2 weeks each on mainnet) to
     // retain the blob. 12 ≈ 6 months. Re-publish to extend.
     // deletable = lets the owner reclaim the storage if needed.
-    const result = await walrus.writeQuilt({
+    // Retry once — the most common failure is a gas-coin version
+    // race when two publishes overlap. Wait ~2s, re-read coins, retry.
+    const doPublish = () => walrus.writeQuilt({
       blobs: [{ contents: body, identifier, tags: { kind } }],
       signer,
       epochs: 12,
       deletable: true,
     });
+    let result;
+    try {
+      result = await doPublish();
+    } catch (firstErr) {
+      const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+      // Transient errors worth retrying: coin version, RPC hiccup,
+      // upload-relay timeout, object not found (stale cache).
+      const isTransient = /coin|version|object not found|timeout|fetch|502|503|ETIMEDOUT|ECONNRESET/i.test(msg);
+      if (!isTransient) throw firstErr;
+      console.warn(`[aggron/publish] transient, retrying once: ${msg}`);
+      await new Promise(r => setTimeout(r, 2000));
+      result = await doPublish();
+    }
     return c.json({
       blobId: result.blobId,
       newlyCreated: { blobObject: { blobId: result.blobId } },
