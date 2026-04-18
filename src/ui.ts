@@ -7318,11 +7318,12 @@ function renderSkiMenu() {
     btn.disabled = true;
     btn.textContent = 'Reading\u2026';
     try {
-      const eth = (window as unknown as { ethereum?: {
-        request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-      } }).ethereum;
+      const getPhantomEth = (window as unknown as {
+        getPhantomEth?: () => Promise<{ request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } | null>;
+      }).getPhantomEth;
+      const eth = getPhantomEth ? await getPhantomEth() : null;
       if (!eth) {
-        showToast('No window.ethereum — is Phantom ETH unlocked?', false, true);
+        showToast('No Phantom ETH provider — unlock Phantom or disable conflicting wallet extensions (e.g. Me / Backpack).', false, true);
         return;
       }
       const accounts = (await eth.request({ method: 'eth_requestAccounts' })) as string[];

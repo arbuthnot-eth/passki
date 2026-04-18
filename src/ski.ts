@@ -1755,11 +1755,9 @@ const _bindWhelmEthResolver = async (
     console.error(`[bindResolver] resolverAddress must be 0x-prefixed 20-byte hex, got ${resolverAddress}`);
     return { error: 'invalid resolver address' };
   }
-  const eth = (window as unknown as { ethereum?: {
-    request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-  } }).ethereum;
+  const eth = await getPhantomEth();
   if (!eth) {
-    console.error('[bindResolver] no window.ethereum — connect Phantom/MetaMask as the whelm.eth owner first');
+    console.error('[bindResolver] no Phantom ETH provider — unlock Phantom first');
     return { error: 'no wallet' };
   }
   const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
@@ -1827,6 +1825,54 @@ const _bindWhelmEthResolver = async (
 (globalThis as unknown as { bindWhelmEthResolver: typeof _bindWhelmEthResolver }).bindWhelmEthResolver = _bindWhelmEthResolver;
 console.log('[ski] bindWhelmEthResolver hook installed — once OffchainResolver.sol is deployed, call bindWhelmEthResolver("0x<addr>") from the whelm.eth owner\'s wallet.');
 
+// ── getPhantomEth — reach Phantom's ETH provider past hijackers ──
+//
+// When multiple wallet extensions install (Phantom + Me + Backpack + Rabby),
+// whichever one loads first grabs window.ethereum. Requests to hijacked
+// providers get rejected with opaque errors (e.g. "Me: Missing or invalid
+// parameters") because the foreign provider doesn't know about the user's
+// Phantom accounts.
+//
+// Resolution order:
+//   1. window.phantom.ethereum — Phantom's dedicated direct reference
+//   2. EIP-6963 provider discovery — wallets announce themselves on load;
+//      pick the one whose info.rdns is io.phantom.app
+//   3. window.ethereum.providers[i] — legacy multi-provider array
+//   4. window.ethereum — last resort (what we were doing before)
+type EthProvider = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> };
+async function getPhantomEth(): Promise<EthProvider | null> {
+  const w = window as unknown as {
+    phantom?: { ethereum?: EthProvider };
+    ethereum?: EthProvider & { providers?: (EthProvider & { isPhantom?: boolean })[] };
+  };
+  if (w.phantom?.ethereum) return w.phantom.ethereum;
+  // EIP-6963: listen for announceProvider events. Already-announced providers
+  // re-fire when we dispatch requestProvider, so this catches whichever order
+  // the extensions loaded in.
+  const found = await new Promise<EthProvider | null>((resolve) => {
+    const handler = (ev: Event) => {
+      const d = (ev as CustomEvent<{ info?: { rdns?: string; name?: string }; provider?: EthProvider }>).detail;
+      const rdns = d?.info?.rdns?.toLowerCase() ?? '';
+      const name = d?.info?.name?.toLowerCase() ?? '';
+      if (rdns.includes('phantom') || name.includes('phantom')) {
+        window.removeEventListener('eip6963:announceProvider', handler as EventListener);
+        resolve(d?.provider ?? null);
+      }
+    };
+    window.addEventListener('eip6963:announceProvider', handler as EventListener);
+    window.dispatchEvent(new Event('eip6963:requestProvider'));
+    setTimeout(() => {
+      window.removeEventListener('eip6963:announceProvider', handler as EventListener);
+      resolve(null);
+    }, 500);
+  });
+  if (found) return found;
+  const legacy = w.ethereum?.providers?.find((p) => p.isPhantom);
+  if (legacy) return legacy;
+  return w.ethereum ?? null;
+}
+(window as unknown as { getPhantomEth: typeof getPhantomEth }).getPhantomEth = getPhantomEth;
+
 // ── deployOffchainResolver — one-click ENS CCIP-read resolver deploy ──
 //
 // Uses the pre-compiled OffchainResolver.sol bytecode bundled from
@@ -1864,11 +1910,9 @@ const _deployOffchainResolver = async (opts?: {
     }
   }
 
-  const eth = (window as unknown as { ethereum?: {
-    request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-  } }).ethereum;
+  const eth = await getPhantomEth();
   if (!eth) {
-    console.error('[deployOCR] no window.ethereum — connect Phantom/MetaMask as whelm.eth owner');
+    console.error('[deployOCR] no Phantom ETH provider — unlock Phantom first');
     return { error: 'no wallet' };
   }
 
@@ -1950,11 +1994,9 @@ const _delegateWhelmEthManagement = async (opts?: {
     console.error(`[delegate] invalid operator: ${operator}`);
     return { error: 'invalid operator' };
   }
-  const eth = (window as unknown as { ethereum?: {
-    request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-  } }).ethereum;
+  const eth = await getPhantomEth();
   if (!eth) {
-    console.error('[delegate] no window.ethereum — connect the invalid.eth Phantom account first');
+    console.error('[delegate] no Phantom ETH provider — unlock Phantom as the whelm.eth owner account first');
     return { error: 'no wallet' };
   }
   const NAME_WRAPPER = '0xD4416b13d2b3a9aBae7aCd5D6C2BbDBE25686401';
