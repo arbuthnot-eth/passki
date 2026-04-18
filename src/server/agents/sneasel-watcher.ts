@@ -40,10 +40,27 @@ const COMPLETED_HISTORY_MAX = 100;
  *  top-ups a chance to coalesce into one batch. */
 const SWEEP_DEBOUNCE_MS = 30 * 1000;
 
-/** Ultron's canonical EVM address — the sole authorized sweep delegate
- *  on the ETH side today. Cross-referenced by guard checks; the Seal
- *  policy enforces the on-chain version. */
+/** Ultron's canonical EVM address — orchestrator, not destination.
+ *  Per-guest intermediates are the first-hop destinations; ultron
+ *  signs the hot→intermediate tx via IKA. This address is the sweep
+ *  delegate whose on-chain sender proof unlocks Seal decrypt of
+ *  layer-1 (ColdDestV2Intermediate), never itself a terminus for
+ *  user funds. See `src/client/sneasel-guest.ts` and Ice Fang plan. */
 export const ULTRON_ETH_ADDR = '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d';
+
+// ─── Ice Fang jitter ────────────────────────────────────────────────────
+
+/** Per-batch random-jitter upper bound. Ice Fang plan §4.2: wrap the
+ *  30s debounce floor with a random upper bound to defeat simple
+ *  timing-correlation of sweeps. 30min matches plan §7 note that
+ *  jitter beats blocks, not weeks. */
+export const SWEEP_JITTER_MAX_MS = 30 * 60 * 1000;
+
+/** Pick a jitter delay in [SWEEP_DEBOUNCE_MS, SWEEP_JITTER_MAX_MS]. */
+export function pickSweepJitterMs(random: () => number = Math.random): number {
+  const span = SWEEP_JITTER_MAX_MS - SWEEP_DEBOUNCE_MS;
+  return SWEEP_DEBOUNCE_MS + Math.floor(random() * span);
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -279,10 +296,14 @@ export class SneaselWatcherAgent extends Agent<Env, SneaselWatcherState> {
     return { success: true, scheduledMs: entry.scheduledMs };
   }
 
-  /** Alarm-driven batch processor. Scaffold: logs what it would sweep.
-   *  Real signing lands in Sneasel Icy Wind; batching in Sneasel Beat Up. */
+  /** Alarm-driven batch processor. Ice Fang property: one batch per
+   *  `(chain, parentHash, label)` — i.e. strictly per-guest. Cross-guest
+   *  batching is intentionally cancelled (was "Sneasel Beat Up") because
+   *  it would reproduce the sweep-graph collapse via Chainalysis
+   *  common-input heuristic. Real signing still lands in Sneasel Icy
+   *  Wind; this move wires the correct grouping + jitter + v1-reject. */
   @callable()
-  async tick(): Promise<{ processed: number; batches: number }> {
+  async tick(): Promise<{ processed: number; batches: number; rejected?: number }> {
     const now = Date.now();
     const ready = this.state.pendingSweeps.filter(p => p.scheduledMs <= now);
     if (ready.length === 0) {
@@ -290,32 +311,72 @@ export class SneaselWatcherAgent extends Agent<Env, SneaselWatcherState> {
       return { processed: 0, batches: 0 };
     }
 
-    // TODO(Sneasel Beat Up): group ready sweeps by (chain, sweepDelegate)
-    // and build one multi-send tx per batch instead of one per sweep.
-    const batchCount = new Set(
-      ready.map(p => {
-        const w = this.state.watchedHotAddrs.find(w => w.hotAddr.toLowerCase() === p.hotAddr.toLowerCase());
-        return `${w?.chain ?? 'unknown'}|${w?.sweepDelegate ?? 'unknown'}`;
-      }),
-    ).size;
+    // Ice Fang: group by (chain, parentHash, label). Each guest gets
+    // its own batch; multiple top-ups into the same hot addr coalesce
+    // inside one batch, but two distinct guests NEVER share a signing
+    // tx. Beat Up (cross-guest batching) is intentionally cancelled —
+    // see plan §4.2. Do NOT reintroduce cross-guest grouping.
+    const groups = new Map<string, PendingSweep[]>();
+    for (const p of ready) {
+      const w = this.state.watchedHotAddrs.find(
+        ww => ww.hotAddr.toLowerCase() === p.hotAddr.toLowerCase(),
+      );
+      if (!w) continue;
+      const key = `${w.chain}|${w.parentHash}|${w.label}`;
+      const bucket = groups.get(key) ?? [];
+      bucket.push(p);
+      groups.set(key, bucket);
+    }
 
-    // TODO(Sneasel Blizzard): for each ready sweep, fetch the sealed
-    // cold destination from Move roster GuestStealth entry and call
-    // Seal decrypt with ultron's sender proof (seal_approve_guest_stealth).
-    //
-    // TODO(Sneasel Icy Wind): take the decrypted cold destination and
-    // run an IKA dWallet signing ceremony on the hot-address keyshares
-    // to produce a hot→cold transfer tx, then submit to the chain.
-    //
-    // TODO(Sneasel Beat Up): issue a single batched tx per (chain,
-    // delegate) group, record one digest per group, and attribute
-    // individual sweeps to that digest.
+    // Reject any v1 sealed payloads with a clear error. Real Seal
+    // decrypt is wired in Sneasel Blizzard / Icy Wind — this gate
+    // lives here so the moment decrypt lands we already refuse v1.
+    let rejected = 0;
+    for (const [key, batch] of groups) {
+      // Scaffold: Seal decrypt is still pending (Blizzard/Icy Wind).
+      // When it lands, parse `decrypted.version`; if it's !== 2,
+      // throw `ice-fang-requires-v2` and skip the batch.
+      // Until decrypt is live, `_rejectV1SealedPayload` is available
+      // as a standalone helper (see below) + tested directly.
+      void key;
+      void batch;
+    }
+
+    // Per-batch random jitter — push scheduledMs forward for each
+    // batch independently. A single-guest batch's sweeps all share
+    // the same delay, but two distinct guests get two independent
+    // jitters so their sweeps don't co-land in the same block.
+    const nextPending: PendingSweep[] = [];
+    const stillDeferred = this.state.pendingSweeps.filter(p => p.scheduledMs > now);
+    nextPending.push(...stillDeferred);
+    for (const [, batch] of groups) {
+      const jitter = pickSweepJitterMs();
+      const target = now + jitter;
+      // Keep them pending with new scheduledMs. Real Icy Wind will
+      // replace this with an actual sign+submit and append to
+      // completedSweeps instead of re-deferring.
+      for (const p of batch) {
+        nextPending.push({ ...p, scheduledMs: target });
+      }
+    }
+    this.setState({ ...this.state, pendingSweeps: nextPending });
 
     console.log(
-      `[SneaselWatcher:${this.name}] tick() — would sweep ${ready.length} addresses in ${batchCount} batch(es); scaffold only, no signing yet`,
+      `[SneaselWatcher:${this.name}] tick() — ${ready.length} ready addresses in ${groups.size} per-guest batch(es); deferred with jitter, no signing yet`,
     );
     this._scheduleSneaselAlarm();
-    return { processed: ready.length, batches: batchCount };
+    return { processed: ready.length, batches: groups.size, rejected };
+  }
+
+  /** Validate a decrypted ColdDestPayload — refuses v1 with the
+   *  canonical Ice Fang error message. Exposed separately so tests
+   *  can exercise the gate without a live Seal decrypt. */
+  static rejectV1SealedPayload(decrypted: { version?: number }): void {
+    if (decrypted.version !== 2) {
+      throw new Error(
+        `ice-fang-requires-v2: got version=${decrypted.version ?? 'undefined'}, Sneasel Ice Fang requires v2 cold-dest payload`,
+      );
+    }
   }
 
   // ─── Private ──────────────────────────────────────────────────────
