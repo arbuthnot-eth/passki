@@ -119,6 +119,16 @@ interface UltronSigningState {
   // share material, and last-seen reconfig epoch here.
   lastSpikeAt?: number;
   lastSpikeOk?: boolean;
+  // Weavile Assurance Move 6 — the paymaster-signer dWallet.
+  // Set by the admin "Rumble Paymaster Squid" button via
+  // setPaymasterSigner. Rotated weekly. Until it's set,
+  // getPaymasterSigner returns null and Move 7 sweep paths refuse to
+  // assemble a UserOperation.
+  paymasterSigner?: {
+    dwalletId: string;
+    ethAddress: string;
+    setAtMs: number;
+  };
 }
 
 let _wasmInitialized = false;
@@ -1200,14 +1210,57 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
    * The hash is fed in as the "message" bytes with an appropriate hashScheme;
    * IKA's approveMessage contract accepts the 32-byte digest directly.
    *
-   * dWallet lookup: matches against ULTRON_DWALLETS[curve] or
-   * PAYMASTER_SIGNER_DWALLET. Additional specs (per-stealth dWallets from
-   * Weavile scans) can be threaded in later by extending the lookup here.
+   * dWallet lookup: matches against ULTRON_DWALLETS[curve], the
+   * DO-state-persisted paymaster signer (set via setPaymasterSigner),
+   * or the compile-time PAYMASTER_SIGNER_DWALLET fallback. Additional
+   * specs (per-stealth dWallets from Weavile scans) can be threaded
+   * in later by extending the lookup here.
    *
    * Returns a 0x-prefixed hex signature:
    *   - secp256k1: 64 bytes (r || s), DER or compact per SDK parser
    *   - ed25519: 64 bytes raw
    */
+  /** Weavile Assurance Move 6 — persist the paymaster-signer dWallet
+   *  freshly minted by the admin "Rumble Paymaster Squid" flow. Replaces
+   *  the PAYMASTER_SIGNER_DWALLET compile-time constant so rotation
+   *  never requires a code paste + redeploy. Admin-gated by the caller
+   *  (the Worker route adds an ultron-sig check before proxying in). */
+  @callable({})
+  async setPaymasterSigner(params: {
+    dwalletId: string;
+    ethAddress: string;
+    encryptedShareId?: string;
+    dkgDigest?: string;
+  }): Promise<{ ok: boolean; setAtMs: number }> {
+    const { dwalletId, ethAddress } = params;
+    if (!dwalletId?.startsWith('0x') || dwalletId.length !== 66) {
+      throw new Error('setPaymasterSigner: dwalletId must be 0x-prefixed 32-byte hex');
+    }
+    if (!ethAddress?.startsWith('0x') || ethAddress.length !== 42) {
+      throw new Error('setPaymasterSigner: ethAddress must be 0x-prefixed 20-byte hex');
+    }
+    const setAtMs = Date.now();
+    this.setState({
+      ...this.state,
+      paymasterSigner: { dwalletId, ethAddress, setAtMs },
+    });
+    console.log(`[UltronSigningAgent] paymaster signer set → ${ethAddress} (dwallet=${dwalletId.slice(0, 10)}…)`);
+    return { ok: true, setAtMs };
+  }
+
+  /** Read-only view of the current paymaster-signer. Returns null until
+   *  setPaymasterSigner has been called. Used by WeavileAssuranceAgent
+   *  when assembling paymasterAndData (Move 7) and by the admin UI to
+   *  display current-state. */
+  @callable({})
+  async getPaymasterSigner(): Promise<{
+    dwalletId: string;
+    ethAddress: string;
+    setAtMs: number;
+  } | null> {
+    return this.state.paymasterSigner ?? null;
+  }
+
   @callable({})
   async signForStealth(params: {
     dwalletId: string;
@@ -1238,6 +1291,7 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
     let matched = false;
     if (ultronSpec.dwalletId === dwalletId) matched = true;
     if (PAYMASTER_SIGNER_DWALLET && PAYMASTER_SIGNER_DWALLET.dwalletId === dwalletId) matched = true;
+    if (this.state.paymasterSigner && this.state.paymasterSigner.dwalletId === dwalletId) matched = true;
     if (!matched) {
       throw new Error(`signForStealth: unknown dwalletId '${dwalletId}' for curve ${curve}`);
     }

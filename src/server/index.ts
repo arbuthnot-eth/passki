@@ -2104,6 +2104,53 @@ app.post('/api/ultron/accept-share', async (c) => {
   }
 });
 
+// ── Weavile Assurance Move 6 — persist paymaster-signer dWallet ──────
+// POST /api/admin/paymaster-signer
+// Body: { dwalletId, ethAddress, adminAddress, signature, message }
+// Admin-gated (must be one of the addresses in ADMIN_ADDRESSES). Stores
+// the dWallet that signs paymasterAndData for Weavile stealth sweeps
+// directly into UltronSigningAgent DO state — no code paste, no
+// redeploy. Rotating the signer is just another call with a new pair.
+app.post('/api/admin/paymaster-signer', async (c) => {
+  const denied = await requireUltronSig(c, 'set-paymaster-signer');
+  if (denied) return denied;
+  try {
+    const body = await c.req.json() as { dwalletId?: string; ethAddress?: string };
+    if (!body.dwalletId || !body.ethAddress) {
+      return c.json({ error: 'dwalletId and ethAddress required' }, 400);
+    }
+    const stub = c.env.UltronSigningAgent.get(
+      c.env.UltronSigningAgent.idFromName('ultron-spike'),
+    ) as unknown as {
+      setPaymasterSigner: (p: { dwalletId: string; ethAddress: string }) => Promise<{ ok: boolean; setAtMs: number }>;
+    };
+    const result = await stub.setPaymasterSigner({
+      dwalletId: body.dwalletId,
+      ethAddress: body.ethAddress,
+    });
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
+// GET /api/admin/paymaster-signer — read current stored paymaster-signer.
+// Not secret (only public addr + dwalletId), so no admin gate — useful
+// for UI status. Returns null until setPaymasterSigner has been called.
+app.get('/api/admin/paymaster-signer', async (c) => {
+  try {
+    const stub = c.env.UltronSigningAgent.get(
+      c.env.UltronSigningAgent.idFromName('ultron-spike'),
+    ) as unknown as {
+      getPaymasterSigner: () => Promise<{ dwalletId: string; ethAddress: string; setAtMs: number } | null>;
+    };
+    const result = await stub.getPaymasterSigner();
+    return c.json(result ?? { unset: true });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
 // ── Leafeon Increment D glue: full signing chain end-to-end ──────────
 // POST /api/ultron/sign
 // Body: { curve: 'secp256k1'|'ed25519', message: '<hex>', hashScheme: 'KECCAK256'|'SHA256'|... }

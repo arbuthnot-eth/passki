@@ -7247,19 +7247,29 @@ function renderSkiMenu() {
       dwalletId?: string;
       ethAddress?: string;
       error?: string;
+      persisted?: boolean;
+      persistError?: string;
     } | undefined;
     if (!detail || detail.error) {
       showToast(`Paymaster squid failed: ${detail?.error ?? 'unknown'}`, false, true);
       return;
     }
     const short = (s?: string) => s ? `${s.slice(0, 10)}\u2026${s.slice(-6)}` : '';
-    showToast(
-      `\u2713 Paymaster squid: ${short(detail.ethAddress)} (dwalletId copied — paste into PAYMASTER_SIGNER_DWALLET)`,
-      false,
-      true,
-    );
-    try { navigator.clipboard?.writeText(detail.dwalletId ?? ''); } catch { /* clipboard blocked — user sees dwalletId in console */ }
-    console.log('[paymaster squid] dwalletId:', detail.dwalletId, 'ethAddress:', detail.ethAddress);
+    if (detail.persisted) {
+      showToast(
+        `\u2713 Paymaster squid: ${short(detail.ethAddress)} \u2014 persisted to ultron DO`,
+        false,
+        true,
+      );
+    } else if (detail.persistError) {
+      showToast(
+        `Paymaster squid minted (${short(detail.ethAddress)}) but persist failed: ${detail.persistError}. dwalletId copied.`,
+        false,
+        true,
+      );
+      try { navigator.clipboard?.writeText(detail.dwalletId ?? ''); } catch { /* clipboard blocked */ }
+    }
+    console.log('[paymaster squid] dwalletId:', detail.dwalletId, 'ethAddress:', detail.ethAddress, 'persisted:', !!detail.persisted);
   });
 
   // Admin — Whelm Squids (DWalletCap sweep)

@@ -697,8 +697,45 @@ window.addEventListener('ski:rumble-paymaster-squid', async () => {
       }));
       return;
     }
+
+    // Auto-persist to UltronSigningAgent DO — no more code paste.
+    // Admin-gated endpoint takes a signed message so we match the same
+    // auth surface as /api/cache/squid-stats and friends.
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const message = `set-paymaster-signer:${ethAddress}:${today}`;
+      const { signPersonalMessage } = await import('./wallet.js');
+      const sig = await signPersonalMessage(new TextEncoder().encode(message));
+      const persistRes = await fetch('/api/admin/paymaster-signer', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-ultron-admin': ws.address,
+          'x-ultron-sig': sig.signature,
+          'x-ultron-msg': message,
+        },
+        body: JSON.stringify({ dwalletId, ethAddress }),
+      });
+      if (!persistRes.ok) {
+        const errJson = await persistRes.json().catch(() => ({})) as { error?: string };
+        console.warn('[paymaster-squid] persist failed:', errJson.error ?? persistRes.status);
+        // Don't fail the whole flow — the dwalletId is still usable via clipboard copy.
+        window.dispatchEvent(new CustomEvent('ski:rumble-paymaster-squid-complete', {
+          detail: {
+            dwalletId,
+            ethAddress,
+            persistError: errJson.error ?? `HTTP ${persistRes.status}`,
+          },
+        }));
+        return;
+      }
+      console.log('[paymaster-squid] persisted to UltronSigningAgent DO');
+    } catch (err) {
+      console.warn('[paymaster-squid] persist error:', err);
+    }
+
     window.dispatchEvent(new CustomEvent('ski:rumble-paymaster-squid-complete', {
-      detail: { dwalletId, ethAddress },
+      detail: { dwalletId, ethAddress, persisted: true },
     }));
   } catch (err) {
     console.error('[paymaster-squid] error:', err);
