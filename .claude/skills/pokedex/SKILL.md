@@ -4,6 +4,8 @@ description: Use when the user invokes /pokedex or asks "show me the pokedex", "
 version: 1.0.0
 ---
 
+> **Note:** this is the `.SKI`-specialized in-repo version. A generic cross-platform version (Claude Code / Copilot CLI / Codex / Gemini) lives at `~/.claude/skills/pokedex/` and will be published at https://github.com/arbuthnot-eth/pokedex-skill.
+
 # Pokedex
 
 Survey the .SKI Pokemon Swarm's current state: which Pokemon are active in development, which have evolved (PR merged to master), and which have been fainted (walked back or cleaned up).

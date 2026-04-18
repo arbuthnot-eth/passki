@@ -138,6 +138,14 @@ export interface WeavileScannerState {
 interface Env {
   SUI_NETWORK?: string;
   SHADE_KEEPER_PRIVATE_KEY?: string;
+  /** Alchemy / Infura ETH mainnet JSON-RPC URL. When unset, eth poll is
+   *  webhook-only (EthAnnouncerSource returns []). */
+  ALCHEMY_ETH_URL?: string;
+  /** Sui GraphQL URL. Defaults to mainnet Mysten endpoint. */
+  SUI_GRAPHQL_URL?: string;
+  /** Published suiami weavile package id — when set, SuiAnnouncerSource
+   *  queries `{pkg}::stealth_announcer::StealthAnnouncement`. */
+  SUIAMI_WEAVILE_PKG?: string;
 }
 
 interface AdminAuth {
@@ -158,34 +166,214 @@ export interface ChainEventSource {
   pollSince(cursor: number): Promise<AnnouncementEvent[]>;
 }
 
+/** ERC-5564 Announcer address on Ethereum mainnet (singleton, same on all
+ *  EVM chains per the EIP's CREATE2 deterministic deploy). */
+export const ERC5564_ANNOUNCER_ADDRESS = '0x55649e01b5df198d18d95b5cc5051630cfd45564';
+
+/** keccak256("Announcement(uint256,address,address,bytes,bytes)").
+ *  Indexed: schemeId (topic1), stealthAddress (topic2), caller (topic3).
+ *  Non-indexed: ephemeralPubkey, metadata — both `bytes`, ABI-encoded in
+ *  log.data as two offset pointers + length-prefixed payloads. */
+export const ERC5564_ANNOUNCEMENT_TOPIC0 =
+  '0x5f0eab8057630ba7676c49b4f21a0231414e79474595be8e4c432fbf6bf0f4e7';
+
+/** Cap blocks per `eth_getLogs` call — Alchemy/Infura both reject ranges
+ *  > ~1000 blocks with zero matches. 500 leaves headroom. */
+const ETH_LOG_RANGE_CAP = 500;
+
+/** Decode an ABI-encoded `bytes` value starting at `offset` bytes inside
+ *  `data` (which is hex without 0x prefix). Returns the hex of the
+ *  payload and its byte length. Used to peel `ephemeralPubkey` +
+ *  `metadata` out of log.data per the Announcement layout:
+ *
+ *    [0x00..0x20] → offset of ephemeralPubkey (bytes32 big-endian)
+ *    [0x20..0x40] → offset of metadata
+ *    [offset..]   → 32-byte length + ceil(len/32)*32 padded payload
+ */
+function decodeAbiBytes(dataHex: string, offsetBytes: number): { hex: string; len: number } {
+  const start = offsetBytes * 2;
+  const lenHex = dataHex.slice(start, start + 64);
+  const len = parseInt(lenHex, 16);
+  const payload = dataHex.slice(start + 64, start + 64 + len * 2);
+  return { hex: `0x${payload}`, len };
+}
+
+/** Parse a raw Alchemy / Infura `eth_getLogs` result entry into our
+ *  normalized AnnouncementEvent. Exported for unit testing. */
+export function parseEthAnnouncementLog(log: {
+  address: string;
+  topics: string[];
+  data: string;
+  blockNumber: string;
+  transactionHash: string;
+}): AnnouncementEvent | null {
+  if (!log.topics || log.topics.length < 4) return null;
+  if ((log.topics[0] || '').toLowerCase() !== ERC5564_ANNOUNCEMENT_TOPIC0) return null;
+  // topic1 = schemeId (uint256) — first byte-of-last-byte is fine for 0/1/2.
+  const schemeId = parseInt(log.topics[1].slice(-2), 16);
+  // topic2 = stealthAddress (address, left-padded 12 zero bytes).
+  const stealthAddr = `0x${log.topics[2].slice(-40)}`.toLowerCase();
+  // data = ABI-encoded (bytes ephemeralPubkey, bytes metadata).
+  const dataHex = log.data.startsWith('0x') ? log.data.slice(2) : log.data;
+  if (dataHex.length < 128) return null;
+  const ephOffset = parseInt(dataHex.slice(0, 64), 16);
+  const metaOffset = parseInt(dataHex.slice(64, 128), 16);
+  const eph = decodeAbiBytes(dataHex, ephOffset);
+  const meta = decodeAbiBytes(dataHex, metaOffset);
+  // View tag is the first byte of metadata per EIP-5564 §Ext. When
+  // metadata is empty (some senders omit it) we fall back to 0 — the
+  // scanner just runs full ECDH for those events.
+  const viewTag = meta.len > 0 ? parseInt(meta.hex.slice(2, 4), 16) : 0;
+  return {
+    chain: 'eth',
+    ephemeralPubHex: eph.hex,
+    stealthAddr,
+    viewTag,
+    schemeId,
+    announcementDigest: log.transactionHash,
+    announcedMs: 0, // block timestamp not carried in getLogs; left-filler
+    metadataHex: meta.hex,
+  };
+}
+
 /** ERC-5564 Announcer at `0x55649E01B5Df198D18D95b5cc5051630cfD45564`.
- *  Metal Claw: hook Alchemy Logs webhook → POST /webhook/eth → DO. */
+ *  Polls Alchemy / Infura via `eth_getLogs` in bounded block windows.
+ *  Webhook push path lives in `/api/webhook/weavile/eth`; the poll is
+ *  a belt-and-braces backfill for dropped webhooks. */
 export class EthAnnouncerSource implements ChainEventSource {
   readonly chain = 'eth';
-  async pollSince(_cursor: number): Promise<AnnouncementEvent[]> {
-    // TODO(Metal Claw): Alchemy `eth_getLogs` filtered by the
-    // ERC-5564 Announcer topic0. For now, zero events.
-    return [];
+  private lastBlock = 0;
+  constructor(private readonly rpcUrl?: string) {}
+  getLastBlock(): number { return this.lastBlock; }
+  async pollSince(cursor: number): Promise<AnnouncementEvent[]> {
+    if (!this.rpcUrl) return []; // not configured — webhook-only mode
+    const from = cursor > 0 ? cursor + 1 : 0;
+    // Cap range; leave head-block discovery to the provider.
+    const toTag = 'latest';
+    const fromHex = '0x' + from.toString(16);
+    const body = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'eth_getLogs',
+      params: [{
+        fromBlock: fromHex,
+        toBlock: toTag,
+        address: ERC5564_ANNOUNCER_ADDRESS,
+        topics: [ERC5564_ANNOUNCEMENT_TOPIC0],
+      }],
+    };
+    const r = await fetch(this.rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    });
+    const resp = await r.json() as { result?: unknown[]; error?: { message: string } };
+    if (resp.error) {
+      // Range-too-large → split. Provider told us the max; caller re-calls
+      // with a smaller window on next tick.
+      throw new Error(`eth_getLogs: ${resp.error.message}`);
+    }
+    const logs = Array.isArray(resp.result) ? resp.result : [];
+    const events: AnnouncementEvent[] = [];
+    let maxBlock = cursor;
+    for (const raw of logs as Array<{ address: string; topics: string[]; data: string; blockNumber: string; transactionHash: string }>) {
+      const parsed = parseEthAnnouncementLog(raw);
+      if (!parsed) continue;
+      events.push(parsed);
+      const bn = parseInt(raw.blockNumber, 16);
+      if (bn > maxBlock) maxBlock = bn;
+    }
+    // Cap advance to ETH_LOG_RANGE_CAP so the next tick does a bounded range.
+    this.lastBlock = Math.min(maxBlock, from + ETH_LOG_RANGE_CAP - 1);
+    return events;
   }
 }
 
-/** `suiami::stealth_announcer::announce` events on Sui mainnet.
- *  Metal Claw: gRPC subscribeEvent or GraphQL polling by event type. */
+/** `suiami::stealth_announcer::StealthAnnouncement` events on Sui mainnet.
+ *  Queries GraphQL by event type with checkpoint-sequence cursor.
+ *  gRPC would be preferred per CLAUDE.md, but Cloudflare Workers/DOs
+ *  can't use HTTP/2 bidi streaming, so GraphQL is the only usable
+ *  transport in this context (see MEMORY.md → Sui RPC for tx submission). */
 export class SuiAnnouncerSource implements ChainEventSource {
   readonly chain = 'sui';
-  async pollSince(_cursor: number): Promise<AnnouncementEvent[]> {
-    // TODO(Metal Claw): query by event type
-    //   `${SUIAMI_WEAVILE_PKG}::stealth_announcer::StealthAnnouncement`.
-    return [];
+  constructor(
+    private readonly pkgId: string | null,
+    private readonly gqlUrl: string = 'https://graphql.mainnet.sui.io/graphql',
+  ) {}
+  async pollSince(cursor: number): Promise<AnnouncementEvent[]> {
+    if (!this.pkgId) return []; // package not published yet
+    const eventType = `${this.pkgId}::stealth_announcer::StealthAnnouncement`;
+    const query = `query($type: String!, $after: String) {
+      events(filter: { eventType: $type }, first: 50, after: $after) {
+        nodes {
+          sequenceNumber
+          timestamp
+          sendingModule { package { address } }
+          contents { json }
+          transactionBlock { digest }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`;
+    const after = cursor > 0 ? String(cursor) : null;
+    const r = await fetch(this.gqlUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query, variables: { type: eventType, after } }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const body = await r.json() as { data?: { events?: { nodes?: Array<{
+      sequenceNumber?: string | number;
+      timestamp?: string;
+      contents?: { json?: Record<string, unknown> };
+      transactionBlock?: { digest?: string };
+    }> } }; errors?: Array<{ message: string }> };
+    if (body.errors?.length) throw new Error(`sui gql: ${body.errors.map(e => e.message).join('; ')}`);
+    const nodes = body.data?.events?.nodes ?? [];
+    const events: AnnouncementEvent[] = [];
+    for (const n of nodes) {
+      const j = n.contents?.json;
+      if (!j) continue;
+      const eph = j.ephemeral_pubkey;
+      const ephHex = Array.isArray(eph)
+        ? '0x' + (eph as number[]).map(b => b.toString(16).padStart(2, '0')).join('')
+        : typeof eph === 'string'
+          ? (eph.startsWith('0x') ? eph : `0x${eph}`)
+          : '';
+      const meta = j.metadata;
+      const metaHex = Array.isArray(meta)
+        ? '0x' + (meta as number[]).map(b => b.toString(16).padStart(2, '0')).join('')
+        : typeof meta === 'string'
+          ? (meta.startsWith('0x') ? meta : `0x${meta}`)
+          : undefined;
+      events.push({
+        chain: 'sui',
+        ephemeralPubHex: ephHex,
+        stealthAddr: String(j.stealth_addr || ''),
+        viewTag: Number(j.view_tag ?? 0),
+        schemeId: Number(j.scheme_id ?? 1),
+        announcementDigest: n.transactionBlock?.digest ?? '',
+        announcedMs: Number(j.announced_ms ?? n.timestamp ?? 0),
+        metadataHex: metaHex,
+      });
+    }
+    return events;
   }
 }
 
-/** Solana program (placeholder — program id TBD in Quick Attack).
- *  Metal Claw: Helius webhook on program log events. */
+/** Solana program — NOT DEPLOYED yet. See
+ *  `contracts/sol-stealth-announcer/README.md` (Quick Attack follow-up).
+ *  Until the program id exists we have nothing to subscribe to. The
+ *  webhook path at `/api/webhook/weavile/sol` is likewise stubbed. */
 export class SolAnnouncerSource implements ChainEventSource {
   readonly chain = 'sol';
   async pollSince(_cursor: number): Promise<AnnouncementEvent[]> {
-    // TODO(Metal Claw): Helius webhook or `getSignaturesForAddress`.
+    // TODO(Quick Attack Sol): see contracts/sol-stealth-announcer/README.md —
+    // program id pending; once deployed, switch to Helius program-log
+    // webhook (push) and keep this poll as backfill via
+    // `getSignaturesForAddress(programId)` paginated by `before`.
+    console.log('[weavile-scanner] SolAnnouncerSource: not-live-yet; program pending Quick Attack Sol');
     return [];
   }
 }
@@ -217,15 +405,23 @@ export class WeavileScannerAgent extends Agent<Env, WeavileScannerState> {
     completedSweeps: [],
   };
 
-  /** Default event sources — overridable in tests via `setEventSources`. */
-  private _sources: ChainEventSource[] = [
-    new EthAnnouncerSource(),
-    new SuiAnnouncerSource(),
-    new SolAnnouncerSource(),
-  ];
+  /** Default event sources — overridable in tests via `setEventSources`.
+   *  Wired from env:
+   *    - EthAnnouncerSource uses `ALCHEMY_ETH_URL`; no URL ⇒ webhook-only
+   *    - SuiAnnouncerSource uses `SUIAMI_WEAVILE_PKG` + `SUI_GRAPHQL_URL`
+   *    - SolAnnouncerSource is a logging stub until Quick Attack Sol lands */
+  private _sources: ChainEventSource[];
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this._sources = [
+      new EthAnnouncerSource(env.ALCHEMY_ETH_URL),
+      new SuiAnnouncerSource(
+        env.SUIAMI_WEAVILE_PKG ?? null,
+        env.SUI_GRAPHQL_URL ?? 'https://graphql.mainnet.sui.io/graphql',
+      ),
+      new SolAnnouncerSource(),
+    ];
     const agentAlarm = this.alarm.bind(this);
     this.alarm = async () => {
       await agentAlarm();

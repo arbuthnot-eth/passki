@@ -81,6 +81,14 @@
       {
         "name": "Aegislash",
         "class_name": "Aegislash"
+      },
+      {
+        "name": "SneaselWatcherAgent",
+        "class_name": "SneaselWatcherAgent"
+      },
+      {
+        "name": "WeavileScannerAgent",
+        "class_name": "WeavileScannerAgent"
       }
     ]
   },
@@ -129,6 +137,14 @@
     {
       "tag": "v11",
       "new_sqlite_classes": ["Aegislash"]
+    },
+    {
+      "tag": "v12",
+      "new_sqlite_classes": ["SneaselWatcherAgent"]
+    },
+    {
+      "tag": "v13",
+      "new_sqlite_classes": ["WeavileScannerAgent"]
     }
   ],
 

@@ -286,6 +286,124 @@ describe('WeavileScannerAgent', () => {
   });
 });
 
+describe('parseEthAnnouncementLog', () => {
+  test('parses real ERC-5564 log shape', async () => {
+    const { parseEthAnnouncementLog, ERC5564_ANNOUNCEMENT_TOPIC0 } = await import('../weavile-scanner.js');
+    // Shape hand-built to match the canonical EIP-5564 Announcement event
+    // layout (schemeId, stealthAddress, caller indexed; ephemeralPubkey
+    // + metadata non-indexed bytes). Real Announcer tx example:
+    // https://etherscan.io/address/0x55649e01b5df198d18d95b5cc5051630cfd45564#events
+    const schemeId = '00'.repeat(31) + '00'; // uint256 = 0
+    const stealth = '0x' + '00'.repeat(12) + 'deadbeef'.repeat(5); // 32-byte padded addr
+    const caller  = '0x' + '00'.repeat(12) + 'cafecafe'.repeat(5);
+    // data: two offsets (0x40, 0x80), then ephPub (len 33, padded to 64),
+    // then metadata (len 1 = single view_tag byte, padded to 32).
+    const ephPayload = '02' + 'ab'.repeat(32); // 33 bytes
+    const ephPadded = ephPayload + '00'.repeat(32 - (33 % 32));
+    const metadataPayload = '9b'; // view tag = 0x9b
+    const metaPadded = metadataPayload + '00'.repeat(32 - 1);
+    const data = '0x'
+      + '0000000000000000000000000000000000000000000000000000000000000040' // eph offset = 64
+      + '00000000000000000000000000000000000000000000000000000000000000a0' // meta offset = 160 (64 + 32 len + 64 padded payload)
+      + '0000000000000000000000000000000000000000000000000000000000000021' // 33
+      + ephPadded
+      + '0000000000000000000000000000000000000000000000000000000000000001' // 1
+      + metaPadded;
+    const parsed = parseEthAnnouncementLog({
+      address: '0x55649e01b5df198d18d95b5cc5051630cfd45564',
+      topics: [ERC5564_ANNOUNCEMENT_TOPIC0, '0x' + schemeId, stealth, caller],
+      data,
+      blockNumber: '0x1234567',
+      transactionHash: '0xabc',
+    });
+    expect(parsed).not.toBeNull();
+    if (!parsed) throw new Error('unreachable');
+    expect(parsed.chain).toBe('eth');
+    expect(parsed.schemeId).toBe(0);
+    expect(parsed.viewTag).toBe(0x9b);
+    expect(parsed.ephemeralPubHex.length).toBe(2 + 33 * 2);
+    expect(parsed.stealthAddr).toBe('0x' + 'deadbeef'.repeat(5));
+    expect(parsed.announcementDigest).toBe('0xabc');
+  });
+
+  test('rejects log with wrong topic0', async () => {
+    const { parseEthAnnouncementLog } = await import('../weavile-scanner.js');
+    expect(parseEthAnnouncementLog({
+      address: '0x55649e01b5df198d18d95b5cc5051630cfd45564',
+      topics: ['0xDEADBEEF', '0x00', '0x00', '0x00'],
+      data: '0x',
+      blockNumber: '0x0',
+      transactionHash: '0x',
+    })).toBeNull();
+  });
+});
+
+describe('SuiAnnouncerSource', () => {
+  test('parses stealth_announcer event from GraphQL shape', async () => {
+    const { SuiAnnouncerSource } = await import('../weavile-scanner.js');
+    // Mock fetch to return a well-formed events query response.
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      json: async () => ({
+        data: { events: { nodes: [{
+          sequenceNumber: '42',
+          timestamp: '1713398400000',
+          contents: { json: {
+            announcer: '0xAAA',
+            ephemeral_pubkey: Array.from({ length: 32 }, (_, i) => i),
+            stealth_addr: '0xBEEF',
+            view_tag: 0x42,
+            metadata: [],
+            scheme_id: 1,
+            announced_ms: '1713398400000',
+          } },
+          transactionBlock: { digest: 'digestX' },
+        }] } },
+      }),
+    })) as typeof fetch;
+    const src = new SuiAnnouncerSource('0xPKG');
+    const events = await src.pollSince(0);
+    globalThis.fetch = origFetch;
+    expect(events.length).toBe(1);
+    expect(events[0].chain).toBe('sui');
+    expect(events[0].schemeId).toBe(1);
+    expect(events[0].viewTag).toBe(0x42);
+    expect(events[0].stealthAddr).toBe('0xBEEF');
+    expect(events[0].announcementDigest).toBe('digestX');
+    expect(events[0].ephemeralPubHex.length).toBe(2 + 32 * 2);
+  });
+
+  test('returns empty when pkgId is null (pre-deploy)', async () => {
+    const { SuiAnnouncerSource } = await import('../weavile-scanner.js');
+    const src = new SuiAnnouncerSource(null);
+    expect(await src.pollSince(0)).toEqual([]);
+  });
+});
+
+describe('webhook HMAC verification', () => {
+  test('correct Alchemy-style signature verifies', async () => {
+    // Reuse eth-inbound.verifyAlchemySignature — same function the
+    // weavile webhook calls. Separate unit test to seed that the guard
+    // fires on bad inputs before we trust the router.
+    const { verifyAlchemySignature } = await import('../../eth-inbound.js');
+    const secret = 'test-secret';
+    const body = '{"logs":[]}';
+    const key = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
+    );
+    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
+    const hex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+    expect(await verifyAlchemySignature(body, hex, secret)).toBe(true);
+  });
+
+  test('wrong Alchemy-style signature is rejected', async () => {
+    const { verifyAlchemySignature } = await import('../../eth-inbound.js');
+    expect(await verifyAlchemySignature('{}', 'deadbeef'.repeat(8), 'secret')).toBe(false);
+    expect(await verifyAlchemySignature('{}', null, 'secret')).toBe(false);
+  });
+});
+
 describe('pickScanJitterMs', () => {
   test('returns values in [30s, 30min]', async () => {
     const { pickScanJitterMs } = await import('../weavile-scanner.js');

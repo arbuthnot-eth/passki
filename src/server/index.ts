@@ -21,6 +21,8 @@ interface Env {
   Pokedex: DurableObjectNamespace;
   UltronSigningAgent: DurableObjectNamespace;
   Aegislash: DurableObjectNamespace;
+  SneaselWatcherAgent: DurableObjectNamespace;
+  WeavileScannerAgent: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key (legacy name — consume via ultronKeypair(env))
@@ -4486,6 +4488,135 @@ app.post('/api/alchemy/webhook', async (c) => {
   return c.json({ ok: true, received: payload.event?.activity?.length ?? 0, qualifying: credits.length });
 });
 
+// ── Weavile Pursuit webhook router (#198 Metal Claw) ────────────────
+// Provider webhooks for multi-chain stealth announcement delivery. Each
+// endpoint HMAC-verifies the raw body, normalizes provider-specific
+// payloads into our AnnouncementEvent shape, and fans each event to the
+// appropriate WeavileScannerAgent DO. DO sharding: one instance per
+// recipient — but the webhook doesn't know which recipient an event
+// belongs to (that's the whole point of stealth addresses), so we
+// broadcast to a per-provider singleton DO (`weavile:all`) that holds
+// every recipient's subscriptions. A future optimization splits this by
+// recipient-hash once the DO fan-out becomes the bottleneck.
+
+// Alchemy webhook format for `GRAPHQL` log subscription: body is
+// `{ event: { data: { block: { logs: [{ data, topics, transaction: { hash }, account: { address } }] } } } }`.
+// We accept either the "Custom Webhook"-shaped payload above or a
+// hand-posted `{ logs: [...] }` shape for testing.
+app.post('/api/webhook/weavile/eth', async (c) => {
+  const rawBody = await c.req.text();
+  const sig = c.req.header('x-alchemy-signature');
+  const secret = c.env.ALCHEMY_WEBHOOK_SECRET;
+  if (secret) {
+    const { verifyAlchemySignature } = await import('./eth-inbound.js');
+    const ok = await verifyAlchemySignature(rawBody, sig ?? null, secret);
+    if (!ok) return c.json({ error: 'Invalid signature' }, 401);
+  } else {
+    console.warn('[weavile-eth-webhook] ALCHEMY_WEBHOOK_SECRET not set — accepting without verification');
+  }
+  let payload: unknown;
+  try { payload = JSON.parse(rawBody); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+  // Extract logs[] from either Alchemy Custom Webhook or our test shape.
+  const p = payload as {
+    event?: { data?: { block?: { logs?: unknown[] } } };
+    logs?: unknown[];
+  };
+  const rawLogs = (p.event?.data?.block?.logs ?? p.logs ?? []) as Array<{
+    address?: string;
+    topics?: string[];
+    data?: string;
+    blockNumber?: string;
+    transactionHash?: string;
+    transaction?: { hash?: string };
+    account?: { address?: string };
+  }>;
+  const { parseEthAnnouncementLog, ERC5564_ANNOUNCER_ADDRESS } = await import('./agents/weavile-scanner.js');
+  const events: unknown[] = [];
+  for (const l of rawLogs) {
+    const address = (l.address ?? l.account?.address ?? '').toLowerCase();
+    if (address && address !== ERC5564_ANNOUNCER_ADDRESS) continue;
+    const parsed = parseEthAnnouncementLog({
+      address,
+      topics: l.topics ?? [],
+      data: l.data ?? '0x',
+      blockNumber: l.blockNumber ?? '0x0',
+      transactionHash: l.transactionHash ?? l.transaction?.hash ?? '',
+    });
+    if (parsed) events.push(parsed);
+  }
+  // Fan to the singleton scanner DO. `weavile:all` is the convention
+  // until per-recipient sharding lands in Ice Punch.
+  if (events.length > 0) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const stub = c.env.WeavileScannerAgent.get(c.env.WeavileScannerAgent.idFromName('weavile:all'));
+        for (const ev of events) {
+          await stub.fetch(new Request('https://weavile-do/onAnnouncementEvent', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-partykit-room': 'weavile:all' },
+            body: JSON.stringify({ event: ev }),
+          }));
+        }
+      } catch (e) {
+        console.warn('[weavile-eth-webhook] fan-out failed:', e instanceof Error ? e.message : e);
+      }
+    })());
+  }
+  return c.json({ ok: true, parsed: events.length, received: rawLogs.length });
+});
+
+// Sui webhook — no canonical provider yet; kept as a stub so our own
+// cron or a third-party relay can POST normalized AnnouncementEvent
+// payloads. Secret: reuses CF_HMAC_SECRET (ours, not a vendor's) so we
+// can sign server→self calls for authenticated replays.
+app.post('/api/webhook/weavile/sui', async (c) => {
+  const rawBody = await c.req.text();
+  const sig = c.req.header('x-ski-signature') ?? '';
+  const secret = c.env.CF_HMAC_SECRET;
+  if (secret) {
+    const key = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
+    );
+    const h = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawBody));
+    const hex = Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
+    if (hex !== sig.toLowerCase()) return c.json({ error: 'Invalid signature' }, 401);
+  } else {
+    console.warn('[weavile-sui-webhook] CF_HMAC_SECRET not set — accepting without verification');
+  }
+  // TODO(Ice Punch): normalize Sui GraphQL event JSON → AnnouncementEvent
+  // and fan to the singleton scanner DO. For now just log + 200.
+  try {
+    const payload = JSON.parse(rawBody) as { events?: unknown[] };
+    console.log(`[weavile-sui-webhook] stub received ${Array.isArray(payload.events) ? payload.events.length : 0} events`);
+  } catch { /* ignore */ }
+  return c.json({ ok: true, stub: true });
+});
+
+// Helius webhook for Solana stealth announcements. Program id TBD (see
+// contracts/sol-stealth-announcer/README.md). Until the program lands
+// we accept + verify + log, but don't fan out to the scanner DO.
+app.post('/api/webhook/weavile/sol', async (c) => {
+  const rawBody = await c.req.text();
+  const auth = c.req.header('Authorization') || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+  const secret = c.env.HELIUS_WEBHOOK_SECRET;
+  if (secret) {
+    if (bearer !== secret) return c.json({ error: 'Invalid signature' }, 401);
+  } else {
+    console.warn('[weavile-sol-webhook] HELIUS_WEBHOOK_SECRET not set — accepting without verification');
+  }
+  // TODO(Quick Attack Sol): parse Helius enhanced payload, locate
+  // program logs from sol-stealth-announcer, map to AnnouncementEvent,
+  // fan to scanner DO. Stubbed today.
+  try {
+    const payload = JSON.parse(rawBody) as unknown;
+    const n = Array.isArray(payload) ? payload.length : 1;
+    console.log(`[weavile-sol-webhook] stub received ${n} events — sol announcer program not deployed`);
+  } catch { /* ignore */ }
+  return c.json({ ok: true, stub: true });
+});
+
 // ── Helius webhook management ──
 // Register a new webhook subscription through Helius's v0 API. Admin
 // endpoint: requires the internal treasury auth header derived from the
@@ -4639,3 +4770,5 @@ export { NameIndex } from './agents/name-index.js';
 export { Pokedex } from './agents/pokedex.js';
 export { UltronSigningAgent } from './agents/ultron-signing-agent.js';
 export { Aegislash } from './agents/aegislash.js';
+export { SneaselWatcherAgent } from './agents/sneasel-watcher.js';
+export { WeavileScannerAgent } from './agents/weavile-scanner.js';
