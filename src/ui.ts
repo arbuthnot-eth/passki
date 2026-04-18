@@ -6392,20 +6392,21 @@ function _skiSettingsHtml(): string {
 // Client-side mirror of ADMIN_ADDRESSES in src/client/whelm-ultron.ts
 // — server still enforces the real check.
 const _SKI_ADMIN_ADDRS = new Set([
-  '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57',
-  '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28',
-  '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057',
-  '0x3ca0da71d19d9a1837ad3da155f03aab776aa33963864064eb81569f10e5222b',
+  '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57', // plankton.sui
+  '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28', // brando.sui (WaaP)
+  '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057', // brando.sui (Phantom)
+  '0x3ca0da71d19d9a1837ad3da155f03aab776aa33963864064eb81569f10e5222b', // superteam.sui
+  '0xcfaa404fdfac8383951af402f47fe4cb76caa0b067bc3002ecec8c1bfccd5c9a', // invalid.eth Sui side
 ]);
 function _skiAdminGroupHtml(): string {
   const ws = getState();
   const isAdmin = ws.address && _SKI_ADMIN_ADDRS.has(ws.address.toLowerCase());
-  const hasWallet = !!ws.address;
 
-  // ENS-side tools are ungated — they fire through window.ethereum, auth is
-  // the ETH signature the user actually signs. Admin allowlist only gates
-  // server-side (Ultron sweep) endpoints that enforce it independently.
-  const ensGroup = hasWallet ? `
+  // ENS-side tools gated to admins only. Earlier scoping had them open to
+  // any connected wallet — too cluttered for normal users. The ETH signature
+  // is still the real auth (our server never touches ENS flows), but UI
+  // visibility should match intended audience.
+  const ensGroup = isAdmin ? `
       <div class="wk-settings-group">
         <span class="wk-settings-group-label">ENS · whelm.eth</span>
         <div class="wk-settings-row wk-settings-row--button">
