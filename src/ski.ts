@@ -1812,7 +1812,7 @@ const _bindWhelmEthResolver = async (
   try {
     const tx = (await eth.request({
       method: 'eth_sendTransaction',
-      params: [{ from, to: target, data }],
+      params: [{ from, to: target, data, value: '0x0' }],
     })) as string;
     console.log(`[bindResolver] tx submitted: ${tx}`);
     showToast(`\u2713 ${ensName}.eth → ${resolverAddress.slice(0, 10)}\u2026`);
@@ -1907,7 +1907,7 @@ const _deployOffchainResolver = async (opts?: {
   try {
     const tx = (await eth.request({
       method: 'eth_sendTransaction',
-      params: [{ from, data: initCode }],
+      params: [{ from, data: initCode, value: '0x0' }],
     })) as string;
     console.log(`[deployOCR] tx submitted: ${tx}`);
     console.log(`[deployOCR] contract will be at: ${predictedAddress}`);
@@ -1980,7 +1980,7 @@ const _delegateWhelmEthManagement = async (opts?: {
   try {
     const tx = (await eth.request({
       method: 'eth_sendTransaction',
-      params: [{ from, to: NAME_WRAPPER, data }],
+      params: [{ from, to: NAME_WRAPPER, data, value: '0x0' }],
     })) as string;
     console.log(`[delegate] tx submitted: ${tx}`);
     showToast(`\u2713 ${opts?.revoke ? 'Revoked' : 'Delegated'} to ${operator.slice(0, 10)}\u2026`);
