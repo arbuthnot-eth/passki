@@ -1,12 +1,32 @@
-import { describe, test, expect } from 'bun:test';
-import {
-  generateBlobId,
-  approxB64DecodedLen,
-  shouldFlushNow,
-  AGGRON_FLUSH_BYTES_MAX,
-  AGGRON_FLUSH_COUNT_MAX,
-  type AggronPendingBlob,
-} from '../aggron-batcher.js';
+import { describe, test, expect, beforeAll, mock } from 'bun:test';
+
+beforeAll(() => {
+  mock.module('agents', () => ({
+    Agent: class AgentStub<_E, S> {
+      state: S;
+      constructor(_ctx: unknown, _env: unknown) { this.state = {} as S; }
+      setState(s: S) { this.state = s; }
+    },
+    callable: () => (_t: unknown, _k: string, d: PropertyDescriptor) => d,
+  }));
+});
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+type Pending = import('../aggron-batcher.js').AggronPendingBlob;
+let generateBlobId: typeof import('../aggron-batcher.js').generateBlobId;
+let approxB64DecodedLen: typeof import('../aggron-batcher.js').approxB64DecodedLen;
+let shouldFlushNow: typeof import('../aggron-batcher.js').shouldFlushNow;
+let AGGRON_FLUSH_COUNT_MAX: number;
+let AGGRON_FLUSH_BYTES_MAX: number;
+
+beforeAll(async () => {
+  const mod = await import('../aggron-batcher.js');
+  generateBlobId = mod.generateBlobId;
+  approxB64DecodedLen = mod.approxB64DecodedLen;
+  shouldFlushNow = mod.shouldFlushNow;
+  AGGRON_FLUSH_COUNT_MAX = mod.AGGRON_FLUSH_COUNT_MAX;
+  AGGRON_FLUSH_BYTES_MAX = mod.AGGRON_FLUSH_BYTES_MAX;
+});
 
 describe('generateBlobId', () => {
   test('is 32-byte 0x-prefixed hex', () => {
@@ -31,7 +51,7 @@ describe('approxB64DecodedLen', () => {
   });
 });
 
-function entry(sizeBytes: number): AggronPendingBlob {
+function entry(sizeBytes: number): Pending {
   return {
     blobId: generateBlobId(),
     kind: 'misc',
