@@ -106,61 +106,6 @@ interface NetworkKeyResponse {
 }
 
 // ---------------------------------------------------------------------------
-// gRPC-Web wire format scaffolding (NOT USED IN STUB MODE)
-// ---------------------------------------------------------------------------
-// These helpers are left here as documentation for the real implementation.
-// They implement the gRPC-Web length-prefixed framing:
-//   [1 byte compressed flag][4 bytes BE length][N bytes protobuf body]
-// When proto definitions are available, wire these up in `callGrpcWeb` and
-// delete the stub branches.
-
-/**
- * Build a gRPC-Web request frame.
- * TODO: replace `body` with protoc-encoded message bytes.
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function buildGrpcWebFrame(body: Uint8Array): Uint8Array {
-  const frame = new Uint8Array(5 + body.length);
-  frame[0] = 0; // not compressed
-  const view = new DataView(frame.buffer);
-  view.setUint32(1, body.length, false); // big-endian length
-  frame.set(body, 5);
-  return frame;
-}
-
-/**
- * Parse a gRPC-Web response frame.
- * TODO: handle trailers frame (flag bit 0x80) and protoc-decode body.
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function parseGrpcWebFrame(buf: Uint8Array): { flag: number; body: Uint8Array } {
-  if (buf.length < 5) throw new Error('grpc-web frame too short');
-  const flag = buf[0];
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const len = view.getUint32(1, false);
-  return { flag, body: buf.subarray(5, 5 + len) };
-}
-
-/**
- * Call a gRPC-Web method.
- * TODO: implement properly once proto definitions are available.
- *
- * @param _upstreamBase — e.g. `https://pre-alpha-dev-1.encrypt.ika-network.net`
- * @param _service      — e.g. `encrypt.v1.EncryptService`
- * @param _method       — e.g. `CreateInputCiphertext`
- * @param _requestBody  — protoc-encoded request message
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function callGrpcWeb(
-  _upstreamBase: string,
-  _service: string,
-  _method: string,
-  _requestBody: Uint8Array,
-): Promise<Uint8Array> {
-  throw new Error('[encrypt-proxy] gRPC-Web upstream not implemented yet');
-}
-
-// ---------------------------------------------------------------------------
 // Stub helpers
 // ---------------------------------------------------------------------------
 
