@@ -215,7 +215,7 @@ Seal policy: `seal_approve_roster_reader` — checks `has_address(ctx.sender())`
 
 ## Walrus Storage
 
-- **Aggregator:** `https://aggregator.walrus-testnet.walrus.space` (upgrade to mainnet when available)
+- **Aggregator:** `https://aggregator.walrus.space` (migrated to mainnet via Metang Rain Dance 2026-04-17; production operators: Walrus Foundation, Studio Mirai, Overclock, H2O Nodes)
 - **Blob format:** JSON `{ btc: "bc1q...", eth: "0x...", sol: "5Kz...", dwallet_caps: ["0x..."] }`
 - **Encryption:** Seal-encrypt before upload, store nonce on-chain in roster
 - **Caching:** CF edge cache with 1hr TTL (same pattern as squids spec blob)

@@ -351,8 +351,9 @@ export interface CfFields {
 export interface CfEnvelope { data: CfFields; sig: string }
 export interface CfChunk { schema: 1; data: CfFields; sig: string }
 
-const WALRUS_PUBLISHER = 'https://publisher.walrus-testnet.walrus.space';
-const WALRUS_AGGREGATOR = 'https://aggregator.walrus-testnet.walrus.space';
+// Mainnet operators: Walrus Foundation, Studio Mirai, Overclock, H2O Nodes
+const WALRUS_PUBLISHER = 'https://publisher.walrus.space';
+const WALRUS_AGGREGATOR = 'https://aggregator.walrus.space';
 
 /** Fields compared for change detection (everything except attestedAt). */
 const CHANGE_KEYS: Array<keyof CfFields> = [
@@ -447,7 +448,8 @@ import { sealRace, buildPersonalSessionKey } from './suiami-seal';
 
 import type { CfChunk } from './cf-history';
 
-const WALRUS_PUBLISHER = 'https://publisher.walrus-testnet.walrus.space';
+// Mainnet operators: Walrus Foundation, Studio Mirai, Overclock, H2O Nodes
+const WALRUS_PUBLISHER = 'https://publisher.walrus.space';
 
 /** Build the 40-byte Seal id: address bytes ‖ 8-byte random nonce. */
 function buildSealId(ownerAddress: string): Uint8Array {

@@ -242,8 +242,9 @@ git commit -m "feat(roster): readRosterByAddress GraphQL query"
  * Roster client — Seal encrypt/decrypt chain addresses + Walrus blob storage.
  */
 
-const WALRUS_PUBLISHER = 'https://publisher.walrus-testnet.walrus.space';
-const WALRUS_AGGREGATOR = 'https://aggregator.walrus-testnet.walrus.space';
+// Mainnet operators: Walrus Foundation, Studio Mirai, Overclock, H2O Nodes
+const WALRUS_PUBLISHER = 'https://publisher.walrus.space';
+const WALRUS_AGGREGATOR = 'https://aggregator.walrus.space';
 
 export interface RosterBlob {
   btc?: string;
