@@ -7242,35 +7242,40 @@ function renderSkiMenu() {
     }
   });
 
-  window.addEventListener('ski:rumble-paymaster-squid-complete', (ev) => {
-    const detail = (ev as CustomEvent).detail as {
-      dwalletId?: string;
-      ethAddress?: string;
-      error?: string;
-      persisted?: boolean;
-      persistError?: string;
-    } | undefined;
-    if (!detail || detail.error) {
-      showToast(`Paymaster squid failed: ${detail?.error ?? 'unknown'}`, false, true);
-      return;
-    }
-    const short = (s?: string) => s ? `${s.slice(0, 10)}\u2026${s.slice(-6)}` : '';
-    if (detail.persisted) {
-      showToast(
-        `\u2713 Paymaster squid: ${short(detail.ethAddress)} \u2014 persisted to ultron DO`,
-        false,
-        true,
-      );
-    } else if (detail.persistError) {
-      showToast(
-        `Paymaster squid minted (${short(detail.ethAddress)}) but persist failed: ${detail.persistError}. dwalletId copied.`,
-        false,
-        true,
-      );
-      try { navigator.clipboard?.writeText(detail.dwalletId ?? ''); } catch { /* clipboard blocked */ }
-    }
-    console.log('[paymaster squid] dwalletId:', detail.dwalletId, 'ethAddress:', detail.ethAddress, 'persisted:', !!detail.persisted);
-  });
+  // Window listener is once-only — the binder runs on every Settings
+  // open, so guard against duplicate subscription (prior bug = 7 toasts).
+  if (!(window as unknown as { _skiPaymasterSquidBound?: boolean })._skiPaymasterSquidBound) {
+    (window as unknown as { _skiPaymasterSquidBound: boolean })._skiPaymasterSquidBound = true;
+    window.addEventListener('ski:rumble-paymaster-squid-complete', (ev) => {
+      const detail = (ev as CustomEvent).detail as {
+        dwalletId?: string;
+        ethAddress?: string;
+        error?: string;
+        persisted?: boolean;
+        persistError?: string;
+      } | undefined;
+      if (!detail || detail.error) {
+        showToast(`Paymaster squid failed: ${detail?.error ?? 'unknown'}`, false, true);
+        return;
+      }
+      const short = (s?: string) => s ? `${s.slice(0, 10)}\u2026${s.slice(-6)}` : '';
+      if (detail.persisted) {
+        showToast(
+          `\u2713 Paymaster squid: ${short(detail.ethAddress)} \u2014 persisted to ultron DO`,
+          false,
+          true,
+        );
+      } else if (detail.persistError) {
+        showToast(
+          `Paymaster squid minted (${short(detail.ethAddress)}) but persist failed: ${detail.persistError}. dwalletId copied.`,
+          false,
+          true,
+        );
+        try { navigator.clipboard?.writeText(detail.dwalletId ?? ''); } catch { /* clipboard blocked */ }
+      }
+      console.log('[paymaster squid] dwalletId:', detail.dwalletId, 'ethAddress:', detail.ethAddress, 'persisted:', !!detail.persisted);
+    });
+  }
 
   // Admin — Whelm Squids (DWalletCap sweep)
   document.getElementById('wk-whelm-ultron-squids')?.addEventListener('click', async (e) => {
