@@ -41,7 +41,7 @@ import { grpcClient } from '../rpc.js';
 // `bind_guest_stealth` + `seal_approve_guest_stealth`. Until then the
 // helpers refuse to build a PTB / cipher so nobody wastes gas on a
 // doomed call and no plaintext-on-chain slips through.
-export const SUIAMI_STEALTH_PKG: string | null = null;
+export const SUIAMI_STEALTH_PKG: string | null = '0xaf56e9d096a69ccc68486cfcc88d5ed08db1cf37c88d255ab14ba0e3a7ab39a0';
 
 export interface GuestPrivateParams {
   /** Hot receive address — freshly provisioned per guest. ETH addr for

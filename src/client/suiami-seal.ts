@@ -65,7 +65,7 @@ export const SUIAMI_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8a
 // added in upgrades (`_v2`, etc.) MUST be called at the latest
 // published-at or Seal returns `FunctionNotFound`. Bump this on every
 // SUIAMI upgrade (Published.toml → published-at).
-export const SUIAMI_PKG_LATEST = '0xe1b6ecf937974317ec558e85ce7c61f57f14f67f7c199cfb4b592ede3fbb535e';
+export const SUIAMI_PKG_LATEST = '0xaf56e9d096a69ccc68486cfcc88d5ed08db1cf37c88d255ab14ba0e3a7ab39a0';
 export const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 export const ROSTER_INITIAL_SHARED_VERSION = 839068132;
 
