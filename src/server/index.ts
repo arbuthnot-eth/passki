@@ -2104,6 +2104,36 @@ app.post('/api/ultron/accept-share', async (c) => {
   }
 });
 
+// ── Walrus publisher proxy ──────────────────────────────────────────
+// PUT /api/walrus/publish
+// Forwards the raw body to the first Walrus mainnet publisher that
+// accepts it. Fixes client-side DNS blocks (ERR_NAME_NOT_RESOLVED) and
+// CORS failures against the Walrus publisher pool. Worker edge has
+// clean DNS + we control CORS, so the browser can always reach us.
+app.put('/api/walrus/publish', async (c) => {
+  const publishers = [
+    'https://publisher.mainnet.walrus.mirai.cloud',
+    'https://publisher.walrus-mainnet.h2o-nodes.com',
+    'https://publisher.walrus.space',
+    'https://sm-walrus-mainnet-publisher.stakesquid.com',
+  ];
+  const body = await c.req.arrayBuffer();
+  const errors: string[] = [];
+  for (const base of publishers) {
+    try {
+      const res = await fetch(`${base}/v1/blobs`, { method: 'PUT', body });
+      if (res.ok) {
+        const json = await res.json();
+        return c.json(json);
+      }
+      errors.push(`${base}: HTTP ${res.status}`);
+    } catch (e) {
+      errors.push(`${base}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return c.json({ error: `all Walrus publishers failed: ${errors.join('; ')}` }, 502);
+});
+
 // ── Weavile Assurance Move 6 — persist paymaster-signer dWallet ──────
 // POST /api/admin/paymaster-signer
 // Body: { dwalletId, ethAddress, adminAddress, signature, message }

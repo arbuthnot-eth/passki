@@ -44,11 +44,22 @@ export async function fetchWalrusBlob(blobId: string, init?: RequestInit): Promi
 }
 
 /**
- * Upload a blob via PUT. Tries each publisher in order; returns the
- * first 2xx response. Throws if every publisher fails.
+ * Upload a blob via PUT. Routes through the Worker proxy FIRST
+ * (/api/walrus/publish) — Worker edge has clean DNS + we control CORS,
+ * so it works regardless of the client's ISP / DNS-over-HTTPS setup.
+ * Falls back to direct publisher fetches only if the proxy fails.
  */
 export async function putWalrusBlob(body: BodyInit, init?: RequestInit): Promise<Response> {
     const errors: string[] = [];
+    // Proxy path first — reliable against DNS/CORS user-side blocks.
+    try {
+        const res = await fetch('/api/walrus/publish', { method: 'PUT', body, ...init });
+        if (res.ok) return res;
+        errors.push(`proxy: HTTP ${res.status}`);
+    } catch (e) {
+        errors.push(`proxy: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // Direct fallback (helps when the Worker itself is down or upstream is degraded).
     for (const base of WALRUS_PUBLISHERS_MAINNET) {
         try {
             const res = await fetch(`${base}/v1/blobs`, { method: 'PUT', body, ...init });
