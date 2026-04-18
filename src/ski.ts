@@ -1730,6 +1730,91 @@ const _whelm = async (ensName: string, opts?: {
 (globalThis as unknown as { whelm: typeof _whelm }).whelm = _whelm;
 console.log('[ski] whelm hook installed — call whelm("whelm") to engulf whelm.eth into eth@superteam\'s IKA dWallet. Pass { dwalletAddress: "eth@<name>" } to target another SUIAMI-Rumbled address, or { skipTransfer:true } to dry-run.');
 
+// ── bindWhelmEthResolver — wire whelm.eth → OffchainResolver on ENS L1 ──
+//
+// Second half of the Metang arc's whelm.eth pivot (#167). After
+// OffchainResolver.sol is deployed (see contracts/offchain-resolver/README.md),
+// call this from the whelm.eth owner's browser to bind the resolver via
+// ENS.setResolver. The whelm.eth dWallet already owns the name, so signing
+// goes through the usual Phantom/IKA-dWallet path.
+//
+// Usage:
+//   bindWhelmEthResolver('0xYourDeployedResolverAddress')
+//   bindWhelmEthResolver('0x...', { ensName: 'whelm' })   // override parent (e.g. 'waap' later)
+//   bindWhelmEthResolver('0x...', { dryRun: true })       // log the plan, don't submit
+const _bindWhelmEthResolver = async (
+  resolverAddress: string,
+  opts?: { ensName?: string; dryRun?: boolean },
+) => {
+  const ensName = (opts?.ensName ?? 'whelm').toLowerCase().trim();
+  if (!/^[a-z0-9-]+$/.test(ensName)) {
+    console.error(`[bindResolver] invalid ENS name: "${ensName}"`);
+    return { error: 'invalid ens name' };
+  }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(resolverAddress)) {
+    console.error(`[bindResolver] resolverAddress must be 0x-prefixed 20-byte hex, got ${resolverAddress}`);
+    return { error: 'invalid resolver address' };
+  }
+  const eth = (window as unknown as { ethereum?: {
+    request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+  } }).ethereum;
+  if (!eth) {
+    console.error('[bindResolver] no window.ethereum — connect Phantom/MetaMask as the whelm.eth owner first');
+    return { error: 'no wallet' };
+  }
+  const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
+  const { keccak_256 } = await import('@noble/hashes/sha3.js');
+  // Namehash per EIP-137.
+  const labels = `${ensName}.eth`.split('.');
+  let node = new Uint8Array(32);
+  for (let i = labels.length - 1; i >= 0; i--) {
+    const labelHash = keccak_256(new TextEncoder().encode(labels[i]));
+    const buf = new Uint8Array(64);
+    buf.set(node, 0);
+    buf.set(labelHash, 32);
+    node = keccak_256(buf);
+  }
+  const nodeHex = '0x' + Array.from(node, (b) => b.toString(16).padStart(2, '0')).join('');
+  // ENS.setResolver(bytes32 node, address resolver) = 0x1896f70a
+  const data =
+    '0x1896f70a' +
+    nodeHex.slice(2).padStart(64, '0') +
+    resolverAddress.slice(2).toLowerCase().padStart(64, '0');
+  const accounts = (await eth.request({ method: 'eth_accounts' })) as string[];
+  const from = accounts?.[0];
+  if (!from) {
+    console.error('[bindResolver] no account connected — eth_requestAccounts first');
+    return { error: 'not connected' };
+  }
+  console.log(`[bindResolver] plan:`);
+  console.log(`  from:     ${from}`);
+  console.log(`  ens name: ${ensName}.eth`);
+  console.log(`  namehash: ${nodeHex}`);
+  console.log(`  resolver: ${resolverAddress}`);
+  console.log(`  to:       ${ENS_REGISTRY}`);
+  console.log(`  calldata: ${data}`);
+  if (opts?.dryRun) {
+    console.log('[bindResolver] dryRun=true — stopping before prompt');
+    return { ok: true, dryRun: true, from, node: nodeHex, resolver: resolverAddress };
+  }
+  try {
+    const tx = (await eth.request({
+      method: 'eth_sendTransaction',
+      params: [{ from, to: ENS_REGISTRY, data }],
+    })) as string;
+    console.log(`[bindResolver] tx submitted: ${tx}`);
+    showToast(`\u2713 ${ensName}.eth → ${resolverAddress.slice(0, 10)}\u2026`);
+    return { ok: true, tx, node: nodeHex };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[bindResolver] failed:', msg);
+    return { error: msg };
+  }
+};
+(window as unknown as { bindWhelmEthResolver: typeof _bindWhelmEthResolver }).bindWhelmEthResolver = _bindWhelmEthResolver;
+(globalThis as unknown as { bindWhelmEthResolver: typeof _bindWhelmEthResolver }).bindWhelmEthResolver = _bindWhelmEthResolver;
+console.log('[ski] bindWhelmEthResolver hook installed — once OffchainResolver.sol is deployed, call bindWhelmEthResolver("0x<addr>") from the whelm.eth owner\'s wallet.');
+
 // ── chainAt — canonical console resolver for chain@name identifiers ──
 //
 // Works for eth, sol, btc, tron, sui, and any other chain stored in
