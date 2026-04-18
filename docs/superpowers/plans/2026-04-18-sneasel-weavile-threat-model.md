@@ -89,11 +89,17 @@ The only place we use the word "private" without qualification is in Weavile **a
 
 ---
 
+## Scope correction 2026-04-18 (project lead override)
+
+Earlier draft scoped Weavile as ETH-only citing "no production reference" for ed25519 stealth (SIP Protocol issue #93). Project lead rejected: **SKI has the missing infrastructure** — IKA 2PC-MPC cross-curve signing + SUIAMI-baked gas sponsorship on every chain. We ship multi-chain from day one and become the reference.
+
+Meta-address format: `ska:<ika_dwallet_id>:<per-chain-view-pubkeys>`. Math is curve-general; IKA handles spend-side composition per chain.
+
 ## Things we deliberately do NOT ship
 
-- **ed25519 stealth on Sui/Sol.** No production reference (SIP Protocol issue #93 unresolved). Conflicts with IKA-native first commandment — stealth-derived keys aren't IKA dWallets, ultron can't co-sign. ETH-only until either matures or we invent an IKA-native multi-curve spec.
 - **Self-custody of spend keys.** SKI's differentiator is keyless-recipient via IKA 2PC-MPC. Offering a "just give me the private key" escape hatch would undo the security model and invite T5 attacks.
 - **Transparent "privacy indicators" in UI without this doc behind them.** Green checkmark UX that misleads users is worse than no privacy primitive at all.
+- **Quantum-resistant stealth** — post-quantum curves not yet in production for any chain in scope. Revisit if post-quantum moves mainstream.
 
 ---
 
