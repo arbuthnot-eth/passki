@@ -6431,16 +6431,16 @@ function _skiAdminGroupHtml(): string {
       <div class="wk-settings-group">
         <span class="wk-settings-group-label">Admin</span>
         <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Paymaster Squid</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-rumble-paymaster-squid" type="button" title="Mint the dedicated secp256k1 dWallet that signs paymasterAndData for Weavile stealth sweeps (rotated weekly). Weavile Assurance Move 6.">Rumble Paymaster Squid</button>
+        </div>
+        <div class="wk-settings-row wk-settings-row--button">
           <span class="wk-settings-label">Ultron</span>
           <button class="wk-settings-value wk-settings-button" id="wk-whelm-ultron" type="button" title="Sweep fungibles from old Ultron into the new dWallet">Whelm Ultron</button>
         </div>
         <div class="wk-settings-row wk-settings-row--button">
           <span class="wk-settings-label">Squids</span>
           <button class="wk-settings-value wk-settings-button" id="wk-whelm-ultron-squids" type="button" title="Sweep DWalletCap objects from old Ultron into the new address">Whelm Squids</button>
-        </div>
-        <div class="wk-settings-row wk-settings-row--button">
-          <span class="wk-settings-label">Paymaster Squid</span>
-          <button class="wk-settings-value wk-settings-button" id="wk-rumble-paymaster-squid" type="button" title="Mint the dedicated secp256k1 dWallet that signs paymasterAndData for Weavile stealth sweeps (rotated weekly). Weavile Assurance Move 6.">Rumble Paymaster Squid</button>
         </div>
       </div>` : '';
 
