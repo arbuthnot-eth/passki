@@ -51,7 +51,17 @@ export async function fetchWalrusBlob(blobId: string, init?: RequestInit): Promi
  */
 export async function putWalrusBlob(body: BodyInit, init?: RequestInit): Promise<Response> {
     const errors: string[] = [];
-    // Proxy path first — reliable against DNS/CORS user-side blocks.
+    // Aggron path first — ultron signs a Walrus SDK Quilt PTB server-side,
+    // pays WAL from its own balance. Bypasses the HTTP publisher pool
+    // entirely, which matters because the public publishers are broken.
+    try {
+        const res = await fetch('/api/aggron/publish', { method: 'PUT', body, ...init });
+        if (res.ok) return res;
+        errors.push(`aggron: HTTP ${res.status}`);
+    } catch (e) {
+        errors.push(`aggron: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // HTTP publisher proxy via Worker — secondary fallback.
     try {
         const res = await fetch('/api/walrus/publish', { method: 'PUT', body, ...init });
         if (res.ok) return res;

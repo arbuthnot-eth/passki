@@ -2105,6 +2105,54 @@ app.post('/api/ultron/accept-share', async (c) => {
   }
 });
 
+// ── Aggron sync publish (Stone Edge shortcut) ──────────────────────
+// PUT /api/aggron/publish
+// Accepts raw ciphertext bytes and publishes them as a one-blob Walrus
+// Quilt via @mysten/walrus SDK, signed by ultron (WAL paid from
+// ultron's balance). This bypasses the dying HTTP publisher pool
+// entirely — the SDK writes the blob via a Sui PTB directly against
+// Walrus storage contracts.
+//
+// Returns { blobId } matching the legacy publisher response shape so
+// existing client callers (e.g. encryptSquidsToWalrus) slot in with
+// no other changes on the reader side (aggregators still work fine).
+app.put('/api/aggron/publish', async (c) => {
+  if (!hasUltronKey(c.env)) return c.json({ error: 'ultron key not configured' }, 503);
+  try {
+    const body = new Uint8Array(await c.req.arrayBuffer());
+    if (body.byteLength === 0) return c.json({ error: 'empty body' }, 400);
+    const identifier = c.req.query('id') || `aggron-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const kind = c.req.query('kind') || 'misc';
+
+    const { WalrusClient } = await import('@mysten/walrus');
+    const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+    const gql = new SuiGraphQLClient({
+      url: 'https://graphql.mainnet.sui.io/graphql',
+      network: 'mainnet',
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const walrus = new WalrusClient({ network: 'mainnet', suiClient: gql as any });
+    const signer = ultronKeypair(c.env);
+    const result = await walrus.writeQuilt({
+      blobs: [{ contents: body, identifier, tags: { kind } }],
+      signer,
+    });
+    return c.json({
+      blobId: result.blobId,
+      newlyCreated: { blobObject: { blobId: result.blobId } },
+      quiltObjectId: result.blobObject?.id ?? null,
+      patches: result.index.patches.map(p => ({
+        identifier: p.identifier,
+        patchId: p.patchId,
+      })),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[aggron/publish]', msg);
+    return c.json({ error: msg }, 500);
+  }
+});
+
 // ── Walrus publisher proxy ──────────────────────────────────────────
 // PUT /api/walrus/publish
 // Forwards the raw body to the first Walrus mainnet publisher that
