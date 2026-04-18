@@ -38,7 +38,7 @@ import { ed25519 } from '@noble/curves/ed25519';
 // Weavile's `set_stealth_meta` is in a *later* Move upgrade that hasn't
 // been published yet. Keep its pkg id null so nothing ships a doomed
 // PTB before the deploy move lands.
-export const SUIAMI_WEAVILE_PKG: string | null = null;
+export const SUIAMI_WEAVILE_PKG: string | null = '0xf4910af0747d53df5e0900c10b1f362407564e717fdee321c2777d535e915c77';
 
 // ─── Chain curve registry ──────────────────────────────────────────
 
