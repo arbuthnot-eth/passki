@@ -301,8 +301,6 @@ app.get('/squids', async (c) => {
   return res;
 });
 
-// Superteam routes removed
-
 // ── JSON-RPC proxy (same-origin, avoids CORS for browser-side IKA SDK) ──
 // Forwards to multiple Sui fullnodes with fallback.
 const SUI_RPC_URLS = [
