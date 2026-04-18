@@ -1450,16 +1450,8 @@ const _importPhantomKey = async (
       console.log(`[importPhantomKey] \u2713 matches expected address ${expected}`);
     }
 
-    // TODO Beldum Metal Claw: wire to ika.ts
-    //   const { importSecp256k1DWallet } = await import('./client/ika.js');
-    //   const result = await importSecp256k1DWallet({
-    //     privateKeyHex: priv,
-    //     bytesToHash: new TextEncoder().encode(`SUIAMI import ${address} @ ${Date.now()}`),
-    //   });
-    //   Then assert result.ethAddress === address, write dwalletCap to roster.
-    console.log('[importPhantomKey] IKA ceremony not yet wired — parse/derive verified only.');
+    console.log('[importPhantomKey] parse/derive verified only — IKA ceremony not yet wired.');
     console.log(`  Ready to import: address=${address}, mode=${mode}`);
-    console.log('  Next: confirm above, then run the ika.ts import flow (commit pending).');
 
     return { ok: true, mode, address, priv: '0x<redacted>' };
   } catch (err) {
