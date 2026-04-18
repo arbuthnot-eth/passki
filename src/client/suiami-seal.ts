@@ -395,7 +395,7 @@ export async function decryptCfChunkForAddress(opts: {
 
   const tx = new Transaction();
   tx.moveCall({
-    target: `${SUIAMI_PKG}::seal_roster::seal_approve_cf_history`,
+    target: `${SUIAMI_PKG_LATEST}::seal_roster::seal_approve_cf_history`,
     arguments: [
       tx.sharedObjectRef({
         objectId: ROSTER_OBJ,

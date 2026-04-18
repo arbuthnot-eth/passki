@@ -73,10 +73,13 @@ function buildPkgConstMap(files: string[]): Map<string, string> {
     while ((m = PKG_CONST_DECL.exec(txt)) !== null) {
       const name = m[1]!;
       const id = m[2]!.toLowerCase();
-      // Only track ones that look like Move package consts (end in
-      // _PKG, _PKG_*, or _PACKAGE). Keeps the map small and avoids
-      // picking up random uppercase-named 0x… constants.
-      if (!/(?:_PKG(?:_[A-Z0-9]+)?|_PACKAGE)$/.test(name)) continue;
+      // Track any uppercase const whose value is a 0x-prefixed id.
+      // Used to be filtered to _PKG/_PACKAGE suffixes but that missed
+      // function-local names like CETUS_ROUTER and PKG. The map stays
+      // small in practice (<50 entries) and false positives in
+      // unrelated constants are harmless — they'd only trip the
+      // check when referenced as `${FOO}::mod::fn`, which requires
+      // the value to actually BE a Move package id on-chain.
       // First win; warn on collision
       if (map.has(name) && map.get(name) !== id) {
         console.warn(
