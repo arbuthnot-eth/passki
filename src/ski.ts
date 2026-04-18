@@ -2324,6 +2324,101 @@ const _chainAt = async (identifier: string): Promise<string> => {
 (globalThis as unknown as { chainAt: typeof _chainAt }).chainAt = _chainAt;
 console.log('[ski] chainAt hook installed — await chainAt("eth@superteam") / chainAt("sol@ultron") / chainAt("sui@brando") to resolve any chain@name identifier via the SUIAMI roster.');
 
+// ── sendWhelm — canonical send via `<name>.whelm.eth` ─────────────────
+//
+// Standardizes on `<name>.whelm.eth` as the universal recipient handle.
+// SKI resolves it via SUIAMI (sui@<name>) and signs a Sui-side transfer
+// with the connected wallet. Supports WAL by default, any coin via
+// `{ coinType }`. Same handle serves every chain — wiring for eth/sol
+// swaps in the same shape (separate hook per chain; parse once, route).
+//
+//   await sendWhelm('ultron', 5)                    // 5 WAL → ultron
+//   await sendWhelm('iusd.whelm.eth', 10)            // trailing .whelm.eth accepted
+//   await sendWhelm('ultron', 1, { coinType: SUI })  // 1 SUI → ultron
+const WAL_COIN_TYPE = '0x356a26eb9e012a68958082340d4c4116e7f55615cf27affcff209cf0ae544f59::wal::WAL';
+const SUI_COIN_TYPE = '0x2::sui::SUI';
+const WAL_DECIMALS = 9;
+const SUI_DECIMALS = 9;
+
+const _sendWhelm = async (
+  whelmName: string,
+  amountWhole: number,
+  opts?: { coinType?: string; decimals?: number },
+): Promise<{ ok: boolean; digest?: string; targetAddress?: string; error?: string }> => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect a Sui wallet first');
+    return { ok: false, error: 'not connected' };
+  }
+  const bareLabel = whelmName.replace(/\.whelm\.eth$/i, '').toLowerCase();
+  const coinType = opts?.coinType ?? WAL_COIN_TYPE;
+  const decimals = opts?.decimals
+    ?? (coinType === WAL_COIN_TYPE ? WAL_DECIMALS
+      : coinType === SUI_COIN_TYPE ? SUI_DECIMALS
+      : 9);
+  const coinLabel = coinType === WAL_COIN_TYPE ? 'WAL'
+    : coinType === SUI_COIN_TYPE ? 'SUI'
+    : coinType.split('::').pop() ?? coinType.slice(0, 12);
+
+  try {
+    // 1. Resolve <bareLabel>.whelm.eth → sui address via SUIAMI roster.
+    //    chainAt reads the roster directly; the .whelm.eth suffix is
+    //    the canonical external handle but the storage lives in SUIAMI.
+    const { chainAt } = await import('./client/chain-at.js');
+    const targetAddress = await chainAt(`sui@${bareLabel}`);
+    if (!targetAddress || !targetAddress.startsWith('0x')) {
+      const msg = `no sui address in SUIAMI for ${bareLabel} (via ${whelmName})`;
+      showToast(msg);
+      return { ok: false, error: msg };
+    }
+
+    // 2. Build a Sui PTB splitting `amount` from a coin of type and
+    //    transferring to target. For SUI specifically split from gas.
+    const amountMist = BigInt(Math.floor(amountWhole * 10 ** decimals));
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const tx = new Transaction();
+    let coinArg;
+    if (coinType === SUI_COIN_TYPE) {
+      coinArg = tx.splitCoins(tx.gas, [tx.pure.u64(amountMist)]);
+    } else {
+      // Fetch caller's coins of this type and merge them into one to split from.
+      const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+      const gql = new SuiGraphQLClient({ url: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+      const owned = await gql.listCoins({ owner: ws.address, coinType });
+      const coins = owned.objects ?? [];
+      if (coins.length === 0) {
+        const msg = `no ${coinLabel} coins owned by ${ws.address.slice(0, 10)}…`;
+        showToast(msg);
+        return { ok: false, error: msg };
+      }
+      const primary = coins[0].objectId;
+      if (coins.length > 1) {
+        tx.mergeCoins(tx.object(primary), coins.slice(1).map(c => tx.object(c.objectId)));
+      }
+      coinArg = tx.splitCoins(tx.object(primary), [tx.pure.u64(amountMist)]);
+    }
+    tx.transferObjects([coinArg], tx.pure.address(targetAddress));
+    tx.setSender(ws.address);
+
+    showToast(`Sending ${amountWhole} ${coinLabel} → ${whelmName} (${targetAddress.slice(0, 10)}\u2026)`);
+    const { digest } = await signAndExecuteTransaction(tx as unknown as Uint8Array);
+    showToast(`\u2713 Sent ${amountWhole} ${coinLabel} → ${whelmName}`);
+    console.log(`[sendWhelm] digest: ${digest} → ${targetAddress}`);
+    return { ok: true, digest, targetAddress };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[sendWhelm] failed:', err);
+    if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
+      try { navigator.clipboard?.writeText(msg); } catch { /* clipboard blocked */ }
+      showToast(`sendWhelm failed: ${msg.slice(0, 100)} (full copied)`);
+    }
+    return { ok: false, error: msg };
+  }
+};
+(window as unknown as { sendWhelm: typeof _sendWhelm }).sendWhelm = _sendWhelm;
+(globalThis as unknown as { sendWhelm: typeof _sendWhelm }).sendWhelm = _sendWhelm;
+console.log('[ski] sendWhelm hook installed — await sendWhelm("ultron", 5) sends 5 WAL to ultron.whelm.eth (resolved via SUIAMI → sui@ultron → 0x9872…)');
+
 // ── v6 hooks: privatize / publicize / guest / purgeGuest ──
 //
 // These call the v6 roster entries shipped at SUIAMI_PKG_LATEST.
