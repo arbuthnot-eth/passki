@@ -45,8 +45,14 @@ const DB_BM_PACKAGE = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df
 // CLAUDE.md "owned BMs are deposit black holes" note was about ORDER
 // PLACEMENT, not withdrawability. The owner can always withdraw.
 const ULTRON_OWNED_BM = '0x2261d2bad4c716d2f542c9ef3db3a7f2cab9188439dc4d81d5aae402481c4f92';
-// iUSD TreasuryCap owned by ultron (minter). Required for burn_and_redeem.
-const IUSD_TREASURY_CAP = '0x0c7873b52c69f409f3c9772e85d927b509a133a42e9c134c826121bb6595e543';
+// iUSD TreasuryCap was DELETED on-chain at version 843442664. Every path
+// below that once consumed it is bricked until a fresh cap is minted and
+// the module is re-published. See memory/project_iusd_module_state.md.
+// Accessing this helper throws so dead paths self-diagnose on first use
+// rather than submitting a PTB that aborts against a missing object.
+const iusdCapOrThrow = (): string => {
+  throw new Error('iUSD TreasuryCap is bricked — deleted on-chain. Mint/burn/redeem is unreachable until the module is re-published. See project_iusd_module_state.md.');
+};
 const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
 const SUIAMI_ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
@@ -568,7 +574,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           module: 'iusd',
           function: 'mint_and_transfer',
           arguments: [
-            tx.object(TreasuryAgents.IUSD_TREASURY_CAP),
+            tx.object(iusdCapOrThrow()),
             tx.object(TreasuryAgents.IUSD_TREASURY),
             tx.pure.u64(amountMist),
             tx.pure.address(recipient),
@@ -3185,7 +3191,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         module: 'iusd',
         function: 'burn_and_redeem',
         arguments: [
-          tx.object(IUSD_TREASURY_CAP),
+          tx.object(iusdCapOrThrow()),
           tx.object(TreasuryAgents.IUSD_TREASURY),
           iusdCoin,
           tx.object('0x6'),
@@ -3310,7 +3316,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         module: 'iusd',
         function: 'mint_and_transfer',
         arguments: [
-          tx.object(TreasuryAgents.IUSD_TREASURY_CAP),
+          tx.object(iusdCapOrThrow()),
           tx.object(TreasuryAgents.IUSD_TREASURY),
           tx.pure.u64(headroom),
           tx.pure.address(ultronAddr),
@@ -3945,7 +3951,6 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   // not the latest address.
   private static readonly IUSD_PKG = '0x8230189af039da5cabb6fdacfbc1ca993642126d73258e30225f5f94272a1ad2'; // v2 @ 110% (upgraded from v1 @ 150%)
   private static readonly IUSD_TREASURY = '0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb';
-  private static readonly IUSD_TREASURY_CAP = '0x0c7873b52c69f409f3c9772e85d927b509a133a42e9c134c826121bb6595e543';
 
   // ─── Thunder Admin ──────────────────────────────────────────────────
 
@@ -4247,7 +4252,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         module: 'iusd',
         function: 'mint_and_transfer',
         arguments: [
-          tx.object(TreasuryAgents.IUSD_TREASURY_CAP),
+          tx.object(iusdCapOrThrow()),
           tx.object(TreasuryAgents.IUSD_TREASURY),
           tx.pure.u64(mintAmount),
           tx.pure.address(recipient),
@@ -4607,7 +4612,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         module: 'iusd',
         function: 'mint_and_transfer',
         arguments: [
-          tx2.object(TreasuryAgents.IUSD_TREASURY_CAP),
+          tx2.object(iusdCapOrThrow()),
           tx2.object(TreasuryAgents.IUSD_TREASURY),
           tx2.pure.u64(BigInt(mintAmount)),
           tx2.pure.address(normalizeSuiAddress(recipient)),
@@ -6475,7 +6480,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         module: 'iusd',
         function: 'mint_and_transfer',
         arguments: [
-          tx2.object(TreasuryAgents.IUSD_TREASURY_CAP),
+          tx2.object(iusdCapOrThrow()),
           tx2.object(TreasuryAgents.IUSD_TREASURY),
           tx2.pure.u64(iusdRaw),
           tx2.pure.address(ultronAddr), // mint to ultron, not user
