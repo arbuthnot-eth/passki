@@ -3044,6 +3044,131 @@ app.post('/api/cache/whelm-ultron-fungibles', async (c) => {
   }
 });
 
+// Whelm the squids — sweep owned DWalletCap objects from old Ultron to
+// new Ultron in a single transferObjects PTB. Non-coin objects that
+// aren't DWalletCaps (BalanceManager, RedeemRequest, etc.) are reported
+// as "skipped" so the caller knows what stayed behind. Coins go through
+// /api/cache/whelm-ultron-fungibles.
+app.post('/api/cache/whelm-ultron-objects', async (c) => {
+  try {
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'Legacy SHADE_KEEPER_PRIVATE_KEY not present — nothing to sweep from' }, 400);
+
+    const body = await c.req.json() as {
+      adminAddress: string;
+      signature: string;
+      message: string;
+      targetAddress: string;
+      dryRun?: boolean;
+    };
+    if (!body.targetAddress || !/^0x[0-9a-fA-F]{64}$/.test(body.targetAddress)) {
+      return c.json({ error: 'targetAddress must be 32-byte hex' }, 400);
+    }
+    const denied = await requireUltronAdmin(c, body, {
+      context: 'whelm-ultron-objects',
+      messageFor: (b) => `whelm-ultron-objects:${b.targetAddress.toLowerCase()}:${todayUtc()}`,
+    });
+    if (denied) return denied;
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const legacyKp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const oldUltron = normalizeSuiAddress(legacyKp.getPublicKey().toSuiAddress());
+    const newUltron = body.targetAddress.toLowerCase();
+    if (oldUltron.toLowerCase() === newUltron) {
+      return c.json({ error: 'targetAddress equals legacy-derived Ultron address — nothing to sweep' }, 400);
+    }
+
+    const RPC = 'https://sui-rpc.publicnode.com';
+    const allObjs: Array<{ objectId: string; type: string }> = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 20; i++) {
+      const r = await fetch(RPC, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'suix_getOwnedObjects',
+          params: [oldUltron, { options: { showType: true } }, cursor, 50],
+        }),
+      });
+      const j = await r.json() as {
+        result?: {
+          data?: Array<{ data?: { objectId: string; type?: string } }>;
+          hasNextPage?: boolean;
+          nextCursor?: string;
+        };
+      };
+      const page = j?.result?.data ?? [];
+      for (const row of page) {
+        const d = row?.data;
+        if (!d?.type) continue;
+        allObjs.push({ objectId: d.objectId, type: d.type });
+      }
+      if (!j?.result?.hasNextPage) break;
+      cursor = j?.result?.nextCursor ?? null;
+      if (!cursor) break;
+    }
+
+    // Sweep only DWalletCap — other types may lack `store` ability and
+    // revert the whole PTB. Everything non-coin non-cap is surfaced as
+    // "skipped" so the caller sees what stayed behind.
+    const isCoin = (t: string) => t.startsWith('0x2::coin::Coin<');
+    const isDWalletCap = (t: string) => /::coordinator_inner::DWalletCap$/.test(t);
+
+    const sweep = allObjs.filter((o) => isDWalletCap(o.type));
+    const skipped = allObjs.filter((o) => !isCoin(o.type) && !isDWalletCap(o.type));
+
+    if (sweep.length === 0) {
+      return c.json({
+        ok: true,
+        dryRun: true,
+        oldUltron,
+        newUltron,
+        plans: [],
+        skipped,
+        message: `No DWalletCaps found on ${oldUltron}.${skipped.length ? ` ${skipped.length} other non-coin object(s) stayed behind.` : ''}`,
+      });
+    }
+
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+    const gql = new SuiGraphQLClient({ url: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+
+    const tx = new Transaction();
+    tx.setSender(oldUltron);
+    tx.transferObjects(
+      sweep.map((o) => tx.object(o.objectId)),
+      tx.pure.address(newUltron),
+    );
+    const txBytes = await tx.build({ client: gql as never });
+
+    if (body.dryRun) {
+      return c.json({ ok: true, dryRun: true, oldUltron, newUltron, plans: sweep, skipped, txBytesLen: txBytes.length });
+    }
+
+    const { signature } = await legacyKp.signTransaction(txBytes);
+    const { toBase64 } = await import('@mysten/sui/utils');
+    const execResp = await fetch(RPC, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'sui_executeTransactionBlock',
+        params: [toBase64(txBytes), [signature], { showEffects: true }, 'WaitForLocalExecution'],
+      }),
+    });
+    const execJson = await execResp.json() as {
+      result?: { digest?: string; effects?: { status?: { status?: string; error?: string } } };
+      error?: { message?: string };
+    };
+    const digest = execJson?.result?.digest ?? '';
+    const status = execJson?.result?.effects?.status?.status;
+    const execError = execJson?.error?.message
+      ?? (status && status !== 'success' ? execJson?.result?.effects?.status?.error : undefined);
+    return c.json({ ok: !execError, digest, execError, oldUltron, newUltron, plans: sweep, skipped });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 // ── Create iUSD/USDC DeepBook pool ──────────────────────────────
 app.post('/api/cache/create-iusd-pool', async (c) => {
   try {

@@ -6389,6 +6389,10 @@ function _skiAdminGroupHtml(): string {
           <span class="wk-settings-label">Ultron</span>
           <button class="wk-settings-value wk-settings-button" id="wk-whelm-ultron" type="button" title="Sweep fungibles from old Ultron into the new dWallet">Whelm Ultron</button>
         </div>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Squids</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-whelm-ultron-squids" type="button" title="Sweep DWalletCap objects from old Ultron into the new address">Whelm Squids</button>
+        </div>
       </div>`;
 }
 
@@ -7150,6 +7154,25 @@ function renderSkiMenu() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(`Whelm Ultron error: ${msg}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
+  // Admin — Whelm Squids (DWalletCap sweep)
+  document.getElementById('wk-whelm-ultron-squids')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Signing\u2026';
+    try {
+      const { whelmUltronSquidsFlow } = await import('./client/whelm-ultron.js');
+      await whelmUltronSquidsFlow(showToast);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Whelm Squids error: ${msg}`);
     } finally {
       btn.disabled = false;
       btn.textContent = original;
