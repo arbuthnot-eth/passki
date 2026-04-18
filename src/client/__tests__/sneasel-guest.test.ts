@@ -162,3 +162,31 @@ describe('mintGuestIntermediate (real DKG path — env guards)', () => {
     ).rejects.toThrow(/signerAddress required/);
   });
 });
+
+describe('buildRotateSweepDelegateTx (Sneasel Slash)', () => {
+  test('emits rotate_sweep_delegate moveCall with expected target + 6 args', async () => {
+    const { buildRotateSweepDelegateTx } = await import('../sneasel-guest.js');
+    const calls: Array<{ target: string; argCount: number }> = [];
+    const fakeTx = {
+      moveCall: (call: { target: string; arguments: unknown[] }) => {
+        calls.push({ target: call.target, argCount: call.arguments.length });
+      },
+      object: (id: string) => ({ kind: 'object', id }),
+      pure: {
+        vector: (t: string, v: unknown) => ({ kind: 'vec', t, v }),
+        address: (a: string) => ({ kind: 'addr', a }),
+      },
+    } as never;
+    await buildRotateSweepDelegateTx(fakeTx, {
+      rosterObj: '0xroster',
+      parentHash: Array.from(parentHash32()),
+      labelBytes: Array.from(new TextEncoder().encode('hermes')),
+      newDelegate: '0xNEW_DELEGATE',
+      newSealedColdDest: new Uint8Array([1, 2, 3]),
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].target).toMatch(/::roster::rotate_sweep_delegate$/);
+    // roster, parent_hash, label, new_delegate, new_sealed_cold_dest, clock
+    expect(calls[0].argCount).toBe(6);
+  });
+});
