@@ -40,10 +40,11 @@ const SUI_TYPE = '0x000000000000000000000000000000000000000000000000000000000000
 const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
 // DeepBook v3 BalanceManager package (separate from the pool/trade package)
 const DB_BM_PACKAGE = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809';
-// Known owned BalanceManager that black-holed a historical mint of iUSD +
-// USDC. Both balances are recoverable via withdraw_all<T>(bm, ctx) — the
-// CLAUDE.md "owned BMs are deposit black holes" note was about ORDER
-// PLACEMENT, not withdrawability. The owner can always withdraw.
+// Historical owned BalanceManager on old-Ultron. Confirmed empty on-chain
+// 2026-04-17 after Whelm Ultron Squids — `balances.size: 0`. Kept as a
+// reference for anyone inspecting old-Ultron's leftover objects; the BM
+// itself is an empty shell with `owner` pinned to the old address, so it
+// can't be reused under new-Ultron (new caller would fail BM auth checks).
 const ULTRON_OWNED_BM = '0x2261d2bad4c716d2f542c9ef3db3a7f2cab9188439dc4d81d5aae402481c4f92';
 // iUSD TreasuryCap was DELETED on-chain at version 843442664. Every path
 // below that once consumed it is bricked until a fresh cap is minted and
