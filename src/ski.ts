@@ -1815,6 +1815,103 @@ const _bindWhelmEthResolver = async (
 (globalThis as unknown as { bindWhelmEthResolver: typeof _bindWhelmEthResolver }).bindWhelmEthResolver = _bindWhelmEthResolver;
 console.log('[ski] bindWhelmEthResolver hook installed — once OffchainResolver.sol is deployed, call bindWhelmEthResolver("0x<addr>") from the whelm.eth owner\'s wallet.');
 
+// ── deployOffchainResolver — one-click ENS CCIP-read resolver deploy ──
+//
+// Uses the pre-compiled OffchainResolver.sol bytecode bundled from
+// contracts/offchain-resolver/. Encodes the constructor args (url + signers[])
+// and fires eth_sendTransaction from the connected wallet. Returns the
+// address computed from sender+nonce so the caller can immediately pipe it
+// into bindWhelmEthResolver() without waiting for the receipt.
+//
+// Defaults target the current signer roster:
+//   - ENS_SIGNER hot address (Smeargle-rotated 2026-04-17): 0xe7AC32Bf…0a11
+//   - ultron ETH dWallet (threshold co-signer):             0xcaA8d6F0…882d
+//
+// Usage:
+//   deployOffchainResolver()                                 // use defaults
+//   deployOffchainResolver({ signers: ['0x…', '0x…'] })       // override signers
+//   deployOffchainResolver({ url: 'https://…/ens-resolver/{sender}/{data}.json' })
+//   deployOffchainResolver({ dryRun: true })                  // log plan only
+const _deployOffchainResolver = async (opts?: {
+  url?: string;
+  signers?: string[];
+  dryRun?: boolean;
+}) => {
+  const DEFAULT_URL = 'https://sui.ski/ens-resolver/{sender}/{data}.json';
+  const DEFAULT_SIGNERS = [
+    '0xe7AC32BfF3B1A0af5F3E9a0c9E44A1E0B4e3De0a11', // ENS_SIGNER (Smeargle 2026-04-17)
+    '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d', // ultron ETH dWallet
+  ];
+  const url = opts?.url ?? DEFAULT_URL;
+  const signers = (opts?.signers ?? DEFAULT_SIGNERS).map((s) => s.toLowerCase());
+
+  for (const s of signers) {
+    if (!/^0x[0-9a-f]{40}$/.test(s)) {
+      console.error(`[deployOCR] invalid signer: ${s}`);
+      return { error: `invalid signer: ${s}` };
+    }
+  }
+
+  const eth = (window as unknown as { ethereum?: {
+    request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+  } }).ethereum;
+  if (!eth) {
+    console.error('[deployOCR] no window.ethereum — connect Phantom/MetaMask as whelm.eth owner');
+    return { error: 'no wallet' };
+  }
+
+  const { OFFCHAIN_RESOLVER_BYTECODE } = await import('./client/offchain-resolver-artifact.js');
+  const { encodeAbiParameters, getContractAddress } = await import('viem');
+
+  const ctorArgs = encodeAbiParameters(
+    [{ type: 'string' }, { type: 'address[]' }],
+    [url, signers as `0x${string}`[]],
+  );
+  const initCode = (OFFCHAIN_RESOLVER_BYTECODE + ctorArgs.slice(2)) as `0x${string}`;
+
+  const accounts = (await eth.request({ method: 'eth_accounts' })) as string[];
+  const from = accounts?.[0];
+  if (!from) {
+    console.error('[deployOCR] no account — eth_requestAccounts first');
+    return { error: 'not connected' };
+  }
+
+  const nonceHex = (await eth.request({ method: 'eth_getTransactionCount', params: [from, 'pending'] })) as string;
+  const predictedAddress = getContractAddress({ from: from as `0x${string}`, nonce: BigInt(nonceHex) });
+
+  console.log('[deployOCR] plan:');
+  console.log(`  from:     ${from}`);
+  console.log(`  url:      ${url}`);
+  console.log(`  signers:  ${signers.join(', ')}`);
+  console.log(`  bytecode: ${(OFFCHAIN_RESOLVER_BYTECODE.length - 2) / 2} bytes`);
+  console.log(`  nonce:    ${BigInt(nonceHex)}`);
+  console.log(`  predicted: ${predictedAddress}`);
+
+  if (opts?.dryRun) {
+    console.log('[deployOCR] dryRun=true — stopping before prompt');
+    return { ok: true, dryRun: true, predictedAddress, from };
+  }
+
+  try {
+    const tx = (await eth.request({
+      method: 'eth_sendTransaction',
+      params: [{ from, data: initCode }],
+    })) as string;
+    console.log(`[deployOCR] tx submitted: ${tx}`);
+    console.log(`[deployOCR] contract will be at: ${predictedAddress}`);
+    console.log(`[deployOCR] next: bindWhelmEthResolver('${predictedAddress}')`);
+    showToast(`\u2713 Resolver deploying: ${predictedAddress.slice(0, 10)}\u2026`);
+    return { ok: true, tx, address: predictedAddress, from };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[deployOCR] failed:', msg);
+    return { error: msg };
+  }
+};
+(window as unknown as { deployOffchainResolver: typeof _deployOffchainResolver }).deployOffchainResolver = _deployOffchainResolver;
+(globalThis as unknown as { deployOffchainResolver: typeof _deployOffchainResolver }).deployOffchainResolver = _deployOffchainResolver;
+console.log('[ski] deployOffchainResolver hook installed — call deployOffchainResolver() from a funded ETH wallet to deploy the OffchainResolver contract. Follow with bindWhelmEthResolver().');
+
 // ── chainAt — canonical console resolver for chain@name identifiers ──
 //
 // Works for eth, sol, btc, tron, sui, and any other chain stored in
