@@ -2047,26 +2047,36 @@ const _delegateWhelmEthManagement = async (opts?: {
     console.log('[delegate] dryRun=true — stopping before prompt');
     return { ok: true, dryRun: true, from, operator };
   }
-  // Phantom's ETH provider is strict — wants chainId + gas estimate, or it
-  // returns "Missing or invalid parameters". Gather both before sending.
+  // Bind request to the provider so no this-rebinding can happen along the
+  // way — Brave Wallet has been observed proxying `.request()` calls via
+  // some shared window property even when we pick a non-Brave provider
+  // cleanly via EIP-6963.
+  const req = eth.request.bind(eth);
+  // Query chainId + ensure we're on mainnet. Skip eth_estimateGas entirely
+  // (hardcoded 60k works — setApprovalForAll on NameWrapper typically uses
+  // ~45k); some providers reject the estimate call outright in Brave.
   let chainIdHex = '0x1';
-  try { chainIdHex = (await eth.request({ method: 'eth_chainId' })) as string; } catch {}
-  let gasHex: string | undefined;
-  try {
-    gasHex = (await eth.request({
-      method: 'eth_estimateGas',
-      params: [{ from, to: NAME_WRAPPER, data, value: '0x0' }],
-    })) as string;
-    console.log(`[delegate] estimated gas: ${BigInt(gasHex)}`);
-  } catch (err) {
-    console.warn('[delegate] eth_estimateGas failed, wallet will estimate:', err);
+  try { chainIdHex = (await req({ method: 'eth_chainId' })) as string; } catch {}
+  if (chainIdHex !== '0x1') {
+    console.log(`[delegate] switching to mainnet (was ${chainIdHex})`);
+    try {
+      await req({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+      chainIdHex = '0x1';
+    } catch (err) {
+      console.warn('[delegate] chain switch failed:', err);
+    }
   }
   try {
-    const txParams: Record<string, unknown> = { from, to: NAME_WRAPPER, data, value: '0x0', chainId: chainIdHex };
-    if (gasHex) txParams.gas = gasHex;
-    const tx = (await eth.request({
+    const tx = (await req({
       method: 'eth_sendTransaction',
-      params: [txParams],
+      params: [{
+        from,
+        to: NAME_WRAPPER,
+        data,
+        value: '0x0',
+        gas: '0xea60', // 60k — generous for setApprovalForAll (~45k)
+        chainId: chainIdHex,
+      }],
     })) as string;
     console.log(`[delegate] tx submitted: ${tx}`);
     showToast(`\u2713 ${opts?.revoke ? 'Revoked' : 'Delegated'} to ${operator.slice(0, 10)}\u2026`);
