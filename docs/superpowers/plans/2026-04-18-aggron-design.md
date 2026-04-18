@@ -1,8 +1,8 @@
-# Claydol — SKI-Native Knowledge Graph Design
+# Aggron — SKI-Native Knowledge Graph Design
 
 **Voter 2 (SKI-native architect), 2026-04-18**
 
-**Status:** Parked design. Ship only if the red-team conditions below clear. Until then, the cheap path (extend Pokedex + Scribes to emit `memory/_graph.md`) is landing instead. See the Claydol swarm deliberation notes in the session log for voter transcripts.
+**Status:** Parked design. Ship only if the red-team conditions below clear. Until then, the cheap path (extend Pokedex + Scribes to emit `memory/_graph.md`) is landing instead. See the Aggron swarm deliberation notes in the session log for voter transcripts.
 
 A graph that thinks in DOs, Walrus blobs, and Pokemon arcs — not nodes.json.
 
@@ -10,8 +10,8 @@ A graph that thinks in DOs, Walrus blobs, and Pokemon arcs — not nodes.json.
 
 Five ingestion streams, all push-model, all idempotent by content hash:
 
-1. **Git stream** — `post-commit` hook pings `ClaydolIngestAgent` with `{sha, subject, files, diffStat}`. Subject regex parses `<Pokemon> <Move> — ...` for arc linkage.
-2. **GitHub stream** — existing `Pokedex` DO already observes issues; it forwards `issue.opened/closed/labeled/commented` to Claydol via a thin fanout.
+1. **Git stream** — `post-commit` hook pings `AggronIngestAgent` with `{sha, subject, files, diffStat}`. Subject regex parses `<Pokemon> <Move> — ...` for arc linkage.
+2. **GitHub stream** — existing `Pokedex` DO already observes issues; it forwards `issue.opened/closed/labeled/commented` to Aggron via a thin fanout.
 3. **Docs stream** — a Scribe agent walks `docs/superpowers/plans/*`, `docs/releases/*`, `memory/*.md` on a 10-min alarm, emits `{path, section-anchor, sha256, summary}` for changed files only. Summary is from Workers AI (`@cf/meta/llama-3.1-8b`), not OpenAI — keep the loop on-edge.
 4. **Move/TS source stream** — same Scribe, but emits symbol-level chunks (`module::function`, `exported const`) via a lightweight regex extractor. No tree-sitter WASM in the bundle — we don't need AST fidelity, we need reference edges.
 5. **Brando stream** — memory/ dir diffs + feedback/*.md entries. Each `feedback_*.md` becomes a first-class `decision` node.
@@ -30,27 +30,27 @@ Edges carry a `confidence ∈ [0,1]` and a `provenance` pointer (commit sha, doc
 
 Three tiers, each chosen for what it's actually good at:
 
-- **DO SQLite (hot graph)** — `ClaydolGraphAgent` singleton DO holds the working set: nodes + edges from the last 90 days, all open arcs, all decisions. SQLite FTS5 on node.summary. This is what subagents query.
-- **Walrus blob (cold, immutable snapshots)** — every 24h the DO serializes a compacted graph slice (CBOR, not JSON — edges are dense) and stores the blob-id on-chain in a Move `ClaydolEpoch` registry object. Anyone can replay history without trusting the DO.
-- **Move dynamic fields (truth anchors)** — only the `decision` and `package` nodes get on-chain mirrors, under a shared `ClaydolCanon` object. Gives us signed provenance for "did brando actually reject that idea" without bloating chain state.
+- **DO SQLite (hot graph)** — `AggronGraphAgent` singleton DO holds the working set: nodes + edges from the last 90 days, all open arcs, all decisions. SQLite FTS5 on node.summary. This is what subagents query.
+- **Walrus blob (cold, immutable snapshots)** — every 24h the DO serializes a compacted graph slice (CBOR, not JSON — edges are dense) and stores the blob-id on-chain in a Move `AggronEpoch` registry object. Anyone can replay history without trusting the DO.
+- **Move dynamic fields (truth anchors)** — only the `decision` and `package` nodes get on-chain mirrors, under a shared `AggronCanon` object. Gives us signed provenance for "did brando actually reject that idea" without bloating chain state.
 
 Seal-gate the Walrus blob only when a decision node touches guest/squid/cold-dest material — default is cleartext so scribes can replay.
 
 ## Compute Layer
 
-`ClaydolGraphAgent` (singleton DO, name `claydol`) owns writes + queries. Community detection runs in-DO via a streaming label-propagation pass on each commit — not Leiden (no igraph in Workers), but LPA on a 5k-node working set is cheap and converges in <50ms. The cohort label is the arc name when available, else a hash.
+`AggronGraphAgent` (singleton DO, name `aggron`) owns writes + queries. Community detection runs in-DO via a streaming label-propagation pass on each commit — not Leiden (no igraph in Workers), but LPA on a 5k-node working set is cheap and converges in <50ms. The cohort label is the arc name when available, else a hash.
 
-Heavy re-clustering (weekly) runs in a `ClaydolReaperAgent` child DO triggered by alarm, so the hot DO never blocks on it. Render is SSR'd SVG from the hot DO at `/api/claydol/render?cohort=hermes` — no client-side graph lib.
+Heavy re-clustering (weekly) runs in a `AggronReaperAgent` child DO triggered by alarm, so the hot DO never blocks on it. Render is SSR'd SVG from the hot DO at `/api/aggron/render?cohort=hermes` — no client-side graph lib.
 
 ## Agent Interface
 
 One DO fetch surface, three verbs:
 
-- `POST /claydol/ask` — `{query, cohort?, asOf?}` returns ranked node-ids + edges. Query language is a tiny DSL: `arc:stuck refs:"2PC-MPC"` — no SPARQL, no Cypher, no bureaucracy.
-- `POST /claydol/assert` — agents emit edges with provenance. Contradicts/supersedes require a `decision` node id.
-- `GET /claydol/trace/:nodeId` — full provenance chain back to commit/doc/quote. This is what killer-query #3 depends on.
+- `POST /aggron/ask` — `{query, cohort?, asOf?}` returns ranked node-ids + edges. Query language is a tiny DSL: `arc:stuck refs:"2PC-MPC"` — no SPARQL, no Cypher, no bureaucracy.
+- `POST /aggron/assert` — agents emit edges with provenance. Contradicts/supersedes require a `decision` node id.
+- `GET /aggron/trace/:nodeId` — full provenance chain back to commit/doc/quote. This is what killer-query #3 depends on.
 
-Subagents get a thin `claydolClient` helper; they never touch SQLite directly.
+Subagents get a thin `aggronClient` helper; they never touch SQLite directly.
 
 ## Three Killer Queries
 
@@ -79,7 +79,7 @@ Park this design until all three clear:
 
 ## Commit cadence (when/if activated)
 
-Lands as: `Claydol Rapid Spin — ClaydolGraphAgent DO scaffold`, then `Claydol Ancient Power — ingest streams`, then `Claydol Cosmic Power — query DSL + three killer queries`.
+Lands as: `Aggron Iron Defense — AggronGraphAgent DO scaffold`, then `Aggron Metal Sound — ingest streams`, then `Aggron Heavy Slam — query DSL + three killer queries`.
 
 ## Cheap alternative (shipping instead)
 
