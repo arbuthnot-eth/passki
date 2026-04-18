@@ -43,6 +43,7 @@
     "deploy:devnet": "bun run build && npx wrangler deploy --config wrangler.devnet.jsonc",
     "deploy": "bun update && bun run build && npx wrangler deploy",
     "smoke": "node scripts/devnet-smoke.mjs",
+    "squids": "bun scripts/squids.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build"
