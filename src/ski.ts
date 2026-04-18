@@ -1928,17 +1928,28 @@ const _deployOffchainResolver = async (opts?: {
   dryRun?: boolean;
 }) => {
   const DEFAULT_URL = 'https://sui.ski/ens-resolver/{sender}/{data}.json';
-  // Default signer set = eth@ultron alone (0xcaA8d6F0…882d, the IKA-derived
-  // ETH dWallet we already delegated whelm.eth management to).
-  //
-  // The Worker's ENS_SIGNER_PRIVATE_KEY hot-key was historically intended as
-  // a second signer but the full address was never checked into source —
-  // the handoff only records "0xe7AC32Bf…0a11". Once that address is
-  // reconstituted (or the key rotated and we capture the full address at
-  // rotation time), call addSigners('0x...') on the deployed contract.
-  const DEFAULT_SIGNERS = [
-    '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d', // eth@ultron — IKA dWallet, whelm.eth manager
+  // Default signer set: Worker's ENS_SIGNER_PRIVATE_KEY-derived address
+  // (hot signer — can sign every CCIP-read response in microseconds) plus
+  // eth@ultron (IKA-derived standing co-signer, threshold-gated, rotation
+  // authority post-deploy). Hot address fetched dynamically from
+  // /api/ens-signer-address so we never hardcode a stale value.
+  let DEFAULT_SIGNERS: string[] = [
+    '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d', // eth@ultron
   ];
+  if (!opts?.signers) {
+    try {
+      const r = await fetch('/api/ens-signer-address');
+      const j = (await r.json()) as { address?: string; error?: string };
+      if (j.address && /^0x[0-9a-f]{40}$/.test(j.address)) {
+        DEFAULT_SIGNERS = [j.address, '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d'];
+        console.log(`[deployOCR] fetched hot signer: ${j.address}`);
+      } else {
+        console.warn('[deployOCR] hot signer fetch failed, using ultron-only:', j.error ?? 'no address');
+      }
+    } catch (err) {
+      console.warn('[deployOCR] hot signer fetch threw, using ultron-only:', err);
+    }
+  }
   const url = opts?.url ?? DEFAULT_URL;
   const signers = (opts?.signers ?? DEFAULT_SIGNERS).map((s) => s.toLowerCase());
 

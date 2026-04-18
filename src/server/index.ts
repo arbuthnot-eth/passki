@@ -261,6 +261,10 @@ app.post('/ens-resolver/:sender/:data', async (c) => {
   const { handleEnsCcipRead } = await import('./ens-resolver.js');
   return handleEnsCcipRead(c);
 });
+app.get('/api/ens-signer-address', async (c) => {
+  const { handleEnsSignerAddress } = await import('./ens-resolver.js');
+  return handleEnsSignerAddress(c);
+});
 
 // Test: can IKA WASM run in CF Workers?
 app.get('/api/test-ika-wasm', async (c) => {

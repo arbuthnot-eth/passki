@@ -351,6 +351,24 @@ function encodeTextResult(value: string): Uint8Array {
   return hexToBytes(encodeAbiParameters([{ type: 'string' }], [value]));
 }
 
+// ─── Signer-address helper — derives the public ETH address that the
+// Worker signs CCIP-read responses from. Called by deployOffchainResolver
+// to stamp the correct signer into the contract's constructor.
+
+export async function handleEnsSignerAddress(c: Context): Promise<Response> {
+  const signerHex = (c.env as any).ENS_SIGNER_PRIVATE_KEY as string | undefined;
+  if (!signerHex) return c.json({ error: 'ENS_SIGNER_PRIVATE_KEY not configured' }, 500);
+  try {
+    const priv = privateKeyBytes(signerHex);
+    const pub = secp256k1.getPublicKey(priv, false); // uncompressed, 65 bytes (0x04 || X || Y)
+    const addrBytes = keccak_256(pub.slice(1)).slice(-20);
+    const addr = '0x' + bytesToHex(addrBytes).slice(2);
+    return c.json({ address: addr.toLowerCase() });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+}
+
 // ─── Main handler ───────────────────────────────────────────────────
 
 export async function handleEnsCcipRead(c: Context): Promise<Response> {
