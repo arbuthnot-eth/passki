@@ -36,11 +36,14 @@ const SEL_ADDR            = '0x3b3b57de'; // addr(bytes32)
 const SEL_ADDR_COINTYPE   = '0xf1cb7e06'; // addr(bytes32,uint256)
 const SEL_TEXT            = '0x59d1d43c'; // text(bytes32,string)
 
-// SLIP-44 coin types we support natively. Sui has no SLIP-44 slot yet,
-// so Sui addresses come through a `text("sui")` lookup instead.
+// SLIP-44 coin types we support natively. Sui's community-agreed
+// coin type (proposed registry + Ensuro + Fluidkey tooling) is 784;
+// we also keep the `text("sui")` fallback for wallets that haven't
+// adopted the coinType path.
 const COIN_ETH = 60n;
 const COIN_BTC = 0n;
 const COIN_SOL = 501n;
+const COIN_SUI = 784n;
 
 // Parents this gateway serves subnames under. New entries go live the
 // moment L1 binds `ENS.setResolver(namehash(<parent>), gatewayAddr)`.
@@ -478,7 +481,8 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
         const chainOk =
           (coinType === COIN_ETH && stealth.chain === 'eth') ||
           (coinType === COIN_BTC && stealth.chain === 'btc') ||
-          (coinType === COIN_SOL && stealth.chain === 'sol');
+          (coinType === COIN_SOL && stealth.chain === 'sol') ||
+          (coinType === COIN_SUI && stealth.chain === 'sui');
         if (!chainOk) {
           result = encodeAddrCoinTypeResult(null);
         } else if (coinType === COIN_ETH) {
@@ -520,7 +524,8 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
         const chainOk =
           (coinType === COIN_ETH && guest.chain === 'eth') ||
           (coinType === COIN_BTC && guest.chain === 'btc') ||
-          (coinType === COIN_SOL && guest.chain === 'sol');
+          (coinType === COIN_SOL && guest.chain === 'sol') ||
+          (coinType === COIN_SUI && guest.chain === 'sui');
         if (!chainOk) {
           result = encodeAddrCoinTypeResult(null);
         } else if (coinType === COIN_ETH) {
@@ -594,6 +599,12 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
         sol = await resolveSolFromCaps(record.dwallet_caps);
       }
       result = encodeAddrCoinTypeResult(sol ? bytesToHex(new TextEncoder().encode(sol)) : null);
+    } else if (coinType === COIN_SUI) {
+      // Sui-side ultron/brando/etc address. Take from chains map if
+      // explicitly publicized, else fall back to the record's
+      // sui_address (always set when the record exists).
+      const sui = chainKey('sui') ?? record.sui_address ?? null;
+      result = encodeAddrCoinTypeResult(sui ? bytesToHex(new TextEncoder().encode(sui)) : null);
     } else {
       result = encodeAddrCoinTypeResult(null);
     }
