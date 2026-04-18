@@ -104,33 +104,7 @@ const OVERCOLLATERAL_BPS = 11000; // 110% — policy target (TS)
 // which address the move call references.
 const ONCHAIN_MIN_RATIO_BPS = 11000; // 110% — matches deployed bytecode after upgrade
 
-// ─── QuestFi: Agent Economics ────────────────────────────────────────
-// Parent keeps 1% of all deployed amounts, redistributes based on performance.
-// Lazy agents die at threshold, bold RWA-focused agents spawn to replace them.
-const PARENT_CUT_BPS = 100;           // 1% of deployed goes to parent cache
-const DEATH_THRESHOLD_RUNS = 50;      // agents with 50+ runs and no profit get culled
-const DEATH_THRESHOLD_PROFIT = 0n;    // must have positive lifetime profit to survive
-
-// RWA tokens the bold new agents hunt for as collateral
-const RWA_TARGETS = ['XAUM', 'XAGM', 'TSLAx', 'NVIDIA', 'META'] as const;
-
 // ─── Types ────────────────────────────────────────────────────────────
-
-// ─── t2000 Agent Registry ─────────────────────────────────────────────
-
-interface T2000Agent {
-  designation: string;
-  mission: 'arb' | 'sweep' | 'snipe' | 'farm' | 'watch' | 'route' | 'storm';
-  objectId: string;        // on-chain T2000 object ID
-  dwalletId: string;       // IKA dWallet controlling this agent
-  operator: address;
-  deployed_ms: number;
-  total_profit_iusd: string; // measured in iUSD (dollars)
-  last_run_ms: number;
-  runs: number;
-  active: boolean;
-  focus?: string[];         // RWA targets for bold agents (e.g. ['XAUM', 'TSLAx'])
-}
 
 type address = string;
 
@@ -202,7 +176,6 @@ interface SquidStats {
 export interface TreasuryAgentsState {
   positions: YieldPosition[];
   arb_history: ArbOpportunity[];
-  t2000s: T2000Agent[];
   total_arb_profit_mist: string;
   total_yield_earned_mist: string;
   last_rebalance_ms: number;
@@ -285,7 +258,6 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   initialState: TreasuryAgentsState = {
     positions: [],
     arb_history: [],
-    t2000s: [],
     total_arb_profit_mist: '0',
     total_yield_earned_mist: '0',
     last_rebalance_ms: 0,
@@ -350,16 +322,6 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const isWebSocket = request.headers.get('upgrade') === 'websocket';
     if (!isReadOnly && !isWebSocket && !this.verifyInternalAuth(request)) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 403, headers: { 'content-type': 'application/json' } });
-    }
-
-    if ((url.pathname.endsWith('/register-t2000') || url.searchParams.has('register-t2000')) && request.method === 'POST') {
-      try {
-        const params = await request.json() as Parameters<typeof this.registerT2000>[0];
-        const result = await this.registerT2000(params);
-        return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
-      }
     }
 
     // Shade — lock iUSD for grace-period name sniping
@@ -1935,12 +1897,6 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
-    if (url.pathname.endsWith('/t2000s') || url.searchParams.has('t2000s')) {
-      return new Response(JSON.stringify({ agents: this.state.t2000s ?? [] }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-
     // Cache state — iUSD supply, collateral, ratio, surplus above 110%
     if (url.pathname.endsWith('/cache-state') || url.searchParams.has('cache-state')) {
       try {
@@ -1979,7 +1935,6 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       return new Response(JSON.stringify({
         positions: this.state.positions,
         arb_count: this.state.arb_history.length,
-        t2000_count: (this.state.t2000s ?? []).filter(a => a.active).length,
         total_arb_profit: this.state.total_arb_profit_mist,
         total_yield_earned: this.state.total_yield_earned_mist,
         last_rebalance: this.state.last_rebalance_ms,
@@ -2423,12 +2378,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     });
 
     try {
-      // Every tick: scan for arb + run t2000 missions + retry open Quests + deliberate Shades + sweep NS
+      // Every tick: scan for arb + retry open Quests + deliberate Shades + sweep NS
       // SOL deposits: primary path is Helius webhook, but poll as
       // fallback in case the webhook didn't fire (key expired, outage).
       await this._watchSolDeposits();
       await this._scanArb();
-      await this._runT2000Missions();
       await this._retryOpenQuests();
       await this._retryStrandedRegistrations();
       await this._deliberateShades();
@@ -3388,9 +3342,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   // ─── Yield Rotator ──────────────────────────────────────────────────
   //
-  // t2000 farm agents prowl for the best yield across NAVI, Scallop, and
-  // DeepBook. They deploy surplus above 110% overcollateralization.
-  // The cache keeps 110% backing — everything above is fair game.
+  // Prowls for the best yield across NAVI, Scallop, and DeepBook. Deploys
+  // surplus above 110% overcollateralization. The cache keeps 110%
+  // backing — everything above is fair game.
 
   private async _yieldRotate(): Promise<{ deployed?: string; venue?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
@@ -3401,7 +3355,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       console.log(`[TreasuryAgents:yield] Cache state: supply=${cache.supply}, collateral=${cache.total}, ratio=${cache.ratioBps}bps, surplus=${cache.surplusMist}`);
 
       if (cache.surplusMist <= 0n) {
-        console.log('[TreasuryAgents:yield] No surplus above 110% — t2000s standing down');
+        console.log('[TreasuryAgents:yield] No surplus above 110% — standing down');
         return { error: 'No surplus above 110%' };
       }
 
@@ -3645,261 +3599,6 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   @callable()
   async getArbHistory(): Promise<ArbOpportunity[]> {
     return this.state.arb_history;
-  }
-
-  // ─── t2000 Agent Management ──────────────────────────────────────────
-
-  /** Register a deployed t2000 agent. Called after on-chain deploy(). */
-  @callable()
-  async registerT2000(params: {
-    designation: string;
-    mission: T2000Agent['mission'];
-    objectId: string;
-    dwalletId: string;
-    operator: string;
-    callerAddress?: string;
-  }): Promise<{ success: boolean }> {
-    const authErr = this.requireUltronCaller(params.callerAddress);
-    if (authErr) return { success: false };
-    const existing = (this.state.t2000s ?? []).find(a => a.objectId === params.objectId);
-    if (existing) return { success: false };
-
-    const agent: T2000Agent = {
-      ...params,
-      deployed_ms: Date.now(),
-      total_profit_iusd: '0',
-      last_run_ms: 0,
-      runs: 0,
-      active: true,
-    };
-
-    this.setState({
-      ...this.state,
-      t2000s: [...(this.state.t2000s ?? []), agent],
-    });
-
-    console.log(`[TreasuryAgents] t2000 registered: ${params.designation} (${params.mission})`);
-    return { success: true };
-  }
-
-  /** Deactivate a t2000 agent. */
-  @callable()
-  async deactivateT2000(params: { objectId: string; callerAddress?: string }): Promise<{ success: boolean }> {
-    const authErr = this.requireUltronCaller(params.callerAddress);
-    if (authErr) return { success: false };
-    this.setState({
-      ...this.state,
-      t2000s: (this.state.t2000s ?? []).map(a =>
-        a.objectId === params.objectId ? { ...a, active: false } : a,
-      ),
-    });
-    return { success: true };
-  }
-
-  /** Get all registered t2000 agents. */
-  @callable()
-  async getT2000s(): Promise<T2000Agent[]> {
-    return this.state.t2000s ?? [];
-  }
-
-  /** QuestFi: Execute quests for all active agents. Parent keeps 1%, redistributes by performance.
-   *  Lazy agents die. Bold RWA-focused agents spawn to replace them. */
-  private async _runT2000Missions() {
-    const agents = (this.state.t2000s ?? []).filter(a => a.active);
-    if (agents.length === 0) return;
-
-    let totalProfitIusd = 0n; // parent accumulates 1% of all activity (measured in iUSD)
-
-    for (const agent of agents) {
-      try {
-        let agentProfitIusd = 0n; // per-agent profit, measured in iUSD (dollars)
-
-        switch (agent.mission) {
-          case 'arb':
-            await this._scanArb();
-            break;
-
-          case 'sweep': {
-            const sweepResult = await this.sweepFees();
-            if (sweepResult.swept && sweepResult.amount) {
-              // Convert MIST to iUSD estimate (1 SUI ≈ price * 1e9 MIST)
-              agentProfitIusd = BigInt(sweepResult.amount) / 1_000_000_000n; // rough $1/SUI
-            }
-            break;
-          }
-
-          case 'farm': {
-            const farmResult = await this._yieldRotate();
-            if (farmResult.deployed) {
-              // deployed is already in iUSD-scale (MIST for iUSD = 1e9 per dollar)
-              agentProfitIusd = BigInt(farmResult.deployed);
-            }
-            break;
-          }
-
-          case 'watch':
-            break;
-
-          case 'route':
-            break;
-
-          case 'storm':
-            break;
-
-          case 'snipe':
-            break;
-        }
-
-        // Parent takes 1% cut — cache keeps the spread
-        const parentCut = agentProfitIusd * BigInt(PARENT_CUT_BPS) / 10000n;
-        const agentShare = agentProfitIusd - parentCut;
-        totalProfitIusd += parentCut;
-
-        // Update agent stats (all measured in iUSD)
-        this.setState({
-          ...this.state,
-          t2000s: (this.state.t2000s ?? []).map(a => {
-            if (a.objectId !== agent.objectId) return a;
-            return {
-              ...a,
-              last_run_ms: Date.now(),
-              runs: a.runs + 1,
-              total_profit_iusd: String(BigInt(a.total_profit_iusd) + agentShare),
-            };
-          }),
-        });
-
-        // Report profit on-chain if significant (> $0.01 iUSD)
-        if (agentShare > 10_000_000n && this.env.SHADE_KEEPER_PRIVATE_KEY) {
-          try {
-            const keypair = ultronKeypair(this.env);
-            const ultronAddr = keypair.getPublicKey().toSuiAddress();
-            const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-            const T2000_PKG = '0x1a160f225ae758173f0ab7bf42db0f8d658a13c728051763754204219828f3ca';
-            const T2000_ARMORY = '0xc78197ce97f89833e5da857cc4da41e7d71163c259128350c8c145a1ecfc67e5';
-
-            const tx = new Transaction();
-            tx.setSender(normalizeSuiAddress(ultronAddr));
-
-            // v2 derived agents use report_quest (idx-based), v1 use report_mission (object-based)
-            const isV2 = agent.objectId.startsWith('spawn-') || typeof (agent as any).focus !== 'undefined';
-            if (isV2) {
-              // Parse idx from objectId: "spawn-{timestamp}-{random}" → use agent index from state
-              const idx = (this.state.t2000s ?? []).indexOf(agent);
-              tx.moveCall({
-                package: T2000_PKG,
-                module: 't2000',
-                function: 'report_quest',
-                arguments: [
-                  tx.object(T2000_ARMORY),
-                  tx.pure.u64(idx >= 0 ? idx : 0),
-                  tx.pure.vector('u8', Array.from(new TextEncoder().encode(agent.mission))),
-                  tx.pure.u64(agentShare),
-                  tx.object('0x6'),
-                ],
-              });
-            } else {
-              tx.moveCall({
-                package: T2000_PKG,
-                module: 't2000',
-                function: 'report_mission',
-                arguments: [
-                  tx.object(agent.objectId),
-                  tx.pure.vector('u8', Array.from(new TextEncoder().encode(agent.mission))),
-                  tx.pure.u64(agentShare),
-                  tx.object('0x6'),
-                ],
-              });
-            }
-
-            const txBytes = await tx.build({ client: transport as never });
-            const { signature } = await keypair.signTransaction(txBytes);
-            await this._submitTx(txBytes, signature);
-            console.log(`[QuestFi:${agent.designation}] Reported $${Number(agentShare) / 1e9} iUSD profit on-chain`);
-          } catch (err) {
-            console.error(`[QuestFi:${agent.designation}] report failed:`, err);
-          }
-        }
-      } catch (err) {
-        console.error(`[QuestFi:${agent.designation}] quest failed:`, err);
-      }
-    }
-
-    // ─── Natural Selection: cull lazy agents, spawn bold ones ──────────
-    await this._cullAndSpawn();
-
-    // Parent profit goes to cache (iUSD yield earned)
-    if (totalProfitIusd > 0n) {
-      this.setState({
-        ...this.state,
-        total_yield_earned_mist: String(BigInt(this.state.total_yield_earned_mist) + totalProfitIusd),
-      });
-      console.log(`[QuestFi:parent] Cache earned $${Number(totalProfitIusd) / 1e9} iUSD from agent activity`);
-    }
-  }
-
-  /** Cull underperforming agents, spawn bold RWA-focused replacements. */
-  private async _cullAndSpawn() {
-    const agents = this.state.t2000s ?? [];
-    const toKill: string[] = [];
-
-    for (const agent of agents) {
-      if (!agent.active) continue;
-      // Death threshold: 50+ runs and zero or negative profit
-      if (agent.runs >= DEATH_THRESHOLD_RUNS && BigInt(agent.total_profit_iusd) <= DEATH_THRESHOLD_PROFIT) {
-        console.log(`[QuestFi:cull] ${agent.designation} dies — ${agent.runs} runs, $${Number(BigInt(agent.total_profit_iusd)) / 1e9} iUSD profit. Pathetic.`);
-        toKill.push(agent.objectId);
-      }
-    }
-
-    if (toKill.length === 0) return;
-
-    // Kill the lazy ones
-    const updated = agents.map(a =>
-      toKill.includes(a.objectId) ? { ...a, active: false } : a,
-    );
-
-    // Spawn bold RWA-focused replacements
-    for (const deadId of toKill) {
-      const dead = agents.find(a => a.objectId === deadId);
-      if (!dead) continue;
-
-      // Pick an RWA focus using crypto.getRandomValues for an
-      // unbiased selection. Math.random was front-runnable and
-      // statistically skewed under the sort-comparator shuffle.
-      const _rand32 = () => { const u = new Uint32Array(1); crypto.getRandomValues(u); return u[0] / 0x100000000; };
-      const focusCount = 2 + Math.floor(_rand32() * (RWA_TARGETS.length - 1));
-      // Fisher-Yates with secure randomness — unbiased permutation
-      // where the Array.sort(_ => Math.random() - 0.5) idiom was not.
-      const shuffled = [...RWA_TARGETS];
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(_rand32() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-      }
-      const focus = shuffled.slice(0, focusCount);
-
-      const _idBytes = new Uint8Array(6);
-      crypto.getRandomValues(_idBytes);
-      const _idSuffix = Array.from(_idBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-      const spawn: T2000Agent = {
-        designation: `${dead.designation}-mk${dead.runs}`,
-        mission: 'farm', // RWA agents are farmers — hunt for tokenized collateral
-        objectId: `spawn-${Date.now()}-${_idSuffix}`,
-        dwalletId: dead.dwalletId, // inherit dWallet
-        operator: dead.operator,
-        deployed_ms: Date.now(),
-        total_profit_iusd: '0',
-        last_run_ms: 0,
-        runs: 0,
-        active: true,
-        focus,
-      };
-
-      updated.push(spawn);
-      console.log(`[QuestFi:spawn] ${spawn.designation} born — no altcoins, hunting ${focus.join(', ')}`);
-    }
-
-    this.setState({ ...this.state, t2000s: updated });
   }
 
   // ─── IKA DKG (emergency provisioning) ────────────────────────────────
@@ -4704,8 +4403,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
         throw new Error(
           `Cache has $${totalUsd.toFixed(2)}, need $${fundingUsd.toFixed(2)} (short $${shortfall.toFixed(2)}). ` +
-          `Send ${Math.ceil(shortfall / suiPrice * 1.1)} SUI or ${Math.ceil(shortfall)} USDC to ${ultronAddr.slice(0, 10)}… — ` +
-          `t2000s earn iUSD credit for fronting USDC`
+          `Send ${Math.ceil(shortfall / suiPrice * 1.1)} SUI or ${Math.ceil(shortfall)} USDC to ${ultronAddr.slice(0, 10)}…`
         );
       }
 
@@ -7076,10 +6774,10 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   };
 
   /**
-   * Fulfill an ignite request — t2000 consensus + IKA dWallet execution.
+   * Fulfill an ignite request — IKA dWallet execution.
    *
    * 1. Validate the request (chain supported, payment sufficient)
-   * 2. Fan out to t2000 DOs for consensus vote (off-chain, HTTP)
+   * 2. Fan out to agent DOs for consensus vote (off-chain, HTTP)
    * 3. Quilt all votes to Walrus
    * 4. If supermajority approves: sign native gas tx via IKA 2PC-MPC
    * 5. Call ignite_resp on-chain with target tx hash + quilt blob ID
@@ -7104,7 +6802,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       return { error: `Underpaid: ${iusdBurned} iUSD < min ${gasInfo.minIusd} for ${chain}` };
     }
 
-    // TODO Phase 2: Fan out to t2000 DOs for consensus votes
+    // TODO Phase 2: Fan out to agent DOs for consensus votes
     // For now, ultron auto-approves (single agent, no fleet yet)
     const votes = [{
       agent: 'ultron.sui',
@@ -7393,16 +7091,6 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const sig = await keypair.signTransaction(txBytes);
       const digest = await this._submitTx(txBytes, sig.signature);
       console.log(`[TreasuryAgents] Pre-Rumbled for ${bare}.sui: ${digest}${source ? ` (${source})` : ''}`);
-
-      // QuestFi attribution — credit snipe agents for pre-trade provisioning
-      if (source === 'questfi-snipe') {
-        const sniper = (this.state.t2000s ?? []).find(a => a.active && a.mission === 'snipe');
-        if (sniper) {
-          sniper.runs = (sniper.runs || 0) + 1;
-          sniper.last_run_ms = Date.now();
-          console.log(`[QuestFi:${sniper.designation}] Pre-rumbled ${bare}.sui — run #${sniper.runs}`);
-        }
-      }
 
       // ── Squid counter — track per-chain + geo ──────────────────────────
       const squids: SquidStats = this.state.squids ?? { total: 0, by_chain: { sui: 0, btc: 0, eth: 0, sol: 0 }, iusd_minted: 0, geo: [] };
