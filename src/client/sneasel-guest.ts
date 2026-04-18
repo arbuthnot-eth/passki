@@ -237,42 +237,226 @@ export async function sealEncryptColdDestLegacy(params: {
 }
 
 /**
- * Mint a fresh per-guest intermediate dWallet. Ice Fang property:
- * every guest gets its OWN intermediate, never shared with ultron's
- * broker cluster and never shared across guests.
+ * Sneasel Icy Wind — per-guest IKA DKG.
  *
- * TODO(Sneasel Icy Wind): replace stub with real IKA dWallet DKG per
- * guest — should reuse the `rumble` machinery with a fresh DKG session
- * keyed on (parentHash, label). The current return is a deterministic
- * placeholder derived from (parentHash, label, chain) so tests and
- * integration wiring can reference a stable intermediateAddr without
- * waiting on Icy Wind. It is clearly marked `0xICE_FANG_STUB_` so a
- * grep catches any accidental mainnet use.
+ * Ice Fang property: every guest gets its OWN intermediate dWallet,
+ * never shared with ultron's broker cluster and never shared across
+ * guests. Icy Wind replaces the Ice Fang stub with a real IKA DKG
+ * ceremony per guest, keyed on a deterministic (parentHash, label)
+ * encryption seed so the seed is reproducible but the DKG output
+ * (public key, address) is non-deterministic (the IKA network
+ * contributes randomness).
+ *
+ * Flow (real path):
+ *   1. Resolve chain → IKA curve (secp256k1 for BTC/ETH/Sui/Tron/Base/
+ *      Polygon/Arbitrum, ed25519 for Sol/Sui-ed25519).
+ *   2. Derive a 32-byte encryption seed = sha256("sneasel-icy-wind" ||
+ *      parentHash || label || chain). Deterministic per guest so a
+ *      keeper can re-derive keys without a side-channel.
+ *   3. Call `provisionDWallet(signerAddress, { requestedCurve, targetOwner:
+ *      sweepDelegate, encryptionSeed, signTransaction, signAndExecuteTransaction })`.
+ *      Reuses all of the existing rumble machinery — no new DKG logic.
+ *   4. Read back the newly-active CrossChainStatus, pick the chain-native
+ *      address (btc/eth/sol) matching the requested chain, and grab the
+ *      freshly-minted DWalletCap id.
+ *
+ * Ownership: `sweepDelegate` receives the DWalletCap via `targetOwner`,
+ * so ultron.sui (Sui-side sweep delegate) gets sign authority.
+ *
+ * NOTE: `sweepDelegate` is the Sui-side cap owner, NOT the eth@ultron
+ * 0xcaA… address. Callers must pass ultron.sui (e.g.
+ * 0x9872c1f5…b285f7). ETH-side sweep delegation is a separate concern
+ * handled by Pursuit DO at sign-time.
+ */
+import type { Curve as IkaCurveType } from '@ika.xyz/sdk';
+import { deriveAddress as deriveChainAddr, resolveChain, IkaCurve } from './chains.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+
+const ICY_WIND_SEED_DOMAIN = new TextEncoder().encode('sneasel-icy-wind');
+
+/** Derive the deterministic per-guest encryption seed. Same (parent,label,chain)
+ *  always produces the same 32 bytes. Keeper re-derives this from its copy
+ *  of the parentHash + label to reconstruct user-share encryption keys. */
+export function deriveIcyWindSeed(params: {
+  parentHash: Uint8Array;
+  label: string;
+  chain: string;
+}): Uint8Array {
+  const labelBytes = new TextEncoder().encode(params.label);
+  const chainBytes = new TextEncoder().encode(params.chain);
+  const buf = new Uint8Array(
+    ICY_WIND_SEED_DOMAIN.length + params.parentHash.length + labelBytes.length + chainBytes.length,
+  );
+  let off = 0;
+  buf.set(ICY_WIND_SEED_DOMAIN, off); off += ICY_WIND_SEED_DOMAIN.length;
+  buf.set(params.parentHash, off); off += params.parentHash.length;
+  buf.set(labelBytes, off); off += labelBytes.length;
+  buf.set(chainBytes, off);
+  return sha256(buf);
+}
+
+/** Map a Sneasel chain string to an IKA curve. Throws on unsupported. */
+function chainToIkaCurve(chain: string): 'secp256k1' | 'ed25519' {
+  const cfg = resolveChain(chain);
+  if (cfg.curve === IkaCurve.SECP256K1) return 'secp256k1';
+  if (cfg.curve === IkaCurve.ED25519) return 'ed25519';
+  throw new Error(`[sneasel:icy-wind] unsupported curve for chain ${chain}`);
+}
+
+/**
+ * Dry-run preview of `mintGuestIntermediate`. Does NOT hit the IKA
+ * network — returns the deterministic seed + the curve that would be
+ * used, plus a stable `previewAddr` for UI display before the user
+ * commits to signing a DKG tx.
+ *
+ * previewAddr is clearly marked `0xICY_WIND_PREVIEW_` so callers can't
+ * accidentally bind it on-chain.
+ */
+export function mintGuestIntermediateDryRun(params: {
+  chain: string;
+  parentHash: Uint8Array;
+  label: string;
+}): {
+  chain: string;
+  curve: 'secp256k1' | 'ed25519';
+  seedHex: string;
+  previewAddr: string;
+} {
+  if (params.parentHash.length !== 32) {
+    throw new Error(`[sneasel:icy-wind] parentHash must be 32 bytes, got ${params.parentHash.length}`);
+  }
+  if (!params.label) throw new Error('[sneasel:icy-wind] label required');
+  const curve = chainToIkaCurve(params.chain);
+  const seed = deriveIcyWindSeed(params);
+  const seedHex = Array.from(seed).map((b) => b.toString(16).padStart(2, '0')).join('');
+  // Preview addr = first 16 bytes of seed, folded with chain — purely
+  // cosmetic, never a real address. Different per (parent,label,chain)
+  // so the stub-uniqueness property the Ice Fang test relied on holds.
+  const previewAddr = `0xICY_WIND_PREVIEW_${seedHex.slice(0, 32)}`;
+  return { chain: params.chain, curve, seedHex, previewAddr };
+}
+
+/** Callbacks required to drive a real per-guest DKG. Mirrors the
+ *  `ProvisionCallbacks` shape from `./ika.ts` but narrowed to what
+ *  Icy Wind needs — the caller (UI) wires their wallet. */
+export interface IcyWindCallbacks {
+  /** Address that will submit the DKG tx (the parent — brando.sui /
+   *  whelm.eth owner's Sui side). Must own SUI + IKA, or be eligible
+   *  for sponsored gas via `/api/ika/provision`. */
+  signerAddress: string;
+  /** Sign-only (Phantom/Backpack sponsored path). */
+  signTransaction: (txBytes: Uint8Array) => Promise<{ signature: string }>;
+  /** Sign + execute (WaaP path). */
+  signAndExecuteTransaction: (txBytes: Uint8Array) => Promise<{ digest: string; effects?: unknown }>;
+  isWaap?: boolean;
+  onStatus?: (msg: string) => void;
+}
+
+/**
+ * Mint a fresh per-guest intermediate dWallet via real IKA DKG.
+ *
+ * Requires `SUIAMI_STEALTH_PKG` to be set (so bound entries have a
+ * policy to approve against) and an IKA-ready signer. Returns the
+ * chain-native intermediate address + the DWalletCap object id now
+ * owned by `sweepDelegate`.
+ *
+ * Throws cleanly (not the old stub) if the env isn't ready — the
+ * companion `mintGuestIntermediateDryRun` exists for preview paths
+ * that must not submit.
  */
 export async function mintGuestIntermediate(params: {
   chain: string;
   parentHash: Uint8Array;
   label: string;
-}): Promise<{ intermediateAddr: string; intermediateCapId: string | null }> {
-  // Deterministic stub: hex of sha-ish concat. Not cryptographic — just
-  // a stable, recognizably-fake address string. Real impl will return
-  // the IKA dWallet's chain-native address + its DWalletCap object id.
-  const labelBytes = new TextEncoder().encode(params.label);
-  const seed = new Uint8Array(params.parentHash.length + labelBytes.length + params.chain.length);
-  seed.set(params.parentHash, 0);
-  seed.set(labelBytes, params.parentHash.length);
-  seed.set(new TextEncoder().encode(params.chain), params.parentHash.length + labelBytes.length);
-  // Simple xor-fold so the label actually affects the first 16 bytes
-  // of the stub addr (parentHash alone would shadow short labels).
-  const folded = new Uint8Array(16);
-  for (let i = 0; i < seed.length; i += 1) {
-    folded[i % 16] ^= seed[i];
+  sweepDelegate: string;
+  callbacks: IcyWindCallbacks;
+}): Promise<{ intermediateAddr: string; intermediateCapId: string | null; chain: string }> {
+  if (!SUIAMI_STEALTH_PKG) {
+    throw new Error(
+      '[sneasel:icy-wind] SUIAMI_STEALTH_PKG not set — refusing to mint a ' +
+      'per-guest dWallet we cannot bind. Land the Move upgrade first.',
+    );
   }
-  const hex = Array.from(folded)
-    .map((x) => x.toString(16).padStart(2, '0'))
-    .join('');
-  const intermediateAddr = `0xICE_FANG_STUB_${hex}`;
-  return { intermediateAddr, intermediateCapId: null };
+  if (params.parentHash.length !== 32) {
+    throw new Error(`[sneasel:icy-wind] parentHash must be 32 bytes, got ${params.parentHash.length}`);
+  }
+  if (!params.label) throw new Error('[sneasel:icy-wind] label required');
+  if (!params.sweepDelegate) throw new Error('[sneasel:icy-wind] sweepDelegate required');
+  if (!params.callbacks?.signerAddress) {
+    throw new Error('[sneasel:icy-wind] callbacks.signerAddress required — need a funded IKA signer');
+  }
+
+  // Resolve curve + derive the deterministic per-guest encryption seed.
+  const preview = mintGuestIntermediateDryRun({
+    chain: params.chain,
+    parentHash: params.parentHash,
+    label: params.label,
+  });
+
+  // Dynamic import of ika.ts so tests that only exercise dry-run / guard
+  // paths don't drag the full IKA SDK + WASM into the module graph.
+  const ika = await import('./ika.js');
+  const ikaCurve: IkaCurveType = preview.curve === 'ed25519' ? ika.Curve.ED25519 : ika.Curve.SECP256K1;
+  const seed = deriveIcyWindSeed({
+    parentHash: params.parentHash,
+    label: params.label,
+    chain: params.chain,
+  });
+
+  params.callbacks.onStatus?.(`[icy-wind] DKG ${preview.curve} for ${params.label}…`);
+
+  // Real DKG — targetOwner is the sweepDelegate so ultron ends up
+  // holding the DWalletCap directly, no second-step transfer needed.
+  const status = await ika.provisionDWallet(params.callbacks.signerAddress, {
+    signTransaction: params.callbacks.signTransaction,
+    signAndExecuteTransaction: params.callbacks.signAndExecuteTransaction,
+    isWaap: params.callbacks.isWaap,
+    onStatus: params.callbacks.onStatus,
+    requestedCurve: ikaCurve,
+    targetOwner: params.sweepDelegate,
+    encryptionSeed: seed,
+  });
+
+  // Pick the chain-native address out of the post-DKG status.
+  let intermediateAddr = '';
+  if (preview.curve === 'ed25519') {
+    intermediateAddr = status.solAddress;
+  } else {
+    // secp256k1 family — pick based on caller's chain.
+    const chainCfg = resolveChain(params.chain);
+    if (chainCfg.name === 'Ethereum' || chainCfg.name === 'Base' ||
+        chainCfg.name === 'Polygon' || chainCfg.name === 'Arbitrum' ||
+        chainCfg.name === 'Optimism') {
+      intermediateAddr = status.ethAddress;
+    } else if (chainCfg.name === 'Bitcoin') {
+      intermediateAddr = status.btcAddress;
+    } else {
+      // Fallback: find by name in status.addresses, else re-derive from
+      // scratch (provisionDWallet only populates btc/eth/sol fast paths).
+      const hit = status.addresses.find((a) => a.name === chainCfg.name);
+      intermediateAddr = hit?.address ?? '';
+    }
+  }
+  if (!intermediateAddr) {
+    throw new Error(
+      `[sneasel:icy-wind] DKG completed but no ${params.chain} address derived — ` +
+      'check CrossChainStatus.addresses and extend the chain switch if needed.',
+    );
+  }
+
+  // The DWalletCap now owned by sweepDelegate — grab the most recent one.
+  // status.dwalletCaps is the signer's caps; we want the recipient's.
+  let intermediateCapId: string | null = null;
+  try {
+    const recipStatus = await ika.getCrossChainStatus(params.sweepDelegate);
+    intermediateCapId = recipStatus.dwalletCaps[recipStatus.dwalletCaps.length - 1] ?? null;
+  } catch {
+    // Non-fatal — caller may resolve via on-chain query later.
+    intermediateCapId = null;
+  }
+
+  params.callbacks.onStatus?.(`[icy-wind] intermediate=${intermediateAddr.slice(0, 12)}…`);
+  return { intermediateAddr, intermediateCapId, chain: params.chain };
 }
 
 /**

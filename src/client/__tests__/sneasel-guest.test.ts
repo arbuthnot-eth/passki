@@ -110,21 +110,55 @@ describe('sealEncryptColdDest (Ice Fang v2)', () => {
   });
 });
 
-describe('mintGuestIntermediate (stub)', () => {
-  test('returns a stable, per-(parent,label) stub address', async () => {
-    const { mintGuestIntermediate } = await import('../sneasel-guest.js');
-    const a = await mintGuestIntermediate({
+describe('mintGuestIntermediateDryRun (Icy Wind preview)', () => {
+  test('returns a stable, per-(parent,label) preview address', async () => {
+    const { mintGuestIntermediateDryRun } = await import('../sneasel-guest.js');
+    const a = mintGuestIntermediateDryRun({
       chain: 'eth',
       parentHash: parentHash32(),
       label: 'amazon',
     });
-    const b = await mintGuestIntermediate({
+    const b = mintGuestIntermediateDryRun({
       chain: 'eth',
       parentHash: parentHash32(),
       label: 'venmo',
     });
-    expect(a.intermediateAddr).toContain('ICE_FANG_STUB_');
-    expect(b.intermediateAddr).toContain('ICE_FANG_STUB_');
-    expect(a.intermediateAddr).not.toBe(b.intermediateAddr);
+    expect(a.previewAddr).toContain('ICY_WIND_PREVIEW_');
+    expect(b.previewAddr).toContain('ICY_WIND_PREVIEW_');
+    expect(a.previewAddr).not.toBe(b.previewAddr);
+    expect(a.curve).toBe('secp256k1');
+  });
+
+  test('picks ed25519 for sol, secp256k1 for eth', async () => {
+    const { mintGuestIntermediateDryRun } = await import('../sneasel-guest.js');
+    const sol = mintGuestIntermediateDryRun({ chain: 'sol', parentHash: parentHash32(), label: 'x' });
+    const eth = mintGuestIntermediateDryRun({ chain: 'eth', parentHash: parentHash32(), label: 'x' });
+    expect(sol.curve).toBe('ed25519');
+    expect(eth.curve).toBe('secp256k1');
+  });
+
+  test('same inputs → identical seed (deterministic keeper re-derivation)', async () => {
+    const { deriveIcyWindSeed } = await import('../sneasel-guest.js');
+    const s1 = deriveIcyWindSeed({ parentHash: parentHash32(), label: 'amazon', chain: 'eth' });
+    const s2 = deriveIcyWindSeed({ parentHash: parentHash32(), label: 'amazon', chain: 'eth' });
+    expect(Buffer.from(s1).toString('hex')).toBe(Buffer.from(s2).toString('hex'));
+    expect(s1.length).toBe(32);
+  });
+});
+
+describe('mintGuestIntermediate (real DKG path — env guards)', () => {
+  test('real DKG path requires SUIAMI_STEALTH_PKG + network (callbacks required)', async () => {
+    const { mintGuestIntermediate } = await import('../sneasel-guest.js');
+    // Missing callbacks.signerAddress — must fail fast, never reach IKA net.
+    await expect(
+      mintGuestIntermediate({
+        chain: 'eth',
+        parentHash: parentHash32(),
+        label: 'amazon',
+        sweepDelegate: '0xULTRON_SUI',
+        // @ts-expect-error — intentionally malformed to hit the guard
+        callbacks: {},
+      }),
+    ).rejects.toThrow(/signerAddress required/);
   });
 });
