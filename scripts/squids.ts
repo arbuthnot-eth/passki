@@ -37,7 +37,18 @@ const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712
 const ROSTER_PKG = '0x7bf4438feaf953e94b98dfc2aab0cf1aaad2250ee4e0fe87c9cc251965987de8';
 const SUI_RPC = 'https://sui-rpc.publicnode.com';
 const WORKER_URL = process.env.SKI_WORKER_URL || 'https://sui.ski';
-const KEYSTORE_PATH = join(homedir(), '.ski', 'squids.json');
+// Per-repo keystore so snap-sandboxed bun and non-snap sh can both
+// read/write it. Lives at $REPO/.ski/squids.json, gitignored.
+const REPO_ROOT = (() => {
+  // Walk up from script dir to find .git
+  let dir = __dirname;
+  for (let i = 0; i < 6; i++) {
+    if (existsSync(join(dir, '.git'))) return dir;
+    dir = join(dir, '..');
+  }
+  return process.cwd();
+})();
+const KEYSTORE_PATH = join(REPO_ROOT, '.ski', 'squids.json');
 
 type Chains = Partial<Record<'sui' | 'btc' | 'eth' | 'sol', string>>;
 type Keystore = Record<string, Chains>;
@@ -51,7 +62,7 @@ function loadKeystore(): Keystore {
 }
 
 function saveKeystore(ks: Keystore): void {
-  mkdirSync(join(homedir(), '.ski'), { recursive: true });
+  mkdirSync(join(REPO_ROOT, '.ski'), { recursive: true });
   writeFileSync(KEYSTORE_PATH, JSON.stringify(ks, null, 2) + '\n', { mode: 0o600 });
 }
 
@@ -232,6 +243,81 @@ async function resolveSuiNs(name: string): Promise<string | null> {
   return j.result || null;
 }
 
+async function rosterRecordByName(name: string): Promise<{ chains: Chains; sender: string } | null> {
+  const nameHash = Array.from(keccak_256(new TextEncoder().encode(name)));
+  const body = {
+    jsonrpc: '2.0', id: 1, method: 'suix_getDynamicFieldObject',
+    params: [ROSTER_OBJ, { type: 'vector<u8>', value: nameHash }],
+  };
+  const r = await fetch(SUI_RPC, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const j = await r.json() as { result?: { data?: { content?: { fields?: { value?: { fields?: { sui_address?: string; chains?: { fields?: { contents?: Array<{ fields?: { key?: string; value?: string } }> } } } } } } } } };
+  const v = j.result?.data?.content?.fields?.value?.fields;
+  if (!v) return null;
+  const chains: Chains = {};
+  for (const entry of v.chains?.fields?.contents ?? []) {
+    const k = entry.fields?.key;
+    const val = entry.fields?.value;
+    if (k && val && ['sui', 'btc', 'eth', 'sol'].includes(k)) chains[k as keyof Chains] = val;
+  }
+  return { chains, sender: v.sui_address ?? '' };
+}
+
+async function rosterRecordByChainAddr(chain: string, addr: string): Promise<{ name: string; chains: Chains } | null> {
+  const key = `${chain}:${addr}`;
+  const body = {
+    jsonrpc: '2.0', id: 1, method: 'suix_getDynamicFieldObject',
+    params: [ROSTER_OBJ, { type: '0x1::string::String', value: key }],
+  };
+  const r = await fetch(SUI_RPC, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const j = await r.json() as { result?: { data?: { content?: { fields?: { value?: { fields?: { name?: string; chains?: { fields?: { contents?: Array<{ fields?: { key?: string; value?: string } }> } } } } } } } } };
+  const v = j.result?.data?.content?.fields?.value?.fields;
+  if (!v) return null;
+  const chains: Chains = {};
+  for (const entry of v.chains?.fields?.contents ?? []) {
+    const k = entry.fields?.key;
+    const val = entry.fields?.value;
+    if (k && val && ['sui', 'btc', 'eth', 'sol'].includes(k)) chains[k as keyof Chains] = val;
+  }
+  return { name: v.name ?? '', chains };
+}
+
+async function cmdChainAt(target: string): Promise<void> {
+  const m = target.match(/^(sui|btc|eth|sol)@(.+)$/);
+  if (!m) { console.error('usage: squids chainAt <chain>@<name>   e.g. eth@ultron'); process.exit(1); }
+  const [, chain, name] = m;
+  const rec = await rosterRecordByName(name);
+  if (!rec) { console.log(`✗ no roster record for ${name}`); return; }
+  const addr = (rec.chains as Record<string, string>)[chain];
+  if (!addr) {
+    console.log(`✗ ${name} has no ${chain} address in roster`);
+    console.log(`  available: ${Object.keys(rec.chains).join(', ') || '(none)'}`);
+    return;
+  }
+  console.log(addr);
+}
+
+async function cmdWho(target: string): Promise<void> {
+  // Accepts "eth:0x…", "btc:bc1…", "sol:…", "sui:0x…", or a bare 0x… address (tries eth then sui).
+  let parsed: { chain: string; addr: string } | null = null;
+  const colon = target.match(/^(sui|btc|eth|sol):(.+)$/);
+  if (colon) parsed = { chain: colon[1], addr: colon[2] };
+  else if (target.startsWith('bc1') || target.startsWith('1') || target.startsWith('3')) parsed = { chain: 'btc', addr: target };
+  else if (/^0x[0-9a-fA-F]{40}$/.test(target)) parsed = { chain: 'eth', addr: target };
+  else if (/^0x[0-9a-fA-F]{64}$/.test(target)) parsed = { chain: 'sui', addr: target };
+  else if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(target)) parsed = { chain: 'sol', addr: target };
+  if (!parsed) { console.error(`usage: squids who <chain>:<addr> | <0x…> | <bc1…> | <sol-b58>`); process.exit(1); }
+  const rec = await rosterRecordByChainAddr(parsed.chain, parsed.addr);
+  if (!rec) { console.log(`✗ no roster record for ${parsed.chain}:${parsed.addr.slice(0, 20)}…`); return; }
+  console.log(`${rec.name}`);
+  for (const [k, v] of Object.entries(rec.chains)) {
+    console.log(`  ${k}  ${v}`);
+  }
+}
+
 async function cmdVerify(name: string): Promise<void> {
   const ks = loadKeystore();
   const local = ks[name];
@@ -271,6 +357,8 @@ async function main(): Promise<void> {
     case 'publish': await cmdPublish(rest[0]); break;
     case 'bootstrap': await cmdBootstrap(rest[0], flags); break;
     case 'verify': await cmdVerify(rest[0]); break;
+    case 'chainAt': case 'at': await cmdChainAt(rest[0]); break;
+    case 'who': await cmdWho(rest[0]); break;
     default:
       console.log('squids — SUIAMI roster CLI + local keystore');
       console.log('  bun run squids list');
@@ -280,6 +368,8 @@ async function main(): Promise<void> {
       console.log('  bun run squids publish <name>    (ultron → Worker, else → sui cli)');
       console.log('  bun run squids bootstrap <name> [chain flags]');
       console.log('  bun run squids verify <name>     (diff keystore vs roster)');
+      console.log('  bun run squids chainAt <chain>@<name>   resolve eth@ultron → 0x…');
+      console.log('  bun run squids who <addr>        reverse lookup any chain addr → name');
       process.exit(cmd ? 1 : 0);
   }
 }
