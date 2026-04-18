@@ -1928,9 +1928,16 @@ const _deployOffchainResolver = async (opts?: {
   dryRun?: boolean;
 }) => {
   const DEFAULT_URL = 'https://sui.ski/ens-resolver/{sender}/{data}.json';
+  // Default signer set = eth@ultron alone (0xcaA8d6F0…882d, the IKA-derived
+  // ETH dWallet we already delegated whelm.eth management to).
+  //
+  // The Worker's ENS_SIGNER_PRIVATE_KEY hot-key was historically intended as
+  // a second signer but the full address was never checked into source —
+  // the handoff only records "0xe7AC32Bf…0a11". Once that address is
+  // reconstituted (or the key rotated and we capture the full address at
+  // rotation time), call addSigners('0x...') on the deployed contract.
   const DEFAULT_SIGNERS = [
-    '0xe7AC32BfF3B1A0af5F3E9a0c9E44A1E0B4e3De0a11', // ENS_SIGNER (Smeargle 2026-04-17)
-    '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d', // ultron ETH dWallet
+    '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d', // eth@ultron — IKA dWallet, whelm.eth manager
   ];
   const url = opts?.url ?? DEFAULT_URL;
   const signers = (opts?.signers ?? DEFAULT_SIGNERS).map((s) => s.toLowerCase());
