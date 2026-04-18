@@ -10,9 +10,10 @@
  *   - docs/superpowers/specs/2026-04-11-subcent-intents-production.md
  *   - contracts/thunder-openclob/sources/bundle.move
  *
- * Phase 3b scope: create_bundle + new_slot composition. Actual
- * venue-native `deepbook::pool::place_limit_order` wiring is deferred
- * to Phase 3c — see the `TODO(deepbook-integration)` block below.
+ * Phase 3b scope: create_bundle + new_slot composition. Venue-native
+ * `deepbook::pool::place_limit_order` wiring is a future phase and is
+ * not tracked here — bundles are created with all slots in
+ * SLOT_PENDING and advanced via a separate `record_order_placed` tx.
  */
 
 import { Transaction } from '@mysten/sui/transactions';
@@ -82,10 +83,9 @@ async function buildWithTx(
  *   6. Pre-build bytes via GraphQL transport + return { txBytes, tx, tag }.
  *
  * NOTE: Phase 3b does NOT wire the actual DeepBook `place_limit_order`
- * calls yet — see the TODO block inside the loop. The bundle is
- * created with all slots in SLOT_PENDING status. A follow-up tx (or
- * the same tx in Phase 3c) would call `record_order_placed` once the
- * venue returns order IDs.
+ * calls yet. The bundle is created with all slots in SLOT_PENDING
+ * status; a follow-up tx calls `record_order_placed` once the venue
+ * returns order IDs.
  */
 export async function buildBundleTx(opts: {
   creator: string;
@@ -159,83 +159,6 @@ export async function buildBundleTx(opts: {
       ],
     }),
   ];
-
-  // ─── TODO(deepbook-integration) — Phase 3c ─────────────────────────
-  //
-  // For each order, invoke DeepBook's native place_limit_order entry
-  // and feed the returned order_id back into `record_order_placed`.
-  //
-  // Reference: `src/suins.ts` uses
-  //   DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497'
-  // via `${DB_PACKAGE}::pool::swap_exact_quote_for_base` for spot swaps.
-  // The limit-order entry we need is the analogous
-  //   `${DB_PACKAGE}::pool::place_limit_order<BaseAsset, QuoteAsset>(
-  //       pool:          &mut Pool<Base, Quote>,
-  //       balance_mgr:   &mut BalanceManager,         // shared BM, see CLAUDE.md
-  //       trade_proof:   &TradeProof,                 // from generate_proof_as_owner
-  //       client_order_id: u64,
-  //       order_type:    u8,                          // 0=limit, 1=post-only, ...
-  //       self_matching: u8,
-  //       price:         u64,                         // quote per base, pool scale
-  //       quantity:      u64,                         // base raw
-  //       is_bid:        bool,                        // true = buy base w/ quote
-  //       pay_with_deep: bool,
-  //       expire_timestamp: u64,
-  //       clock:         &Clock,
-  //       ctx:           &mut TxContext,
-  //   ): OrderInfo
-  //
-  // Pseudocode to drop in here once the DeepBook SDK story is pinned:
-  //
-  //   for (let i = 0; i < orders.length; i++) {
-  //     const order = orders[i];
-  //     const [orderInfo] = [tx.moveCall({
-  //       target: `${DB_PACKAGE}::pool::place_limit_order`,
-  //       typeArguments: [baseType(order), quoteType(order)],
-  //       arguments: [
-  //         tx.object(order.poolId),
-  //         tx.object(sharedBalanceManagerId),
-  //         tradeProofHandle,
-  //         tx.pure.u64(clientOrderId + BigInt(i)),
-  //         tx.pure.u8(0), // limit
-  //         tx.pure.u8(0), // self-match = abort
-  //         tx.pure.u64(order.price),
-  //         tx.pure.u64(order.quantity),
-  //         tx.pure.bool(order.side === 'buy'),
-  //         tx.pure.bool(false),
-  //         tx.pure.u64(BigInt(settleDeadlineMs)),
-  //         tx.object(CLOCK_ID),
-  //       ],
-  //     })];
-  //     // Extract order_id from OrderInfo and feed to record_order_placed.
-  //     // DeepBook OrderInfo currently exposes order_id via a getter;
-  //     // we'll call that getter in a subsequent moveCall.
-  //     const [orderIdU128] = [tx.moveCall({
-  //       target: `${DB_PACKAGE}::order_info::order_id`,
-  //       arguments: [orderInfo],
-  //     })];
-  //     tx.moveCall({
-  //       target: `${THUNDER_OPENCLOB_PACKAGE}::bundle::record_order_placed`,
-  //       arguments: [
-  //         tx.object(bundleObjectRef /* need to capture from create_bundle */),
-  //         tx.pure.u8(i),
-  //         orderIdU128,
-  //       ],
-  //     });
-  //   }
-  //
-  // Blockers: (a) create_bundle returns the OrderBundleCap but shares
-  // the bundle — the bundle object ID isn't surfaced to the PTB
-  // directly, so record_order_placed needs either a modified contract
-  // that returns &mut OrderBundle from create_bundle or a two-tx flow
-  // that waits for BundleCreated event. (b) DeepBook BalanceManager
-  // MUST be a shared object — see CLAUDE.md "BalanceManager Black
-  // Hole" note. (c) trade proof generation via BM owner cap.
-  //
-  // See `docs/superpowers/specs/2026-04-11-openclob-bundle-tags.md`
-  // Phase 3c section for the sequencing plan.
-  //
-  // ────────────────────────────────────────────────────────────────────
 
   // 4. Transfer the bundle cap back to the creator.
   tx.transferObjects([cap], tx.pure.address(normalizedCreator));
