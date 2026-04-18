@@ -69,17 +69,17 @@ Old address `0x04354d56…3902` was printed to terminal during generation. Rotat
 ## Still pending from original handoff
 
 ### 🔴 High
-- **Ultron rumble** (imported-key ed25519 DKG) — SDK supports it, but ceremony needs the raw key in-browser. Blocker: we don't have the key locally.
-- **`whelm("waap")` in Phantom** — user action. Still blocks Zen Headbutt.
+- **Ultron rumble** 🟡 IN FLIGHT — Regigigas Slow Start pt 1–4 spec landed, Crush Grip rotate script live, Slack Off fungible sweep done, Mega Punch whelm gas-dust + JSON-RPC execute shipped, admin endpoints gated. Ceremony not yet executed.
+- **`whelm("waap")` in Phantom** 🔴 STILL PENDING — user action. Blocks Zen Headbutt.
 
 ### 🟡 Medium
-- **Pokedex skill auto-comment on releases** — not done.
-- **Agent DO audit** for raw keys — partially done (Magneton consolidation confirmed zero other keys beyond ultron).
+- **Pokedex skill auto-comment on releases** ❌ not done.
+- **Agent DO audit** for raw keys — 🟡 Probopass Magnet Bomb swept fromSecretKey; Lock-On auth-gated debug endpoints. Full `src/server/agents/*` audit still pending.
 
 ### 🟢 Low
-- **TLD toggle UX** — UI work, untouched.
-- **Stealth address research** — untouched.
-- **Walrus blob re-upload migration** — the constants switched but existing testnet blobs will 404. Any user-facing encrypted data created pre-Rain Dance needs re-upload via `upgradeSuiami()` pass.
+- **TLD toggle UX** ❌ untouched.
+- **Stealth address research** ❌ untouched.
+- **Walrus blob re-upload migration** ❌ — constants switched, user blobs pre-Rain Dance still 404.
 
 ## Test coverage snapshot
 
@@ -110,9 +110,27 @@ Zen Headbutt can deploy on top of this without a production-readiness pass first
 
 ## Next session — lean
 
-1. **Decide ultron rumble approach.** SDK supports imported-key ed25519 natively. Either extract the key from Worker (via a one-shot bootstrap endpoint that destroys itself after use) or rotate to a fresh key you hold + run ceremony. Address stays the same in the imported-key path.
+1. **Decide ultron rumble approach.** SDK supports imported-key ed25519 natively. Either extract the key from Worker (via a one-shot bootstrap endpoint that destroys itself after use) or rotate to a fresh key you hold + run ceremony. Address stays the same in the imported-key path. _Regigigas Slow Start pt 4 specs the `requestReEncryptUserShareFor` flow for moving existing dWallets from old ultron → new._
 2. **Zen Headbutt deploy.** OffchainResolver.sol with new signer addresses, constructor `[0xe7AC32Bf…0a11, 0xcaA8d6F0…882d]`. ~$0.51 L1 gas.
 3. **Run `moveWaapEthToDwallet()` in Phantom.** One-line browser action. Two tx prompts.
 4. **TLD toggle UX** is the UI-side counterpart to Zen Headbutt.
 
 If pushing forward without blockers: Pokedex auto-comment, Walrus blob re-upload migration, or stealth address research.
+
+---
+
+## Post-Metang-arc progress log (2026-04-17 evening → 2026-04-18)
+
+Threads landed after the 20-move push:
+
+- **Metang v6** — Ice Punch (groundwork) → Dragon Dance (16 tests) → Psychic (v6 live on mainnet) → Extreme Speed (browser hooks) → Giga Impact (CCIP-read honors PublicChains + Guest) → Rock Polish (privatize semantics fix) → Protect + Slack Off (publish pipeline).
+- **Probopass** — Lock-On (auth-gate debug endpoints), Magnet Bomb (fromSecretKey sweep).
+- **Regigigas (ultron keyless rumble)** — Slow Start pt 1–4 (spec with IKA `requestReEncryptUserShareFor`), Crush Grip pt 1–5 (`rotate-ultron` script, XDG env fix, landed-value verify + diagnostics), Slack Off (fungible asset sweep, dry-run default), Mega Punch (Whelm gas-dust + JSON-RPC execute). Plus admin-gated UI: Settings → Admin button, server endpoint, allowlist adds superteam.sui.
+- **Machamp** (#195 Silvally policy) — Focus Punch (scaffold compiles) → Agility (untrack build/) → Bulk Up (IKA shim with real mainnet sigs) → Close Combat (6 unit tests) → Agility v2 (press-go helper) → Vital Throw (real IKA source) → Dynamic Punch pt1 (`buildInitSilvallyPolicyTx`).
+- **Klinklang Gear Grind** — Steel Jacket composes on Silvally base.
+- **Smeargle Sketch** — README sweep for SuiNS Crowds / Silvally / Jackets.
+- **Honedge** — Aegislash DO skeleton (iUSD GENIUS/CLARITY compliance).
+- **Chimecho Heal Bell** — SUIAMI button session timer + 3s toast revert.
+- **Slowpoke Yawn** — idle overlay threshold 15s → 5min.
+- **Whelm Ultron sub-thread** — GQL undefined fix after RPC swap, inline URL for tx build, JSON-RPC `suix_getCoins` for inventory, old/new address surface + hint on empty plan.
+- **Idle card name-drift fix** — `authoritativeOnly` path in `refreshPortfolio`.

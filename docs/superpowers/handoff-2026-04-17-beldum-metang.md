@@ -19,13 +19,15 @@
 
 ## 🔴 HIGH PRIORITY — do before more Beldum work
 
-### 1. IKA-native the hot keys — first commandment gap
+> **Status snapshot (2026-04-17 end-of-Metang-arc + post-Metang):** Items 4, 5, 6, 9 ✅ done. Item 1 partially (ENS signer rotated via Smeargle; ultron choke point via Magneton + Probopass Magnet Bomb). Items 2 & 3 in-flight (Regigigas spec landed; Mega Punch JSON-RPC execute shipped). Items 7, 8, 10 pending.
+
+### 1. IKA-native the hot keys — first commandment gap 🟡 PARTIAL
 
 Current state violates "**no private keys on Cloudflare Workers, ever**" in three places:
 
-- **`ENS_SIGNER_PRIVATE_KEY`** — raw secp256k1 on Wrangler. Signs every CCIP-read response. Also note: this key was printed to terminal during generation (dev-scope). **Rotate immediately + frame for a proper IKA-authority hybrid before Zen Headbutt.**
-- **`ultron`'s ETH + SOL keys** — raw Ed25519 / keypairs on Worker per `project_crosschain_iusd.md`. The keeper should be Rumbled to an imported-key IKA dWallet so its address stays the same but signing goes through 2PC-MPC.
-- **Agent DOs** — memory says "ALL agents are keyless IKA-native" but practice diverges. Audit `src/server/agents/*` for any Worker-held private keys; every one should hold a DWalletCap + user-share only.
+- ~~**`ENS_SIGNER_PRIVATE_KEY`**~~ ✅ Rotated via Metang Smeargle (`0xe7AC32Bf…0a11`). Hybrid co-signer plan still pending ultron rumble.
+- **`ultron`'s ETH + SOL keys** — 🟡 Choke point landed (Magneton `ultronKeypair(env)` + Probopass Magnet Bomb). Rumble ceremony spec'd via Regigigas Slow Start pt 1–4 but not executed.
+- **Agent DOs** — 🟡 Probopass Lock-On auth-gated debug endpoints; full key audit of `src/server/agents/*` still outstanding.
 
 **Recommended approach for the CCIP-read signer** (the hardest of the three):
 
@@ -34,13 +36,15 @@ Current state violates "**no private keys on Cloudflare Workers, ever**" in thre
 - Budget: $0.51 to redeploy OffchainResolver per rotation (per `reference_ens_resolver_deploy_cost.md`).
 - Blocker: ultron must actually be Rumbled first (see item 2).
 
-### 2. Rumble ultron to an imported-key IKA dWallet
+### 2. Rumble ultron to an imported-key IKA dWallet 🟡 IN FLIGHT
+
+**Progress:** Regigigas Slow Start pt 1 (spec), pt 2 (asset sweep + repoint), pt 3 (reEncryptForNewOwner scaffold), pt 4 (full ceremony spec with `requestReEncryptUserShareFor`). Crush Grip pt 1–5 landed `scripts/rotate-ultron.ts` with wrangler stdin + landed-value verify. Slack Off added fungible asset sweep (dry-run default). Mega Punch bumped Whelm gas-dust + wired JSON-RPC execute. Admin page + endpoints (`Whelm Ultron` moves) gated to `requireUltronAdmin`. **Not yet executed — ceremony still needs the raw key in-browser.**
 
 `@ika.xyz/sdk` has `prepareImportedKeyDWalletVerification` (tested, shipped) — takes a raw secp256k1 private key, runs the centralized 2PC-MPC step, encrypts the user-share, submits to `coordinator::request_imported_key_dwallet_verification`. Preserves the same ETH address. See `project_ens_waap_extension.md` + swarm memo for exact steps.
 
 **Caveat:** once imported, ultron's raw key still exists until explicitly destroyed — threshold property is only "true" after the raw key is wiped from the Worker env. Do both.
 
-### 3. Relocate waap.eth to IKA dWallet (user action)
+### 3. Relocate waap.eth to IKA dWallet (user action) 🔴 STILL PENDING
 
 Blocks Zen Headbutt entirely.
 
@@ -51,7 +55,11 @@ whelm('waap')
 
 Two tx prompts: 0.002 ETH value transfer + `ENS.setOwner(waap.eth, 0xCE3e9733…1763)`. Post-run, superteam.sui's IKA secp256k1 dWallet owns waap.eth; all future Ethereum ops are PTB+IKA signed. Details: `project_ens_waap_extension.md`.
 
-### 4. Metal Claw — test + upgrade
+### 4. Metal Claw — test + upgrade ✅ DONE
+
+Metang Meditate + Metal Claw landed 7 Move tests (all pass). Iron Head wired `ensIssue` → `set_ens_identity_verified`. Metang Psychic put SUIAMI v6 live on mainnet. `SUIAMI_PKG_LATEST` bumped. Security stub closed.
+
+<details><summary>original plan</summary>
 
 Move code for `set_ens_identity_verified` committed at `c93b372` but **not on-chain and untested**. Before Move v6 upgrade:
 
@@ -63,38 +71,34 @@ Move code for `set_ens_identity_verified` committed at `c93b372` but **not on-ch
 
 Until this lands, `ensIssue()` is a security stub — any SUIAMI holder can claim any unbound `*.waap.eth` label with no ownership proof.
 
-### 5. Walrus testnet → mainnet migration
+</details>
 
-`WALRUS_PUBLISHER` / `WALRUS_AGGREGATOR` in `src/client/suiami-seal.ts` point at `walrus-testnet.walrus.space`. All existing encrypted cross-chain blobs live on testnet endpoints — they can be pruned at any time.
+### 5. Walrus testnet → mainnet migration ✅ CONSTANTS DONE (blob re-upload pending)
 
-- Switch constants to mainnet Walrus endpoints.
-- Re-upload existing blobs (affected: every SUIAMI user's squids + cf-history chunks). Coordinate via `upgradeSuiami()` call for each user, or write a keeper-driven migrator.
+Metang Rain Dance switched to mainnet with 4-operator read race + 2-operator write fallback. Existing testnet blobs will 404 — blob re-upload migration still outstanding (tracked as 🟢 Low in Metang-arc handoff).
 
-### 6. Test coverage gap
+### 6. Test coverage gap ✅ DONE
 
-- `contracts/suiami` has **zero** Move tests (`sui move test` → "Total tests: 0").
-- `packages/suiami` has **no `test` script** in package.json, no test files in `src/`.
-- Root repo has one stray `src/network-detection.test.ts` with no runner wired.
-
-Pokemon-BST auto-bump is shipping versioned code with no safety net. Add `bun:test` to `packages/suiami`, cover the hex/hash/proof-token paths, add Move unit tests for `set_ens_identity_verified` + `seal_approve_roster_reader_v3` before the next publish.
+- `contracts/suiami/tests/metal_claw_tests.move` — 7 tests pass
+- `packages/suiami` — 13 tests / 33 expects (Hammer Arm); +16 tests v6 (Dragon Dance)
+- `src/network-detection.test.ts` — 50 tests wired in via Double Team
+- Root `bun test` — 63+ total; Barrier gates both publish workflows on green
 
 ---
 
 ## 🟡 MEDIUM PRIORITY — efficiency, Cloudflare, Pokedex
 
-### 7. Cloudflare — use what we already pay for
+### 7. Cloudflare — use what we already pay for 🟡 PARTIAL
 
-Current worker (`dotski`) is deployed but we're leaving capabilities on the table:
+- ✅ **Rate limit** — Magnet Rise + Spikes cover `/ens-resolver/*` + RPC proxies (60 req/min/IP)
+- ✅ **KV cache** on roster reads (Rest pt 2, 60s TTL) + balance endpoints (Light Screen, 30s)
+- ❌ **D1 for ENS subname issuance** — gated on Metagross
+- ✅ **Smart Placement** — enabled via Magnet Rise
+- ❌ **Cache API** on CCIP-read idempotent responses — not wired
+- ❌ **Workers Analytics Engine** — Flash Cannon turned on 100% head-sampling observability; dedicated AE table not created
+- ❌ **Cloudflare for Startups** — unclaimed
 
-- **Rate limit** the `/ens-resolver/*` endpoint via Workers Rate Limiting binding (free tier: 10 req/10s per IP). Mandatory before Zen Headbutt flips it live — without it, the hot signer key is DDoSable.
-- **KV cache** for hot roster reads. Every CCIP-read query currently hits Sui GraphQL. 60-second KV TTL on `{ens_hash → record}` cuts Sui GraphQL load by ~95% at steady state. Matches cb.id / Namestone edge-cache pattern.
-- **D1** for ENS subname issuance metadata (label → Sui address) — needed when `waap.eth` subname registrar ships (Metagross). Beats Durable Object overhead for simple KV lookups.
-- **Smart Placement** — enable on the worker so it runs in the region closest to Sui RPC endpoints. Cuts latency for every roster read.
-- **Cache API** on idempotent CCIP-read responses — same `{sender, data}` yields same signed response until the signer's `expires` timestamp. Cache-Control aware.
-- **Workers Analytics Engine** — log every CCIP-read query (sender, label, coinType) to a time-series table. Feeds future pokedex pages.
-- **Cloudflare for Startups** — per `handoff-2026-04-16-prism-session.md`, we qualify; unclaimed up to $250K credits.
-
-### 8. Pokedex skill — wire it into the pipeline
+### 8. Pokedex skill — wire it into the pipeline ❌ NOT DONE
 
 Memory has `/pokedex` skill that surveys Pokemon-named GitHub issues. Currently manual. Ways to make it earn its keep:
 
@@ -103,7 +107,11 @@ Memory has `/pokedex` skill that surveys Pokemon-named GitHub issues. Currently 
 - **Pokedex DO endpoint.** `Pokedex` DO is already bound in `wrangler.jsonc`. Add `/api/pokedex` that returns species status (Active / Evolved / Fainted) — wire to sui.ski idle overlay as a small ticker.
 - **Evolution trigger.** When a `(#NNN)` merge commit includes a species name in squash subject, pokedex DO auto-updates + posts to the related issue.
 
-### 9. Commit-message enforcement
+### 9. Commit-message enforcement ✅ DONE
+
+Metang Mean Look landed `.githooks/commit-msg` + `scripts/install-git-hooks.sh`. CI matrix-check not added (low priority).
+
+<details><summary>original plan</summary>
 
 `feedback_every_commit_is_a_move.md` locked the convention. Need a pre-commit hook:
 
@@ -111,7 +119,9 @@ Memory has `/pokedex` skill that surveys Pokemon-named GitHub issues. Currently 
 - Allow-list the top 3-5 lines for PR squash subjects (GitHub auto-generates those from PR titles).
 - Matrix-check commit messages on CI with `scripts/pokemon-lint.ts` — fail the workflow if any commit on the feature branch violates.
 
-### 10. CI run consolidation
+</details>
+
+### 10. CI run consolidation ❌ NOT DONE
 
 Two publish workflows fire independently on master push when both path filters hit. Could collapse to one workflow with a matrix job (`[sui.ski, suiami]`). Fewer queue slots used, easier to reason about. Lower priority — current setup works.
 
@@ -119,10 +129,10 @@ Two publish workflows fire independently on master push when both path filters h
 
 ## 🟢 LOW PRIORITY — polish
 
-- **Rotate `ENS_SIGNER_PRIVATE_KEY`** — dev-scope key in terminal history. Before Zen Headbutt deploys a resolver referencing it.
-- **TLD toggle UX** — `.sui` ↔ `.eth` pill on name input. `project_name_input_tld_toggle.md`. Waits on Metal Claw + Zen Headbutt for the `.eth` path to be non-decorative.
-- **Stealth addresses** — ENS CCIP-read responses are structurally public. For the "one handle, no linkability" property some users want, research EIP-5564 stealth address integration with the SUIAMI roster.
-- **Move module type audit** — `v1` `seal_approve_roster_reader` is on-chain but broken (wrong arg order). Dead code; consider removing in next upgrade via a no-op entry that aborts.
+- ~~**Rotate `ENS_SIGNER_PRIVATE_KEY`**~~ ✅ Done (Smeargle).
+- **TLD toggle UX** ❌ — still queued.
+- **Stealth addresses** ❌ — untouched.
+- **Move module type audit** ❌ — v6 landed but v1 dead-code removal not performed.
 
 ---
 
@@ -134,9 +144,9 @@ Suilana Ikasystem framing requires IKA to be *the* signing substrate. Current in
 |---|---|---|
 | brando.sui (user) | ✅ | DKG done, dWalletCaps in roster |
 | superteam.sui (user) | ✅ | 4 dWalletCaps, ed25519 + secp256k1 |
-| ultron (keeper) | ❌ | Raw Ed25519 on Worker. Rumble + import-key. |
-| ENS gateway signer | ❌ | Raw secp256k1 on Wrangler. Hot-key-by-design; mitigate with IKA authority co-signer. |
-| Agent DOs | unknown | Audit `src/server/agents/*` |
+| ultron (keeper) | 🟡 | Choke point via `ultronKeypair(env)`. Rumble spec'd (Regigigas Slow Start pt 1–4), not executed. |
+| ENS gateway signer | 🟡 | Rotated via Smeargle. Hybrid IKA co-signer still pending ultron rumble. |
+| Agent DOs | 🟡 | Probopass Lock-On auth-gated debug endpoints. Full audit still outstanding. |
 
 **Efficiency levers:**
 
@@ -152,8 +162,8 @@ Suilana Ikasystem framing requires IKA to be *the* signing substrate. Current in
 |---|---|---|
 | Kadabra | 400 | Evolved (Confusion — Seal fix landed) |
 | Beldum | 300 | Evolved → Metang in #168 |
-| Metang | 420 | Active on master; Metagross ahead |
-| Metagross | 600 | Gated on: Metal Claw upgrade, Zen Headbutt, TLD toggle |
+| Metang | 420 | ✅ Evolved post-handoff — Psychic/Giga Impact/Extreme Speed/Rock Polish/Dragon Dance; SUIAMI v6 live |
+| Metagross | 600 | Gated on: ~~Metal Claw upgrade~~ ✅, Zen Headbutt, TLD toggle |
 | Zapdos | 580 | Active (prior session) — Thunderbolt through Sky Attack ahead |
 | Articuno | 580 | Blocked on Zapdos (prism-claim client) |
 | Moltres | 580 | Blocked on Articuno (UI + demo) |
