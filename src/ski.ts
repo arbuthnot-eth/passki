@@ -2047,36 +2047,35 @@ const _delegateWhelmEthManagement = async (opts?: {
     console.log('[delegate] dryRun=true — stopping before prompt');
     return { ok: true, dryRun: true, from, operator };
   }
-  // Bind request to the provider so no this-rebinding can happen along the
-  // way — Brave Wallet has been observed proxying `.request()` calls via
-  // some shared window property even when we pick a non-Brave provider
-  // cleanly via EIP-6963.
   const req = eth.request.bind(eth);
-  // Query chainId + ensure we're on mainnet. Skip eth_estimateGas entirely
-  // (hardcoded 60k works — setApprovalForAll on NameWrapper typically uses
-  // ~45k); some providers reject the estimate call outright in Brave.
-  let chainIdHex = '0x1';
-  try { chainIdHex = (await req({ method: 'eth_chainId' })) as string; } catch {}
-  if (chainIdHex !== '0x1') {
-    console.log(`[delegate] switching to mainnet (was ${chainIdHex})`);
-    try {
-      await req({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
-      chainIdHex = '0x1';
-    } catch (err) {
-      console.warn('[delegate] chain switch failed:', err);
-    }
+  // ALWAYS fire wallet_switchEthereumChain first. Phantom silently rejects
+  // writes if the popup-visible chain doesn't match the tx's expected
+  // chain, surfacing the generic "Missing or invalid parameters" error
+  // (per Phantom's evmAsk.js param validator). Research agent confirmed
+  // this is the most common cause.
+  const chainBefore = await req({ method: 'eth_chainId' }).catch(() => '?') as string;
+  console.log(`[delegate] chain before switch: ${chainBefore}`);
+  try {
+    await req({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+    const chainAfter = await req({ method: 'eth_chainId' }) as string;
+    console.log(`[delegate] chain after switch:  ${chainAfter}`);
+  } catch (err) {
+    console.warn('[delegate] wallet_switchEthereumChain failed:', err);
   }
+  // Minimal tx params — Phantom is strict about shape. Let Phantom choose
+  // gas + chain from the now-active provider state instead of stamping
+  // fields we might get wrong.
+  const txParams = {
+    from: from.toLowerCase(),
+    to: NAME_WRAPPER.toLowerCase(),
+    data,
+    value: '0x0',
+  };
+  console.log('[delegate] tx params:', JSON.stringify(txParams));
   try {
     const tx = (await req({
       method: 'eth_sendTransaction',
-      params: [{
-        from,
-        to: NAME_WRAPPER,
-        data,
-        value: '0x0',
-        gas: '0xea60', // 60k — generous for setApprovalForAll (~45k)
-        chainId: chainIdHex,
-      }],
+      params: [txParams],
     })) as string;
     console.log(`[delegate] tx submitted: ${tx}`);
     showToast(`\u2713 ${opts?.revoke ? 'Revoked' : 'Delegated'} to ${operator.slice(0, 10)}\u2026`);
