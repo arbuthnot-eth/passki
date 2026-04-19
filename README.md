@@ -1,17 +1,19 @@
-# .SKI — .Sui Key-In
+# passki — Sui Key-In
 
-.SKI once, everywhere.
+Key in once, everywhere.
 
 [![npm](https://img.shields.io/npm/v/passki)](https://www.npmjs.com/package/passki)
-[![Live](https://img.shields.io/badge/live-sui.ski-blue)](https://sui.ski)
+[![Live](https://img.shields.io/badge/live-passki.xyz-blue)](https://passki.xyz)
 
-<a href="https://sui.ski"><img src="public/assets/sui-ski-qr.svg" width="160" alt="sui.ski QR code"></a>
+<a href="https://passki.xyz"><img src="public/assets/sui-ski-qr.svg" width="160" alt="passki QR code"></a>
+
+> **Rebranded April 2026.** Formerly `.SKI` / `sui.ski`. The npm package, GitHub repo, and primary domain are now `passki`. The legacy domain `sui.ski` still routes to the same worker as an alias. Internal lore ("SKI Pass", "key-in", Pokemon versioning) is unchanged — SKI is still the in-project shorthand for the sign-in primitive.
 
 ---
 
-## What .SKI Is
+## What passki Is
 
-.SKI is a Sui-native messaging and cross-chain identity dApp where SuiNS names are communication endpoints. You send a thunder to `@name` and it lands as an encrypted storm conversation whose ciphertext lives on Walrus and whose keys live behind Seal. Every wallet, agent, and cross-chain address is IKA-native — no private keys sit on Cloudflare Workers, ever. The same UI rails carry Thunder messages, Thunder IOU transfers, shielded Pedersen commitments, Shade grace-period snipes, and SUIAMI cross-chain identity proofs.
+passki is a Sui-native messaging and cross-chain identity dApp where SuiNS names are communication endpoints. You send a thunder to `@name` and it lands as an encrypted storm conversation whose ciphertext lives on Walrus and whose keys live behind Seal. Every wallet, agent, and cross-chain address is IKA-native — no private keys sit on Cloudflare Workers, ever. The same UI rails carry Thunder messages, Thunder IOU transfers, shielded Pedersen commitments, Shade grace-period snipes, and SUIAMI cross-chain identity proofs.
 
 Agents (ultron, chronicoms, t2000s) are Durable Objects that sign via IKA dWallet user shares + DWalletCap wrappers. `brando.sui` runs DKG in the browser and re-encrypts the user share to the agent. Either brando OR agent + IKA network = a valid signature.
 
@@ -142,10 +144,12 @@ Thunder. Ultron sees who, never what. Everything else falls out for free.
 
 | Domain | Purpose |
 |---|---|
-| `sui.ski` | Root — main application, embeddable widget, API endpoints |
-| `<name>.sui.ski` | SuiNS profile pages (e.g. `brando.sui.ski`) |
+| `passki.xyz` | Root — main application, embeddable widget, API endpoints (custom domain on `dotski` worker) |
+| `www.passki.xyz` | Apex alias (custom domain, same worker) |
+| `sui.ski` | Legacy alias — still routed to `dotski` for backward compatibility |
+| `<name>.sui.ski` | SuiNS profile pages (e.g. `brando.sui.ski`) — preserved for existing links |
 
-Cross-domain session cookie (`ski:xdomain`) on `domain=sui.ski` for auth persistence across subdomains.
+Cross-domain session cookie (`ski:xdomain`) on `domain=sui.ski` for auth persistence across legacy subdomains. A parallel cookie on `passki.xyz` is registered alongside.
 
 ---
 
@@ -506,8 +510,8 @@ bun add passki
 ## Embed via script tag
 
 ```html
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sui.ski/public/styles.css">
-<script type="module" src="https://cdn.jsdelivr.net/npm/sui.ski/public/dist/ski.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/passki/public/styles.css">
+<script type="module" src="https://cdn.jsdelivr.net/npm/passki/public/dist/ski.js"></script>
 ```
 
 Add the widget markup:
@@ -529,7 +533,7 @@ Auto-initializes on load.
 ## Embed via bundler
 
 ```ts
-import 'sui.ski';
+import 'passki';
 ```
 
 Same DOM markup required.
