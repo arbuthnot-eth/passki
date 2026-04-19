@@ -1189,10 +1189,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
     ? keyPfpHtml(addr0, suinsName0)
     : '<div class="ski-key-pfp ski-key-pfp--green-circle"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div>';
   const nameInputHtml = `<input class="ski-create-waap-name-input" type="text" value="name" tabindex="0" onclick="event.stopPropagation()" onfocus="if(this.value==='name')this.value=''" onblur="if(!this.value)this.value='name'"><span class="ski-create-waap-tld">.sui</span>`;
-  // QR column: QR image on top, hex addr + copy button underneath. The
-  // truncated address moves out of the name row so the left column shows
-  // just the key pfp + SuiNS name, and the right column shows the QR with
-  // its scannable target text right below it.
+  // Three-column detail pane: [icon + big name] · [LOCK IN] · [QR + addr]
   const addrUnderQrHtml = addr0
     ? `<div class="ski-detail-addr-under-qr">
         <a href="${esc(scanUrl0)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr0)}">${esc(truncAddr(addr0))}</a>
@@ -1205,15 +1202,14 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
         ${addrUnderQrHtml}
       </div>`
     : '';
-  const activeTextHtml = addr0 ? `<div class="ski-detail-active-text-row">
+  // Big expanded name — SuiNS name if set (e.g. "waap"), else the input placeholder
+  const bigNameHtml = suinsName0
+    ? `<div class="ski-detail-name-big">${esc(suinsName0)}<span class="ski-detail-name-tld">.sui</span></div>`
+    : `<div class="ski-detail-name-big-input">${nameInputHtml}</div>`;
+  const activeTextHtml = `<div class="ski-detail-active-text-row">
         <div class="ski-detail-active-pfp">${activePfpHtml}</div>
         <div class="ski-detail-key-text">
-          <span class="ski-detail-suins-slot">${suinsName0 ? '' : nameInputHtml}</span>
-        </div>
-      </div>` : `<div class="ski-detail-active-text-row">
-        <div class="ski-detail-active-pfp">${activePfpHtml}</div>
-        <div class="ski-detail-key-text">
-          <span class="ski-detail-suins-slot">${nameInputHtml}</span>
+          <span class="ski-detail-suins-slot">${bigNameHtml}</span>
         </div>
       </div>`;
   const lockInBtnHtml = `<button type="button" class="ski-detail-lockin-btn" data-detail-lockin="true" aria-label="Lock In">LOCK IN</button>`;
@@ -1246,8 +1242,8 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
         </div>
         ${activeTextHtml}
       </div>
-      ${activeQrHtml}
       ${lockInBtnHtml}
+      ${activeQrHtml}
     </div>
   `;
 
