@@ -295,6 +295,33 @@ export { getState, getSuiWallets, connect, disconnect, subscribe, signAndExecute
 // Register <ski-button>, <ski-dot>, <ski-balance> Custom Elements
 import './elements.js';
 
+// ─── TEMP: Font candidate picker swatch ──────────────────────────────
+// Floats a panel showing PASSKI.XYZ in each candidate font for visual
+// comparison. Dismissed by clicking the × corner. Remove once a pick
+// is locked in.
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', () => {
+    if (document.getElementById('ski-font-picker')) return;
+    const panel = document.createElement('div');
+    panel.id = 'ski-font-picker';
+    panel.className = 'ski-font-picker';
+    const word = 'PASSKI.XYZ';
+    const rows = [
+      { cls: 'f-current',   label: 'current'       },
+      { cls: 'f-bungee',    label: 'Bungee'        },
+      { cls: 'f-bungee-i',  label: 'Bungee Inline' },
+      { cls: 'f-archivo',   label: 'Archivo Black' },
+      { cls: 'f-blackops',  label: 'Black Ops One' },
+      { cls: 'f-alfa',      label: 'Alfa Slab One' },
+      { cls: 'f-monoton',   label: 'Monoton'       },
+      { cls: 'f-rubikmono', label: 'Rubik Mono'    },
+    ].map(r => `<div class="ski-font-picker-row"><span class="ski-font-picker-label">${r.label}</span><span class="ski-font-picker-word ${r.cls}">${r.cls === 'f-current' ? '\u2119\u{1D538}\u{1D54A}\u{1D54A}\u{1D542}\u{1D540}.\u{1D54F}\u{1D550}\u2124' : word}</span></div>`).join('');
+    panel.innerHTML = `<button class="ski-font-picker-close" type="button" aria-label="Close">\u00D7</button><div class="ski-font-picker-title">PASSKI.XYZ wordmark preview</div>${rows}`;
+    panel.querySelector<HTMLElement>('.ski-font-picker-close')?.addEventListener('click', () => panel.remove());
+    document.body.appendChild(panel);
+  });
+}
+
 // ─── Auto sign-in on wallet connect ──────────────────────────────────
 
 window.addEventListener('ski:wallet-connected', async (e) => {

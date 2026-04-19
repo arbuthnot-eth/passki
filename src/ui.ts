@@ -802,19 +802,7 @@ function getPillSkiSvg(variant: SkiDotVariant): string {
 
 // SKI button SVG — 'ski-btn' prefix, lift always hidden
 function getSkiBtnSvg(variant: SkiDotVariant): string {
-  let svg = _buildSkiSvg('ski-btn-svg', 'wk-ski-btn-logo', 'ski-btn', variant, false);
-  if (!svg) return '';
-  // Hide the crafted letter paths AND the dark shadow path that ghosts
-  // underneath, then overlay 𝕊𝕂𝕀 (Unicode Mathematical Double-Struck,
-  // same block as the X logo's 𝕏) so the header button matches the
-  // brand wordmark in the modal title.
-  svg = svg.replace('id="ski-btn-text"', 'id="ski-btn-text" style="display:none"');
-  svg = svg.replace('id="ski-btn-shadow"', 'id="ski-btn-shadow" style="display:none"');
-  // Positioned in the cropped viewBox (0 460 1214 387): dot occupies
-  // ~x=0-350 on the left; letters fill the remaining right side.
-  const wordmark = `<text x="780" y="665" text-anchor="middle" dominant-baseline="central" font-family="'Apple Symbols','STIX Two Math','Cambria Math','Noto Sans Math','Inter Display',Inter,sans-serif" font-size="260" font-weight="700" fill="#ffffff" pointer-events="none">\u{1D54A}\u{1D542}\u{1D540}</text>`;
-  svg = svg.replace('</svg>', wordmark + '</svg>');
-  return svg;
+  return _buildSkiSvg('ski-btn-svg', 'wk-ski-btn-logo', 'ski-btn', variant, false);
 }
 
 let _skiLiftVisible = true;

@@ -1,3 +1,6 @@
+/* TEMPORARY font picker — remove once user picks a candidate. */
+@import url('https://fonts.googleapis.com/css2?family=Bungee&family=Bungee+Inline&family=Archivo+Black&family=Black+Ops+One&family=Alfa+Slab+One&family=Monoton&family=Rubik+Mono+One&display=swap');
+
 :root {
   --bg: #05070d;
   --panel: rgba(12, 14, 22, 0.92);
@@ -5,6 +8,71 @@
   --muted: #9ca7bb;
   --border: rgba(163, 184, 211, 0.24);
 }
+
+/* Font-candidate preview swatch — floats top-left of the viewport so
+   the user can compare PASSKI.XYZ in each candidate alongside the
+   current double-struck wordmark. Remove when the pick is locked. */
+.ski-font-picker {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 9999;
+  background: rgba(5, 7, 13, 0.92);
+  border: 1px solid rgba(163, 184, 211, 0.35);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-family: 'Inter', system-ui, sans-serif;
+  color: #ffffff;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+  max-width: 380px;
+  pointer-events: auto;
+}
+.ski-font-picker-title {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(163, 184, 211, 0.8);
+  margin-bottom: 6px;
+}
+.ski-font-picker-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(163, 184, 211, 0.12);
+}
+.ski-font-picker-row:first-of-type { border-top: 0; }
+.ski-font-picker-label {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: rgba(163, 184, 211, 0.7);
+  min-width: 72px;
+  text-align: right;
+}
+.ski-font-picker-word {
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+  color: #ffffff;
+}
+.ski-font-picker-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  background: none;
+  border: 0;
+  color: rgba(163, 184, 211, 0.8);
+  font-size: 14px;
+  cursor: pointer;
+}
+.f-bungee   { font-family: 'Bungee', sans-serif; font-weight: 400; }
+.f-bungee-i { font-family: 'Bungee Inline', sans-serif; font-weight: 400; }
+.f-archivo  { font-family: 'Archivo Black', sans-serif; font-weight: 900; }
+.f-blackops { font-family: 'Black Ops One', sans-serif; font-weight: 400; }
+.f-alfa     { font-family: 'Alfa Slab One', serif; font-weight: 400; }
+.f-monoton  { font-family: 'Monoton', sans-serif; font-weight: 400; }
+.f-rubikmono{ font-family: 'Rubik Mono One', sans-serif; font-weight: 400; }
+.f-current  { font-family: 'Apple Symbols', 'STIX Two Math', 'Cambria Math', 'Noto Sans Math', 'Inter Display', Inter, sans-serif; font-weight: 700; }
 
 * {
   box-sizing: border-box;
