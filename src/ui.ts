@@ -774,7 +774,15 @@ function getPillSkiSvg(variant: SkiDotVariant): string {
 
 // SKI button SVG — 'ski-btn' prefix, lift always hidden
 function getSkiBtnSvg(variant: SkiDotVariant): string {
-  return _buildSkiSvg('ski-btn-svg', 'wk-ski-btn-logo', 'ski-btn', variant, false);
+  let svg = _buildSkiSvg('ski-btn-svg', 'wk-ski-btn-logo', 'ski-btn', variant, false);
+  if (!svg) return '';
+  // Hide the crafted "SKI" letter paths and overlay the passki wordmark.
+  // The header button is the brand surface most users see first; it has to
+  // say PASSKI. The artistic SKI paths stay in the source for legacy uses.
+  svg = svg.replace('id="ski-btn-text"', 'id="ski-btn-text" style="display:none"');
+  const wordmark = `<text x="640" y="700" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="300" font-weight="900" fill="white" letter-spacing="-10">PASSKI</text>`;
+  svg = svg.replace('</svg>', wordmark + '</svg>');
+  return svg;
 }
 
 let _skiLiftVisible = true;
