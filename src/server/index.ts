@@ -138,6 +138,9 @@ app.use('*', async (c, next) => {
   if (c.req.header('upgrade') === 'websocket') return;
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  // HSTS — passki is a WebAuthn relying party; browsers must never
+  // downgrade to HTTP. 2-year max-age, include subdomains, preload-ready.
+  c.header('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
   // X-Frame-Options omitted — we use frame-ancestors (CSP) instead, which is
   // the modern replacement. XFO SAMEORIGIN conflicts with WaaP's cross-origin
   // iframe lifecycle in some browsers.
@@ -192,7 +195,7 @@ app.use('*', async (c, next) => {
     "img-src 'self' data: https:",
     `connect-src 'self' https://*.sui.io https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://*.h2o-nodes.com ${WAAP_CONNECT}`,
     `frame-src 'self' ${WAAP_FRAME}`,
-    "frame-ancestors 'self' https://*.sui.ski",
+    "frame-ancestors 'self' https://*.sui.ski https://*.passki.xyz",
     "base-uri 'self'",
     `form-action 'self' ${OAUTH_FORMS}`,
   ].join('; '));
@@ -255,6 +258,14 @@ app.use('/agents/*', agentsMiddleware());
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', version: '2.0.0' }));
+
+// Credential Management — well-known change-password endpoint.
+// Browsers + password managers probe `/.well-known/change-password`
+// to route the user to the right place when they ask to rotate a
+// credential. For a WebAuthn/passkey-first site, we redirect to the
+// SKI idle overlay where the user can rotate their passkey. Spec:
+// https://w3c.github.io/webappsec-change-password-url/
+app.get('/.well-known/change-password', (c) => c.redirect('/#settings', 303));
 
 // ENS CCIP-read gateway — Beldum Iron Defense (#167). Serves
 // wildcard `*.waap.eth` resolver callbacks from the on-chain
