@@ -1189,7 +1189,11 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
     ? keyPfpHtml(addr0, suinsName0)
     : '<div class="ski-key-pfp ski-key-pfp--green-circle"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div>';
   const nameInputHtml = `<input class="ski-create-waap-name-input" type="text" value="name" tabindex="0" onclick="event.stopPropagation()" onfocus="if(this.value==='name')this.value=''" onblur="if(!this.value)this.value='name'"><span class="ski-create-waap-tld">.sui</span>`;
-  // Three-column detail pane: [icon + big name] · [LOCK IN] · [QR + addr]
+  // Two-column detail pane:
+  //   Left  — WaaP logo with blue-square pfp overlapping top-left and
+  //           provider badge overlapping top-right; big name below;
+  //           flat LOCK IN button below that
+  //   Right — QR with truncated hex + copy underneath
   const addrUnderQrHtml = addr0
     ? `<div class="ski-detail-addr-under-qr">
         <a href="${esc(scanUrl0)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr0)}">${esc(truncAddr(addr0))}</a>
@@ -1202,16 +1206,12 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
         ${addrUnderQrHtml}
       </div>`
     : '';
-  // Big expanded name — SuiNS name if set (e.g. "waap"), else the input placeholder
   const bigNameHtml = suinsName0
-    ? `<div class="ski-detail-name-big">${esc(suinsName0)}<span class="ski-detail-name-tld">.sui</span></div>`
+    ? `<div class="ski-detail-name-big"><span class="ski-detail-name-text">${esc(suinsName0)}</span><span class="ski-detail-name-tld">.sui</span></div>`
     : `<div class="ski-detail-name-big-input">${nameInputHtml}</div>`;
-  const activeTextHtml = `<div class="ski-detail-active-text-row">
-        <div class="ski-detail-active-pfp">${activePfpHtml}</div>
-        <div class="ski-detail-key-text">
-          <span class="ski-detail-suins-slot">${bigNameHtml}</span>
-        </div>
-      </div>`;
+  const providerBadgeHtml = /waap/i.test(w.name) && addr0
+    ? `<div class="ski-detail-provider-badge" aria-hidden="true">${waapProviderIcon(addr0)}</div>`
+    : '';
   const lockInBtnHtml = `<button type="button" class="ski-detail-lockin-btn" data-detail-lockin="true" aria-label="Lock In">LOCK IN</button>`;
 
   const otherKeysHtml = displayAddrs.slice(1).map((addr: string, i: number) => keyCardHtml(addr, i + 1)).join('');
@@ -1222,8 +1222,8 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
 
   detailEl.innerHTML = `
     <div class="ski-detail-header ski-detail-header--keyed" data-detail-wallet="${esc(w.name)}">
-      <div class="ski-detail-icon-row"${addr0 ? ` data-addr-idx="0" data-full-addr="${esc(addr0)}"` : ''}>
-        <div class="ski-detail-icons-top">
+      <div class="ski-detail-left-col"${addr0 ? ` data-addr-idx="0" data-full-addr="${esc(addr0)}"` : ''}>
+        <div class="ski-detail-logo-stack">
           ${w.icon ? (() => {
             const splashAuth = getSponsorState().auth;
             const activated = !!(splashAuth?.walletName === w.name && new Date(splashAuth.expiresAt).getTime() > Date.now());
@@ -1238,11 +1238,12 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
               ${activated ? `<div class="ski-revoke-tooltip" aria-hidden="true">Withdraw <span class="ski-revoke-tooltip-name">${esc(w.name)}</span> Splash <img src="${SUI_DROP_URI}" class="ski-revoke-tooltip-drop" alt=""></div>` : ''}
             </div>`;
           })() : ''}
-          ${balanceCyclerHtml}
+          <div class="ski-detail-pfp-overlap">${activePfpHtml}</div>
+          ${providerBadgeHtml}
         </div>
-        ${activeTextHtml}
+        ${bigNameHtml}
+        ${lockInBtnHtml}
       </div>
-      ${lockInBtnHtml}
       ${activeQrHtml}
     </div>
   `;

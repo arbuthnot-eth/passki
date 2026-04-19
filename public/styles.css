@@ -7229,91 +7229,112 @@ a.ski-idle-bubble-name:hover {
   width: 100%;
   min-height: 38px;
 }
-/* Three equal-width columns: [icon + big name] · [LOCK IN] · [QR + addr] */
+/* Two equal-width columns: [icon stack + name + LOCK IN]  ·  [QR + addr] */
 .ski-detail-header--keyed {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+  gap: 16px;
+  padding: 14px;
+  container-type: inline-size;
 }
-.ski-detail-header--keyed > .ski-detail-icon-row {
+.ski-detail-left-col {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
 }
-.ski-detail-header--keyed > .ski-detail-icon-row .ski-detail-icon {
-  width: 64px;
-  height: 64px;
+
+/* Logo stack — WaaP icon is the base; blue-square pfp overlaps top-left
+   corner; provider badge (X/Google/Discord) overlaps top-right corner. */
+.ski-detail-logo-stack {
+  position: relative;
+  display: inline-block;
+  width: clamp(96px, 55cqw, 140px);
 }
-.ski-detail-qr-col {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
+.ski-detail-logo-stack .ski-detail-icon-wrap {
   width: 100%;
-}
-.ski-detail-qr {
-  width: 100%;
-  max-width: 150px;
   aspect-ratio: 1;
-  border-radius: 6px;
-  overflow: hidden;
-  background: #ffffff;
-  cursor: pointer;
 }
-.ski-detail-addr-under-qr {
+.ski-detail-logo-stack .ski-detail-icon {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.ski-detail-pfp-overlap {
+  position: absolute;
+  top: -10px;
+  left: -10px;
+  z-index: 3;
+}
+.ski-detail-pfp-overlap .ski-key-pfp {
+  width: 44px;
+  height: 44px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.ski-detail-provider-badge {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  z-index: 3;
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: rgba(220, 232, 255, 0.9);
+  justify-content: center;
+  background: #111;
 }
-.ski-detail-addr-under-qr .ski-detail-addr-text {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
-  color: rgba(220, 232, 255, 0.95);
-  text-decoration: none;
-}
-.ski-detail-addr-under-qr .ski-detail-addr-text:hover { color: #ffffff; }
+.ski-detail-provider-badge svg { width: 100%; height: 100%; display: block; }
 
-/* Big expanded SuiNS name — e.g. "waap.sui" */
+/* Flexible expanded name — fills column width, clips elegantly */
 .ski-detail-name-big {
-  font-family: Inter, system-ui, sans-serif;
-  font-size: clamp(26px, 3.4vw, 38px);
-  font-weight: 800;
-  letter-spacing: -0.01em;
+  font-family: 'Inter Display', 'Space Grotesk', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-weight: 900;
+  letter-spacing: -0.03em;
   color: #ffffff;
-  line-height: 1.05;
+  line-height: 1;
   text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+  font-size: clamp(24px, 14cqw, 46px);
+  padding: 0 4px;
 }
+.ski-detail-name-text { color: #ffffff; }
 .ski-detail-name-tld {
-  font-size: 0.6em;
-  font-weight: 600;
-  color: rgba(186, 220, 255, 0.75);
+  font-size: 0.55em;
+  font-weight: 700;
+  color: rgba(186, 220, 255, 0.72);
   margin-left: 2px;
+  letter-spacing: 0;
 }
-.ski-detail-name-big-input .ski-create-waap-name-input { font-size: 1.15rem; height: 36px; width: 100%; max-width: 140px; }
-.ski-detail-name-big-input .ski-create-waap-tld { font-size: 1.15rem; }
+.ski-detail-name-big-input {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.ski-detail-name-big-input .ski-create-waap-name-input { font-size: 1.2rem; height: 38px; max-width: 140px; }
+.ski-detail-name-big-input .ski-create-waap-tld { font-size: 1.2rem; }
 
-/* Middle LOCK IN button — full column width, pushable CTA */
+/* Flat LOCK IN button — single line, sits under the name */
 .ski-detail-lockin-btn {
   width: 100%;
-  min-height: 110px;
-  padding: 18px 10px;
+  padding: 12px 14px;
   border: 1px solid rgba(134, 239, 172, 0.65);
-  border-radius: 12px;
+  border-radius: 10px;
   background: linear-gradient(180deg, rgba(34, 197, 94, 0.22), rgba(22, 163, 74, 0.32));
   color: #ffffff;
-  font-family: Inter, system-ui, sans-serif;
-  font-size: clamp(18px, 2.4vw, 26px);
+  font-family: 'Inter Display', 'Space Grotesk', Inter, -apple-system, sans-serif;
+  font-size: clamp(15px, 5.5cqw, 20px);
   font-weight: 800;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
+  white-space: nowrap;
   cursor: pointer;
   user-select: none;
   transition: transform 0.08s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
@@ -7328,6 +7349,37 @@ a.ski-idle-bubble-name:hover {
   transform: translateY(1px);
   box-shadow: 0 0 0 1px rgba(187, 247, 208, 0.55) inset, 0 0 12px rgba(34, 197, 94, 0.55);
 }
+
+/* Right column: QR + address underneath */
+.ski-detail-qr-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+.ski-detail-qr {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ffffff;
+  cursor: pointer;
+}
+.ski-detail-addr-under-qr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: clamp(12px, 3.5cqw, 15px);
+  color: rgba(220, 232, 255, 0.9);
+}
+.ski-detail-addr-under-qr .ski-detail-addr-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: rgba(220, 232, 255, 0.95);
+  text-decoration: none;
+}
+.ski-detail-addr-under-qr .ski-detail-addr-text:hover { color: #ffffff; }
 .ski-detail-qr svg {
   display: block;
   width: 100%;
