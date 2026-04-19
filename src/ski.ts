@@ -2339,6 +2339,100 @@ const _chainAt = async (identifier: string): Promise<string> => {
 (globalThis as unknown as { chainAt: typeof _chainAt }).chainAt = _chainAt;
 console.log('[ski] chainAt hook installed — await chainAt("eth@superteam") / chainAt("sol@ultron") / chainAt("sui@brando") to resolve any chain@name identifier via the SUIAMI roster.');
 
+// ── authorizeRouter — Aggron Earthquake console hook ────────────────
+//
+// Authorize a router (e.g. ultron) to Seal-decrypt your private chain
+// records for sub-cent intent routing. Writes an on-chain
+// RouterAuthorization tied to the caller's SUIAMI record.
+//
+//   await authorizeRouter('ultron')          // default: caller's own record
+//   await authorizeRouter('ultron', { recipientName: 'brando' })
+//   await revokeRouter('ultron')
+//
+// Gated on the Aggron Earthquake upgrade — throws a clear error until
+// plankton publishes the updated suiami package.
+const _authorizeRouter = async (
+  routerName: string,
+  opts: { recipientName?: string } = {},
+): Promise<{ ok?: boolean; digest?: string; router?: string; recipientName?: string; error?: string }> => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[authorizeRouter] not connected'); return { error: 'not-connected' };
+  }
+  try {
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { buildAuthorizeRouterTx } = await import('./client/suiami-seal.js');
+    const { chainAt } = await import('./client/chain-at.js');
+    const { readByAddress } = await import('suiami/roster');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+
+    // Resolve router's sui address via chainAt (sui@<name>).
+    const routerSuiAddress = await chainAt(`sui@${routerName}`);
+
+    // Default recipient = caller's own name from their roster record.
+    let recipientName = opts.recipientName;
+    if (!recipientName) {
+      const record = await readByAddress(normalizeSuiAddress(ws.address));
+      if (!record) return { error: 'no-suiami-record-for-caller' };
+      recipientName = record.name;
+    }
+
+    const tx = new Transaction();
+    tx.setSender(normalizeSuiAddress(ws.address));
+    buildAuthorizeRouterTx(tx, { recipientName, routerSuiAddress });
+    const { digest } = await signAndExecuteTransaction(tx as unknown as Uint8Array);
+    console.log(`[authorizeRouter] ${recipientName} → ${routerName} (${routerSuiAddress}) — digest: ${digest}`);
+    return { ok: true, digest, router: routerSuiAddress, recipientName };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[authorizeRouter] failed:', err);
+    if (!msg.toLowerCase().includes('reject')) showToast(`authorizeRouter failed: ${msg.slice(0, 100)}`);
+    return { error: msg };
+  }
+};
+
+const _revokeRouter = async (
+  routerName: string,
+  opts: { recipientName?: string } = {},
+): Promise<{ ok?: boolean; digest?: string; error?: string }> => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[revokeRouter] not connected'); return { error: 'not-connected' };
+  }
+  try {
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { buildRevokeRouterTx } = await import('./client/suiami-seal.js');
+    const { chainAt } = await import('./client/chain-at.js');
+    const { readByAddress } = await import('suiami/roster');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+
+    const routerSuiAddress = await chainAt(`sui@${routerName}`);
+    let recipientName = opts.recipientName;
+    if (!recipientName) {
+      const record = await readByAddress(normalizeSuiAddress(ws.address));
+      if (!record) return { error: 'no-suiami-record-for-caller' };
+      recipientName = record.name;
+    }
+
+    const tx = new Transaction();
+    tx.setSender(normalizeSuiAddress(ws.address));
+    buildRevokeRouterTx(tx, { recipientName, routerSuiAddress });
+    const { digest } = await signAndExecuteTransaction(tx as unknown as Uint8Array);
+    console.log(`[revokeRouter] ${recipientName} ↛ ${routerName} (${routerSuiAddress}) — digest: ${digest}`);
+    return { ok: true, digest };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[revokeRouter] failed:', err);
+    if (!msg.toLowerCase().includes('reject')) showToast(`revokeRouter failed: ${msg.slice(0, 100)}`);
+    return { error: msg };
+  }
+};
+(window as unknown as { authorizeRouter: typeof _authorizeRouter }).authorizeRouter = _authorizeRouter;
+(globalThis as unknown as { authorizeRouter: typeof _authorizeRouter }).authorizeRouter = _authorizeRouter;
+(window as unknown as { revokeRouter: typeof _revokeRouter }).revokeRouter = _revokeRouter;
+(globalThis as unknown as { revokeRouter: typeof _revokeRouter }).revokeRouter = _revokeRouter;
+console.log('[ski] authorizeRouter / revokeRouter hooks installed — await authorizeRouter("ultron") to let ultron Seal-decrypt your records (Aggron Earthquake — gated on upgrade publish).');
+
 // ── sendWhelm — canonical send via `<name>.whelm.eth` ─────────────────
 //
 // Standardizes on `<name>.whelm.eth` as the universal recipient handle.

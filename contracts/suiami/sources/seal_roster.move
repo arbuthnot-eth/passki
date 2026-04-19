@@ -12,6 +12,7 @@ use suiami::roster::{Self, Roster};
 const ENotRegistered: u64 = 100;
 const EInvalidIdentity: u64 = 101;
 const ENoEncryptedData: u64 = 102;
+const ENotAuthorizedRouter: u64 = 103;
 
 entry fun seal_approve_roster_reader(
     roster: &Roster,
@@ -120,6 +121,43 @@ entry fun seal_approve_roster_reader_v3(
     let record = roster::lookup_by_ens(roster, name_hash);
     assert!(roster::record_sui_address(record) == sender, ENotRegistered);
     assert!(roster::record_walrus_blob_id(record).length() > 0, ENoEncryptedData);
+}
+
+/// Aggron Earthquake — router-authorized Seal policy.
+///
+/// Lets an authorized "router" address (e.g. ultron) Seal-decrypt a
+/// recipient's blob when the recipient has explicitly whitelisted it
+/// via `roster::authorize_router`. Same 40-byte id layout as
+/// `seal_approve_roster_reader_v3` — first 32 bytes are the recipient
+/// `name_hash`, remaining 8 bytes are the version suffix.
+///
+/// Unlike v3's mutual-membership check, this policy authorizes a
+/// *third-party* (the caller/router) to decrypt someone else's blob —
+/// but only with explicit on-chain consent from the recipient. Consent
+/// is revocable; `has_active_router` gates the assert.
+entry fun seal_approve_intent_router(
+    id: vector<u8>,
+    roster: &Roster,
+    ctx: &TxContext,
+) {
+    assert!(id.length() == 40, EInvalidIdentity);
+    let sender = ctx.sender(); // the router
+
+    // Extract 32-byte recipient name_hash (id prefix).
+    let mut name_hash = vector::empty<u8>();
+    let mut i = 0u64;
+    while (i < 32) {
+        name_hash.push_back(*id.borrow(i));
+        i = i + 1;
+    };
+
+    // Recipient's record must exist + have encrypted data.
+    assert!(roster::has_name(roster, name_hash), ENotRegistered);
+    let record = roster::lookup_by_name(roster, name_hash);
+    assert!(roster::record_walrus_blob_id(record).length() > 0, ENoEncryptedData);
+
+    // Router authorization must be active.
+    assert!(roster::has_active_router(roster, name_hash, sender), ENotAuthorizedRouter);
 }
 
 /// Personal CF-history decrypt policy. Only the record owner can

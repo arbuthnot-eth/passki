@@ -27,6 +27,7 @@ interface Env {
   AggronBatcher: DurableObjectNamespace;
   SuiInboundWatcher: DurableObjectNamespace;
   UltronPostal: DurableObjectNamespace;
+  IntentRegistry: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key (legacy name — consume via ultronKeypair(env))
@@ -2194,6 +2195,126 @@ app.put('/api/aggron/publish', async (c) => {
   }
 });
 
+// ── Aggron Mega Punch — IntentRegistry endpoints ───────────────────
+// Maps sub-cent intent indexes (0000–9999) to SUIAMI identities per
+// chain tag. Writes are admin-gated (requireUltronAdmin), reads are
+// public — the registry is a routing table, not secret material.
+//
+// Scheme recap: a deposit to sui@ultron with dust tail `10000` decodes
+// as chainTag=1 (eth), recipientIndex=0000 → IntentRegistry slot 0000
+// for eth-tagged entries. See `src/server/sui-inbound.ts`.
+type IntentRegisterBody = {
+  intentIndex: number;
+  suiamiName: string;
+  chainTag: 0 | 1 | 2 | 3;
+  adminAddress: string;
+  signature: string;
+  message: string;
+};
+
+type IntentRevokeBody = {
+  intentIndex: number;
+  adminAddress: string;
+  signature: string;
+  message: string;
+};
+
+function _intentRegistryStub(c: { env: Env }) {
+  return c.env.IntentRegistry.get(c.env.IntentRegistry.idFromName('aggron:intent-registry')) as unknown as {
+    register(p: { intentIndex: number; suiamiName: string; chainTag: 0|1|2|3; issuedBy: string }): Promise<unknown>;
+    revoke(p: { intentIndex: number }): Promise<unknown>;
+    lookup(p: { intentIndex: number }): Promise<unknown>;
+    list(): Promise<unknown>;
+  };
+}
+
+app.post('/api/aggron/intent/register', async (c) => {
+  let body: IntentRegisterBody;
+  try {
+    body = await c.req.json<IntentRegisterBody>();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+  const { intentIndex, suiamiName, chainTag } = body;
+  if (typeof intentIndex !== 'number' || !Number.isInteger(intentIndex) || intentIndex < 0 || intentIndex > 9999) {
+    return c.json({ error: 'intentIndex must be integer 0..9999' }, 400);
+  }
+  if (typeof suiamiName !== 'string' || suiamiName.length === 0) {
+    return c.json({ error: 'suiamiName required' }, 400);
+  }
+  if (typeof chainTag !== 'number' || chainTag < 0 || chainTag > 3) {
+    return c.json({ error: 'chainTag must be 0..3' }, 400);
+  }
+  const denied = await requireUltronAdmin(c, body, {
+    context: 'aggron-intent-register',
+    messageFor: (b) => `aggron-intent-register:${b.intentIndex}:${b.suiamiName}:${todayUtc()}`,
+  });
+  if (denied) return denied;
+  try {
+    const stub = _intentRegistryStub(c);
+    const result = await stub.register({
+      intentIndex,
+      suiamiName,
+      chainTag,
+      issuedBy: body.adminAddress.toLowerCase(),
+    });
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.post('/api/aggron/intent/revoke', async (c) => {
+  let body: IntentRevokeBody;
+  try {
+    body = await c.req.json<IntentRevokeBody>();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+  const { intentIndex } = body;
+  if (typeof intentIndex !== 'number' || !Number.isInteger(intentIndex) || intentIndex < 0 || intentIndex > 9999) {
+    return c.json({ error: 'intentIndex must be integer 0..9999' }, 400);
+  }
+  const denied = await requireUltronAdmin(c, body, {
+    context: 'aggron-intent-revoke',
+    messageFor: (b) => `aggron-intent-revoke:${b.intentIndex}:${todayUtc()}`,
+  });
+  if (denied) return denied;
+  try {
+    const stub = _intentRegistryStub(c);
+    const result = await stub.revoke({ intentIndex });
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.get('/api/aggron/intent', async (c) => {
+  try {
+    const stub = _intentRegistryStub(c);
+    const result = await stub.list();
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.get('/api/aggron/intent/:index', async (c) => {
+  const raw = c.req.param('index');
+  const intentIndex = Number(raw);
+  if (!Number.isInteger(intentIndex) || intentIndex < 0 || intentIndex > 9999) {
+    return c.json({ error: 'intentIndex must be integer 0..9999' }, 400);
+  }
+  try {
+    const stub = _intentRegistryStub(c);
+    const entry = await stub.lookup({ intentIndex });
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    return c.json({ entry });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 // ── Walrus publisher proxy ──────────────────────────────────────────
 // PUT /api/walrus/publish
 // Forwards the raw body to the first Walrus mainnet publisher that
@@ -2257,6 +2378,48 @@ app.post('/api/admin/paymaster-signer', async (c) => {
     const result = await stub.setPaymasterSigner({
       dwalletId: body.dwalletId,
       ethAddress: body.ethAddress,
+    });
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
+// POST /api/ultron-postal/test-live-transfer — Icy Wind pt2.
+// Admin-gated live transfer via UltronPostal.handleTransfer. Routes to
+// the DO's `testLiveTransfer` callable, which builds + IKA-signs + submits
+// a real Sui transfer to sui@<recipientSuiamiName>.
+app.post('/api/ultron-postal/test-live-transfer', async (c) => {
+  const body = await c.req.json() as {
+    recipientSuiamiName?: string;
+    amountMist?: string;
+    coinType?: string;
+    adminAddress?: string;
+    signature?: string;
+    message?: string;
+  };
+  const denied = await requireUltronAdmin(c, body as Required<typeof body>, {
+    context: 'ultron-postal-test-live-transfer',
+    messageFor: (b) => `ultron-postal-test-live-transfer:${b.recipientSuiamiName}:${b.amountMist}:${todayUtc()}`,
+  });
+  if (denied) return denied;
+  try {
+    if (!body.recipientSuiamiName || !body.amountMist) {
+      return c.json({ error: 'recipientSuiamiName and amountMist required' }, 400);
+    }
+    const stub = c.env.UltronPostal.get(
+      c.env.UltronPostal.idFromName('ultron-postal'),
+    ) as unknown as {
+      testLiveTransfer: (p: {
+        recipientSuiamiName: string;
+        amountMist: string;
+        coinType?: string;
+      }) => Promise<{ ok: boolean; digest?: string; error?: string }>;
+    };
+    const result = await stub.testLiveTransfer({
+      recipientSuiamiName: body.recipientSuiamiName,
+      amountMist: body.amountMist,
+      ...(body.coinType ? { coinType: body.coinType } : {}),
     });
     return c.json(result);
   } catch (err) {
@@ -4978,3 +5141,4 @@ export { WeavileAssuranceAgent } from './agents/weavile-assurance.js';
 export { AggronBatcher } from './agents/aggron-batcher.js';
 export { SuiInboundWatcher } from './agents/sui-inbound-watcher.js';
 export { UltronPostal } from './agents/ultron-postal.js';
+export { IntentRegistry } from './agents/intent-registry.js';

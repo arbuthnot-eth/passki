@@ -1408,3 +1408,157 @@ public fun stealth_meta_view_pubkeys(roster: &Roster, addr: address): &VecMap<St
     let meta: &StealthMeta = dynamic_field::borrow(&roster.id, StealthMetaKey { addr });
     &meta.view_pubkeys
 }
+
+// ─── Aggron Earthquake — IntentRegistryAnchor (#-) ──────────────────
+//
+// On-chain mirror of the server-side IntentRegistry. Lets a recipient
+// explicitly authorize a "router" (e.g. ultron) to Seal-decrypt their
+// private chain records for sub-cent intent routing. The authorization
+// is keyed by `(recipient_name_hash, router_sui_address)` and stored
+// as a dynamic field on the shared Roster — no new shared object.
+//
+// Auth model:
+//   - `authorize_router`: sender must already own a Roster record
+//     (name_hash → record with record.sui_address == sender). Writes
+//     a RouterAuthorization with revoked_at_ms=0.
+//   - `revoke_router`: same ownership check; flips revoked_at_ms to now.
+//   - Re-authorize after revoke: overwrites the existing authorization
+//     with a fresh authorized_at_ms and revoked_at_ms=0.
+//
+// Seal policy (`seal_approve_intent_router`, in seal_roster.move) reads
+// the same field and approves decrypt iff sender (the router) has an
+// active authorization for the recipient identified by the seal id's
+// first 32 bytes.
+
+const ENotRecipient: u64 = 14;
+const ENoRouterAuthorization: u64 = 15;
+
+public struct RouterAuthKey has copy, drop, store {
+    recipient_name_hash: vector<u8>,
+    router: address,
+}
+
+public struct RouterAuthorization has store, drop, copy {
+    recipient_name_hash: vector<u8>,
+    router_sui_address: address,
+    authorized_at_ms: u64,
+    /// 0 ⇒ still active; otherwise ms timestamp of revocation.
+    revoked_at_ms: u64,
+}
+
+public struct RouterAuthorized has copy, drop {
+    recipient_name_hash: vector<u8>,
+    router: address,
+    authorized_at_ms: u64,
+}
+
+public struct RouterRevoked has copy, drop {
+    recipient_name_hash: vector<u8>,
+    router: address,
+    revoked_at_ms: u64,
+}
+
+/// Authorize `router_sui_address` to Seal-decrypt the recipient's
+/// private chain records. Sender must own the recipient record (owner
+/// check: record.sui_address == sender). The recipient is identified
+/// by `recipient_name_hash = keccak256(bareName)` — same hash space as
+/// the roster's name index.
+entry fun authorize_router(
+    roster: &mut Roster,
+    recipient_name_hash: vector<u8>,
+    router_sui_address: address,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    // Recipient ownership: the name_hash must be registered and
+    // the sender must be the on-chain owner of that name.
+    assert!(dynamic_field::exists_<vector<u8>>(&roster.id, recipient_name_hash), ENotRecipient);
+    let record: &IdentityRecord = dynamic_field::borrow(&roster.id, recipient_name_hash);
+    assert!(record.sui_address == sender, ENotRecipient);
+
+    let key = RouterAuthKey { recipient_name_hash, router: router_sui_address };
+    if (dynamic_field::exists_<RouterAuthKey>(&roster.id, key)) {
+        // Re-authorize path: drop stale entry so we can write fresh.
+        let _old: RouterAuthorization = dynamic_field::remove<RouterAuthKey, RouterAuthorization>(&mut roster.id, key);
+    };
+
+    let authorized_at_ms = clock.timestamp_ms();
+    let auth = RouterAuthorization {
+        recipient_name_hash,
+        router_sui_address,
+        authorized_at_ms,
+        revoked_at_ms: 0,
+    };
+    dynamic_field::add(&mut roster.id, key, auth);
+
+    event::emit(RouterAuthorized {
+        recipient_name_hash,
+        router: router_sui_address,
+        authorized_at_ms,
+    });
+}
+
+/// Revoke a previously-authorized router. Sender must own the recipient
+/// record. Aborts if no authorization exists. Sets revoked_at_ms to
+/// current clock time; leaves the field in place so audit history is
+/// preserved (`has_active_router` returns false for revoked entries).
+entry fun revoke_router(
+    roster: &mut Roster,
+    recipient_name_hash: vector<u8>,
+    router_sui_address: address,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<vector<u8>>(&roster.id, recipient_name_hash), ENotRecipient);
+    let record: &IdentityRecord = dynamic_field::borrow(&roster.id, recipient_name_hash);
+    assert!(record.sui_address == sender, ENotRecipient);
+
+    let key = RouterAuthKey { recipient_name_hash, router: router_sui_address };
+    assert!(dynamic_field::exists_<RouterAuthKey>(&roster.id, key), ENoRouterAuthorization);
+    let auth: &mut RouterAuthorization = dynamic_field::borrow_mut(&mut roster.id, key);
+    let revoked_at_ms = clock.timestamp_ms();
+    auth.revoked_at_ms = revoked_at_ms;
+
+    event::emit(RouterRevoked {
+        recipient_name_hash,
+        router: router_sui_address,
+        revoked_at_ms,
+    });
+}
+
+/// Returns true iff an authorization exists for this (recipient,
+/// router) pair AND it has not been revoked.
+public fun has_active_router(
+    roster: &Roster,
+    recipient_name_hash: vector<u8>,
+    router_sui_address: address,
+): bool {
+    let key = RouterAuthKey { recipient_name_hash, router: router_sui_address };
+    if (!dynamic_field::exists_<RouterAuthKey>(&roster.id, key)) return false;
+    let auth: &RouterAuthorization = dynamic_field::borrow(&roster.id, key);
+    auth.revoked_at_ms == 0
+}
+
+public fun router_authorization_authorized_at_ms(
+    roster: &Roster,
+    recipient_name_hash: vector<u8>,
+    router_sui_address: address,
+): u64 {
+    let key = RouterAuthKey { recipient_name_hash, router: router_sui_address };
+    assert!(dynamic_field::exists_<RouterAuthKey>(&roster.id, key), ENoRouterAuthorization);
+    let auth: &RouterAuthorization = dynamic_field::borrow(&roster.id, key);
+    auth.authorized_at_ms
+}
+
+public fun router_authorization_revoked_at_ms(
+    roster: &Roster,
+    recipient_name_hash: vector<u8>,
+    router_sui_address: address,
+): u64 {
+    let key = RouterAuthKey { recipient_name_hash, router: router_sui_address };
+    assert!(dynamic_field::exists_<RouterAuthKey>(&roster.id, key), ENoRouterAuthorization);
+    let auth: &RouterAuthorization = dynamic_field::borrow(&roster.id, key);
+    auth.revoked_at_ms
+}

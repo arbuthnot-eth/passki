@@ -425,6 +425,100 @@ export async function decryptCfChunkForAddress(opts: {
   }
 }
 
+// ─── Aggron Earthquake — IntentRegistryAnchor PTB helpers ───────────
+//
+// Scaffolded ahead of the on-chain upgrade. Both helpers build PTBs
+// against `SUIAMI_PKG_LATEST`'s `roster::authorize_router` /
+// `revoke_router` entries. The current `SUIAMI_PKG_LATEST` predates
+// the Aggron upgrade — calling these today will abort with a
+// Move-level `FunctionNotFound`. The `AGGRON_EARTHQUAKE_PKG` constant
+// below gates the helpers with a thrown error so dev tooling doesn't
+// fire a doomed tx before publish.
+//
+// After plankton publishes the upgrade (see
+// `docs/superpowers/plans/2026-04-18-aggron-earthquake-publish.md`),
+// bump `SUIAMI_PKG_LATEST` above to the new published-at and set
+// `AGGRON_EARTHQUAKE_PUBLISHED = true` below.
+
+/** Flip to true after plankton publishes the Aggron upgrade AND
+ *  `SUIAMI_PKG_LATEST` is bumped to the new published-at. */
+export const AGGRON_EARTHQUAKE_PUBLISHED = false;
+
+function assertAggronPublished(): void {
+  if (!AGGRON_EARTHQUAKE_PUBLISHED) {
+    throw new Error(
+      'Aggron Earthquake upgrade not yet published — authorize_router / revoke_router ' +
+      'entries do not exist at SUIAMI_PKG_LATEST. See docs/superpowers/plans/' +
+      '2026-04-18-aggron-earthquake-publish.md for the publish checklist.',
+    );
+  }
+}
+
+/** Derive the 32-byte `name_hash` used as the router-authorization key.
+ *  Matches `deriveSuiamiSealId`'s first 32 bytes so the Seal id and the
+ *  on-chain dynamic-field key line up. */
+export function deriveRecipientNameHash(bareName: string): Uint8Array {
+  const normalized = bareName.replace(/\.sui$/i, '').toLowerCase();
+  return keccak_256(new TextEncoder().encode(normalized));
+}
+
+export interface BuildRouterAuthArgs {
+  /** Bare SuiNS name of the recipient (whose record + blob will be
+   *  decryptable by the router). Defaults to the caller's own name —
+   *  but since only the recipient can sign the tx, passing someone
+   *  else's name aborts on-chain with ENotRecipient regardless. */
+  recipientName: string;
+  /** Sui address of the router to authorize / revoke (e.g. ultron). */
+  routerSuiAddress: string;
+}
+
+/** Append a `roster::authorize_router` moveCall to `tx`. Caller is
+ *  responsible for sender + execution. Gated on the Aggron upgrade. */
+export function buildAuthorizeRouterTx(
+  tx: Transaction,
+  { recipientName, routerSuiAddress }: BuildRouterAuthArgs,
+): Transaction {
+  assertAggronPublished();
+  const nameHash = deriveRecipientNameHash(recipientName);
+  tx.moveCall({
+    target: `${SUIAMI_PKG_LATEST}::roster::authorize_router`,
+    arguments: [
+      tx.sharedObjectRef({
+        objectId: ROSTER_OBJ,
+        initialSharedVersion: ROSTER_INITIAL_SHARED_VERSION,
+        mutable: true,
+      }),
+      tx.pure.vector('u8', Array.from(nameHash)),
+      tx.pure.address(routerSuiAddress),
+      tx.object('0x6'),
+    ],
+  });
+  return tx;
+}
+
+/** Append a `roster::revoke_router` moveCall to `tx`. Gated on Aggron. */
+export function buildRevokeRouterTx(
+  tx: Transaction,
+  { recipientName, routerSuiAddress }: BuildRouterAuthArgs,
+): Transaction {
+  assertAggronPublished();
+  const nameHash = deriveRecipientNameHash(recipientName);
+  tx.moveCall({
+    target: `${SUIAMI_PKG_LATEST}::roster::revoke_router`,
+    arguments: [
+      tx.sharedObjectRef({
+        objectId: ROSTER_OBJ,
+        initialSharedVersion: ROSTER_INITIAL_SHARED_VERSION,
+        mutable: true,
+      }),
+      tx.pure.vector('u8', Array.from(nameHash)),
+      tx.pure.address(routerSuiAddress),
+      tx.object('0x6'),
+    ],
+  });
+  return tx;
+}
+
 /** Clear any cached SUIAMI session key. For tests and the wallet's
  *  "disconnect" event, same pattern as clearSealCache() for thunder. */
 export function clearSuiamiSessionCache(address?: string): void {

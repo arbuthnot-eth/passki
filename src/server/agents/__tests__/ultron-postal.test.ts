@@ -66,12 +66,21 @@ function makeIntent(hasIntent = true) {
 }
 
 function newInstance(): UltronPostal {
-  const inst = new UltronPostalCtor({} as unknown as DurableObjectState, {});
+  // Subclass that re-stubs handleTransfer so alarm-drain tests don't
+  // hit the live Icy Wind pt2 network path. Tests in the
+  // "handleTransfer (Icy Wind pt2 live path)" describe block call
+  // handleTransfer directly (with fetch + signer mocks) instead.
+  class Stubbed extends UltronPostalCtor {
+    protected override _resolveHandler() {
+      return async () => ({ digest: null, stub: true });
+    }
+  }
+  const inst = new Stubbed({} as unknown as DurableObjectState, {});
   // Mirror the constructor setting state to initialState (AgentStub ctor
   // assigns `{} as S`; the real Agent base runs initialState, so we do it).
   // @ts-expect-error – accessing for test setup
   inst.state = { ...inst.initialState };
-  return inst;
+  return inst as UltronPostal;
 }
 
 describe('inferEnvelopeKind', () => {
@@ -171,77 +180,63 @@ describe('alarm drain', () => {
   });
 });
 
+function newFlakyInstance(onCall: () => void): UltronPostal {
+  class Flaky extends UltronPostalCtor {
+    protected override _resolveHandler() {
+      return async () => {
+        onCall();
+        throw new mod.TransientDispatchError('boom');
+      };
+    }
+  }
+  const inst = new Flaky({} as unknown as DurableObjectState, {});
+  // @ts-expect-error – mirror initialState like newInstance()
+  inst.state = { ...inst.initialState };
+  return inst as UltronPostal;
+}
+
 describe('retry + dead-letter', () => {
   test('transient error increments attempts and re-queues', async () => {
-    const inst = newInstance();
-    // Patch handlerFor via monkey-patch on the module: swap handleTransfer
-    // to a flaky one for this test only.
-    const original = mod.handleTransfer;
     let calls = 0;
-    const flaky = async () => {
-      calls++;
-      throw new mod.TransientDispatchError('boom');
-    };
-    // @ts-expect-error – mutating exported binding for test
-    (mod as { handleTransfer: unknown }).handleTransfer = flaky;
-    // But handlerFor is a closure over the module-local handleTransfer
-    // reference — so patch handlerFor directly too.
-    const originalHandlerFor = mod.handlerFor;
-    // @ts-expect-error – test override
-    (mod as { handlerFor: unknown }).handlerFor = () => flaky;
-
-    try {
-      await inst.dispatch({
-        activity: makeActivity(),
-        intent: makeIntent(true),
-        recipientSuiamiName: 'ares',
-      });
-      // @ts-expect-error – internal
-      await inst._runDispatchAlarm();
-      expect(calls).toBe(1);
-      // @ts-expect-error – internal
-      const pending = inst.state.pendingDispatches as DispatchTicket[];
-      expect(pending.length).toBe(1);
-      expect(pending[0]!.attempts).toBe(1);
-      expect(pending[0]!.lastError).toBe('boom');
-    } finally {
-      // @ts-expect-error – restore
-      (mod as { handleTransfer: unknown }).handleTransfer = original;
-      // @ts-expect-error – restore
-      (mod as { handlerFor: unknown }).handlerFor = originalHandlerFor;
-    }
+    const inst = newFlakyInstance(() => { calls++; });
+    await inst.dispatch({
+      activity: makeActivity(),
+      intent: makeIntent(true),
+      recipientSuiamiName: 'ares',
+    });
+    // @ts-expect-error – internal
+    await inst._runDispatchAlarm();
+    expect(calls).toBe(1);
+    // @ts-expect-error – internal
+    const pending = inst.state.pendingDispatches as DispatchTicket[];
+    expect(pending.length).toBe(1);
+    expect(pending[0]!.attempts).toBe(1);
+    expect(pending[0]!.lastError).toBe('boom');
   });
 
   test('dead-letters after MAX_ATTEMPTS', async () => {
-    const inst = newInstance();
-    const flaky = async () => { throw new mod.TransientDispatchError('boom'); };
-    const originalHandlerFor = mod.handlerFor;
-    // @ts-expect-error – test override
-    (mod as { handlerFor: unknown }).handlerFor = () => flaky;
-
-    try {
-      await inst.dispatch({
-        activity: makeActivity(),
-        intent: makeIntent(true),
-        recipientSuiamiName: 'ares',
-      });
-      for (let i = 0; i < mod.POSTAL_MAX_ATTEMPTS; i++) {
-        // @ts-expect-error – internal
-        await inst._runDispatchAlarm();
-      }
-      // @ts-expect-error – internal
-      const pending = inst.state.pendingDispatches as DispatchTicket[];
-      expect(pending.length).toBe(1);
-      expect(pending[0]!.attempts).toBe(mod.POSTAL_MAX_ATTEMPTS);
-      expect(pending[0]!.lastError).toBe('boom');
-      // Further alarm ticks shouldn't re-run the handler on a dead-letter.
+    let calls = 0;
+    const inst = newFlakyInstance(() => { calls++; });
+    await inst.dispatch({
+      activity: makeActivity(),
+      intent: makeIntent(true),
+      recipientSuiamiName: 'ares',
+    });
+    for (let i = 0; i < mod.POSTAL_MAX_ATTEMPTS; i++) {
       // @ts-expect-error – internal
       await inst._runDispatchAlarm();
-      expect(pending[0]!.attempts).toBe(mod.POSTAL_MAX_ATTEMPTS);
-    } finally {
-      // @ts-expect-error – restore
-      (mod as { handlerFor: unknown }).handlerFor = originalHandlerFor;
     }
+    // @ts-expect-error – internal
+    const pending = inst.state.pendingDispatches as DispatchTicket[];
+    expect(pending.length).toBe(1);
+    expect(pending[0]!.attempts).toBe(mod.POSTAL_MAX_ATTEMPTS);
+    expect(pending[0]!.lastError).toBe('boom');
+    // Further alarm ticks shouldn't re-run the handler on a dead-letter.
+    const callsAtCap = calls;
+    // @ts-expect-error – internal
+    await inst._runDispatchAlarm();
+    expect(calls).toBe(callsAtCap);
+    expect(pending[0]!.attempts).toBe(mod.POSTAL_MAX_ATTEMPTS);
   });
 });
 
@@ -281,5 +276,170 @@ describe('status', () => {
     expect(s.pendingCount).toBe(0);
     expect(s.recentCompletions.length).toBe(1);
     expect(s.recentCompletions[0]!.recipientSuiamiName).toBe('hera');
+  });
+});
+
+// ─── Icy Wind pt2 — handleTransfer live path ───────────────────────
+//
+// We mock `suiami/roster`, chain-at, and global fetch so handleTransfer
+// runs end-to-end without touching the network. The injected signer
+// observes the dwalletId + curve and returns a fake 64-byte sig.
+
+describe('handleTransfer (Icy Wind pt2 live path)', () => {
+  const ULTRON_DWALLET = '0x1a5e6b22b81cd644e15314b451212d9cadb6cd1446c466754760cc5a65ac82a9';
+  // 32 bytes of 0x11 — produces a deterministic Sui address. Not a real pubkey.
+  const FAKE_PUBKEY_HEX = '11'.repeat(32);
+  const FAKE_SIG_HEX = 'ab'.repeat(64);
+  const FAKE_DIGEST = 'AbCdEf1234567890';
+
+  function installFetchStub(opts: {
+    onSubmit?: (body: string) => void;
+    submitError?: boolean;
+  } = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
+      const body = init?.body ? String(init.body) : '';
+      const parsed = body ? JSON.parse(body) : {};
+      const method = parsed.method as string | undefined;
+      if (method === 'sui_getObject') {
+        const po = [1, 32, ...Array.from({ length: 32 }, () => 0x11)];
+        return new Response(JSON.stringify({
+          result: { data: { content: { fields: { state: { fields: { public_output: po } } } } } },
+        }), { status: 200 });
+      }
+      if (method === 'suix_getBalance' || method === 'sui_getBalance') {
+        return new Response(JSON.stringify({
+          result: {
+            coinType: '0x2::sui::SUI',
+            coinObjectCount: 1,
+            totalBalance: '10000000000',
+            fundsInAddressBalance: '0',
+          },
+        }), { status: 200 });
+      }
+      if (method === 'suix_getReferenceGasPrice' || method === 'sui_getReferenceGasPrice') {
+        return new Response(JSON.stringify({ result: '1000' }), { status: 200 });
+      }
+      if (method === 'suix_getCoins' || method === 'sui_getCoins') {
+        return new Response(JSON.stringify({
+          result: {
+            data: [{
+              coinObjectId: '0x' + '44'.repeat(32),
+              version: '1',
+              // Base58 32-byte digest that is NOT the reservation magic.
+              digest: '11111111111111111111111111111111',
+              balance: '10000000000',
+              coinType: '0x2::sui::SUI',
+              previousTransaction: '0x0',
+              digestLong: '',
+            }],
+            hasNextPage: false,
+            nextCursor: null,
+          },
+        }), { status: 200 });
+      }
+      if (method === 'sui_executeTransactionBlock') {
+        if (opts.submitError) {
+          return new Response(JSON.stringify({
+            error: { message: 'permanent fail' },
+          }), { status: 200 });
+        }
+        opts.onSubmit?.(body);
+        return new Response(JSON.stringify({
+          result: {
+            digest: FAKE_DIGEST,
+            effects: { status: { status: 'success' } },
+          },
+        }), { status: 200 });
+      }
+      // getCoins / anything else — return empty success.
+      return new Response(JSON.stringify({ result: { data: [] } }), { status: 200 });
+    };
+    // SuiJsonRpcClient.getCoins uses fetch internally too; the default
+    // above returns `result: { data: [] }` for unknown methods. We only
+    // hit getCoins for non-SUI coin paths — SUI splits from tx.gas.
+  }
+
+  beforeAll(async () => {
+    // Mock the roster so resolveRecipientSuiAddress returns a known addr.
+    mock.module('suiami/roster', () => ({
+      readByName: async (_name: string) => ({
+        sui_address: '0x' + 'cd'.repeat(32),
+        chains: { sui: '0x' + 'cd'.repeat(32) },
+      }),
+    }));
+  });
+
+  test('signs via injected SignForStealth and submits a real digest', async () => {
+    installFetchStub();
+    let observed: { dwalletId: string; curve: string; hash: string } | null = null;
+    const fakeSigner = async (p: { dwalletId: string; curve: 'ed25519' | 'secp256k1'; hash: string }) => {
+      observed = { dwalletId: p.dwalletId, curve: p.curve, hash: p.hash };
+      return { sig: '0x' + FAKE_SIG_HEX };
+    };
+
+    const ticket: import('../ultron-postal.js').DispatchTicket = {
+      ticketId: '0x' + 'aa'.repeat(32),
+      kind: 'transfer',
+      activity: {
+        digest: '0xabc',
+        fromAddress: '0xsender',
+        toAddress: '0xultron',
+        coinType: '0x2::sui::SUI',
+        amountMist: 1_000_000n,
+        timestampMs: 1,
+      },
+      intent: {
+        rawAmount: 1_000_042n,
+        intentCode: 42,
+        chainTag: 0,
+        recipientIndex: 42,
+        baseAmount: 1_000_000n,
+        hasIntent: true,
+      },
+      recipientSuiamiName: 'hermes',
+      queuedAtMs: Date.now(),
+      attempts: 0,
+    };
+
+    const res = await mod.handleTransfer(ticket, {} as never, fakeSigner);
+    expect(res.stub).toBe(false);
+    expect(res.digest).toBe(FAKE_DIGEST);
+    expect(observed).not.toBeNull();
+    expect(observed!.dwalletId).toBe(ULTRON_DWALLET);
+    expect(observed!.curve).toBe('ed25519');
+    // Hash must be 32 bytes hex.
+    expect(observed!.hash).toMatch(/^0x[0-9a-f]{64}$/);
+    // silence unused local
+    void FAKE_PUBKEY_HEX;
+  });
+
+  test('throws (permanent) when submit RPC returns an error', async () => {
+    installFetchStub({ submitError: true });
+    const fakeSigner = async () => ({ sig: '0x' + FAKE_SIG_HEX });
+    const ticket: import('../ultron-postal.js').DispatchTicket = {
+      ticketId: '0x' + 'bb'.repeat(32),
+      kind: 'transfer',
+      activity: {
+        digest: '0xdef',
+        fromAddress: '0xsender',
+        toAddress: '0xultron',
+        coinType: '0x2::sui::SUI',
+        amountMist: 500_000n,
+        timestampMs: 1,
+      },
+      intent: {
+        rawAmount: 500_000n,
+        intentCode: 1,
+        chainTag: 0,
+        recipientIndex: 1,
+        baseAmount: 500_000n,
+        hasIntent: true,
+      },
+      recipientSuiamiName: 'ares',
+      queuedAtMs: Date.now(),
+      attempts: 0,
+    };
+    await expect(mod.handleTransfer(ticket, {} as never, fakeSigner)).rejects.toThrow();
   });
 });
