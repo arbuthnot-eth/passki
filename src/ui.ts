@@ -1940,7 +1940,7 @@ function activateLegendRow(idx: number, fromHover = false) {
     const wallet = walletName ? getSuiWallets().find((w) => w.name === walletName) : null;
     const iconSrc = wallet?.icon || '';
     detailEl.innerHTML = `
-      <div class="ski-detail-header ski-detail-header--keyed ski-detail-header--create-waap" data-detail-wallet="${esc(walletName || '')}" data-detail-create-waap="true" role="button" tabindex="0" aria-label="Tap to lock in a new WaaP wallet">
+      <div class="ski-detail-header ski-detail-header--keyed ski-detail-header--create-waap" data-detail-wallet="${esc(walletName || '')}" data-detail-create-waap="true" role="button" tabindex="0" aria-label="Create a new passki">
         <div class="ski-detail-icon-row">
           <div class="ski-detail-icons-top">
             ${iconSrc ? `<div class="ski-detail-icon-wrap"><img src="${esc(iconSrc)}" alt="" class="ski-detail-icon"></div>` : ''}
@@ -1948,14 +1948,10 @@ function activateLegendRow(idx: number, fromHover = false) {
           <div class="ski-detail-active-text-row">
             <div class="ski-detail-active-pfp"><div class="ski-key-pfp ski-key-pfp--green-circle"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div></div>
             <div class="ski-detail-key-text">
-              <span class="ski-detail-suins-slot"><input class="ski-create-waap-name-input" type="text" value="name" tabindex="0" onclick="event.stopPropagation()" onfocus="if(this.value==='name')this.value=''" onblur="if(!this.value)this.value='name'"><span class="ski-create-waap-tld">.sui</span></span>
-              <div class="ski-detail-addr-row">
-                <span class="ski-detail-addr-text ski-detail-addr-text--faux">0xHex\u2026Addr</span>
-              </div>
+              <span class="ski-detail-create-waap-headline">NEW PASSKI</span>
             </div>
           </div>
         </div>
-        <div class="ski-detail-create-waap-cta" aria-hidden="true">Tap to lock in new WaaP&nbsp;→</div>
       </div>`;
     activeDetailAddr = '';
     activeDetailSui = 0;
