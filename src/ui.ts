@@ -18254,12 +18254,17 @@ export function initUI() {
       void (async () => {
         const { getCurrentWaapProvider } = await import('./waap.js');
         const current = getCurrentWaapProvider();
-        // WaaP's SDK cannot be re-initialized in the same page load — the
-        // iframe's postMessage origin gets stuck. If the registered provider
-        // already matches the user's pick, connect directly. Otherwise we
-        // cache an auto-connect flag in sessionStorage and hard-reload the
-        // page so WaaP re-initializes with the new allowedSocials constraint.
-        if (current === provider) {
+        // WaaP's SDK cannot be re-initialized in the same page load. Three
+        // branches:
+        //   1. First visit — WaaP registered with full list (current == null).
+        //      Connect directly; WaaP shows its full modal once, user taps the
+        //      provider matching the chip, cache sticks. Next visit lands
+        //      already-constrained.
+        //   2. Cached provider matches chip — instant connect, single-button.
+        //   3. Cached provider differs from chip — reload to re-init WaaP
+        //      with the new allowedSocials, auto-continue via sessionStorage.
+        const shouldReload = current !== null && current !== provider;
+        if (!shouldReload) {
           closeModal();
           try { await disconnect(); } catch {}
           try {
@@ -18275,8 +18280,7 @@ export function initUI() {
           }
           return;
         }
-        // Provider mismatch → reload with auto-connect flag. The reload is
-        // fast (< 1s) and gets us a freshly-initialized WaaP iframe.
+        // Provider mismatch on a returning user → reload with auto-connect flag.
         try {
           sessionStorage.setItem('ski:waap-auto-connect', provider);
           for (let i = localStorage.length - 1; i >= 0; i--) {
