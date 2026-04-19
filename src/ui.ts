@@ -18240,6 +18240,44 @@ export function initUI() {
   els.modal?.addEventListener('click', (e) => {
     if (longPressFired) { longPressFired = false; return; } // long-press consumed this click
 
+    // Provider chip inside the NEW PASSKI picker → pick a social + launch WaaP
+    const providerChip = (e.target as HTMLElement).closest<HTMLElement>('[data-waap-provider]');
+    if (providerChip) {
+      e.preventDefault();
+      e.stopPropagation();
+      const provider = providerChip.dataset.waapProvider as 'twitter' | 'google' | 'discord' | 'github';
+      const walletName = providerChip.dataset.walletName;
+      const wallet = walletName ? getSuiWallets().find((w) => w.name === walletName) : null;
+      if (!wallet || !provider) return;
+      // Remember the provider so future pickers pre-highlight it
+      try { localStorage.setItem('ski:waap-preferred-provider', provider); } catch {}
+      closeModal();
+      void (async () => {
+        try { await disconnect(); } catch {}
+        try {
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const k = localStorage.key(i);
+            if (k && !k.startsWith('ski:')) localStorage.removeItem(k);
+          }
+        } catch {}
+        try {
+          const { reinitWaaP } = await import('./waap.js');
+          await reinitWaaP(provider);
+        } catch (err) {
+          showToast('WaaP init failed: ' + _errMsg(err));
+          return;
+        }
+        // Re-resolve the wallet after reinit — the registration replaces the instance
+        const freshWallet = getSuiWallets().find((w) => /waap/i.test(w.name)) ?? wallet;
+        try {
+          await connect(freshWallet, { skipSilent: true });
+        } catch (err) {
+          showToast('Failed to connect: ' + _errMsg(err));
+        }
+      })();
+      return;
+    }
+
     // Detail pane keyed header click → connect wallet + lock-in (BEFORE anchor check
     // so clicks on the address link inside the header trigger connection, not Suiscan)
     const clickedDetailHeader = (e.target as HTMLElement).closest<HTMLElement>('.ski-detail-header--keyed');
@@ -18253,28 +18291,35 @@ export function initUI() {
           return wName ? getSuiWallets().find((w) => w.name === wName) ?? null : null;
         })();
       if (wallet) {
-        // "+ new WaaP" detail pane → full disconnect to clear WaaP's in-memory
-        // session, then connect with skipSilent to force the OAuth modal open.
+        // "+ new WaaP" detail pane → swap content for provider picker.
+        // User picks X / Google / Discord / GitHub, then we re-init WaaP
+        // with allowedSocials=[chosen] so the iframe shows a single button.
+        if (clickedDetailHeader.dataset.detailCreateWaap && clickedDetailHeader.dataset.pickerOpen !== 'true') {
+          clickedDetailHeader.dataset.pickerOpen = 'true';
+          const iconX = SOCIAL_ICON_X;
+          const iconG = SOCIAL_ICON_GOOGLE;
+          const iconD = SOCIAL_ICON_DISCORD;
+          const iconGH = `<svg width="38" height="38" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg" aria-label="GitHub"><rect width="38" height="38" rx="8" fill="#24292e"/><svg x="7" y="7" width="24" height="24" viewBox="0 0 24 24"><path fill="#fff" fill-rule="evenodd" d="M12 .297a12 12 0 00-3.793 23.387c.6.11.82-.26.82-.577v-2.03c-3.338.724-4.042-1.61-4.042-1.61-.546-1.386-1.333-1.756-1.333-1.756-1.09-.745.083-.729.083-.729 1.205.085 1.838 1.238 1.838 1.238 1.07 1.834 2.807 1.304 3.492.997.108-.776.418-1.305.762-1.605-2.665-.304-5.467-1.333-5.467-5.932 0-1.31.468-2.38 1.236-3.22-.124-.304-.536-1.524.118-3.176 0 0 1.008-.322 3.3 1.23a11.49 11.49 0 016.003 0c2.292-1.552 3.3-1.23 3.3-1.23.654 1.652.242 2.872.118 3.176.77.84 1.235 1.91 1.235 3.22 0 4.61-2.807 5.625-5.48 5.922.43.372.814 1.103.814 2.222v3.293c0 .322.218.694.825.577A12 12 0 0012 .297"/></svg></svg>`;
+          const walletName = clickedDetailHeader.dataset.detailWallet || '';
+          const preferred = (() => { try { return localStorage.getItem('ski:waap-preferred-provider') || ''; } catch { return ''; } })();
+          const chip = (p: string, svg: string, label: string) => `<button type="button" class="ski-waap-provider-chip${preferred === p ? ' ski-waap-provider-chip--pref' : ''}" data-waap-provider="${p}" data-wallet-name="${esc(walletName)}" aria-label="Continue with ${label}">${svg}</button>`;
+          clickedDetailHeader.innerHTML = `
+            <div class="ski-waap-picker">
+              <div class="ski-waap-picker-title">CHOOSE PROVIDER</div>
+              <div class="ski-waap-picker-chips">
+                ${chip('twitter', iconX, 'X')}
+                ${chip('google', iconG, 'Google')}
+                ${chip('discord', iconD, 'Discord')}
+                ${chip('github', iconGH, 'GitHub')}
+              </div>
+            </div>`;
+          return;
+        }
         if (clickedDetailHeader.dataset.detailCreateWaap) {
-          closeModal();
-          void (async () => {
-            // Full disconnect clears WaaP's accounts so connect() won't short-circuit
-            try { await disconnect(); } catch {}
-            // Purge WaaP's OAuth localStorage keys so the SDK doesn't silently
-            // re-authenticate with the same social account on reconnect
-            try {
-              for (let i = localStorage.length - 1; i >= 0; i--) {
-                const k = localStorage.key(i);
-                if (k && !k.startsWith('ski:')) localStorage.removeItem(k);
-              }
-            } catch {}
-            try {
-              await connect(wallet, { skipSilent: true });
-            } catch (err) {
-              showToast('Failed to connect: ' + _errMsg(err));
-            }
-          })();
-        } else if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
+          // Picker already open but user tapped the frame (not a chip) — no-op
+          return;
+        }
+        if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
         else {
           // Connect only — lockin deferred to first Thunder send/decrypt
           void selectWallet(wallet);
