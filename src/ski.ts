@@ -295,36 +295,6 @@ export { getState, getSuiWallets, connect, disconnect, subscribe, signAndExecute
 // Register <ski-button>, <ski-dot>, <ski-balance> Custom Elements
 import './elements.js';
 
-// ─── TEMP: Font candidate picker swatch ──────────────────────────────
-// Floats a panel showing PASSKI.XYZ in each candidate font for visual
-// comparison. Dismissed by clicking the × corner. Remove once a pick
-// is locked in.
-if (typeof window !== 'undefined') {
-  window.addEventListener('DOMContentLoaded', () => {
-    if (document.getElementById('ski-font-picker')) return;
-    const panel = document.createElement('div');
-    panel.id = 'ski-font-picker';
-    panel.className = 'ski-font-picker';
-    const wordHtml = 'PASSKI.XYZ';
-    const rows = [
-      { cls: 'f-current',    label: 'current'      },
-      { cls: 'f-jetbrains',  label: 'JetBrains'    },
-      { cls: 'f-spacemono',  label: 'Space Mono'   },
-      { cls: 'f-ibmplex',    label: 'IBM Plex'     },
-      { cls: 'f-robotomono', label: 'Roboto Mono'  },
-      { cls: 'f-firacode',   label: 'Fira Code'    },
-      { cls: 'f-sharetech',  label: 'Share Tech'   },
-      { cls: 'f-major',      label: 'Major Mono'   },
-      { cls: 'f-vt323',      label: 'VT323'        },
-      { cls: 'f-azeret',     label: 'Azeret Mono'  },
-      { cls: 'f-dmmono',     label: 'DM Mono'      },
-    ].map(r => `<div class="ski-font-picker-row"><span class="ski-font-picker-label">${r.label}</span><span class="ski-font-picker-word ${r.cls}">${r.cls === 'f-current' ? '\u2119\u{1D538}\u{1D54A}\u{1D54A}\u{1D542}\u{1D540}.\u{1D54F}\u{1D550}\u2124' : wordHtml}</span></div>`).join('');
-    panel.innerHTML = `<button class="ski-font-picker-close" type="button" aria-label="Close">\u00D7</button><div class="ski-font-picker-title">PASSKI.XYZ wordmark preview</div>${rows}`;
-    panel.querySelector<HTMLElement>('.ski-font-picker-close')?.addEventListener('click', () => panel.remove());
-    document.body.appendChild(panel);
-  });
-}
-
 // ─── Auto sign-in on wallet connect ──────────────────────────────────
 
 window.addEventListener('ski:wallet-connected', async (e) => {
