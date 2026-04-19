@@ -7817,11 +7817,25 @@ a.ski-idle-bubble-name:hover {
 @media (prefers-contrast: more), (prefers-contrast: high) {
   .ski-title-diamond svg polygon { fill: #000000 !important; }
 }
+.ski-title-passki,
 .ski-title-xyz {
-  font-family: 'Inter Display', 'Space Grotesk', 'Arial Black', Inter, sans-serif;
-  font-weight: 900;
-  letter-spacing: -0.04em;
+  /* Apple Symbols + STIX Two Math ship double-struck glyphs on mac/iOS;
+     Cambria Math covers Windows; Noto Sans Math covers Linux/Android.
+     System fallbacks ensure a clean render everywhere, otherwise the
+     OS default font handles the math-alphanumerics block. */
+  font-family: 'Apple Symbols', 'STIX Two Math', 'Cambria Math', 'Noto Sans Math', 'Inter Display', 'Space Grotesk', 'Arial Black', Inter, sans-serif;
+  font-weight: 700;
+  letter-spacing: 0;
   color: #ffffff;
+}
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .ski-modal-tagline {

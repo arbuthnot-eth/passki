@@ -139,16 +139,15 @@ const NS_ICON_URI     = 'https://coin-images.coingecko.com/coins/images/40110/sm
 const WAL_ICON_URI    = 'https://coin-images.coingecko.com/coins/images/54914/small/Walrus_Token_Full_Color_200x200.png';
 const AU_ICON_URI     = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAABdFBMVEX//////5n//6r/zGb/zHf/3Xf/3Yj/7ojuzGbuu1Xu3Xf/7nfu7pnuu0TdqlXMqlW7mUSqiESqmUTdu2bu3Zn/7pm7iDN3VSJEMxEiIhEiIiIzMyJVVSKZiETdzHfu7rsRERERESJERCKZmVXu7oj//8zMmVVVMyIRIiIiIjMzMzNEMyKId0TuzHfuu2YiESJERDNVVTO7mWb/7qruzIhERERVVUR3ZkSZiFXdzGbdu1UzIiJmRDNmVTNVRDMzM0RVRES7iEQzIhFmVUT/3ZnMu4hEMzO7qlV3VTMiERGqiFXu3YiIZjPMqmZ3ZlVVRCJmRCLdu3e7mVWqmVXdzJm7qogzMxHMmUSZZjOqdzPuu4iIZkS7qneqiDOIZiLdqkRVMxEiEQDuu3eZd0SIdzOZdzPdu0RmRBHMqkTuzFVmVSLMu2Z3ZjPdzIjdu4h3ZiLdqneId1WqmWYREQDdzFURIhH/3WaIiES7qkR3d0Tu3WbMzIjjISF8AAAAAXRSTlMAQObYZgAAAo5JREFUOMt1k/tXEkEcxRdw37YDDoSzFM1SCbHsioYpQ1iN+SDEdYk084GmWBjZw6Kif75ZWBU9eX/Zc773M3f2nO8djhtWIOiJu0GhEd6TIPCi+B9bkmRZDoU8RFFUcfSaLfCSfEvWQDgyBqCiqqIYiA77Mc+/HR9HTHrizt0kA4L3hv2RkBZH2NB9pe4/CAQfXhDCiBSaSGNsZAb2o2zWzI0GA7GkD1i2PWFO6hnDJxiQn5p+LPLWwC/YNmC+7kVkfGDmyeycYhWJHwDjzC89Lc/rfYIBz2ae5+8WIfADXlBdzywUXi6WLn4im18ylwkIewEQrrBh5ZUlVFPGJZEtrWqARRSgBkw2ozVJ4lewPrm0Nq/r5sJaXncAYBEW1CKIAetuPSK8RgaebbwpVdbdxry+EQZgk0sS7S0D0BZcTb9z0wbedndKOA2ho6NdTQOcS7Q9Bjibzf2D+vtDhI+kWgnvE2KiSksjgIN9ALWOm/H9LVszcU4CJfxhAJA+0GyxBX08bluWLUs5fGTXEjhOYApXIgT2gTA1TgjZzeUOgfSJdmBt/CAOoYnpsg80TTxnaRRj3El+niqfuuGtCdcdxw4hMMJxhBx/odNft1EmYyztLH5LfD8tuHXXNc+OIIRe12Q5TClFbJmGgahu6PNlh6YcRAHsLwOyLu6dYWOg869ROWixAG8XnC3L5ISt2hjWZGUFwiL0C91u/yijn8MErnSKxaJ13ig+1FV+UXxpY5RLWpZQPC+lqPKq+ttB2Bdy6oqixKqXtQ4G1G63PdZJbVCacP4sK1Xmx66+SrXb6/WkYjJpKYKgVMXh84NreKUnKYIoilWlGotdf3qe2LXsYF9R7iZFo43G3yuTf1cDfbPrlphDAAAAAElFTkSuQmCC';
 
-// ─── Passki header title — "·XYZ" where `·` is the black-diamond SKI shape
-// and XYZ is the heavy geometric wordmark that pairs with the X logo.
-// Inline `style` with forced-color-adjust on both the <svg> and the
-// <polygon> defends the vantablack fill from Windows High Contrast,
-// print stylesheets, and Brave/Firefox "invert on dark" extensions that
-// override system colors — those modes replace fill: attributes with
-// CanvasText / ButtonText (often white on dark). The explicit hex fill,
-// `forced-color-adjust: none`, and `color-scheme: light` on the svg root
-// together keep the diamond absolute-black across every rendering mode.
-const PASSKI_TITLE_HTML = '<span class="ski-title-diamond" aria-hidden="true"><svg viewBox="0 0 47 47" width="1em" height="1em" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;color-scheme:light"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;fill:#000000!important"/></svg></span><span class="ski-title-xyz">XYZ</span>';
+// ─── Passki header title — "ℙ𝔸𝕊𝕊𝕂𝕀 ◆ 𝕏𝕐ℤ"
+// Unicode Mathematical Double-Struck alphabet (same block as the X logo's
+// 𝕏 U+1D54F) renders the wordmark natively on modern platforms without
+// a custom font. The `.` slot is our branded SKI diamond SVG, vantablack
+// with forced-color-adjust defenses so it survives Windows High Contrast
+// and dark-mode extensions. aria-label on the container keeps screen
+// readers and SEO sane: they hear "PASSKI.XYZ" (plain ASCII) while
+// sighted users see the double-struck wordmark.
+const PASSKI_TITLE_HTML = '<span class="ski-title-passki" aria-hidden="true">\u2119\ud835\udd38\ud835\udd4a\ud835\udd4a\ud835\udd42\ud835\udd40</span><span class="ski-title-diamond" aria-hidden="true"><svg viewBox="0 0 47 47" width="1em" height="1em" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;color-scheme:light"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;fill:#000000!important"/></svg></span><span class="ski-title-xyz" aria-hidden="true">\ud835\udd4f\ud835\udd50\u2124</span><span class="sr-only">PASSKI.XYZ</span>';
 
 // ─── Social provider icons (inline SVG, ships in the bundle) ─────────
 // Used in legend col-4 to replace wallet logos for social-login wallets.
