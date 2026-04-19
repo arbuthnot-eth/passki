@@ -228,12 +228,15 @@ export function decodeSubcentIntent(amountMist: bigint, _coinType: string): Deco
 
 /**
  * Thin wrapper that resolves a decoded intent into a recipient SUIAMI
- * identity (e.g. `"brando.sui"` or a raw address). Kept deliberately
+ * identity (e.g. `"athena.sui"` or a raw address). Kept deliberately
  * minimal so the network-side roster lookup lives in its own module
  * and this file stays unit-testable.
  *
  * In tests, inject `rosterLookup` to return fixed values. In prod,
- * call sites pass the SUIAMI reverse-lookup helper.
+ * the Worker resolves against the IntentRegistry DO via
+ * `rosterLookupFromRegistry` (see `agents/intent-registry.ts`) — the
+ * DO binding isn't reachable from this pure-helper module, so callers
+ * pass the live lookup in. The no-arg path returns null (fail-closed).
  */
 export async function lookupRecipientByIntent(
   intentCode: number,

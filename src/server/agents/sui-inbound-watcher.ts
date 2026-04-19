@@ -50,9 +50,18 @@ export const DEFAULT_FULLNODE_URL = 'https://sui-rpc.publicnode.com';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
-/** One logged routing decision. `routedAt === null` means "decoded only,
- *  no sweep attempted yet" — which is every entry until the follow-up
- *  move wires IKA signing. */
+/** One logged routing decision.
+ *
+ *  Status semantics:
+ *    - `routed`     — registry lookup hit + UltronPostal dispatch succeeded
+ *    - `unresolved` — registry miss OR dispatch threw (transient; next
+ *                     alarm tick re-polls the same Sui tx, dedupe won't
+ *                     apply because we don't record observed entries for
+ *                     unresolved txs... actually we do — see note below)
+ *    - `no-intent`  — decoded tail was zero (kept for completeness; the
+ *                     current pipeline doesn't push these into
+ *                     routingLog, but the type admits it for future use)
+ */
 export interface RoutingDecision {
   digest: string;
   coinType: string;
@@ -66,8 +75,30 @@ export interface RoutingDecision {
   /** Would-be routing note for logs. */
   note: string;
   observedAtMs: number;
-  /** Null until a sweep actually fires (future move). */
+  /** Ms timestamp a dispatch actually fired; null until then. */
   routedAt: number | null;
+  /** SUIAMI name resolved via IntentRegistry (absent on unresolved). */
+  recipientSuiamiName?: string;
+  /** Ticket id returned by UltronPostal.dispatch. */
+  dispatchTicketId?: string;
+  /** Dispatch/registry phase. See interface doc for semantics. */
+  status: 'routed' | 'unresolved' | 'no-intent';
+  /** Last error message if status === 'unresolved' due to a throw. */
+  lastError?: string;
+}
+
+/** Shape returned by IntentRegistry.lookup. */
+export interface IntentRegistryEntry {
+  suiamiName: string;
+  recipientIndex: number;
+  chainTag?: string;
+}
+
+/** Shape returned by UltronPostal.dispatch. */
+export interface UltronPostalTicket {
+  ticketId: string;
+  kind: string;
+  action: string;
 }
 
 /** Lightweight serializable mirror of SuiInboundActivity. */
@@ -93,6 +124,23 @@ interface Env {
   SUI_NETWORK?: string;
   /** Optional override for the JSON-RPC URL (tests / alternate providers). */
   SUI_FULLNODE_URL?: string;
+  /** Intent→SUIAMI recipient registry DO (built by a sibling agent). */
+  IntentRegistry?: DurableObjectNamespace;
+  /** Ultron-side dispatcher DO (built by a sibling agent). */
+  UltronPostal?: DurableObjectNamespace;
+}
+
+/** Minimal RPC-shape for the two sibling DOs. Declared here so this file
+ *  doesn't import their class modules (parallel agents land them). */
+export interface IntentRegistryStub {
+  lookup(params: { intentIndex: number }): Promise<IntentRegistryEntry | null>;
+}
+export interface UltronPostalStub {
+  dispatch(params: {
+    activity: SuiInboundActivity;
+    intent: DecodedIntent;
+    recipientSuiamiName: string;
+  }): Promise<UltronPostalTicket>;
 }
 
 // ─── Pure helpers (exported for tests) ──────────────────────────────
@@ -193,6 +241,8 @@ export class SuiInboundWatcher extends Agent<Env, SuiInboundWatcherState> {
   };
 
   private _queryFn: QueryTransactionBlocksFn | null = null;
+  private _registryStub: IntentRegistryStub | null = null;
+  private _postalStub: UltronPostalStub | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -209,6 +259,16 @@ export class SuiInboundWatcher extends Agent<Env, SuiInboundWatcherState> {
    *  network traffic. */
   setQueryFn(fn: QueryTransactionBlocksFn | null): void {
     this._queryFn = fn;
+  }
+
+  /** Test-only hook — inject a fake IntentRegistry callable. */
+  setRegistryStub(stub: IntentRegistryStub | null): void {
+    this._registryStub = stub;
+  }
+
+  /** Test-only hook — inject a fake UltronPostal callable. */
+  setPostalStub(stub: UltronPostalStub | null): void {
+    this._postalStub = stub;
   }
 
   // ─── Callables ─────────────────────────────────────────────────────
@@ -285,21 +345,65 @@ export class SuiInboundWatcher extends Agent<Env, SuiInboundWatcherState> {
         if (intent.hasIntent) {
           intents += 1;
           const tagName = chainTagName(intent.chainTag);
-          const note =
-            `would route ${intent.baseAmount.toString()} (${a.coinType}) ` +
-            `to registry[${intent.recipientIndex}] on chain=${tagName}`;
-          newRouting.push({
+          const entry: RoutingDecision = {
             digest: a.digest,
             coinType: a.coinType,
             fromAddress: a.fromAddress,
             amountMist: a.amountMist.toString(),
             intent: serializeIntent(intent),
             chainTagName: tagName,
-            note,
+            note: `route ${intent.baseAmount.toString()} (${a.coinType}) ` +
+              `to registry[${intent.recipientIndex}] on chain=${tagName}`,
             observedAtMs: now,
             routedAt: null,
-          });
-          console.log(`[SuiInboundWatcher] intent@${a.digest.slice(0, 10)}… — ${note}`);
+            status: 'unresolved',
+          };
+
+          // 1. Resolve recipient via IntentRegistry.
+          let registryEntry: IntentRegistryEntry | null = null;
+          try {
+            const registry = this._getRegistryStub();
+            if (registry) {
+              registryEntry = await registry.lookup({ intentIndex: intent.recipientIndex });
+            }
+          } catch (err) {
+            entry.lastError = err instanceof Error ? err.message : String(err);
+          }
+
+          if (!registryEntry) {
+            if (!entry.lastError) {
+              entry.lastError = 'registry miss';
+            }
+            console.log(
+              `[SuiInboundWatcher] unresolved@${a.digest.slice(0, 10)}… — ${entry.lastError}`,
+            );
+            newRouting.push(entry);
+          } else {
+            entry.recipientSuiamiName = registryEntry.suiamiName;
+            // 2. Dispatch to UltronPostal.
+            try {
+              const postal = this._getPostalStub();
+              if (!postal) throw new Error('UltronPostal binding not available');
+              const ticket = await postal.dispatch({
+                activity: a,
+                intent,
+                recipientSuiamiName: registryEntry.suiamiName,
+              });
+              entry.dispatchTicketId = ticket.ticketId;
+              entry.status = 'routed';
+              entry.routedAt = Date.now();
+              console.log(
+                `[SuiInboundWatcher] routed@${a.digest.slice(0, 10)}… → ` +
+                `${registryEntry.suiamiName} [${ticket.ticketId}]`,
+              );
+            } catch (err) {
+              entry.lastError = err instanceof Error ? err.message : String(err);
+              console.warn(
+                `[SuiInboundWatcher] dispatch failed@${a.digest.slice(0, 10)}… — ${entry.lastError}`,
+              );
+            }
+            newRouting.push(entry);
+          }
         }
         if (!highestDigest) highestDigest = a.digest || null;
       }
@@ -329,6 +433,22 @@ export class SuiInboundWatcher extends Agent<Env, SuiInboundWatcherState> {
       ) as unknown as Promise<unknown>;
     this._queryFn = bound;
     return bound;
+  }
+
+  private _getRegistryStub(): IntentRegistryStub | null {
+    if (this._registryStub) return this._registryStub;
+    const ns = this.env.IntentRegistry;
+    if (!ns) return null;
+    const id = ns.idFromName('aggron:intent-registry');
+    return ns.get(id) as unknown as IntentRegistryStub;
+  }
+
+  private _getPostalStub(): UltronPostalStub | null {
+    if (this._postalStub) return this._postalStub;
+    const ns = this.env.UltronPostal;
+    if (!ns) return null;
+    const id = ns.idFromName('ultron-postal');
+    return ns.get(id) as unknown as UltronPostalStub;
   }
 
   private async _ensureAlarm(): Promise<void> {

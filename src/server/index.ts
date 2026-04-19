@@ -26,6 +26,7 @@ interface Env {
   WeavileAssuranceAgent: DurableObjectNamespace;
   AggronBatcher: DurableObjectNamespace;
   SuiInboundWatcher: DurableObjectNamespace;
+  UltronPostal: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key (legacy name — consume via ultronKeypair(env))
@@ -4976,3 +4977,4 @@ export { WeavileScannerAgent } from './agents/weavile-scanner.js';
 export { WeavileAssuranceAgent } from './agents/weavile-assurance.js';
 export { AggronBatcher } from './agents/aggron-batcher.js';
 export { SuiInboundWatcher } from './agents/sui-inbound-watcher.js';
+export { UltronPostal } from './agents/ultron-postal.js';

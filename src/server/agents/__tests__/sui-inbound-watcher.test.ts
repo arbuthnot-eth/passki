@@ -141,6 +141,9 @@ describe('_runPollAlarm', () => {
     expect(entry.chainTagName).toBe('eth');
     expect(entry.intent.recipientIndex).toBe(42);
     expect(entry.routedAt).toBeNull();
+    // No registry/postal stubs → status=unresolved, registry miss.
+    expect(entry.status).toBe('unresolved');
+    expect(entry.lastError).toBeDefined();
   });
 
   test('zero-tail activities are observed but not routed', async () => {
@@ -190,6 +193,7 @@ describe('_runPollAlarm', () => {
         note: 'old',
         observedAtMs: now,
         routedAt: null,
+        status: 'unresolved' as const,
       })),
     };
     // Feed 10 new intent-bearing txs → total exceeds cap.
@@ -243,5 +247,124 @@ describe('status + recentRouting', () => {
     const r = await agent.poke();
     expect(r.polled).toBe(1);
     expect(r.intents).toBe(1);
+  });
+});
+
+// ─── IntentRegistry + UltronPostal wiring ─────────────────────────
+
+describe('registry + postal wiring', () => {
+  test('intent + registry match + dispatch OK → status=routed + ticketId', async () => {
+    const { agent } = await makeAgent();
+    agent.setQueryFn(async () => ({
+      data: [makeActivity({ digest: '0xhermes', amount: '1000010042' })],
+    }));
+    agent.setRegistryStub({
+      lookup: async ({ intentIndex }) =>
+        intentIndex === 42
+          ? { suiamiName: 'hermes.sui', recipientIndex: 42 }
+          : null,
+    });
+    agent.setPostalStub({
+      dispatch: async () => ({
+        ticketId: 'tkt-athena-001',
+        kind: 'sweep',
+        action: 'forward',
+      }),
+    });
+    await agent._runPollAlarm();
+    expect(agent.state.routingLog).toHaveLength(1);
+    const entry = agent.state.routingLog[0];
+    expect(entry.status).toBe('routed');
+    expect(entry.recipientSuiamiName).toBe('hermes.sui');
+    expect(entry.dispatchTicketId).toBe('tkt-athena-001');
+    expect(entry.routedAt).not.toBeNull();
+    expect(entry.lastError).toBeUndefined();
+  });
+
+  test('intent + registry miss → status=unresolved, no ticketId', async () => {
+    const { agent } = await makeAgent();
+    agent.setQueryFn(async () => ({
+      data: [makeActivity({ digest: '0xapollo', amount: '1000010099' })],
+    }));
+    agent.setRegistryStub({
+      lookup: async ({ intentIndex }) =>
+        intentIndex === 42
+          ? { suiamiName: 'hermes.sui', recipientIndex: 42 }
+          : null,
+    });
+    let dispatchCalls = 0;
+    agent.setPostalStub({
+      dispatch: async () => {
+        dispatchCalls += 1;
+        return { ticketId: 'should-not-be-called', kind: '', action: '' };
+      },
+    });
+    await agent._runPollAlarm();
+    expect(dispatchCalls).toBe(0);
+    expect(agent.state.routingLog).toHaveLength(1);
+    const entry = agent.state.routingLog[0];
+    expect(entry.status).toBe('unresolved');
+    expect(entry.dispatchTicketId).toBeUndefined();
+    expect(entry.recipientSuiamiName).toBeUndefined();
+    expect(entry.routedAt).toBeNull();
+  });
+
+  test('no intent → routingLog skipped, observed recorded', async () => {
+    const { agent } = await makeAgent();
+    let lookups = 0;
+    agent.setQueryFn(async () => ({
+      data: [makeActivity({ digest: '0xzeus', amount: '1000000000' })],
+    }));
+    agent.setRegistryStub({
+      lookup: async () => {
+        lookups += 1;
+        return null;
+      },
+    });
+    await agent._runPollAlarm();
+    expect(lookups).toBe(0);
+    expect(agent.state.routingLog).toHaveLength(0);
+    expect(agent.state.observed).toHaveLength(1);
+  });
+
+  test('registry stub throws → status=unresolved + lastError set', async () => {
+    const { agent } = await makeAgent();
+    agent.setQueryFn(async () => ({
+      data: [makeActivity({ digest: '0xares', amount: '1000010042' })],
+    }));
+    agent.setRegistryStub({
+      lookup: async () => {
+        throw new Error('registry down: olympus unreachable');
+      },
+    });
+    await agent._runPollAlarm();
+    expect(agent.state.routingLog).toHaveLength(1);
+    const entry = agent.state.routingLog[0];
+    expect(entry.status).toBe('unresolved');
+    expect(entry.lastError).toContain('olympus unreachable');
+    expect(entry.dispatchTicketId).toBeUndefined();
+    expect(entry.routedAt).toBeNull();
+  });
+
+  test('dispatch stub throws → status=unresolved, recipient resolved, lastError set', async () => {
+    const { agent } = await makeAgent();
+    agent.setQueryFn(async () => ({
+      data: [makeActivity({ digest: '0xposeidon', amount: '1000010042' })],
+    }));
+    agent.setRegistryStub({
+      lookup: async () => ({ suiamiName: 'poseidon.sui', recipientIndex: 42 }),
+    });
+    agent.setPostalStub({
+      dispatch: async () => {
+        throw new Error('postal jammed');
+      },
+    });
+    await agent._runPollAlarm();
+    expect(agent.state.routingLog).toHaveLength(1);
+    const entry = agent.state.routingLog[0];
+    expect(entry.status).toBe('unresolved');
+    expect(entry.recipientSuiamiName).toBe('poseidon.sui');
+    expect(entry.dispatchTicketId).toBeUndefined();
+    expect(entry.lastError).toContain('postal jammed');
   });
 });

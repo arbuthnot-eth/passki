@@ -101,6 +101,14 @@
       {
         "name": "SuiInboundWatcher",
         "class_name": "SuiInboundWatcher"
+      },
+      {
+        "name": "UltronPostal",
+        "class_name": "UltronPostal"
+      },
+      {
+        "name": "IntentRegistry",
+        "class_name": "IntentRegistry"
       }
     ]
   },
@@ -169,6 +177,14 @@
     {
       "tag": "v16",
       "new_sqlite_classes": ["SuiInboundWatcher"]
+    },
+    {
+      "tag": "v17",
+      "new_sqlite_classes": ["UltronPostal"]
+    },
+    {
+      "tag": "v18",
+      "new_sqlite_classes": ["IntentRegistry"]
     }
   ],
 
