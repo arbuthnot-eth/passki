@@ -3149,14 +3149,15 @@ import('./zklogin.js').then(({ registerZkLogin, configureZkLogin }) => {
 import('./waap.js').then(async ({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
   // Read cached provider pick — if the user previously chose a social
   // provider via the NEW PASSKI picker, register WaaP constrained to
-  // that provider so the iframe opens on a single-button screen. First
-  // visit / no cache → full picker fallback.
-  let _cachedProvider: 'twitter' | 'google' | 'discord' | 'github' | null = null;
+  // that provider so the iframe opens on a single-button screen.
+  // First visit / no cache → default to 'twitter' (X). X is the dominant
+  // pick so new users land on a single-button screen without a reload.
+  let _cachedProvider: 'twitter' | 'google' | 'discord' | 'github' = 'twitter';
   try {
     const raw = localStorage.getItem('ski:waap-preferred-provider');
     if (raw === 'twitter' || raw === 'google' || raw === 'discord' || raw === 'github') _cachedProvider = raw;
   } catch {}
-  await registerWaaP(_cachedProvider || undefined);
+  await registerWaaP(_cachedProvider);
   // If we just reloaded from the NEW PASSKI picker with a provider switch,
   // auto-continue the connect flow so the user doesn't have to tap again.
   try {
