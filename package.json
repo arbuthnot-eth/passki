@@ -1,6 +1,6 @@
 {
   "name": "passki",
-  "version": "4.6.0",
+  "version": "0.1.0",
   "description": "passki — Sui-native sign-in, once, everywhere.",
   "type": "module",
   "main": "public/dist/ski.js",
