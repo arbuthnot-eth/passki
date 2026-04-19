@@ -10592,7 +10592,33 @@ function bindEvents() {
         <div class="ski-idle-bottom-row">
           <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
           <button class="ski-idle-rumble" id="ski-idle-rumble" type="button" title="Rumble Your Squids">\ud83e\udd91 Rumble</button>
+          <button class="ski-idle-send" id="ski-idle-send" type="button" title="Send via *.whelm.eth">\u2708\ufe0f Send</button>
           <button class="ski-idle-next" id="ski-idle-next" type="button" title="Guest Manager">\u203a</button>
+        </div>
+        <div class="ski-send-sheet" id="ski-send-sheet" hidden aria-hidden="true">
+          <div class="ski-send-sheet-backdrop" id="ski-send-sheet-backdrop"></div>
+          <div class="ski-send-sheet-panel">
+            <div class="ski-send-sheet-grab"></div>
+            <div class="ski-send-sheet-title">Send</div>
+            <label class="ski-send-label" for="ski-send-recipient">To</label>
+            <input class="ski-send-input" id="ski-send-recipient" type="text" placeholder="hermes.whelm.eth / ultron.sui / 0x\u2026" spellcheck="false" autocomplete="off">
+            <div class="ski-send-resolved" id="ski-send-resolved"></div>
+            <label class="ski-send-label" for="ski-send-amount">Amount</label>
+            <div class="ski-send-amount-row">
+              <input class="ski-send-input ski-send-input--amount" id="ski-send-amount" type="number" step="0.000000001" min="0" placeholder="0.0" inputmode="decimal" autocomplete="off">
+              <div class="ski-send-coin-pills">
+                <button class="ski-send-coin-pill ski-send-coin-pill--active" type="button" data-coin="SUI">SUI</button>
+                <button class="ski-send-coin-pill" type="button" data-coin="USDC">USDC</button>
+                <button class="ski-send-coin-pill" type="button" data-coin="WAL">WAL</button>
+                <button class="ski-send-coin-pill" type="button" data-coin="IUSD">iUSD</button>
+              </div>
+            </div>
+            <div class="ski-send-recent" id="ski-send-recent"></div>
+            <div class="ski-send-actions">
+              <button class="ski-send-cancel" id="ski-send-cancel" type="button">Cancel</button>
+              <button class="ski-send-go" id="ski-send-go" type="button" disabled>Send</button>
+            </div>
+          </div>
         </div>
       `;
 
@@ -14090,6 +14116,187 @@ function bindEvents() {
         } finally {
           btn.disabled = false;
           btn.innerHTML = '\ud83e\udd91 Rumble';
+        }
+      });
+
+      // ── Beldum Body Slam — Send via *.whelm.eth ────────────────────
+      // Wires the bottom-sheet Send panel. Reuses the existing
+      // `sendWhelm` hook (console-exposed on window) so there's zero
+      // new crypto / server work — just UI plumbing.
+      const sendSheet = _idleOverlay.querySelector('#ski-send-sheet') as HTMLElement | null;
+      const recipientInput = _idleOverlay.querySelector('#ski-send-recipient') as HTMLInputElement | null;
+      const amountInput = _idleOverlay.querySelector('#ski-send-amount') as HTMLInputElement | null;
+      const resolvedEl = _idleOverlay.querySelector('#ski-send-resolved') as HTMLElement | null;
+      const goBtn = _idleOverlay.querySelector('#ski-send-go') as HTMLButtonElement | null;
+      const cancelBtn = _idleOverlay.querySelector('#ski-send-cancel') as HTMLButtonElement | null;
+      const backdrop = _idleOverlay.querySelector('#ski-send-sheet-backdrop') as HTMLElement | null;
+      const coinPillsEl = _idleOverlay.querySelector('.ski-send-coin-pills') as HTMLElement | null;
+      const recentEl = _idleOverlay.querySelector('#ski-send-recent') as HTMLElement | null;
+
+      let selectedCoin: 'SUI' | 'USDC' | 'WAL' | 'IUSD' = 'SUI';
+      let resolvedAddr: string | null = null;
+      let resolveInFlight = 0; // monotonic guard against stale async updates
+
+      const COIN_TYPES: Record<typeof selectedCoin, string> = {
+        SUI: '0x2::sui::SUI',
+        WAL: '0x356a26eb9e012a68958082340d4c4116e7f55615cf27affcff209cf0ae544f59::wal::WAL',
+        USDC: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
+        IUSD: '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515::iusd::IUSD',
+      };
+
+      const RECENT_KEY = 'ski:send:recent';
+      function loadRecent(): string[] {
+        try { return (JSON.parse(localStorage.getItem(RECENT_KEY) || '[]') as string[]).slice(0, 5); }
+        catch { return []; }
+      }
+      function pushRecent(name: string): void {
+        const dedup = [name, ...loadRecent().filter(n => n !== name)].slice(0, 5);
+        try { localStorage.setItem(RECENT_KEY, JSON.stringify(dedup)); } catch { /* quota */ }
+      }
+
+      function renderRecent(): void {
+        if (!recentEl) return;
+        const list = loadRecent();
+        if (list.length === 0) { recentEl.innerHTML = ''; return; }
+        recentEl.innerHTML = list
+          .map(n => `<button class="ski-send-recent-pill" type="button" data-name="${n}">${n}</button>`)
+          .join('');
+        recentEl.querySelectorAll<HTMLButtonElement>('.ski-send-recent-pill').forEach(pill => {
+          pill.addEventListener('click', () => {
+            if (recipientInput) { recipientInput.value = pill.dataset.name || ''; recipientInput.dispatchEvent(new Event('input')); }
+          });
+        });
+      }
+
+      function openSendSheet(): void {
+        if (!sendSheet) return;
+        sendSheet.hidden = false;
+        sendSheet.setAttribute('aria-hidden', 'false');
+        renderRecent();
+        setTimeout(() => recipientInput?.focus(), 50);
+        document.body.style.overflow = 'hidden';
+      }
+      function closeSendSheet(): void {
+        if (!sendSheet) return;
+        sendSheet.hidden = true;
+        sendSheet.setAttribute('aria-hidden', 'true');
+        document.body.style.overflow = '';
+        if (recipientInput) recipientInput.value = '';
+        if (amountInput) amountInput.value = '';
+        if (resolvedEl) { resolvedEl.textContent = ''; resolvedEl.className = 'ski-send-resolved'; }
+        resolvedAddr = null;
+        if (goBtn) goBtn.disabled = true;
+      }
+
+      function parseRecipient(raw: string): { bare: string; kind: 'whelm' | 'sui' | 'addr' | 'bare' } | null {
+        const s = raw.trim().toLowerCase();
+        if (!s) return null;
+        if (s.startsWith('0x') && s.length >= 42) return { bare: s, kind: 'addr' };
+        if (s.endsWith('.whelm.eth')) return { bare: s.replace(/\.whelm\.eth$/, ''), kind: 'whelm' };
+        if (s.endsWith('.sui')) return { bare: s.replace(/\.sui$/, ''), kind: 'sui' };
+        return { bare: s, kind: 'bare' };
+      }
+
+      async function resolveAndPreview(raw: string): Promise<void> {
+        if (!resolvedEl) return;
+        const ticket = ++resolveInFlight;
+        const parsed = parseRecipient(raw);
+        if (!parsed) { resolvedEl.textContent = ''; resolvedEl.className = 'ski-send-resolved'; resolvedAddr = null; updateGoBtn(); return; }
+        if (parsed.kind === 'addr') {
+          resolvedAddr = parsed.bare;
+          resolvedEl.textContent = `\u2192 ${parsed.bare.slice(0, 10)}\u2026${parsed.bare.slice(-6)} (direct)`;
+          resolvedEl.className = 'ski-send-resolved ski-send-resolved--ok';
+          updateGoBtn();
+          return;
+        }
+        resolvedEl.textContent = `resolving ${parsed.bare}\u2026`;
+        resolvedEl.className = 'ski-send-resolved';
+        try {
+          const chainAt = (window as unknown as { chainAt?: (id: string) => Promise<string> }).chainAt;
+          if (!chainAt) throw new Error('chainAt not loaded');
+          const addr = await chainAt(`sui@${parsed.bare}`);
+          if (ticket !== resolveInFlight) return; // superseded
+          if (!addr || !addr.startsWith('0x')) {
+            resolvedEl.textContent = `no sui address in SUIAMI for ${parsed.bare}`;
+            resolvedEl.className = 'ski-send-resolved ski-send-resolved--err';
+            resolvedAddr = null;
+          } else {
+            resolvedAddr = addr;
+            resolvedEl.textContent = `\u2192 ${addr.slice(0, 10)}\u2026${addr.slice(-6)}`;
+            resolvedEl.className = 'ski-send-resolved ski-send-resolved--ok';
+          }
+        } catch (err) {
+          if (ticket !== resolveInFlight) return;
+          resolvedEl.textContent = `resolve failed: ${err instanceof Error ? err.message : String(err)}`;
+          resolvedEl.className = 'ski-send-resolved ski-send-resolved--err';
+          resolvedAddr = null;
+        }
+        updateGoBtn();
+      }
+
+      function updateGoBtn(): void {
+        if (!goBtn || !amountInput) return;
+        const amt = parseFloat(amountInput.value);
+        goBtn.disabled = !(resolvedAddr && amt > 0 && isFinite(amt));
+      }
+
+      let resolveDebounce: ReturnType<typeof setTimeout> | null = null;
+      recipientInput?.addEventListener('input', () => {
+        if (resolveDebounce) clearTimeout(resolveDebounce);
+        resolveDebounce = setTimeout(() => {
+          resolveAndPreview(recipientInput.value);
+        }, 300);
+      });
+      amountInput?.addEventListener('input', updateGoBtn);
+
+      coinPillsEl?.querySelectorAll<HTMLButtonElement>('.ski-send-coin-pill').forEach(pill => {
+        pill.addEventListener('click', () => {
+          coinPillsEl.querySelectorAll('.ski-send-coin-pill').forEach(p => p.classList.remove('ski-send-coin-pill--active'));
+          pill.classList.add('ski-send-coin-pill--active');
+          selectedCoin = (pill.dataset.coin as typeof selectedCoin) || 'SUI';
+        });
+      });
+
+      _idleOverlay.querySelector('#ski-idle-send')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openSendSheet();
+      });
+      cancelBtn?.addEventListener('click', closeSendSheet);
+      backdrop?.addEventListener('click', closeSendSheet);
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && sendSheet && !sendSheet.hidden) closeSendSheet();
+      });
+
+      goBtn?.addEventListener('click', async () => {
+        if (!recipientInput || !amountInput || !goBtn) return;
+        const rawRecipient = recipientInput.value.trim();
+        const parsed = parseRecipient(rawRecipient);
+        if (!parsed) { showToast('Recipient required'); return; }
+        const amount = parseFloat(amountInput.value);
+        if (!isFinite(amount) || amount <= 0) { showToast('Amount required'); return; }
+        const coinType = COIN_TYPES[selectedCoin];
+        const original = goBtn.textContent;
+        goBtn.disabled = true;
+        goBtn.textContent = 'Signing\u2026';
+        try {
+          const sendWhelm = (window as unknown as {
+            sendWhelm?: (name: string, amount: number, opts?: { coinType?: string }) => Promise<{ ok: boolean; digest?: string; error?: string }>;
+          }).sendWhelm;
+          if (!sendWhelm) throw new Error('sendWhelm not loaded');
+          const result = await sendWhelm(parsed.bare, amount, { coinType });
+          if (result.ok) {
+            showToast(`\u2713 Sent ${amount} ${selectedCoin} \u2192 ${parsed.bare}`);
+            pushRecent(parsed.bare);
+            closeSendSheet();
+          } else if (!(result.error || '').toLowerCase().match(/reject|cancel/)) {
+            showToast(`Send failed: ${result.error ?? 'unknown'}`);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.toLowerCase().match(/reject|cancel/)) showToast(`Send failed: ${msg}`);
+        } finally {
+          goBtn.disabled = false;
+          goBtn.textContent = original || 'Send';
         }
       });
 
