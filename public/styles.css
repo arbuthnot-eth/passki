@@ -7267,23 +7267,26 @@ a.ski-idle-bubble-name:hover {
   display: block;
   object-fit: cover;
 }
+/* Corner badges are centered ON the WaaP logo corners — half inside,
+   half outside. Using negative offsets equal to half the badge size
+   keeps their centers exactly on the logo's corner. */
 .ski-detail-pfp-overlap {
   position: absolute;
-  top: -18px;
-  left: -18px;
+  top: 10px;
+  left: 10px;
   z-index: 3;
 }
 .ski-detail-pfp-overlap .ski-key-pfp {
-  width: 68px;
-  height: 68px;
+  width: 72px;
+  height: 72px;
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.55);
 }
 .ski-detail-provider-badge {
   position: absolute;
-  top: -18px;
-  right: -18px;
-  width: 68px;
-  height: 68px;
+  top: 10px;
+  right: 10px;
+  width: 72px;
+  height: 72px;
   border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.55);
@@ -7776,6 +7779,26 @@ a.ski-idle-bubble-name:hover {
   line-height: 1.15;
   text-align: right;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+.ski-title-diamond {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  line-height: 1;
+  vertical-align: middle;
+}
+.ski-title-diamond svg { display: block; width: 100%; height: 100%; }
+.ski-title-xyz {
+  font-family: 'Inter Display', 'Space Grotesk', 'Arial Black', Inter, sans-serif;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  color: #ffffff;
 }
 
 .ski-modal-tagline {

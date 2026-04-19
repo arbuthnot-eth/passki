@@ -139,6 +139,10 @@ const NS_ICON_URI     = 'https://coin-images.coingecko.com/coins/images/40110/sm
 const WAL_ICON_URI    = 'https://coin-images.coingecko.com/coins/images/54914/small/Walrus_Token_Full_Color_200x200.png';
 const AU_ICON_URI     = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAABdFBMVEX//////5n//6r/zGb/zHf/3Xf/3Yj/7ojuzGbuu1Xu3Xf/7nfu7pnuu0TdqlXMqlW7mUSqiESqmUTdu2bu3Zn/7pm7iDN3VSJEMxEiIhEiIiIzMyJVVSKZiETdzHfu7rsRERERESJERCKZmVXu7oj//8zMmVVVMyIRIiIiIjMzMzNEMyKId0TuzHfuu2YiESJERDNVVTO7mWb/7qruzIhERERVVUR3ZkSZiFXdzGbdu1UzIiJmRDNmVTNVRDMzM0RVRES7iEQzIhFmVUT/3ZnMu4hEMzO7qlV3VTMiERGqiFXu3YiIZjPMqmZ3ZlVVRCJmRCLdu3e7mVWqmVXdzJm7qogzMxHMmUSZZjOqdzPuu4iIZkS7qneqiDOIZiLdqkRVMxEiEQDuu3eZd0SIdzOZdzPdu0RmRBHMqkTuzFVmVSLMu2Z3ZjPdzIjdu4h3ZiLdqneId1WqmWYREQDdzFURIhH/3WaIiES7qkR3d0Tu3WbMzIjjISF8AAAAAXRSTlMAQObYZgAAAo5JREFUOMt1k/tXEkEcxRdw37YDDoSzFM1SCbHsioYpQ1iN+SDEdYk084GmWBjZw6Kif75ZWBU9eX/Zc773M3f2nO8djhtWIOiJu0GhEd6TIPCi+B9bkmRZDoU8RFFUcfSaLfCSfEvWQDgyBqCiqqIYiA77Mc+/HR9HTHrizt0kA4L3hv2RkBZH2NB9pe4/CAQfXhDCiBSaSGNsZAb2o2zWzI0GA7GkD1i2PWFO6hnDJxiQn5p+LPLWwC/YNmC+7kVkfGDmyeycYhWJHwDjzC89Lc/rfYIBz2ae5+8WIfADXlBdzywUXi6WLn4im18ylwkIewEQrrBh5ZUlVFPGJZEtrWqARRSgBkw2ozVJ4lewPrm0Nq/r5sJaXncAYBEW1CKIAetuPSK8RgaebbwpVdbdxry+EQZgk0sS7S0D0BZcTb9z0wbedndKOA2ho6NdTQOcS7Q9Bjibzf2D+vtDhI+kWgnvE2KiSksjgIN9ALWOm/H9LVszcU4CJfxhAJA+0GyxBX08bluWLUs5fGTXEjhOYApXIgT2gTA1TgjZzeUOgfSJdmBt/CAOoYnpsg80TTxnaRRj3El+niqfuuGtCdcdxw4hMMJxhBx/odNft1EmYyztLH5LfD8tuHXXNc+OIIRe12Q5TClFbJmGgahu6PNlh6YcRAHsLwOyLu6dYWOg869ROWixAG8XnC3L5ISt2hjWZGUFwiL0C91u/yijn8MErnSKxaJ13ig+1FV+UXxpY5RLWpZQPC+lqPKq+ttB2Bdy6oqixKqXtQ4G1G63PdZJbVCacP4sK1Xmx66+SrXb6/WkYjJpKYKgVMXh84NreKUnKYIoilWlGotdf3qe2LXsYF9R7iZFo43G3yuTf1cDfbPrlphDAAAAAElFTkSuQmCC';
 
+// ─── Passki header title — "·XYZ" where `·` is the black-diamond SKI shape
+// and XYZ is the heavy geometric wordmark that pairs with the X logo.
+const PASSKI_TITLE_HTML = '<span class="ski-title-diamond" aria-hidden="true"><svg viewBox="0 0 47 47" width="1em" height="1em"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#3a3a5e" stroke="#ffffff" stroke-width="4"/></svg></span><span class="ski-title-xyz">XYZ</span>';
+
 // ─── Social provider icons (inline SVG, ships in the bundle) ─────────
 // Used in legend col-4 to replace wallet logos for social-login wallets.
 
@@ -692,6 +696,10 @@ function _buildSkiSvg(
 
   let s = _skiSvgText
     .replace('<svg ', `<svg id="${svgId}" class="${cssClass}" `)
+    // First black path is the SKI shadow silhouette — tag it so consumers
+    // can hide it when overlaying a live balance (otherwise the dark SKI
+    // letter shapes ghost through the overlaid number).
+    .replace('<path fill="#010101" opacity="1.000000" stroke="none"', `<path id="${idPrefix}-shadow" fill="#010101" opacity="1.000000" stroke="none"`)
     .replace('id="ski-lift"',       showLift ? `id="${idPrefix}-lift"` : `id="${idPrefix}-lift" style="display:none"`)
     .replace('id="ski-text"',       `id="${idPrefix}-text"`)
     .replace('id="ski-dot-outer"',  `id="${idPrefix}-dot-outer"`)
@@ -749,8 +757,11 @@ function getInlineSkiSvg(): string {
   const _showSui = activeDetailAddr ? activeDetailSui : app.sui;
   const _showUsd = activeDetailAddr ? activeDetailUsd : app.usd;
   if (activeDetailAddr || (ws.address && app.suinsName)) {
-    // Hide SKI letter paths and replace with live balance (left-justified from after the dot)
+    // Hide SKI letter paths AND the dark letter-shadow path beneath them so
+    // the balance number sits on a clean background instead of ghosting
+    // over the original "SKI" silhouette.
     svg = svg.replace('id="ski-text"', 'id="ski-text" style="display:none"');
+    svg = svg.replace('id="ski-shadow"', 'id="ski-shadow" style="display:none"');
     const rawBal = balView === 'usd'
       ? ((fmtUsd(_showUsd) || '').replace(/^\$/, '') || '--')
       : fmtSui(_showSui);
@@ -891,7 +902,7 @@ function updateSkiDot(variant: SkiDotVariant, suinsName?: string) {
   }
 
   const titleEl = document.querySelector('.ski-modal-title') as HTMLElement | null;
-  if (titleEl) titleEl.textContent = '.Sui Key-In';
+  if (titleEl) titleEl.innerHTML = PASSKI_TITLE_HTML;
 }
 
 // ─── Hydration guard (suppress disconnected flash on reload) ─────────
@@ -2168,7 +2179,7 @@ function renderModal(): void {
             <div class="ski-modal-header-left">
               ${getInlineSkiSvg()}
               <div class="ski-modal-titles">
-                <h2 class="ski-modal-title">.Sui Key-In</h2>
+                <h2 class="ski-modal-title">${PASSKI_TITLE_HTML}</h2>
                 <p class="ski-modal-tagline">once,<br>everywhere</p>
               </div>
             </div>
@@ -2265,7 +2276,7 @@ function renderModal(): void {
                   </div>
                 </div>
                 <div class="ski-modal-titles">
-                  <h2 class="ski-modal-title">${app.suinsName ? '.Sui Key-In' : 'SKI'}</h2>
+                  <h2 class="ski-modal-title">${app.suinsName ? PASSKI_TITLE_HTML : 'SKI'}</h2>
                   <p class="ski-modal-tagline">once,<br>everywhere${headerSplashHtml}</p>
                 </div>
               </div>
