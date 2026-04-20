@@ -7758,23 +7758,25 @@ a.ski-idle-bubble-name:hover {
   position: relative;
 }
 
-/* Brand column in header — right-aligned */
+/* Brand column in header — full width so logo can sit far left */
 .ski-modal-header-brand {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: stretch;
   padding: 2px 3px 6px 12px;
   gap: 0;
+  width: 100%;
 }
 
 /* Top row inside brand column: logo + titles */
 .ski-modal-header-brand-top {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 2px;
   overflow: visible;
+  width: 100%;
 }
 #ski-modal-close {
   background: rgba(0, 0, 0, 0.5);
@@ -7870,8 +7872,8 @@ a.ski-idle-bubble-name:hover {
   font-family: 'Major Mono Display', ui-monospace, monospace;
   font-weight: 400;
   letter-spacing: 0.02em;
-  font-size: 9.6rem;
-  line-height: 1.05;
+  font-size: 5rem !important;
+  line-height: 1;
   text-transform: uppercase;
 }
 
@@ -8029,8 +8031,8 @@ a.ski-idle-bubble-name:hover {
   font-family: 'Major Mono Display', ui-monospace, monospace;
   font-weight: 400;
   letter-spacing: 0.02em;
-  font-size: 9.6rem;
-  line-height: 1.05;
+  font-size: 5rem !important;
+  line-height: 1;
   text-transform: uppercase;
   margin: 0;
   padding-bottom: 0;
