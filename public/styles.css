@@ -7872,6 +7872,7 @@ a.ski-idle-bubble-name:hover {
   letter-spacing: 0.02em;
   font-size: 2.4rem;
   line-height: 1.05;
+  text-transform: uppercase;
 }
 
 .ski-modal-brand-link {
@@ -8029,6 +8030,7 @@ a.ski-idle-bubble-name:hover {
   letter-spacing: 0.02em;
   font-size: 2.4rem;
   line-height: 1.05;
+  text-transform: uppercase;
   margin: 0;
   padding-bottom: 0;
   position: relative;
