@@ -1,5 +1,5 @@
 /* TEMPORARY font picker — remove once user picks a candidate. */
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700;800&family=Space+Mono:wght@700&family=IBM+Plex+Mono:wght@600;700&family=Roboto+Mono:wght@700&family=Fira+Code:wght@600;700&family=Share+Tech+Mono&family=Major+Mono+Display&family=VT323&family=Azeret+Mono:wght@700;800&family=DM+Mono:wght@500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700;800&family=Space+Mono:wght@700&family=IBM+Plex+Mono:wght@600;700&family=Roboto+Mono:wght@700&family=Fira+Code:wght@600;700&family=Share+Tech+Mono&family=Major+Mono+Display&family=VT323&family=Azeret+Mono:wght@700;800&family=DM+Mono:wght@500&family=Kode+Mono:wght@700&family=Martian+Mono:wght@700;800&family=Nova+Mono&family=Anonymous+Pro:wght@700&family=Inconsolata:wght@700;900&family=Source+Code+Pro:wght@700;900&family=Cousine:wght@700&family=B612+Mono:wght@700&family=Red+Hat+Mono:wght@700&family=Ubuntu+Mono:wght@700&family=Courier+Prime:wght@700&family=Overpass+Mono:wght@700&family=Spline+Sans+Mono:wght@700&family=Xanh+Mono&family=Syne+Mono&family=Reddit+Mono:wght@700;900&family=Geist+Mono:wght@700;900&display=swap');
 
 :root {
   --bg: #05070d;
@@ -14,17 +14,19 @@
    current double-struck wordmark. Remove when the pick is locked. */
 .ski-font-picker {
   position: fixed;
-  top: 10px;
-  left: 10px;
+  bottom: 10px;
+  right: 10px;
   z-index: 9999;
   background: rgba(5, 7, 13, 0.92);
   border: 1px solid rgba(163, 184, 211, 0.35);
   border-radius: 10px;
-  padding: 10px 14px;
+  padding: 10px 14px 10px 10px;
   font-family: 'Inter', system-ui, sans-serif;
   color: #ffffff;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
-  max-width: 380px;
+  max-width: 420px;
+  max-height: 70vh;
+  overflow-y: auto;
   pointer-events: auto;
 }
 .ski-font-picker-title {
@@ -75,6 +77,23 @@
 .f-vt323    { font-family: 'VT323', ui-monospace, monospace; font-weight: 400; }
 .f-azeret   { font-family: 'Azeret Mono', ui-monospace, monospace; font-weight: 800; }
 .f-dmmono   { font-family: 'DM Mono', ui-monospace, monospace; font-weight: 500; }
+.f-kode     { font-family: 'Kode Mono', ui-monospace, monospace; font-weight: 700; }
+.f-martian  { font-family: 'Martian Mono', ui-monospace, monospace; font-weight: 800; }
+.f-nova     { font-family: 'Nova Mono', ui-monospace, monospace; font-weight: 400; }
+.f-anonymous{ font-family: 'Anonymous Pro', ui-monospace, monospace; font-weight: 700; }
+.f-inconsolata{font-family: 'Inconsolata', ui-monospace, monospace; font-weight: 900; }
+.f-sourcecode{font-family: 'Source Code Pro', ui-monospace, monospace; font-weight: 900; }
+.f-cousine  { font-family: 'Cousine', ui-monospace, monospace; font-weight: 700; }
+.f-b612     { font-family: 'B612 Mono', ui-monospace, monospace; font-weight: 700; }
+.f-redhat   { font-family: 'Red Hat Mono', ui-monospace, monospace; font-weight: 700; }
+.f-ubuntu   { font-family: 'Ubuntu Mono', ui-monospace, monospace; font-weight: 700; }
+.f-courierp { font-family: 'Courier Prime', ui-monospace, monospace; font-weight: 700; }
+.f-overpass { font-family: 'Overpass Mono', ui-monospace, monospace; font-weight: 700; }
+.f-spline   { font-family: 'Spline Sans Mono', ui-monospace, monospace; font-weight: 700; }
+.f-xanh     { font-family: 'Xanh Mono', ui-monospace, monospace; font-weight: 400; font-style: italic; }
+.f-syne     { font-family: 'Syne Mono', ui-monospace, monospace; font-weight: 400; }
+.f-reddit   { font-family: 'Reddit Mono', ui-monospace, monospace; font-weight: 900; }
+.f-geist    { font-family: 'Geist Mono', ui-monospace, monospace; font-weight: 900; }
 .f-current  { font-family: 'Apple Symbols', 'STIX Two Math', 'Cambria Math', 'Noto Sans Math', 'Inter Display', Inter, sans-serif; font-weight: 700; }
 
 
