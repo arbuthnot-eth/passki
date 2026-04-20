@@ -7323,7 +7323,7 @@ a.ski-idle-bubble-name:hover {
 /* Two equal-width columns: [icon stack + name + LOCK IN]  ·  [QR + addr] */
 .ski-detail-header--keyed {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 0.6fr) minmax(0, 1.4fr);
   align-items: start;
   gap: 16px;
   padding: 14px;
@@ -7829,7 +7829,7 @@ a.ski-idle-bubble-name:hover {
 
 .ski-modal-header-left {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 0.6fr) minmax(0, 1.4fr);
   grid-template-areas:
     "title   title"
     "logo    tagline";
@@ -7870,7 +7870,7 @@ a.ski-idle-bubble-name:hover {
   font-family: 'Major Mono Display', ui-monospace, monospace;
   font-weight: 400;
   letter-spacing: 0.02em;
-  font-size: 4.8rem;
+  font-size: 9.6rem;
   line-height: 1.05;
   text-transform: uppercase;
 }
@@ -7981,7 +7981,7 @@ a.ski-idle-bubble-name:hover {
 /* Brand column: title spans row 1 full-width; logo + tagline share row 2 */
 .ski-modal-header-brand .ski-modal-header-left {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 0.6fr) minmax(0, 1.4fr);
   grid-template-areas:
     "title   title"
     "logo    tagline";
@@ -7995,14 +7995,15 @@ a.ski-idle-bubble-name:hover {
 }
 .ski-modal-header-brand .ski-brand-logo-row {
   grid-area: logo;
-  justify-self: stretch;
+  justify-self: start;
   align-self: center;
   display: flex;
   flex-direction: row;
   align-items: center;
   gap: 0;
   overflow: visible;
-  width: 100%;
+  width: auto;
+  margin-left: -12px;
 }
 /* Dissolve the titles wrapper so h2 and p sit in separate grid rows */
 .ski-modal-header-brand .ski-modal-titles {
@@ -8028,7 +8029,7 @@ a.ski-idle-bubble-name:hover {
   font-family: 'Major Mono Display', ui-monospace, monospace;
   font-weight: 400;
   letter-spacing: 0.02em;
-  font-size: 4.8rem;
+  font-size: 9.6rem;
   line-height: 1.05;
   text-transform: uppercase;
   margin: 0;
