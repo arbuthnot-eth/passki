@@ -7940,6 +7940,13 @@ a.ski-idle-bubble-name:hover {
   fill: #000000 !important;
   forced-color-adjust: none;
   -webkit-forced-color-adjust: none;
+  filter: none !important;
+  mix-blend-mode: normal !important;
+}
+.ski-title-diamond, .ski-title-diamond * {
+  filter: none !important;
+  mix-blend-mode: normal !important;
+  -webkit-filter: none !important;
 }
 /* Some UA high-contrast modes keyed to system queries — pin fills again */
 @media (forced-colors: active) {

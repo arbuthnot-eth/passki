@@ -306,7 +306,7 @@ if (typeof window !== 'undefined') {
     panel.id = 'ski-font-picker';
     panel.className = 'ski-font-picker';
     const S = '\u{1D54A}';                    // double math struck S
-    const diamondSvg = '<svg viewBox="0 0 47 47" width="0.9em" height="0.9em" style="vertical-align:-0.05em;forced-color-adjust:none;-webkit-forced-color-adjust:none;color-scheme:light"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;fill:#000000!important"/></svg>';
+    const diamondSvg = '<span class="ski-title-diamond" aria-hidden="true"><svg viewBox="0 0 47 47" width="1em" height="1em" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;color-scheme:light"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;fill:#000000!important"/></svg></span>';
     const ascii = `PASSKI${diamondSvg}XYZ`;
     const majorWord = `PA${S}${S}KI${diamondSvg}XYZ`;
     const doubleWord = `\u2119\u{1D538}\u{1D54A}\u{1D54A}\u{1D542}\u{1D540}${diamondSvg}\u{1D54F}\u{1D550}\u2124`;
