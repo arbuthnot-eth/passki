@@ -295,57 +295,6 @@ export { getState, getSuiWallets, connect, disconnect, subscribe, signAndExecute
 // Register <ski-button>, <ski-dot>, <ski-balance> Custom Elements
 import './elements.js';
 
-// ─── TEMP: Font candidate picker swatch ──────────────────────────────
-// Floats panel bottom-right (out of the SKI button's path) showing
-// PASSKI.XYZ across candidate fonts. Double math struck (current) and
-// Major Mono Display pinned to the top. Dismiss via × corner.
-if (typeof window !== 'undefined') {
-  window.addEventListener('DOMContentLoaded', () => {
-    if (document.getElementById('ski-font-picker')) return;
-    const panel = document.createElement('div');
-    panel.id = 'ski-font-picker';
-    panel.className = 'ski-font-picker';
-    const S = '\u{1D54A}';                    // double math struck S
-    const diamondSvg = '<span class="ski-title-diamond" aria-hidden="true"><svg viewBox="0 0 47 47" width="1em" height="1em" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;color-scheme:light"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;fill:#000000!important"/></svg></span>';
-    const ascii = `PASSKI${diamondSvg}XYZ`;
-    const majorWord = `PA${S}${S}KI${diamondSvg}XYZ`;
-    const doubleWord = `\u2119\u{1D538}\u{1D54A}\u{1D54A}\u{1D542}\u{1D540}${diamondSvg}\u{1D54F}\u{1D550}\u2124`;
-    const rows = [
-      { cls: 'f-current',     label: 'double math struck', word: doubleWord },
-      { cls: 'f-major',       label: 'Major Mono',   word: majorWord },
-      { cls: 'f-kode',        label: 'Kode Mono',    word: ascii },
-      { cls: 'f-martian',     label: 'Martian Mono', word: ascii },
-      { cls: 'f-geist',       label: 'Geist Mono',   word: ascii },
-      { cls: 'f-reddit',      label: 'Reddit Mono',  word: ascii },
-      { cls: 'f-jetbrains',   label: 'JetBrains',    word: ascii },
-      { cls: 'f-spacemono',   label: 'Space Mono',   word: ascii },
-      { cls: 'f-ibmplex',     label: 'IBM Plex',     word: ascii },
-      { cls: 'f-robotomono',  label: 'Roboto Mono',  word: ascii },
-      { cls: 'f-firacode',    label: 'Fira Code',    word: ascii },
-      { cls: 'f-sharetech',   label: 'Share Tech',   word: ascii },
-      { cls: 'f-vt323',       label: 'VT323',        word: ascii },
-      { cls: 'f-azeret',      label: 'Azeret Mono',  word: ascii },
-      { cls: 'f-dmmono',      label: 'DM Mono',      word: ascii },
-      { cls: 'f-nova',        label: 'Nova Mono',    word: ascii },
-      { cls: 'f-anonymous',   label: 'Anonymous Pro',word: ascii },
-      { cls: 'f-inconsolata', label: 'Inconsolata',  word: ascii },
-      { cls: 'f-sourcecode',  label: 'Source Code',  word: ascii },
-      { cls: 'f-cousine',     label: 'Cousine',      word: ascii },
-      { cls: 'f-b612',        label: 'B612 Mono',    word: ascii },
-      { cls: 'f-redhat',      label: 'Red Hat Mono', word: ascii },
-      { cls: 'f-ubuntu',      label: 'Ubuntu Mono',  word: ascii },
-      { cls: 'f-courierp',    label: 'Courier Prime',word: ascii },
-      { cls: 'f-overpass',    label: 'Overpass Mono',word: ascii },
-      { cls: 'f-spline',      label: 'Spline Mono',  word: ascii },
-      { cls: 'f-xanh',        label: 'Xanh Mono',    word: ascii },
-      { cls: 'f-syne',        label: 'Syne Mono',    word: ascii },
-    ].map(r => `<div class="ski-font-picker-row"><span class="ski-font-picker-label">${r.label}</span><span class="ski-font-picker-word ${r.cls}">${r.word}</span></div>`).join('');
-    panel.innerHTML = `<button class="ski-font-picker-close" type="button" aria-label="Close">\u00D7</button><div class="ski-font-picker-title">PASSKI.XYZ wordmark preview</div>${rows}`;
-    panel.querySelector<HTMLElement>('.ski-font-picker-close')?.addEventListener('click', () => panel.remove());
-    document.body.appendChild(panel);
-  });
-}
-
 // ─── Auto sign-in on wallet connect ──────────────────────────────────
 
 window.addEventListener('ski:wallet-connected', async (e) => {
