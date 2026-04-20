@@ -7972,29 +7972,31 @@ a.ski-idle-bubble-name:hover {
   text-align: right;
 }
 
-/* Brand column: grid replaces flex so SVG + titles align precisely */
+/* Brand column: title spans row 1 full-width; logo + tagline share row 2 */
 .ski-modal-header-brand .ski-modal-header-left {
   display: grid;
-  grid-template-columns: auto auto;
-  column-gap: 0;
-  row-gap: 0;
-  align-items: start;
-  justify-content: end;
+  grid-template-columns: 1fr 1fr;
+  grid-template-areas:
+    "title   title"
+    "logo    tagline";
+  column-gap: 12px;
+  row-gap: 8px;
+  align-items: center;
   align-self: stretch;
-  width: 92%;
-  margin-left: 8%;
+  width: 100%;
+  margin-left: 0;
   overflow: visible;
 }
-/* Logo row (wallet icon + SKI svg) spans both text rows */
 .ski-modal-header-brand .ski-brand-logo-row {
-  grid-column: 1;
-  grid-row: 1 / 3;
-  align-self: stretch;
+  grid-area: logo;
+  justify-self: stretch;
+  align-self: center;
   display: flex;
   flex-direction: row;
-  align-items: stretch;
+  align-items: center;
   gap: 0;
   overflow: visible;
+  width: 100%;
 }
 /* Dissolve the titles wrapper so h2 and p sit in separate grid rows */
 .ski-modal-header-brand .ski-modal-titles {
@@ -8002,20 +8004,21 @@ a.ski-idle-bubble-name:hover {
 }
 /* Title: row 1, 1px left-pad → 2px column-gap + 1px = 3px from SVG */
 .ski-modal-header-brand .ski-modal-title {
-  grid-column: 2;
-  grid-row: 1;
-  align-self: end;
-  padding-left: 1px;
+  grid-area: title;
+  justify-self: center;
+  text-align: center;
+  align-self: center;
+  padding-left: 0;
   position: relative;
   top: 0;
   font-size: 2.12rem;
 }
-/* Tagline: row 2, left-justified, anchored to bottom of brand area */
+/* Tagline: row 2 right col, sits next to logo */
 .ski-modal-header-brand .ski-modal-tagline {
-  grid-column: 2;
-  grid-row: 2;
-  text-align: left;
-  align-self: start;
+  grid-area: tagline;
+  text-align: right;
+  align-self: center;
+  justify-self: end;
   margin: 0;
   padding-bottom: 0;
   position: relative;
