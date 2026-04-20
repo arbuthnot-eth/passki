@@ -2186,7 +2186,7 @@ function renderModal(): void {
               ${getInlineSkiSvg()}
               <div class="ski-modal-titles">
                 <h2 class="ski-modal-title">${PASSKI_TITLE_HTML}</h2>
-                <p class="ski-modal-tagline">once,<br>everywhere</p>
+                <p class="ski-modal-tagline">once, everywhere</p>
               </div>
             </div>
             <button id="ski-modal-close">&times;</button>
@@ -2283,7 +2283,7 @@ function renderModal(): void {
                 </div>
                 <div class="ski-modal-titles">
                   <h2 class="ski-modal-title">${app.suinsName ? PASSKI_TITLE_HTML : 'SKI'}</h2>
-                  <p class="ski-modal-tagline">once,<br>everywhere${headerSplashHtml}</p>
+                  <p class="ski-modal-tagline">once, everywhere${headerSplashHtml}</p>
                 </div>
               </div>
             </div>

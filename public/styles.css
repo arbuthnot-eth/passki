@@ -6378,6 +6378,8 @@ a.ski-idle-bubble-name:hover {
   border-radius: 12px;
   max-width: calc(100% - 20px);
   width: auto;
+  container-type: inline-size;
+  container-name: skimodal;
   max-height: calc(100vh - 32px);
   overflow: hidden;
   display: flex;
@@ -7320,12 +7322,12 @@ a.ski-idle-bubble-name:hover {
   width: 100%;
   min-height: 38px;
 }
-/* Two equal-width columns: [icon stack + name + LOCK IN]  ·  [QR + addr] */
+/* Single stacked column: waap logo → name → LOCKIN → QR + addr */
 .ski-detail-header--keyed {
   display: grid;
-  grid-template-columns: minmax(0, 0.6fr) minmax(0, 1.4fr);
+  grid-template-columns: 1fr;
   align-items: start;
-  gap: 16px;
+  gap: 12px;
   padding: 14px;
   container-type: inline-size;
 }
@@ -7486,12 +7488,14 @@ a.ski-idle-bubble-name:hover {
   width: 100%;
 }
 .ski-detail-qr {
-  width: 100%;
+  width: 60%;
+  max-width: 220px;
   aspect-ratio: 1;
   border-radius: 6px;
   overflow: hidden;
   background: #ffffff;
   cursor: pointer;
+  margin: 0 auto;
 }
 .ski-detail-addr-under-qr {
   display: flex;
@@ -7831,25 +7835,17 @@ a.ski-idle-bubble-name:hover {
 
 .ski-modal-header-left {
   display: grid;
-  grid-template-columns: minmax(0, 0.6fr) minmax(0, 1.4fr);
+  grid-template-columns: 1fr;
   grid-template-areas:
-    "title   title"
-    "logo    tagline";
+    "title"
+    "tagline";
   align-items: center;
-  column-gap: 2px;
-  row-gap: 4px;
+  justify-items: center;
+  row-gap: 2px;
   overflow: visible;
   width: 100%;
 }
-.ski-modal-header-left > .ski-modal-brand-link {
-  grid-area: logo;
-  justify-self: stretch;
-  align-self: center;
-  width: 100%;
-  display: block;
-  height: auto;
-  overflow: visible;
-}
+.ski-modal-header-left > .ski-modal-brand-link { display: none; }
 .ski-modal-header-left > .ski-modal-brand-link .ski-modal-logo {
   width: 100%;
   height: auto;
@@ -7865,16 +7861,17 @@ a.ski-idle-bubble-name:hover {
 }
 .ski-modal-header-left .ski-modal-tagline {
   grid-area: tagline;
-  text-align: left;
+  text-align: center;
   align-self: center;
-  justify-self: start;
+  justify-self: center;
   margin: 0;
   font-family: 'Major Mono Display', ui-monospace, monospace;
   font-weight: 400;
-  letter-spacing: 0.02em;
-  font-size: 5rem !important;
+  letter-spacing: 0.04em;
+  font-size: 1.6rem !important;
   line-height: 1;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .ski-modal-brand-link {
@@ -7980,33 +7977,22 @@ a.ski-idle-bubble-name:hover {
   text-align: right;
 }
 
-/* Brand column: title spans row 1 full-width; logo + tagline share row 2 */
+/* Brand column: title + tagline stacked, full modal width, logo hidden */
 .ski-modal-header-brand .ski-modal-header-left {
   display: grid;
-  grid-template-columns: minmax(0, 0.6fr) minmax(0, 1.4fr);
+  grid-template-columns: 1fr;
   grid-template-areas:
-    "title   title"
-    "logo    tagline";
-  column-gap: 2px;
-  row-gap: 4px;
+    "title"
+    "tagline";
+  row-gap: 2px;
   align-items: center;
+  justify-items: center;
   align-self: stretch;
   width: 100%;
   margin-left: 0;
   overflow: visible;
 }
-.ski-modal-header-brand .ski-brand-logo-row {
-  grid-area: logo;
-  justify-self: start;
-  align-self: center;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 0;
-  overflow: visible;
-  width: auto;
-  margin-left: -12px;
-}
+.ski-modal-header-brand .ski-brand-logo-row { display: none; }
 /* Dissolve the titles wrapper so h2 and p sit in separate grid rows */
 .ski-modal-header-brand .ski-modal-titles {
   display: contents;
@@ -8014,33 +8000,29 @@ a.ski-idle-bubble-name:hover {
 /* Title: row 1, 1px left-pad → 2px column-gap + 1px = 3px from SVG */
 .ski-modal-header-brand .ski-modal-title {
   grid-area: title;
-  justify-self: center;
+  justify-self: stretch;
   text-align: center;
   align-self: center;
   padding-left: 0;
   position: relative;
   top: 0;
-  font-size: 2.12rem;
+  font-size: clamp(2rem, 9cqw, 5.2rem);
+  width: 100%;
 }
-/* Tagline: row 2 right col, sits next to logo */
 .ski-modal-header-brand .ski-modal-tagline {
   grid-area: tagline;
-  text-align: left;
+  text-align: center;
   align-self: center;
-  justify-self: start;
+  justify-self: center;
   font-family: 'Major Mono Display', ui-monospace, monospace;
   font-weight: 400;
-  letter-spacing: 0.02em;
-  font-size: 5rem !important;
+  letter-spacing: 0.04em;
+  font-size: 1.6rem !important;
   line-height: 1;
   text-transform: uppercase;
+  white-space: nowrap;
   margin: 0;
-  padding-bottom: 0;
-  position: relative;
-  left: 5px;
-  top: 1px;
-  font-size: 0.95rem;
-  line-height: 1.2;
+  padding: 0;
 }
 
 /* ─── Subname Creator (secondary key cards) ────────────────────────── */
