@@ -7863,10 +7863,15 @@ a.ski-idle-bubble-name:hover {
 }
 .ski-modal-header-left .ski-modal-tagline {
   grid-area: tagline;
-  text-align: right;
+  text-align: left;
   align-self: center;
-  justify-self: end;
+  justify-self: start;
   margin: 0;
+  font-family: 'Major Mono Display', ui-monospace, monospace;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  font-size: 2.4rem;
+  line-height: 1.05;
 }
 
 .ski-modal-brand-link {
@@ -8016,9 +8021,14 @@ a.ski-idle-bubble-name:hover {
 /* Tagline: row 2 right col, sits next to logo */
 .ski-modal-header-brand .ski-modal-tagline {
   grid-area: tagline;
-  text-align: right;
+  text-align: left;
   align-self: center;
-  justify-self: end;
+  justify-self: start;
+  font-family: 'Major Mono Display', ui-monospace, monospace;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  font-size: 2.4rem;
+  line-height: 1.05;
   margin: 0;
   padding-bottom: 0;
   position: relative;
