@@ -1,0 +1,15 @@
+[package]
+name = "storm"
+edition = "2024.beta"
+
+[dependencies]
+
+[addresses]
+storm = "0x0"
+
+[dev-addresses]
+storm = "0x0"
+
+[environments]
+mainnet = { chain-id = "35834a8a" }
+testnet = { chain-id = "4c78adac" }

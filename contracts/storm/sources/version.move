@@ -1,4 +1,4 @@
-module darkrai::version;
+module storm::version;
 
 use sui::package;
 

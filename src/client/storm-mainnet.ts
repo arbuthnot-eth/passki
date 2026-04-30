@@ -1,27 +1,27 @@
 /**
- * Darkrai mainnet — Hypnosis Field.
+ * storm mainnet client — Hypnosis Field.
  *
- * Wraps the live `darkrai` Move package (scribed 2026-04-30) into JS helpers
- * that build PTBs against `darkrai::nebula::*` and `darkrai::group_storm::*`.
+ * Wraps the live `storm` Move package (scribed 2026-04-30 via Switcheroo,
+ * replacing the deprecated `darkrai` package) into JS helpers that build
+ * PTBs against `storm::nebula::*`. GroupStorm was dropped per swarm
+ * verdict — Storms are Storms regardless of recipient count.
  *
- * Combine with `darkrai-storm.ts` (sender + recipient flow) to produce real
- * on-chain Nebulae instead of in-tab simulations.
+ * Combine with `darkrai-storm.ts` (sender + recipient flow) to produce
+ * real on-chain Nebulae instead of in-tab simulations.
  */
 
 import { Transaction } from '@mysten/sui/transactions';
 import { bcs } from '@mysten/sui/bcs';
 
-// ─── Mainnet addresses (see ~/.claude/.../memory/project_darkrai_mainnet.md) ──
+// ─── Mainnet addresses (see ~/.claude/.../memory/project_storm_mainnet.md) ──
 
-export const DARKRAI_PACKAGE =
-  '0xc10f1c6276fe397bfda2200ffbbe174ebbf2aa95ec2d92aa0906c66345e0cde6';
-export const DARKRAI_VERSION_OBJECT =
-  '0xda6aa3fb1a72117edce6f9ec424da255890ae795cb9d13f26716bd59b71044d9';
+export const STORM_PACKAGE =
+  '0xc2526368317a60be3d9e0c90deb9ecfd82278d7781b291c28ce7b02693b697ff';
+export const STORM_VERSION_OBJECT =
+  '0xcaa7bba1c57523951d0bf7ce1048b46f330ac4fed9b9aacfb6120646150289e6';
 
-export const NEBULA_TYPE = `${DARKRAI_PACKAGE}::nebula::Nebula`;
-export const NEBULA_EPOCH_TYPE = `${DARKRAI_PACKAGE}::nebula::NebulaEpoch`;
-export const GROUP_STORM_TYPE = `${DARKRAI_PACKAGE}::group_storm::GroupStorm`;
-export const GROUP_STORM_EPOCH_TYPE = `${DARKRAI_PACKAGE}::group_storm::GroupStormEpoch`;
+export const NEBULA_TYPE = `${STORM_PACKAGE}::nebula::Nebula`;
+export const NEBULA_EPOCH_TYPE = `${STORM_PACKAGE}::nebula::NebulaEpoch`;
 
 // ─── Cryptographic byte sizes (BE_short / BLS12-381) ──────────────────────
 
@@ -53,7 +53,7 @@ export function buildOpenNebulaTx(args: OpenNebulaArgs): Transaction {
   }
   const tx = new Transaction();
   const nebula = tx.moveCall({
-    target: `${DARKRAI_PACKAGE}::nebula::open`,
+    target: `${STORM_PACKAGE}::nebula::open`,
     arguments: [
       tx.pure(bcs.string().serialize(args.suinsName)),
       tx.pure(bcs.vector(bcs.u8()).serialize(Array.from(args.ekCompressed))),
@@ -79,7 +79,7 @@ export function buildOpenAndShareNebulaTx(args: OpenNebulaArgs): Transaction {
   }
   const tx = new Transaction();
   const nebula = tx.moveCall({
-    target: `${DARKRAI_PACKAGE}::nebula::open`,
+    target: `${STORM_PACKAGE}::nebula::open`,
     arguments: [
       tx.pure(bcs.string().serialize(args.suinsName)),
       tx.pure(bcs.vector(bcs.u8()).serialize(Array.from(args.ekCompressed))),
@@ -114,7 +114,7 @@ export function buildPostThunderTx(args: PostThunderArgs): Transaction {
   }
   const tx = new Transaction();
   tx.moveCall({
-    target: `${DARKRAI_PACKAGE}::nebula::post_thunder`,
+    target: `${STORM_PACKAGE}::nebula::post_thunder`,
     arguments: [
       tx.object(args.epochId),
       tx.object(args.nebulaId),
@@ -143,7 +143,7 @@ export function buildSealEpochTx(args: SealEpochArgs): Transaction {
   }
   const tx = new Transaction();
   tx.moveCall({
-    target: `${DARKRAI_PACKAGE}::nebula::seal_epoch`,
+    target: `${STORM_PACKAGE}::nebula::seal_epoch`,
     arguments: [
       tx.object(args.epochId),
       tx.object(args.nebulaId),
@@ -168,7 +168,7 @@ interface MarkBadCtArgs {
 export function buildMarkBadCtTx(args: MarkBadCtArgs): Transaction {
   const tx = new Transaction();
   tx.moveCall({
-    target: `${DARKRAI_PACKAGE}::nebula::mark_bad_ct`,
+    target: `${STORM_PACKAGE}::nebula::mark_bad_ct`,
     arguments: [
       tx.object(args.epochId),
       tx.object(args.nebulaId),
@@ -190,7 +190,7 @@ interface RotateEpochArgs {
 export function buildRotateEpochTx(args: RotateEpochArgs): Transaction {
   const tx = new Transaction();
   const newEpoch = tx.moveCall({
-    target: `${DARKRAI_PACKAGE}::nebula::rotate_epoch`,
+    target: `${STORM_PACKAGE}::nebula::rotate_epoch`,
     arguments: [tx.object(args.nebulaId), tx.object(args.prevEpochId)],
   });
   tx.moveCall({
