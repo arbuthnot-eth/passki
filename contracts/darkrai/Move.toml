@@ -1,0 +1,18 @@
+[package]
+name = "darkrai"
+edition = "2024.beta"
+
+[dependencies]
+# suins is not required — display names are just String; resolution lives
+# off-chain via SuiNS lookup. Add it back only if we need on-chain
+# subname-target verification in a future move.
+
+[addresses]
+darkrai = "0x0"
+
+[dev-addresses]
+darkrai = "0x0"
+
+[environments]
+mainnet = { chain-id = "35834a8a" }
+testnet = { chain-id = "4c78adac" }
