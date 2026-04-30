@@ -295,6 +295,10 @@ export { getState, getSuiWallets, connect, disconnect, subscribe, signAndExecute
 // Register <ski-button>, <ski-dot>, <ski-balance> Custom Elements
 import './elements.js';
 
+// Darkrai smoke — Bad Dreams move 1. Registers window.__darkraiSmoke() for
+// browser devtools. The 289 KB wasm only loads when smoke is invoked.
+import './client/darkrai-smoke.js';
+
 // ─── Auto sign-in on wallet connect ──────────────────────────────────
 
 window.addEventListener('ski:wallet-connected', async (e) => {
@@ -3175,29 +3179,34 @@ import('./waap.js').then(async ({ registerWaaP, purgeWaaPState, reinitWaaP }) =>
     }
   } catch {}
   // Resolve the social provider to register WaaP with. Priority order:
-  //   1. A previously-connected WaaP address's detected provider
-  //      (ski:waap-provider:<addr>) — overrides everything; the user's
-  //      existing session should re-auth with the same provider.
-  //   2. The user's explicit pick from the NEW PASSKI chip picker
-  //      (ski:waap-preferred-provider).
+  //   1. The user's explicit pick from the PASSKI chip picker
+  //      (ski:waap-preferred-provider) — always wins.
+  //   2. A previously-connected WaaP address's detected provider
+  //      (ski:waap-provider:<addr>) — fallback only when no explicit pick.
   //   3. Default 'twitter' (X) — dominant on first visit.
   let _cachedProvider: 'twitter' | 'google' | 'discord' | 'github' = 'twitter';
+  let _hasExplicitPick = false;
   try {
     const raw = localStorage.getItem('ski:waap-preferred-provider');
-    if (raw === 'twitter' || raw === 'google' || raw === 'discord' || raw === 'github') _cachedProvider = raw;
-  } catch {}
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (!k || !k.startsWith('ski:waap-provider:')) continue;
-      const v = localStorage.getItem(k);
-      // Map legacy values ('x' = twitter, 'email'/'phone' not supported as allowedSocials — skip)
-      if (v === 'x' || v === 'twitter') { _cachedProvider = 'twitter'; break; }
-      if (v === 'google') { _cachedProvider = 'google'; break; }
-      if (v === 'discord') { _cachedProvider = 'discord'; break; }
-      if (v === 'github') { _cachedProvider = 'github'; break; }
+    if (raw === 'twitter' || raw === 'google' || raw === 'discord' || raw === 'github') {
+      _cachedProvider = raw;
+      _hasExplicitPick = true;
     }
   } catch {}
+  if (!_hasExplicitPick) {
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k || !k.startsWith('ski:waap-provider:')) continue;
+        const v = localStorage.getItem(k);
+        // Map legacy values ('x' = twitter, 'email'/'phone' not supported as allowedSocials — skip)
+        if (v === 'x' || v === 'twitter') { _cachedProvider = 'twitter'; break; }
+        if (v === 'google') { _cachedProvider = 'google'; break; }
+        if (v === 'discord') { _cachedProvider = 'discord'; break; }
+        if (v === 'github') { _cachedProvider = 'github'; break; }
+      }
+    } catch {}
+  }
   await registerWaaP(_cachedProvider);
   // If we just reloaded from the NEW PASSKI picker with a provider switch,
   // auto-continue the connect flow so the user doesn't have to tap again.
