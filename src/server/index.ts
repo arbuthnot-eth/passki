@@ -6,6 +6,7 @@ import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
 import { createZkLoginApp } from './zklogin-proxy.js';
 import { encryptProxy } from './encrypt-proxy.js';
+import mintRoutes from './mint/routes.js';
 import { verifyVectorIntent } from './vector-intent.js';
 import { createPublicClient, http, erc20Abi, type Address } from 'viem';
 import { mainnet } from 'viem/chains';
@@ -50,6 +51,8 @@ const app = new Hono<{ Bindings: Env }>();
 // Encrypt: stub mode until pre-alpha exposes gRPC-Web or grpc-gateway.
 app.route('/api/zklogin', createZkLoginApp());
 app.route('/api/encrypt', encryptProxy);
+// Gholdengo Make It Rain — Mint v1 live SuiNS pricing
+app.route('/api/mint', mintRoutes);
 
 // ── CF edge context for SUIAMI CF-history enrichment ────────────────
 // Returns HMAC-signed CF metadata the client encrypts + uploads to
