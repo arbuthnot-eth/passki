@@ -35,8 +35,41 @@
  * direction. The richer scheme stays available for other producers.
  */
 
+/**
+ * Canonical IKA-DKG-derived Sui address for ultron.sui.
+ * Reference for `setSender`, gas-coin lookup, and outbound tx signing.
+ */
 export const SUI_ULTRON_ADDRESS =
   '0x9872c1f5edf4daffbdcf5f577567ce997a00db9d63a8a8fac4feb8b135b285f7';
+
+/**
+ * Legacy keypair-derived ultron address (rotated out 2026-04-18, Beldum/Metang
+ * arc). Still holds: BalanceManager (DeepBook, possibly black-holed funds —
+ * needs `withdraw_all` per CLAUDE.md), orphaned `iusd::RedeemRequest`
+ * (~34.7 iUSD, can't settle against current iUSD module per
+ * project_iusd_module_state.md), and dust SUI.
+ *
+ * Aliased here so any inbound-tracking, balance-aggregation, or
+ * "is this ultron?" check recognizes both addresses as the same identity.
+ * New outbound txs always use the canonical address.
+ */
+export const SUI_ULTRON_LEGACY_ADDRESS =
+  '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+
+/**
+ * Both ultron addresses. Use for membership checks; iterate when
+ * aggregating balances/objects across the alias.
+ */
+export const SUI_ULTRON_ADDRESSES = [
+  SUI_ULTRON_ADDRESS,
+  SUI_ULTRON_LEGACY_ADDRESS,
+] as const;
+
+/** Case-insensitive ultron-address membership check. */
+export function isUltronAddress(addr: string): boolean {
+  const lower = addr.toLowerCase();
+  return SUI_ULTRON_ADDRESSES.some((a) => a.toLowerCase() === lower);
+}
 
 /** Canonical coin types we recognize for intent decoding. Other types
  *  are still surfaced by `extractInboundToUltron` but `decodeSubcentIntent`
@@ -156,7 +189,7 @@ function collectTxs(checkpoint: unknown): RawTx[] {
  */
 export function extractInboundToUltron(checkpoint: unknown): SuiInboundActivity[] {
   const txs = collectTxs(checkpoint);
-  const ultron = SUI_ULTRON_ADDRESS.toLowerCase();
+  const ultronAddrs = SUI_ULTRON_ADDRESSES.map((a) => a.toLowerCase());
   const out: SuiInboundActivity[] = [];
 
   for (const tx of txs) {
@@ -173,7 +206,7 @@ export function extractInboundToUltron(checkpoint: unknown): SuiInboundActivity[
 
     for (const ch of changes) {
       const ownerAddr = extractOwnerAddress(ch.owner);
-      if (!ownerAddr || ownerAddr.toLowerCase() !== ultron) continue;
+      if (!ownerAddr || !ultronAddrs.includes(ownerAddr.toLowerCase())) continue;
       const coinType = typeof ch.coinType === 'string' ? ch.coinType : '';
       if (!coinType) continue;
       let amt: bigint;

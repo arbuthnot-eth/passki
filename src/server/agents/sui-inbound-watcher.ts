@@ -24,6 +24,7 @@
 import { Agent, callable } from 'agents';
 import {
   SUI_ULTRON_ADDRESS,
+  SUI_ULTRON_ADDRESSES,
   decodeSubcentIntent,
   chainTagName,
   type SuiInboundActivity,
@@ -168,13 +169,13 @@ export function serializeIntent(intent: DecodedIntent): RoutingDecision['intent'
  *  `amount` is a string; `effects` lives at top level). */
 export function parseInboundFromRpc(
   response: unknown,
-  ultronAddress: string = SUI_ULTRON_ADDRESS,
+  ultronAddress: string | readonly string[] = SUI_ULTRON_ADDRESSES,
 ): SuiInboundActivity[] {
   const out: SuiInboundActivity[] = [];
   if (!response || typeof response !== 'object') return out;
   const r = response as Record<string, unknown>;
   const data = Array.isArray(r.data) ? r.data : [];
-  const ultron = ultronAddress.toLowerCase();
+  const ultronAddrs = (Array.isArray(ultronAddress) ? ultronAddress : [ultronAddress as string]).map((a) => a.toLowerCase());
   for (const tx of data as Array<Record<string, unknown>>) {
     const digest = typeof tx.digest === 'string' ? tx.digest : '';
     const timestampMs = typeof tx.timestampMs === 'string'
@@ -195,7 +196,7 @@ export function parseInboundFromRpc(
         if (typeof o.AddressOwner === 'string') ownerAddr = o.AddressOwner;
         else if (typeof o.ObjectOwner === 'string') ownerAddr = o.ObjectOwner;
       }
-      if (!ownerAddr || ownerAddr.toLowerCase() !== ultron) continue;
+      if (!ownerAddr || !ultronAddrs.includes(ownerAddr.toLowerCase())) continue;
       const coinType = typeof ch.coinType === 'string' ? ch.coinType : '';
       if (!coinType) continue;
       let amt: bigint;
