@@ -21,8 +21,20 @@ app.get('/quote/:name', async (c) => {
   const yearsParam = c.req.query('years');
   const years = yearsParam ? parseInt(yearsParam, 10) : 1;
 
+  // ?paid_usdc=N — if set, response includes funded_percent
+  const paidParam = c.req.query('paid_usdc');
+  let paidUsdcBaseUnits: bigint | null = null;
+  if (paidParam) {
+    try {
+      paidUsdcBaseUnits = BigInt(paidParam);
+      if (paidUsdcBaseUnits < 0n) throw new Error('negative');
+    } catch {
+      return c.json({ error: 'paid_usdc must be a non-negative integer (USDC base units)' }, 400);
+    }
+  }
+
   try {
-    const quote = await quoteMint(bareName, years);
+    const quote = await quoteMint(bareName, years, paidUsdcBaseUnits);
     return c.json(quote, 200);
   } catch (e) {
     return c.json(
