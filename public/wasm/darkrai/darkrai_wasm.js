@@ -1,10 +1,60 @@
 /* @ts-self-types="./darkrai_wasm.d.ts" */
 
+export class SetupBundle {
+    static __wrap(ptr) {
+        const obj = Object.create(SetupBundle.prototype);
+        obj.__wbg_ptr = ptr;
+        SetupBundleFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        SetupBundleFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_setupbundle_free(ptr, 0);
+    }
+    /**
+     * @returns {Uint8Array}
+     */
+    get dk() {
+        const ret = wasm.setupbundle_dk(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * @returns {Uint8Array}
+     */
+    get ek() {
+        const ret = wasm.setupbundle_ek(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * @returns {number}
+     */
+    get ell() {
+        const ret = wasm.setupbundle_ell(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {Uint8Array}
+     */
+    get sk() {
+        const ret = wasm.setupbundle_sk(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+}
+if (Symbol.dispose) SetupBundle.prototype[Symbol.dispose] = SetupBundle.prototype.free;
+
 /**
- * Run the full benchmark cycle for batch size `ell` and return a JSON string
- * with all timings (ms) plus serialized sizes (bytes).
- *
- * `ell` must be a power of two within the field's two-adicity.
  * @param {number} ell
  * @returns {string}
  */
@@ -25,6 +75,91 @@ export function bench_batch(ell) {
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
+}
+
+/**
+ * @param {Uint8Array} dk_bytes
+ * @param {Uint8Array} sbk_bytes
+ * @param {Uint8Array} cts_concat
+ * @param {number} ell
+ * @returns {Uint8Array}
+ */
+export function decrypt(dk_bytes, sbk_bytes, cts_concat, ell) {
+    const ptr0 = passArray8ToWasm0(dk_bytes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(sbk_bytes, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(cts_concat, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.decrypt(ptr0, len0, ptr1, len1, ptr2, len2, ell);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v4 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v4;
+}
+
+/**
+ * @param {Uint8Array} ek_bytes
+ * @param {Uint8Array} pad_bytes
+ * @returns {Uint8Array}
+ */
+export function encrypt(ek_bytes, pad_bytes) {
+    const ptr0 = passArray8ToWasm0(ek_bytes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(pad_bytes, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.encrypt(ptr0, len0, ptr1, len1);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
+}
+
+/**
+ * @param {Uint8Array} sk_bytes
+ * @param {Uint8Array} cts_concat
+ * @param {number} ell
+ * @returns {Uint8Array}
+ */
+export function pre_decrypt(sk_bytes, cts_concat, ell) {
+    const ptr0 = passArray8ToWasm0(sk_bytes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(cts_concat, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.pre_decrypt(ptr0, len0, ptr1, len1, ell);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
+}
+
+/**
+ * Generate a fresh GT pad (576 B) — caller hashes this to derive an AES key.
+ * @returns {Uint8Array}
+ */
+export function random_pad() {
+    const ret = wasm.random_pad();
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
+}
+
+/**
+ * @param {number} ell
+ * @returns {SetupBundle}
+ */
+export function setup(ell) {
+    const ret = wasm.setup(ell);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return SetupBundle.__wrap(ret[0]);
 }
 
 /**
@@ -92,7 +227,7 @@ function __wbg_get_imports() {
             const ret = arg0.node;
             return ret;
         },
-        __wbg_now_1b782d58f3fa2df0: function() {
+        __wbg_now_f8e9f3177e960801: function() {
             const ret = performance.now();
             return ret;
         },
@@ -160,6 +295,10 @@ function __wbg_get_imports() {
     };
 }
 
+const SetupBundleFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_setupbundle_free(ptr, 1));
+
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
     wasm.__wbindgen_externrefs.set(idx, obj);
@@ -196,6 +335,13 @@ function isLikeNone(x) {
     return x === undefined || x === null;
 }
 
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
 function takeFromExternrefTable0(idx) {
     const value = wasm.__wbindgen_externrefs.get(idx);
     wasm.__externref_table_dealloc(idx);
@@ -215,6 +361,8 @@ function decodeText(ptr, len) {
     }
     return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
 }
+
+let WASM_VECTOR_LEN = 0;
 
 let wasmModule, wasmInstance, wasm;
 function __wbg_finalize_init(instance, module) {

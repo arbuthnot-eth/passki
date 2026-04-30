@@ -295,9 +295,11 @@ export { getState, getSuiWallets, connect, disconnect, subscribe, signAndExecute
 // Register <ski-button>, <ski-dot>, <ski-balance> Custom Elements
 import './elements.js';
 
-// Darkrai smoke — Bad Dreams move 1. Registers window.__darkraiSmoke() for
-// browser devtools. The 289 KB wasm only loads when smoke is invoked.
+// Darkrai smoke + Storm demo — Bad Dreams. Registers window.__darkraiSmoke()
+// and window.__darkraiStorm(ell) for browser devtools. Wasm (~314 KB)
+// only loads when first invoked.
 import './client/darkrai-smoke.js';
+import './client/darkrai-storm.js';
 
 // ─── Auto sign-in on wallet connect ──────────────────────────────────
 
