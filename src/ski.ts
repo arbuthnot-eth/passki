@@ -300,6 +300,7 @@ import './elements.js';
 // only loads when first invoked.
 import './client/darkrai-smoke.js';
 import './client/darkrai-storm.js';
+import './client/suiami-balance-refresh.js';
 
 // ─── Auto sign-in on wallet connect ──────────────────────────────────
 
