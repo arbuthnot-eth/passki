@@ -1,7 +1,7 @@
 #[test_only]
-module darkrai::inbox_tests;
+module darkrai::nebula_tests;
 
-use darkrai::inbox::{Self, Inbox};
+use darkrai::nebula::{Self, Nebula};
 use std::string;
 use sui::clock;
 use sui::test_scenario as ts;
@@ -19,11 +19,11 @@ fun fake_bytes(n: u64, byte: u8): vector<u8> {
 }
 
 #[test]
-fun open_inbox_emits_event_and_stores_ek() {
+fun open_nebula_emits_event_and_stores_ek() {
     let mut sc = ts::begin(ALICE);
     let ek = fake_bytes(EK_BYTES, 0x42);
     let committee_ref = b"committee:thunder-stack-2of3";
-    let inbox = inbox::open(
+    let inbox = nebula::open(
         string::utf8(b"alice.sui"),
         ek,
         committee_ref,
@@ -31,19 +31,19 @@ fun open_inbox_emits_event_and_stores_ek() {
         0,  // no padding
         sc.ctx(),
     );
-    assert!(inbox::owner(&inbox) == ALICE, 0);
-    assert!(inbox::ell_max(&inbox) == 16, 1);
-    assert!(inbox::epoch_padding(&inbox) == 0, 2);
-    assert!(inbox::current_epoch_no(&inbox) == 0, 3);
+    assert!(nebula::owner(&inbox) == ALICE, 0);
+    assert!(nebula::ell_max(&inbox) == 16, 1);
+    assert!(nebula::epoch_padding(&inbox) == 0, 2);
+    assert!(nebula::current_epoch_no(&inbox) == 0, 3);
     sui::transfer::public_share_object(inbox);
     sc.end();
 }
 
 #[test]
-#[expected_failure(abort_code = inbox::EBadEkSize)]
-fun open_inbox_rejects_wrong_ek_size() {
+#[expected_failure(abort_code = nebula::EBadEkSize)]
+fun open_nebula_rejects_wrong_ek_size() {
     let mut sc = ts::begin(ALICE);
-    let inbox = inbox::open(
+    let inbox = nebula::open(
         string::utf8(b"alice.sui"),
         fake_bytes(64, 0), // wrong size
         b"",
@@ -56,10 +56,10 @@ fun open_inbox_rejects_wrong_ek_size() {
 }
 
 #[test]
-#[expected_failure(abort_code = inbox::EEllNotPowerOfTwo)]
-fun open_inbox_rejects_non_power_of_two_ell() {
+#[expected_failure(abort_code = nebula::EEllNotPowerOfTwo)]
+fun open_nebula_rejects_non_power_of_two_ell() {
     let mut sc = ts::begin(ALICE);
-    let inbox = inbox::open(
+    let inbox = nebula::open(
         string::utf8(b"alice.sui"),
         fake_bytes(EK_BYTES, 0),
         b"",
@@ -74,7 +74,7 @@ fun open_inbox_rejects_non_power_of_two_ell() {
 #[test]
 fun set_epoch_padding_owner_only() {
     let mut sc = ts::begin(ALICE);
-    let mut inbox = inbox::open(
+    let mut inbox = nebula::open(
         string::utf8(b"alice.sui"),
         fake_bytes(EK_BYTES, 0),
         b"",
@@ -82,17 +82,17 @@ fun set_epoch_padding_owner_only() {
         0,
         sc.ctx(),
     );
-    inbox::set_epoch_padding(&mut inbox, 8, sc.ctx());
-    assert!(inbox::epoch_padding(&inbox) == 8, 0);
+    nebula::set_epoch_padding(&mut inbox, 8, sc.ctx());
+    assert!(nebula::epoch_padding(&inbox) == 8, 0);
     sui::transfer::public_share_object(inbox);
     sc.end();
 }
 
 #[test]
-#[expected_failure(abort_code = inbox::ENotOwner)]
+#[expected_failure(abort_code = nebula::ENotOwner)]
 fun set_epoch_padding_rejects_non_owner() {
     let mut sc = ts::begin(ALICE);
-    let mut inbox = inbox::open(
+    let mut inbox = nebula::open(
         string::utf8(b"alice.sui"),
         fake_bytes(EK_BYTES, 0),
         b"",
@@ -102,7 +102,7 @@ fun set_epoch_padding_rejects_non_owner() {
     );
     sc.next_tx(BOB);
     // Bob is not owner
-    inbox::set_epoch_padding(&mut inbox, 8, sc.ctx());
+    nebula::set_epoch_padding(&mut inbox, 8, sc.ctx());
     sui::transfer::public_share_object(inbox);
     sc.end();
 }

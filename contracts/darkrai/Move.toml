@@ -1,6 +1,7 @@
 [package]
 name = "darkrai"
 edition = "2024.beta"
+published-at = "0xc10f1c6276fe397bfda2200ffbbe174ebbf2aa95ec2d92aa0906c66345e0cde6"
 
 [dependencies]
 # suins is not required — display names are just String; resolution lives
@@ -8,7 +9,7 @@ edition = "2024.beta"
 # subname-target verification in a future move.
 
 [addresses]
-darkrai = "0x0"
+darkrai = "0xc10f1c6276fe397bfda2200ffbbe174ebbf2aa95ec2d92aa0906c66345e0cde6"
 
 [dev-addresses]
 darkrai = "0x0"

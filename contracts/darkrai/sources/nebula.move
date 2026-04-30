@@ -1,4 +1,4 @@
-/// Module: darkrai::inbox
+/// Module: darkrai::nebula
 ///
 /// Per-recipient batch-threshold-encrypted inbox.
 ///
@@ -20,7 +20,7 @@
 ///     bad slot via `mark_bad_ct` and re-runs pre_decrypt. The bad CT
 ///     stays on-chain as an evidence trail of the injecting sender.
 ///     (Pistis / Shield-of-Faith mitigation against batch-poisoning DoS.)
-///   - Optional epoch padding: `epoch_padding` field on the Inbox lets
+///   - Optional epoch padding: `epoch_padding` field on the Nebula lets
 ///     a privacy-conscious recipient pad each epoch to a fixed length
 ///     with decoy CTs, hiding inbound volume against on-chain observers.
 ///     (Dikaiosyne / Breastplate mitigation against volume correlation.)
@@ -28,7 +28,7 @@
 /// See passki/thunder-sim/DESIGN.md in
 /// arbuthnot-eth/batch-enc-partial-fractions@passki for the full
 /// architecture write-up.
-module darkrai::inbox;
+module darkrai::nebula;
 
 use std::string::String;
 use sui::clock::Clock;
@@ -70,7 +70,7 @@ const SBK_BYTES: u64 = 48;
 /// open; `sk_user` lives off-chain, Seal-protected by the existing 2-of-3
 /// committee (Overclock + NodeInfra + Studio Mirai) and referenced by
 /// `committee_ref`. Only the owner can rotate epochs or change padding.
-public struct Inbox has key, store {
+public struct Nebula has key, store {
     id: UID,
     /// Sui address that owns this inbox. Authoritative for sk_user via Seal.
     owner: address,
@@ -92,10 +92,10 @@ public struct Inbox has key, store {
     version: u64,
 }
 
-/// One epoch of CTs accumulating in an Inbox. Append-only until sealed.
+/// One epoch of CTs accumulating in an Nebula. Append-only until sealed.
 /// Sealed epochs are immutable except for `bad_ct_indices` which the
 /// owner can flag post-seal if they discover poisoned slots offline.
-public struct InboxEpoch has key, store {
+public struct NebulaEpoch has key, store {
     id: UID,
     inbox: ID,
     epoch_no: u64,
@@ -119,7 +119,7 @@ public struct InboxEpoch has key, store {
 
 // === Events ===
 
-public struct InboxOpened has copy, drop {
+public struct NebulaOpened has copy, drop {
     inbox: ID,
     owner: address,
     ell_max: u64,
@@ -134,7 +134,7 @@ public struct ThunderPosted has copy, drop {
     sender: address,
 }
 
-public struct EpochSealed has copy, drop {
+public struct NebulaEpochSealed has copy, drop {
     epoch: ID,
     inbox: ID,
     epoch_no: u64,
@@ -142,7 +142,7 @@ public struct EpochSealed has copy, drop {
     n_messages: u64,
 }
 
-public struct EpochRotated has copy, drop {
+public struct NebulaEpochRotated has copy, drop {
     inbox: ID,
     prev_epoch: ID,
     new_epoch: ID,
@@ -165,11 +165,11 @@ public fun open(
     ell_max: u64,
     epoch_padding: u64,
     ctx: &mut TxContext,
-): Inbox {
+): Nebula {
     assert!(ek_compressed.length() == EK_BYTES, EBadEkSize);
     assert!(is_power_of_two(ell_max), EEllNotPowerOfTwo);
     let owner = ctx.sender();
-    let inbox = Inbox {
+    let inbox = Nebula {
         id: object::new(ctx),
         owner,
         suins_name,
@@ -180,7 +180,7 @@ public fun open(
         current_epoch: 0,
         version: 1,
     };
-    event::emit(InboxOpened {
+    event::emit(NebulaOpened {
         inbox: object::id(&inbox),
         owner,
         ell_max,
@@ -190,14 +190,14 @@ public fun open(
 }
 
 /// Owner-only: change epoch padding (privacy/throughput trade-off).
-public fun set_epoch_padding(inbox: &mut Inbox, new_padding: u64, ctx: &TxContext) {
+public fun set_epoch_padding(inbox: &mut Nebula, new_padding: u64, ctx: &TxContext) {
     assert!(ctx.sender() == inbox.owner, ENotOwner);
     inbox.epoch_padding = new_padding;
 }
 
 /// Spawn a fresh epoch object. Done as part of inbox open or rotation.
-fun new_epoch(inbox: &Inbox, epoch_no: u64, ctx: &mut TxContext): InboxEpoch {
-    InboxEpoch {
+fun new_epoch(inbox: &Nebula, epoch_no: u64, ctx: &mut TxContext): NebulaEpoch {
+    NebulaEpoch {
         id: object::new(ctx),
         inbox: object::id(inbox),
         epoch_no,
@@ -219,8 +219,8 @@ fun new_epoch(inbox: &Inbox, epoch_no: u64, ctx: &mut TxContext): InboxEpoch {
 /// which is what makes batch-poisoning detectable post-hoc via
 /// `mark_bad_ct`.
 public fun post_thunder(
-    epoch: &mut InboxEpoch,
-    inbox: &Inbox,
+    epoch: &mut NebulaEpoch,
+    inbox: &Nebula,
     ct: vector<u8>,
     aead_payload: vector<u8>,
     walrus_blob_id: vector<u8>,
@@ -251,8 +251,8 @@ public fun post_thunder(
 /// Once sealed, the epoch is read-only (except `mark_bad_ct` for
 /// post-hoc poisoning evidence).
 public fun seal_epoch(
-    epoch: &mut InboxEpoch,
-    inbox: &Inbox,
+    epoch: &mut NebulaEpoch,
+    inbox: &Nebula,
     sbk: vector<u8>,
     clock: &Clock,
     ctx: &TxContext,
@@ -265,7 +265,7 @@ public fun seal_epoch(
     epoch.sbk = sbk;
     epoch.sealed_at_ms = clock.timestamp_ms();
 
-    event::emit(EpochSealed {
+    event::emit(NebulaEpochSealed {
         epoch: object::id(epoch),
         inbox: object::id(inbox),
         epoch_no: epoch.epoch_no,
@@ -275,19 +275,19 @@ public fun seal_epoch(
 }
 
 /// Owner-only: rotate to a new epoch after the previous one is sealed.
-/// Returns the new InboxEpoch which the caller should `transfer::share_object`.
+/// Returns the new NebulaEpoch which the caller should `transfer::share_object`.
 public fun rotate_epoch(
-    inbox: &mut Inbox,
-    prev: &InboxEpoch,
+    inbox: &mut Nebula,
+    prev: &NebulaEpoch,
     ctx: &mut TxContext,
-): InboxEpoch {
+): NebulaEpoch {
     assert!(ctx.sender() == inbox.owner, ENotOwner);
     assert!(prev.inbox == object::id(inbox), 0);
     assert!(prev.sealed_at_ms != 0, EPrevEpochNotSealed);
 
     inbox.current_epoch = inbox.current_epoch + 1;
     let next = new_epoch(inbox, inbox.current_epoch, ctx);
-    event::emit(EpochRotated {
+    event::emit(NebulaEpochRotated {
         inbox: object::id(inbox),
         prev_epoch: object::id(prev),
         new_epoch: object::id(&next),
@@ -303,8 +303,8 @@ public fun rotate_epoch(
 /// The flagged sender is on-chain evidence — useful for senderside
 /// rate-limiting, allowlisting, or social-layer recourse.
 public fun mark_bad_ct(
-    epoch: &mut InboxEpoch,
-    inbox: &Inbox,
+    epoch: &mut NebulaEpoch,
+    inbox: &Nebula,
     slot: u64,
     ctx: &TxContext,
 ) {
@@ -325,22 +325,22 @@ public fun mark_bad_ct(
 
 // === Public read accessors (for client + indexer use) ===
 
-public fun owner(inbox: &Inbox): address { inbox.owner }
-public fun ek(inbox: &Inbox): &vector<u8> { &inbox.ek_compressed }
-public fun ell_max(inbox: &Inbox): u64 { inbox.ell_max }
-public fun epoch_padding(inbox: &Inbox): u64 { inbox.epoch_padding }
-public fun current_epoch_no(inbox: &Inbox): u64 { inbox.current_epoch }
+public fun owner(inbox: &Nebula): address { inbox.owner }
+public fun ek(inbox: &Nebula): &vector<u8> { &inbox.ek_compressed }
+public fun ell_max(inbox: &Nebula): u64 { inbox.ell_max }
+public fun epoch_padding(inbox: &Nebula): u64 { inbox.epoch_padding }
+public fun current_epoch_no(inbox: &Nebula): u64 { inbox.current_epoch }
 
-public fun epoch_inbox(epoch: &InboxEpoch): ID { epoch.inbox }
-public fun epoch_no(epoch: &InboxEpoch): u64 { epoch.epoch_no }
-public fun epoch_cts(epoch: &InboxEpoch): &vector<vector<u8>> { &epoch.cts }
-public fun epoch_payloads(epoch: &InboxEpoch): &vector<vector<u8>> { &epoch.aead_payloads }
-public fun epoch_senders(epoch: &InboxEpoch): &vector<address> { &epoch.senders }
-public fun epoch_walrus_blobs(epoch: &InboxEpoch): &vector<vector<u8>> { &epoch.walrus_blob_ids }
-public fun epoch_bad_indices(epoch: &InboxEpoch): &VecSet<u64> { &epoch.bad_ct_indices }
-public fun epoch_sbk(epoch: &InboxEpoch): &vector<u8> { &epoch.sbk }
-public fun epoch_is_sealed(epoch: &InboxEpoch): bool { epoch.sealed_at_ms != 0 }
-public fun epoch_sealed_at_ms(epoch: &InboxEpoch): u64 { epoch.sealed_at_ms }
+public fun epoch_inbox(epoch: &NebulaEpoch): ID { epoch.inbox }
+public fun epoch_no(epoch: &NebulaEpoch): u64 { epoch.epoch_no }
+public fun epoch_cts(epoch: &NebulaEpoch): &vector<vector<u8>> { &epoch.cts }
+public fun epoch_payloads(epoch: &NebulaEpoch): &vector<vector<u8>> { &epoch.aead_payloads }
+public fun epoch_senders(epoch: &NebulaEpoch): &vector<address> { &epoch.senders }
+public fun epoch_walrus_blobs(epoch: &NebulaEpoch): &vector<vector<u8>> { &epoch.walrus_blob_ids }
+public fun epoch_bad_indices(epoch: &NebulaEpoch): &VecSet<u64> { &epoch.bad_ct_indices }
+public fun epoch_sbk(epoch: &NebulaEpoch): &vector<u8> { &epoch.sbk }
+public fun epoch_is_sealed(epoch: &NebulaEpoch): bool { epoch.sealed_at_ms != 0 }
+public fun epoch_sealed_at_ms(epoch: &NebulaEpoch): u64 { epoch.sealed_at_ms }
 
 // === Internals ===
 
