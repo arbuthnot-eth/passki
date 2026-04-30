@@ -1,11 +1,14 @@
 [package]
 name = "storm"
 edition = "2024.beta"
+published-at = "0x88e8766b8e4815e4ca0e678d228ac80c8503d16ef559931eb72833cbd7d848cb"
+# Original v1 publish: 0xc2526368317a60be3d9e0c90deb9ecfd82278d7781b291c28ce7b02693b697ff
+# v2 (Cumulo added):   0x88e8766b8e4815e4ca0e678d228ac80c8503d16ef559931eb72833cbd7d848cb (live)
 
 [dependencies]
 
 [addresses]
-storm = "0x0"
+storm = "0xc2526368317a60be3d9e0c90deb9ecfd82278d7781b291c28ce7b02693b697ff"
 
 [dev-addresses]
 storm = "0x0"
