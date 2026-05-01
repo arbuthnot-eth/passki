@@ -132,9 +132,9 @@ body {
   gap: 4px;
   position: fixed;
   top: 0;
-  right: 0;
+  right: max(0px, calc((100vw - 1080px) / 2));
   width: var(--ski-header-w, auto);
-  max-width: 100vw;
+  max-width: min(1080px, 100vw);
   z-index: 10001;
 }
 
@@ -3296,9 +3296,14 @@ body {
   filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
 }
 .ski-idle-overlay[data-bg="basmr"] .ski-idle-context {
-  top: calc(8% - 16px);
+  top: calc(8% - 10px);
 }
 .ski-idle-context[hidden] { display: none; }
+.ski-idle-ns-action--hot {
+  box-shadow: 0 0 0 2px rgba(255, 184, 0, 0.75), 0 0 14px rgba(255, 184, 0, 0.5) !important;
+  transform: translateY(-1px);
+  transition: box-shadow 0.12s ease, transform 0.12s ease;
+}
 .ski-idle-context-icon { flex-shrink: 0; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5)); }
 .ski-idle-context-text { white-space: nowrap; }
 .ski-idle-ns-action--suiami {
@@ -3650,6 +3655,7 @@ body {
 .ski-idle-addr-icon--inline { display: inline-flex; }
 .ski-idle-addr-icon--inline svg { width: 24px; height: 24px; }
 .ski-idle-addr-line {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3663,6 +3669,28 @@ body {
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid;
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+/* Lombre Bullet Seed — per-row badges retired. The single SUIAMI chip
+   handles scribed vs unscribed signaling for the whole record. Rows
+   stay clean: icon + address + right-justified balance. Classes still
+   get toggled by ui.ts so the SUIAMI-chip whip has accurate state. */
+/* Lombre Ice Beam — SUIAMI chip becomes the single "scribe all" button
+   when the record has unpublished chains. Keeps one obvious action
+   instead of per-row chips the user has to tap individually. */
+.ski-idle-addr-suiami.is-incomplete {
+  background: rgba(239, 68, 68, 0.16) !important;
+  color: #ef4444 !important;
+  border-color: rgba(239, 68, 68, 0.55) !important;
+  position: relative;
+  animation: lombre-scribe-pulse 1.8s ease-in-out infinite;
+}
+.ski-idle-addr-suiami.is-incomplete:hover {
+  background: rgba(239, 68, 68, 0.28) !important;
+  border-color: rgba(239, 68, 68, 0.85) !important;
+}
+@keyframes lombre-scribe-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
 }
 .ski-idle-addr-line:hover {
   background: rgba(10, 10, 15, 0.96);
@@ -4932,17 +4960,56 @@ a.ski-idle-bubble-name:hover {
 }
 .ski-idle-quick-btn--green:hover { background: rgba(34, 197, 94, 0.15); }
 .ski-idle-quick-btn--squid {
+  position: relative;
   background: rgba(0, 0, 0, 0.8);
   border: 1px solid rgba(236, 72, 153, 0.4);
   color: #ec4899;
   font-size: 1.1rem;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .ski-idle-quick-btn--squid:hover { background: rgba(236, 72, 153, 0.2); }
 .ski-idle-quick-btn--squid.ski-idle-quick-btn--active {
   background: rgba(236, 72, 153, 0.3);
   border-color: rgba(236, 72, 153, 0.6);
 }
+/* Lombre Water Gun — vantablack-inverted state for a properly rumbled
+   identity (all expected chains published). Mirrors .ski-title-diamond
+   treatment on PASSKI/XYZ: pure black fill, white glyph, white border. */
+.ski-idle-quick-btn--squid.is-rumbled {
+  background: #000;
+  border-color: rgba(255, 255, 255, 0.9);
+  color: #fff;
+  filter: none;
+  mix-blend-mode: normal;
+}
+.ski-idle-quick-btn--squid.is-rumbled:hover {
+  background: #0a0a0a;
+  border-color: #fff;
+}
+/* Lombre Absorb — exclamation pip when caps exist but chains aren't
+   fully published (incomplete rumble). Applies to both the small squid
+   button in the quick-actions row and the full-size Rumble CTA at the
+   bottom. */
+.ski-idle-quick-btn--squid.is-incomplete::after,
+.ski-idle-rumble.is-incomplete::after {
+  content: "!";
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ef4444;
+  color: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.65rem;
+  font-weight: 900;
+  line-height: 14px;
+  text-align: center;
+  box-shadow: 0 0 0 1.5px #000;
+  pointer-events: none;
+}
+.ski-idle-rumble { position: relative; }
 .ski-idle-quick-btn--attach {
   background: rgba(0, 0, 0, 0.8);
   border: 1px solid rgba(148, 163, 184, 0.4);
@@ -5319,10 +5386,26 @@ a.ski-idle-bubble-name:hover {
   align-items: center;
   gap: 8px;
   width: 100%;
-  justify-content: center;
+  max-width: 100%;
+  box-sizing: border-box;
+  justify-content: flex-start;
   background: rgba(0, 0, 0, 0.95);
   border-radius: 0 0 12px 12px;
-  padding: 8px 0;
+  padding: 8px 12px;
+  /* Lombre Bubble — keep the row bounded to the overlay width and
+     scroll horizontally when the contents overflow, so adding more
+     CTAs (Send, Next, future buttons) never blows out the layout. */
+  overflow-x: auto;
+  overflow-y: visible;
+  flex-wrap: nowrap;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.ski-idle-bottom-row::-webkit-scrollbar { display: none; }
+.ski-idle-bottom-row > * {
+  flex-shrink: 0;
+  scroll-snap-align: start;
 }
 .ski-idle-next {
   all: unset;
@@ -6056,6 +6139,35 @@ a.ski-idle-bubble-name:hover {
 }
 
 /* Legacy static balance classes (kept for any external reference) */
+/* Whelm.eth deploy button on main SKI panel — admin shortcut so the user
+   doesn't have to dig into settings or pre-connect Phantom EVM. */
+.wk-dd-whelm-row {
+  margin-top: 10px;
+  padding: 0 4px;
+}
+.wk-dd-whelm-deploy {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #0a1f3d, #0e2a52);
+  color: #cbd5e1;
+  border: 1.5px solid rgba(99, 162, 255, 0.3);
+  font: 11px/1 'Inter', system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.wk-dd-whelm-deploy:hover:not(:disabled) {
+  border-color: rgba(99, 162, 255, 0.6);
+  background: linear-gradient(135deg, #0e2a52, #143568);
+  color: #e2e8f0;
+}
+.wk-dd-whelm-deploy:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
 .wk-popout-actions {
   display: flex;
   gap: 6px;
@@ -6084,9 +6196,141 @@ a.ski-idle-bubble-name:hover {
     0 10px 22px rgba(2, 6, 23, 0.45),
     0 0 0 1px rgba(148, 163, 184, 0.14) inset;
   position: relative;
+  /* Mobile Brave / iOS Safari sometimes inverts near-black SVG fills under
+     "Smart Invert" or color-scheme dark treatment — this block defends the
+     black-diamond variant from rendering as white on mobile. */
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
+  color-scheme: light dark;
+  isolation: isolate;
 }
+.ski-btn svg {
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
+}
+/* Explicit diamond fills — defeat color inversion heuristics */
+.ski-btn svg [id$="-dot-outer"] { fill: #ffffff !important; }
+.ski-btn svg [id$="-dot-inner"] { fill: #000000 !important; }
 /* Hide button until it has content — prevents FOUC on hard refresh */
 .ski-btn:empty { opacity: 0; pointer-events: none; }
+
+/* ── Radioactive white SKI button while idle overlay is open ── */
+body.ski-idle-active #ski-btn {
+  background: #ffffff;
+  border-color: #ffffff;
+  /* Inset-only glow keeps the shine confined to the button's footprint
+     instead of bleeding onto the profile pill sibling to the left. */
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 1) inset,
+    0 0 28px rgba(147, 197, 253, 0.65) inset,
+    0 0 44px rgba(74, 222, 128, 0.35) inset,
+    0 0 12px rgba(255, 255, 255, 0.85);
+  animation: skiRadioactivePulse 1.6s ease-in-out infinite;
+  filter: none !important;
+  isolation: isolate;
+}
+/* Ensure the profile row paints above the SKI button glow */
+body.ski-idle-active #ski-profile,
+body.ski-idle-active #ski-wallet > :not(#ski-btn) {
+  position: relative;
+  z-index: 2;
+}
+body.ski-idle-active #ski-btn svg,
+body.ski-idle-active #ski-btn .wk-ski-btn-logo {
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.45));
+}
+
+/* Balance on the radioactive white button:
+   - $ icon → bright, opaque green circle with white glyph
+   - whole number (40) → SOLID vantablack with a waning opacity aura
+   - decimals (.97) → opaque bright green */
+body.ski-idle-active #ski-btn .ski-btn-price-icon { filter: none !important; }
+body.ski-idle-active #ski-btn .ski-btn-price-icon > circle,
+body.ski-idle-active #ski-btn .ski-btn-price-icon > rect {
+  fill: #10b981 !important;
+  stroke: #ffffff !important;
+}
+body.ski-idle-active #ski-btn .ski-btn-price-icon > text,
+body.ski-idle-active #ski-btn .ski-btn-price-icon > g path,
+body.ski-idle-active #ski-btn .ski-btn-price-icon > g { fill: #ffffff !important; }
+
+body.ski-idle-active #ski-btn .ski-btn-price-label,
+body.ski-idle-active #ski-btn .ski-btn-price-label--usd {
+  color: #000000 !important;
+}
+body.ski-idle-active #ski-btn .ski-btn-price-label .ski-btn-bal-whole,
+body.ski-idle-active #ski-btn .ski-btn-bal-whole {
+  color: #000000 !important;
+  font-weight: 900 !important;
+  -webkit-text-stroke: 0.5px #000000;
+  animation: skiVantaAura 1.8s ease-in-out infinite;
+}
+body.ski-idle-active #ski-btn .ski-btn-price-label .ski-btn-bal-dec,
+body.ski-idle-active #ski-btn .ski-btn-bal-dec {
+  color: #059669 !important;
+  font-weight: 800 !important;
+  opacity: 1 !important;
+  text-shadow: 0 0 1px rgba(5, 150, 105, 0.7);
+}
+/* Waning transparency aura — solid black core, pulsing faded halo */
+@keyframes skiVantaAura {
+  0%, 100% {
+    text-shadow:
+      0 0 0 #000,
+      0 0 4px rgba(0, 0, 0, 0.75),
+      0 0 10px rgba(0, 0, 0, 0.35);
+  }
+  50% {
+    text-shadow:
+      0 0 0 #000,
+      0 0 10px rgba(0, 0, 0, 0.9),
+      0 0 22px rgba(0, 0, 0, 0.55),
+      0 0 40px rgba(0, 0, 0, 0.2);
+  }
+}
+body.ski-idle-active #ski-btn::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 12px;
+  background: conic-gradient(from 0deg,
+    rgba(255,255,255,0.0) 0deg,
+    rgba(255,255,255,0.85) 60deg,
+    rgba(186,230,253,0.6) 140deg,
+    rgba(134,239,172,0.55) 220deg,
+    rgba(255,255,255,0.85) 300deg,
+    rgba(255,255,255,0.0) 360deg);
+  filter: blur(6px);
+  opacity: 0.7;
+  z-index: -1;
+  animation: skiRadioactiveSpin 3.2s linear infinite;
+  pointer-events: none;
+}
+@keyframes skiRadioactivePulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 2px rgba(255, 255, 255, 1) inset,
+      0 0 22px rgba(147, 197, 253, 0.55) inset,
+      0 0 40px rgba(74, 222, 128, 0.3) inset,
+      0 0 10px rgba(255, 255, 255, 0.8);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px rgba(255, 255, 255, 1) inset,
+      0 0 34px rgba(147, 197, 253, 0.9) inset,
+      0 0 56px rgba(74, 222, 128, 0.6) inset,
+      0 0 18px rgba(255, 255, 255, 1);
+  }
+}
+@keyframes skiRadioactiveSpin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.ski-idle-active #ski-btn,
+  body.ski-idle-active #ski-btn::before {
+    animation: none;
+  }
+}
 
 .ski-dot {
   padding: 3px;
@@ -6944,7 +7188,7 @@ a.ski-idle-bubble-name:hover {
 }
 .ski-legend-wallet-icon,
 .ski-legend-social-icon {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 /* ── Collapsible shape-category groups ── */
@@ -7327,16 +7571,78 @@ a.ski-idle-bubble-name:hover {
   display: grid;
   grid-template-columns: 1fr;
   align-items: start;
-  gap: 12px;
+  gap: 10px;
   padding: 14px;
   container-type: inline-size;
+}
+.ski-qr-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  margin: 0 0 10px;
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(147, 197, 253, 0.18);
+}
+.ski-qr-split-badges {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 120px;
+}
+/* Reset the absolutely-positioned badges so they sit statically in the split row */
+.ski-qr-split-badges .ski-detail-pfp-overlap,
+.ski-qr-split-badges .ski-detail-provider-badge {
+  position: static;
+  top: auto;
+  left: auto;
+  right: auto;
+}
+.ski-qr-split-badges .ski-detail-pfp-overlap .ski-key-pfp,
+.ski-qr-split-badges > .ski-key-pfp {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+}
+.ski-qr-split-badges > .ski-key-pfp svg {
+  width: 100%;
+  height: 100%;
+}
+.ski-qr-split-badges .ski-detail-provider-badge {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  flex: 0 0 52px;
+}
+.ski-qr-split .ski-detail-qr-col {
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+}
+.ski-qr-split .ski-detail-qr {
+  width: 100%;
+  max-width: 140px;
+  aspect-ratio: 1;
 }
 .ski-detail-left-col {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   width: 100%;
+}
+.ski-detail-logo-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  width: 100%;
+}
+.ski-detail-logo-row .ski-detail-lockin-btn {
+  flex-shrink: 0;
 }
 
 /* Logo stack — WaaP icon is the base; blue-square pfp overlaps top-left
@@ -7344,8 +7650,22 @@ a.ski-idle-bubble-name:hover {
 .ski-detail-logo-stack {
   position: relative;
   display: block;
-  width: 100%;
+  width: clamp(56px, 20vw, 96px);
   aspect-ratio: 1;
+  margin: 0 auto;
+}
+.ski-detail-name-shape {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  margin-right: 8px;
+  flex: 0 0 auto;
+}
+.ski-detail-name-shape svg {
+  display: block;
+  width: clamp(18px, 3.2cqi, 24px);
+  height: clamp(18px, 3.2cqi, 24px);
 }
 .ski-detail-logo-stack .ski-detail-icon-wrap {
   width: 100%;
@@ -7365,22 +7685,22 @@ a.ski-idle-bubble-name:hover {
    keeps their centers exactly on the logo's corner. */
 .ski-detail-pfp-overlap {
   position: absolute;
-  top: 10px;
-  left: 10px;
+  top: 6px;
+  left: 6px;
   z-index: 3;
 }
 .ski-detail-pfp-overlap .ski-key-pfp {
-  width: 72px;
-  height: 72px;
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.55);
+  width: 26px;
+  height: 26px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55);
 }
 .ski-detail-provider-badge {
   position: absolute;
-  top: 10px;
-  right: 10px;
-  width: 72px;
-  height: 72px;
-  border-radius: 14px;
+  top: 4px;
+  right: 4px;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
   overflow: hidden;
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.55);
   z-index: 3;
@@ -7451,14 +7771,15 @@ a.ski-idle-bubble-name:hover {
 
 /* Flat LOCK IN button — single line, sits under the name */
 .ski-detail-lockin-btn {
-  width: 100%;
-  padding: 12px 14px;
+  width: auto;
+  align-self: center;
+  padding: 8px 22px;
   border: 1px solid rgba(134, 239, 172, 0.65);
   border-radius: 10px;
   background: linear-gradient(180deg, rgba(34, 197, 94, 0.22), rgba(22, 163, 74, 0.32));
   color: #ffffff;
   font-family: 'Inter Display', 'Space Grotesk', Inter, -apple-system, sans-serif;
-  font-size: clamp(15px, 5.5cqw, 20px);
+  font-size: clamp(13px, 4cqw, 16px);
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -7488,8 +7809,7 @@ a.ski-idle-bubble-name:hover {
   width: 100%;
 }
 .ski-detail-qr {
-  width: 60%;
-  max-width: 220px;
+  width: min(160px, 55%);
   aspect-ratio: 1;
   border-radius: 6px;
   overflow: hidden;
@@ -7867,12 +8187,15 @@ a.ski-idle-bubble-name:hover {
   margin: 0;
   font-family: 'Major Mono Display', ui-monospace, monospace;
   font-weight: 400;
-  letter-spacing: 0.04em;
-  font-size: 1.6rem !important;
+  letter-spacing: clamp(0.01em, 0.5cqi, 0.04em);
+  font-size: clamp(0.75rem, 4.2cqi, 1.6rem) !important;
   line-height: 1;
   text-transform: uppercase;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
 }
+.ski-modal-header-left { container-type: inline-size; }
 
 .ski-modal-brand-link {
   display: flex;

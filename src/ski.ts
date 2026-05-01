@@ -2235,6 +2235,87 @@ const _deployOffchainResolver = async (opts?: {
 (globalThis as unknown as { deployOffchainResolver: typeof _deployOffchainResolver }).deployOffchainResolver = _deployOffchainResolver;
 console.log('[ski] deployOffchainResolver hook installed — call deployOffchainResolver() from a funded ETH wallet to deploy the OffchainResolver contract. Follow with bindWhelmEthResolver().');
 
+// ── deployAndBindWhelmEthOneShot — single-button base-UI flow ──
+//
+// Combines deploy + bind into one user-facing action with a single Phantom
+// connection prompt. Surfaced on the main SKI menu (not buried in settings)
+// so the user can hit it without first navigating to settings or pre-
+// connecting Phantom EVM.
+//
+// First commandment: signing happens entirely in Phantom on the user's
+// device, never on a Worker.
+const _deployAndBindWhelmEthOneShot = async () => {
+  const eth = await getPhantomEth();
+  if (!eth) {
+    showToast('Phantom EVM not detected — install/unlock Phantom and try again');
+    return { error: 'no-wallet' };
+  }
+  let from: string | undefined;
+  try {
+    const accounts = (await eth.request({ method: 'eth_requestAccounts' })) as string[];
+    from = accounts?.[0]?.toLowerCase();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    showToast(`Phantom connection rejected: ${msg.slice(0, 80)}`);
+    return { error: 'connection-rejected', detail: msg };
+  }
+  if (!from) {
+    showToast('Phantom returned no EVM account');
+    return { error: 'no-account' };
+  }
+  const WRAPPED_OWNER = '0xa964b8b83290b60f27d57a8b9e07862ceb5e1bc1';
+  if (from !== WRAPPED_OWNER) {
+    showToast(`Phantom is on ${from.slice(0, 10)}… — switch to whelm.eth owner ${WRAPPED_OWNER.slice(0, 10)}…`);
+    return { error: 'wrong-account', expected: WRAPPED_OWNER, got: from };
+  }
+  showToast('Deploying OffchainResolver — confirm in Phantom');
+  const deployResult = await _deployOffchainResolver();
+  if ('error' in deployResult && deployResult.error) {
+    showToast(`Deploy failed: ${String(deployResult.error).slice(0, 80)}`);
+    return { error: 'deploy-failed', detail: deployResult.error };
+  }
+  const predictedAddress = ('address' in deployResult ? deployResult.address : null)
+    ?? ('predictedAddress' in deployResult ? deployResult.predictedAddress : null);
+  if (!predictedAddress) {
+    showToast('Deploy submitted but no predicted address returned');
+    return { error: 'no-predicted-address', deploy: deployResult };
+  }
+  try { localStorage.setItem('ski:offchain-resolver-addr', predictedAddress); } catch { /* non-fatal */ }
+  showToast(`Resolver deploying — ${predictedAddress.slice(0, 10)}… mining`);
+  const POLL_INTERVAL_MS = 4_000;
+  const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+  const t0 = Date.now();
+  let confirmed = false;
+  const deployTx = 'tx' in deployResult ? deployResult.tx : null;
+  if (deployTx) {
+    while (Date.now() - t0 < POLL_TIMEOUT_MS) {
+      const receipt = (await eth.request({
+        method: 'eth_getTransactionReceipt',
+        params: [deployTx],
+      })) as { status?: string } | null;
+      if (receipt?.status === '0x1') { confirmed = true; break; }
+      if (receipt?.status === '0x0') {
+        showToast(`Deploy reverted: ${deployTx}`);
+        return { error: 'deploy-reverted', tx: deployTx };
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    }
+  }
+  if (!confirmed) {
+    showToast('Deploy timeout — click Bind whelm.eth in settings once it confirms');
+    return { error: 'deploy-timeout', deployTx, predictedAddress };
+  }
+  showToast('✓ Deployed — binding whelm.eth');
+  const bindResult = await _bindWhelmEthResolver(predictedAddress, { ensName: 'whelm' });
+  if ('error' in bindResult && bindResult.error) {
+    return { error: 'bind-failed', detail: bindResult.error, predictedAddress, deployTx };
+  }
+  const bindTx = 'tx' in bindResult ? bindResult.tx : null;
+  showToast(`✓ whelm.eth resolver bound: ${predictedAddress.slice(0, 10)}…`);
+  return { ok: true, resolverAddress: predictedAddress, deployTx, bindTx };
+};
+(window as unknown as { deployAndBindWhelmEthOneShot: typeof _deployAndBindWhelmEthOneShot }).deployAndBindWhelmEthOneShot = _deployAndBindWhelmEthOneShot;
+
 // ── delegateWhelmEthManagement — approve an operator on NameWrapper ──
 //
 // One-time tx from the wrapped-name owner (e.g. the invalid.eth Phantom

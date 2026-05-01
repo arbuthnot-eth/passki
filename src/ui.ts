@@ -28,6 +28,7 @@ import {
   onWalletsChanged,
   type WalletState,
 } from './wallet.js';
+import { rosterHealth, chainIsRostered, type RosterHealth } from './client/roster-health.js';
 import type { Wallet, WalletAccount } from '@wallet-standard/base';
 import { grpcClient, grpcUrl, GQL_URL } from './rpc.js';
 export { grpcClient };
@@ -233,12 +234,6 @@ function waapProviderIcon(address: string | null): string {
       if (stored === 'discord') return SOCIAL_ICON_DISCORD;
       if (stored === 'email' || stored === 'phone' || stored === 'github') return SOCIAL_ICON_EMAIL;
     } catch {}
-    // No stored provider — try live detection from localStorage OAuth keys
-    const detected = detectWaapProvider('');
-    if (detected === 'google') return SOCIAL_ICON_GOOGLE;
-    if (detected === 'x') return SOCIAL_ICON_X;
-    if (detected === 'discord') return SOCIAL_ICON_DISCORD;
-    if (detected) return SOCIAL_ICON_EMAIL;
   }
   // Unknown provider — return WaaP's own icon (don't assume X)
   return `<svg width="30" height="30" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg"><rect width="38" height="38" rx="8" fill="#6366f1"/><text x="19" y="24" text-anchor="middle" fill="white" font-size="16" font-weight="700" font-family="system-ui">W</text></svg>`;
@@ -1239,10 +1234,10 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   // empty until the async roster check resolves.
   const bigNameHtml = bareName0
     ? `<div class="ski-detail-name-block">
-        <div class="ski-detail-name-big"><span class="ski-detail-name-text">${esc(bareName0)}</span><span class="ski-detail-name-tld">.sui</span></div>
+        <div class="ski-detail-name-big"><span class="ski-detail-name-shape" aria-hidden="true">${_shapeOnlySvg('blue-square', 24)}</span><span class="ski-detail-name-text">${esc(bareName0)}</span><span class="ski-detail-name-tld">.sui</span></div>
         <div class="ski-detail-whelm-slot" id="ski-detail-whelm-slot" data-bare="${esc(bareName0)}"></div>
       </div>`
-    : `<div class="ski-detail-name-big-input">${nameInputHtml}</div>`;
+    : `<div class="ski-detail-name-big-input"><span class="ski-detail-name-shape" aria-hidden="true">${_shapeOnlySvg('black-diamond', 24)}</span>${nameInputHtml}</div>`;
   const providerBadgeHtml = /waap/i.test(w.name) && addr0
     ? `<div class="ski-detail-provider-badge" aria-hidden="true">${waapProviderIcon(addr0)}</div>`
     : '';
@@ -1257,30 +1252,39 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   detailEl.innerHTML = `
     <div class="ski-detail-header ski-detail-header--keyed" data-detail-wallet="${esc(w.name)}">
       <div class="ski-detail-left-col"${addr0 ? ` data-addr-idx="0" data-full-addr="${esc(addr0)}"` : ''}>
-        <div class="ski-detail-logo-stack">
-          ${w.icon ? (() => {
-            const splashAuth = getSponsorState().auth;
-            const activated = !!(splashAuth?.walletName === w.name && new Date(splashAuth.expiresAt).getTime() > Date.now());
-            return `<div class="ski-detail-icon-wrap${activated ? ' ski-detail-icon-wrap--activated' : ''}"${!activated ? ` title="Splash all keys in ${esc(w.name)}"` : ''}>
-              <img src="${esc(w.icon)}" alt="" class="ski-detail-icon">
-              <div class="ski-detail-icon-overlay" aria-hidden="true">
-                <img src="${SUI_DROP_URI}" class="ski-detail-icon-overlay-drop" alt="">
-              </div>
-              <div class="ski-detail-icon-revoke-overlay" aria-hidden="true">
-                <svg width="34" height="34" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg"><line x1="3" y1="3" x2="19" y2="19" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/><line x1="19" y1="3" x2="3" y2="19" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/></svg>
-              </div>
-              ${activated ? `<div class="ski-revoke-tooltip" aria-hidden="true">Withdraw <span class="ski-revoke-tooltip-name">${esc(w.name)}</span> Splash <img src="${SUI_DROP_URI}" class="ski-revoke-tooltip-drop" alt=""></div>` : ''}
-            </div>`;
-          })() : ''}
-          <div class="ski-detail-pfp-overlap">${activePfpHtml}</div>
-          ${providerBadgeHtml}
-        </div>
         ${bigNameHtml}
-        ${lockInBtnHtml}
+        <div class="ski-detail-logo-row">
+          <div class="ski-detail-logo-stack">
+            ${w.icon ? (() => {
+              const splashAuth = getSponsorState().auth;
+              const activated = !!(splashAuth?.walletName === w.name && new Date(splashAuth.expiresAt).getTime() > Date.now());
+              return `<div class="ski-detail-icon-wrap${activated ? ' ski-detail-icon-wrap--activated' : ''}"${!activated ? ` title="Splash all keys in ${esc(w.name)}"` : ''}>
+                <img src="${esc(w.icon)}" alt="" class="ski-detail-icon">
+                <div class="ski-detail-icon-overlay" aria-hidden="true">
+                  <img src="${SUI_DROP_URI}" class="ski-detail-icon-overlay-drop" alt="">
+                </div>
+                <div class="ski-detail-icon-revoke-overlay" aria-hidden="true">
+                  <svg width="34" height="34" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg"><line x1="3" y1="3" x2="19" y2="19" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/><line x1="19" y1="3" x2="3" y2="19" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/></svg>
+                </div>
+                ${activated ? `<div class="ski-revoke-tooltip" aria-hidden="true">Withdraw <span class="ski-revoke-tooltip-name">${esc(w.name)}</span> Splash <img src="${SUI_DROP_URI}" class="ski-revoke-tooltip-drop" alt=""></div>` : ''}
+              </div>`;
+            })() : ''}
+          </div>
+          ${lockInBtnHtml}
+        </div>
       </div>
-      ${activeQrHtml}
     </div>
   `;
+
+  // Render the shared split row (legend color icons on the left, QR on the
+  // right) just above the legend rows. Lives outside the key-details pane.
+  const qrSplitSlot = document.getElementById('ski-qr-split-slot');
+  if (qrSplitSlot) {
+    const badgesHtml = `<div class="ski-qr-split-badges">${activePfpHtml}${providerBadgeHtml}</div>`;
+    qrSplitSlot.innerHTML = activeQrHtml
+      ? `<div class="ski-qr-split">${badgesHtml}${activeQrHtml}</div>`
+      : '';
+  }
 
   // Async: if a `<bareName>.whelm.eth` subname is bound in the SUIAMI
   // roster, inject it under the SuiNS name so the user sees both handles.
@@ -1756,7 +1760,7 @@ function buildSplashLegend(): string {
     const iconHtml = waapWallet.icon
       ? `<img class="ski-legend-wallet-icon" src="${esc(waapWallet.icon)}" alt="${esc(waapWallet.name)}">`
       : `<span></span>`;
-    const html = `<div class="ski-legend-row ski-legend-row--create-waap" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(waapWallet.name)}" data-legend-create-waap="true" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span><span class="ski-legend-row-mid"><span class="ski-legend-name ski-legend-name--create-waap">NEW PASSKI</span></span>${iconHtml}</div>`;
+    const html = `<div class="ski-legend-row ski-legend-row--create-waap" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(waapWallet.name)}" data-legend-create-waap="true" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span>${iconHtml}<span class="ski-legend-row-mid"><span class="ski-legend-name ski-legend-name--create-waap">NEW PASSKI</span></span></div>`;
     rowIdx++;
     return html;
   };
@@ -1821,7 +1825,7 @@ function buildSplashLegend(): string {
           ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
           : (e.icon ? `<img class="ski-legend-wallet-icon" src="${esc(e.icon)}" alt="${esc(e.walletName)}">` : `<span></span>`);
       const addrAttr = e.address ? ` data-legend-addr="${esc(e.address)}"` : '';
-      return `<div class="ski-legend-row" data-legend-idx="${rowIdx++}" data-legend-wallet="${esc(e.walletName)}"${addrAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span><span class="ski-legend-row-mid">${nameHtml}</span>${addrCell}${iconCell}</div>`;
+      return `<div class="ski-legend-row" data-legend-idx="${rowIdx++}" data-legend-wallet="${esc(e.walletName)}"${addrAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span>${iconCell}<span class="ski-legend-row-mid">${nameHtml}</span>${addrCell}</div>`;
     };
 
     // Group entries by tier with collapsible arrows
@@ -1842,7 +1846,8 @@ function buildSplashLegend(): string {
         allHtml += rowsHtml[0];
       } else {
         const hasBlueSquare = tierGroups.has(1) && (tierGroups.get(1)!.length > 0);
-        const openClass = tier === 2 && !hasBlueSquare ? ' ski-legend-group--open' : '';
+        // Blue-square groups (tier 1) always expanded; tier 2 opens when no blue-square exists
+        const openClass = (tier === 1) || (tier === 2 && !hasBlueSquare) ? ' ski-legend-group--open' : '';
         allHtml += `<div class="ski-legend-group${openClass}"><div class="ski-legend-group-head">${ARROW}${rowsHtml[0]}</div><div class="ski-legend-group-body"><div class="ski-legend-group-inner">${rowsHtml.slice(1).join('')}</div></div></div>`;
       }
     }
@@ -1869,7 +1874,7 @@ function buildSplashLegend(): string {
     const iconCell = social
       ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
       : (w.icon ? `<img class="ski-legend-wallet-icon" src="${esc(w.icon)}" alt="${esc(w.name)}">` : `<span></span>`);
-    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(w.name)}" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span><span class="ski-legend-row-mid">${col2}<span class="ski-legend-name ski-legend-name--wallet">${esc(w.name)}</span></span>${iconCell}</div>`;
+    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(w.name)}" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span>${iconCell}<span class="ski-legend-row-mid">${col2}<span class="ski-legend-name ski-legend-name--wallet">${esc(w.name)}</span></span></div>`;
     rowIdx++;
     return html;
   }).join('');
@@ -1996,11 +2001,23 @@ function activateLegendRow(idx: number, fromHover = false) {
   if (row.dataset.legendCreateWaap && detailEl) {
     const wallet = walletName ? getSuiWallets().find((w) => w.name === walletName) : null;
     const iconSrc = wallet?.icon || '';
+    // Show the user's preferred provider as the logo (if any). Clicking that
+    // logo opens the picker; clicking anywhere else on the header connects
+    // directly with the preferred provider.
+    const preferred = (() => { try { return localStorage.getItem('ski:waap-preferred-provider') || ''; } catch { return ''; } })();
+    const preferredIconSvg = preferred === 'twitter' ? SOCIAL_ICON_X
+      : preferred === 'google' ? SOCIAL_ICON_GOOGLE
+      : preferred === 'discord' ? SOCIAL_ICON_DISCORD
+      : preferred === 'github' ? `<svg width="38" height="38" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg" aria-label="GitHub"><rect width="38" height="38" rx="8" fill="#24292e"/><svg x="7" y="7" width="24" height="24" viewBox="0 0 24 24"><path fill="#fff" fill-rule="evenodd" d="M12 .297a12 12 0 00-3.793 23.387c.6.11.82-.26.82-.577v-2.03c-3.338.724-4.042-1.61-4.042-1.61-.546-1.386-1.333-1.756-1.333-1.756-1.09-.745.083-.729.083-.729 1.205.085 1.838 1.238 1.838 1.238 1.07 1.834 2.807 1.304 3.492.997.108-.776.418-1.305.762-1.605-2.665-.304-5.467-1.333-5.467-5.932 0-1.31.468-2.38 1.236-3.22-.124-.304-.536-1.524.118-3.176 0 0 1.008-.322 3.3 1.23a11.49 11.49 0 016.003 0c2.292-1.552 3.3-1.23 3.3-1.23.654 1.652.242 2.872.118 3.176.77.84 1.235 1.91 1.235 3.22 0 4.61-2.807 5.625-5.48 5.922.43.372.814 1.103.814 2.222v3.293c0 .322.218.694.825.577A12 12 0 0012 .297"/></svg></svg>`
+      : '';
+    const logoHtml = preferredIconSvg
+      ? `<div class="ski-detail-icon-wrap" data-waap-open-picker="true" role="button" tabindex="0" aria-label="Change provider">${preferredIconSvg}</div>`
+      : (iconSrc ? `<div class="ski-detail-icon-wrap" data-waap-open-picker="true" role="button" tabindex="0" aria-label="Choose provider"><img src="${esc(iconSrc)}" alt="" class="ski-detail-icon"></div>` : '');
     detailEl.innerHTML = `
       <div class="ski-detail-header ski-detail-header--keyed ski-detail-header--create-waap" data-detail-wallet="${esc(walletName || '')}" data-detail-create-waap="true" role="button" tabindex="0" aria-label="Create a new passki">
         <div class="ski-detail-icon-row">
           <div class="ski-detail-icons-top">
-            ${iconSrc ? `<div class="ski-detail-icon-wrap"><img src="${esc(iconSrc)}" alt="" class="ski-detail-icon"></div>` : ''}
+            ${logoHtml}
           </div>
           <div class="ski-detail-active-text-row">
             <div class="ski-detail-active-pfp"><div class="ski-key-pfp ski-key-pfp--green-circle"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></div></div>
@@ -2291,6 +2308,7 @@ function renderModal(): void {
         </div>
         <div class="ski-modal-col ski-modal-detail" id="ski-modal-detail"></div>
         <div class="ski-modal-body">
+          <div id="ski-qr-split-slot"></div>
           ${leftColHtml}
           <div id="ski-other-keys-slot"></div>
         </div>
@@ -2445,6 +2463,11 @@ function renderModal(): void {
 export function openModal(focusFirst = false) {
   // Close the SKI menu if open — modal and menu are mutually exclusive
   if (app.skiMenuOpen) { app.skiMenuOpen = false; }
+  // Close the idle overlay if open — also mutually exclusive with modal
+  if (_idleOverlay) {
+    _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.body.classList.remove('ski-idle-active'); document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated');
+    try { localStorage.removeItem('ski:idle-open'); } catch {}
+  }
   modalOpen = true;
   try { localStorage.setItem('ski:lift', '2'); } catch {}
   els.widget?.classList.add('ski-modal-active');
@@ -4572,13 +4595,16 @@ async function _discoverRealOwner() {
   } catch {}
 }
 
-async function fetchAndShowNsPrice(label: string) {
+async function fetchAndShowNsPrice(label: string, opts?: { force?: boolean }) {
   if (label.length < 3) {
     nsPriceUsd = null; nsPriceFetchFor = ''; nsAvail = null; nsGraceEndMs = 0;
     _patchNsPrice(); _patchNsStatus();
     return;
   }
-  if (label === nsPriceFetchFor && nsPriceUsd != null) return;
+  // Lombre Mega Drain — `opts.force` skips the cache short-circuit so
+  // click-to-refresh / visibilitychange / online whips can always get
+  // fresh status, even when price is already cached.
+  if (!opts?.force && label === nsPriceFetchFor && nsPriceUsd != null) return;
   nsPriceFetchFor = label;
   if (nsAvail !== 'owned') { nsAvail = null; _patchNsStatus(); }
   // Clear sessionStorage cache after first fetch — it was only for instant first render
@@ -6940,6 +6966,9 @@ function renderSkiMenu() {
             </div>
             ${nsRowHtml}
             <!-- Thunder bar hidden pending v4 migration (#63) -->
+            <div class="wk-dd-whelm-row">
+              <button class="wk-dd-whelm-deploy" id="wk-dd-whelm-deploy" type="button" title="Deploy OffchainResolver + bind whelm.eth in one Phantom prompt (~$15 in ETH gas, requires whelm.eth owner Phantom account)">Deploy whelm.eth resolver</button>
+            </div>
           </div>
           <div class="wk-dd-panel wk-dd-panel--settings">
             ${settingsHtml}
@@ -7370,6 +7399,42 @@ function renderSkiMenu() {
   });
 
   // Admin — Deploy OffchainResolver (ENS CCIP-read resolver for whelm.eth)
+  // Main-panel "Deploy whelm.eth resolver" — one-shot deploy + bind via Phantom
+  document.getElementById('wk-dd-whelm-deploy')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Connecting Phantom…';
+    try {
+      const fn = (window as unknown as {
+        deployAndBindWhelmEthOneShot?: () => Promise<{
+          ok?: boolean;
+          error?: string;
+          resolverAddress?: string;
+          deployTx?: string;
+          bindTx?: string;
+        }>;
+      }).deployAndBindWhelmEthOneShot;
+      if (!fn) {
+        showToast('deployAndBindWhelmEthOneShot helper not loaded');
+        return;
+      }
+      const result = await fn();
+      if (result.ok && result.resolverAddress) {
+        showToast(`✓ whelm.eth → ${result.resolverAddress.slice(0, 10)}…`, false, true);
+      } else if (result.error) {
+        showToast(`Deploy + bind failed: ${result.error.slice(0, 100)}`, false, true);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Deploy + bind error: ${msg}`, false, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
   document.getElementById('wk-deploy-resolver')?.addEventListener('click', async (e) => {
     e.stopPropagation();
     const btn = e.currentTarget as HTMLButtonElement;
@@ -10364,7 +10429,7 @@ let _idleVideoBlobUrl: string | null = null;
 function bindEvents() {
   els.skiDot?.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); try { localStorage.removeItem('ski:idle-open'); } catch {} return; }
+    if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.body.classList.remove('ski-idle-active'); document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); try { localStorage.removeItem('ski:idle-open'); } catch {} return; }
     if (modalOpen) { closeModal(); return; }
     if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:lift', '0'); } catch {} render(); }
     openModal();
@@ -10374,7 +10439,17 @@ function bindEvents() {
     e.stopPropagation();
 
     if (!getState().address) {
-      if (modalOpen) { closeModal(); return; }
+      // Pre-login cycle: nothing → modal → idle overlay → nothing
+      if (_idleOverlay) {
+        _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.body.classList.remove('ski-idle-active'); document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated');
+        try { localStorage.removeItem('ski:idle-open'); } catch {}
+        return;
+      }
+      if (modalOpen) {
+        closeModal();
+        _showIdleOverlay();
+        return;
+      }
       openModal();
       return;
     }
@@ -10383,7 +10458,7 @@ function bindEvents() {
     // Three-state cycle: menu → overlay → menu(collapsed) → overlay → ...
     if (_idleOverlay) {
       // Overlay open → close it, open SKI menu collapsed
-      _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated');
+      _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.body.classList.remove('ski-idle-active'); document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated');
       try { localStorage.removeItem('ski:idle-open'); } catch {}
       // Collapse all sections
       addrSectionOpen = false; _persistAddrSectionOpen();
@@ -10530,8 +10605,9 @@ function bindEvents() {
   let _idleOverlayGen = 0;
 
   const _showIdleOverlay = () => {
-      if (!app.skiMenuOpen && !getState().address && !localStorage.getItem('ski:last-address')) return;
-      if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
+      // Ensure modal is closed — idle overlay and modal are mutually exclusive
+      if (modalOpen) closeModal();
+      if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.body.classList.remove('ski-idle-active'); document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
       const _myGen = ++_idleOverlayGen;
       const _isStaleIdleMount = () => _idleOverlayGen !== _myGen;
       // Ensure menu is open
@@ -10557,6 +10633,7 @@ function bindEvents() {
 
       _idleOverlay = document.createElement('div');
       _idleOverlay.className = 'ski-idle-overlay';
+      document.body.classList.add('ski-idle-active');
       // Always start with 'ski-idle' layout — the poster is
       // ski-idle.gif, so CSS must match until the real video loads.
       // _loadIdleBg defers data-bg for non-default backgrounds
@@ -10581,21 +10658,12 @@ function bindEvents() {
       //
       // Invalid/too-short persisted values are cleared so stale
       // single-char junk doesn't resurrect across sessions.
-      let _idleInputVal = nsLabel.trim();
-      if (_idleInputVal && (_idleInputVal.length < 3 || !isValidNsLabel(_idleInputVal))) {
-        _idleInputVal = '';
-        nsLabel = '';
-        try { localStorage.removeItem('ski:ns-label'); } catch {}
-      }
-      if (!_idleInputVal) {
-        try {
-          const saved = localStorage.getItem('ski:ns-label') || '';
-          if (saved && isValidNsLabel(saved)) {
-            _idleInputVal = saved;
-            nsLabel = saved;
-          }
-        } catch {}
-      }
+      // Always start refreshed sessions with an empty input. Button
+      // defaults to SUIAMI targeting the user's primary name; no stale
+      // labels from prior sessions resurrect as a TRADE/MINT/black-diamond.
+      const _idleInputVal = '';
+      nsLabel = '';
+      try { localStorage.removeItem('ski:ns-label'); } catch {}
 
       // Rumble button hides when the connected wallet is already rumbled
       // AND has a verified SUIAMI proof — the primary squids-provisioning
@@ -10809,6 +10877,209 @@ function bindEvents() {
         }
       });
 
+      // Lombre — keep the squid button + Rumble CTA in sync with SUIAMI
+      // roster health. Fires on wallet-state change (new address) and
+      // after a successful rumble. Adds `is-rumbled` / `is-incomplete`
+      // classes so the CSS drives the vantablack-inverted state and
+      // the exclamation pip.
+      let _lastRosterHealthAddr: string | null = null;
+      let _lastRosterHealth: RosterHealth | null = null;
+      const ROW_CHAIN_CLASSES: Array<{ sel: string; chain: string }> = [
+        { sel: '.ski-idle-addr-line--btc', chain: 'btc' },
+        { sel: '.ski-idle-addr-line--sol', chain: 'sol' },
+        { sel: '.ski-idle-addr-line--eth', chain: 'eth' },
+        { sel: '.ski-idle-addr-line--base', chain: 'base' },
+        { sel: '.ski-idle-addr-line--tron', chain: 'tron' },
+      ];
+      const _applyAddrRowBadges = (h: RosterHealth) => {
+        for (const { sel, chain } of ROW_CHAIN_CLASSES) {
+          const rows = document.querySelectorAll<HTMLElement>(sel);
+          const rostered = chainIsRostered(h, chain);
+          for (const row of rows) {
+            // Skip dark placeholder rows (viewing another identity without
+            // a SUIAMI proof) — those don't carry a real address.
+            if (row.classList.contains('ski-idle-addr-dark')) {
+              row.classList.remove('is-rostered', 'is-unpublished');
+              continue;
+            }
+            row.classList.toggle('is-rostered', rostered);
+            row.classList.toggle('is-unpublished', !rostered);
+          }
+        }
+      };
+      let _applyingRosterHealth = false;
+      const _applyRosterHealthClasses = (h: RosterHealth) => {
+        // Reentrancy guard — this function mutates subtree (innerHTML of
+        // the SUIAMI chip), which the MutationObserver is watching;
+        // without the flag, a single call ends up re-entering via the
+        // observer in an infinite loop the moment the chip's content
+        // changes.
+        if (_applyingRosterHealth) return;
+        _applyingRosterHealth = true;
+        try {
+          const squidBtns = document.querySelectorAll<HTMLElement>('.ski-idle-quick-btn--squid');
+          const rumbleBtn = document.getElementById('ski-idle-rumble');
+          for (const btn of squidBtns) {
+            btn.classList.toggle('is-incomplete', h.incomplete);
+            btn.classList.toggle('is-rumbled', h.rumbled);
+          }
+          if (rumbleBtn) rumbleBtn.classList.toggle('is-incomplete', h.incomplete);
+          const targetHtml = h.incomplete ? '\u{1F58B} SCRIBE SUIAMI' : '✓ SUIAMI';
+          const targetTitle = h.incomplete
+            ? `Scribe ${h.missingChains.join(', ')} to roster`
+            : 'Click to copy SUIAMI proof';
+          const suiamiChips = document.querySelectorAll<HTMLElement>('.ski-idle-addr-suiami');
+          for (const chip of suiamiChips) {
+            if (chip.classList.contains('ski-idle-addr-suiami--join')) continue;
+            chip.classList.toggle('is-incomplete', h.incomplete);
+            // Idempotent writes — only touch innerHTML/title if they
+            // differ from target. Doubles as a second safety net against
+            // the observer loop even if the reentrancy flag races.
+            if (chip.innerHTML !== targetHtml) chip.innerHTML = targetHtml;
+            if (chip.getAttribute('title') !== targetTitle) chip.setAttribute('title', targetTitle);
+          }
+          _applyAddrRowBadges(h);
+        } finally {
+          _applyingRosterHealth = false;
+        }
+      };
+      // Expose so the addr-row renderer can re-apply badges after it
+      // overwrites innerHTML (badges are CSS pseudo-elements but the
+      // is-rostered / is-unpublished classes live on the parent line,
+      // which gets blown away on re-render).
+      (window as unknown as { __skiReapplyRosterBadges?: () => void })
+        .__skiReapplyRosterBadges = () => {
+          if (_lastRosterHealth) _applyAddrRowBadges(_lastRosterHealth);
+        };
+      const _syncRosterHealth = async (force = false) => {
+        const ws = getState();
+        const addr = ws.address;
+        if (!addr) {
+          _lastRosterHealthAddr = null;
+          _lastRosterHealth = null;
+          _applyRosterHealthClasses({ found: false, capCount: 0, publishedChains: [], missingChains: [], incomplete: false, rumbled: false });
+          return;
+        }
+        if (!force && addr === _lastRosterHealthAddr && _lastRosterHealth) return;
+        _lastRosterHealthAddr = addr;
+        try {
+          const h = await rosterHealth(addr);
+          if (getState().address !== addr) return;
+          _lastRosterHealth = h;
+          _applyRosterHealthClasses(h);
+        } catch { /* keep prior state on error */ }
+      };
+      subscribe(() => { void _syncRosterHealth(); });
+      window.addEventListener('ski:rumble-complete', () => { void _syncRosterHealth(true); });
+      window.addEventListener('ski:roster-updated', () => { void _syncRosterHealth(true); });
+      // Network-resume whip: on tab visibility + online, revalidate so
+      // external changes (another device rumbled the same identity)
+      // reflect without a reload.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') void _syncRosterHealth(true);
+      });
+      window.addEventListener('online', () => { void _syncRosterHealth(true); });
+      // Low-freq polling whip — idempotent and cheap (single RPC hit).
+      setInterval(() => { if (document.visibilityState === 'visible') void _syncRosterHealth(true); }, 60_000);
+      // MutationObserver whip — reapply row badges every time the addr-
+      // row markup is rebuilt. Covers all 6 innerHTML render paths
+      // (own wallet, dark placeholder, SUIAMI-reveal, detail pane, etc.)
+      // without touching each call site. Idempotent: re-running the
+      // class toggles against the cached health is free.
+      // Observe the whole overlay subtree (or document.body as fallback).
+      // .ski-idle-addr-row elements are swapped in/out as the addr card
+      // re-renders, so observing those nodes directly misses the later
+      // chip creation. Watching a stable root with subtree:true catches
+      // every markup swap and keeps the SUIAMI chip / row classes in
+      // sync immediately — no 60s polling wait.
+      const _reapplyObserver = new MutationObserver((muts) => {
+        if (!_lastRosterHealth) return;
+        // Only react to changes that touched addr/chip nodes — avoids
+        // re-running on every unrelated DOM tweak.
+        for (const m of muts) {
+          const target = m.target as Element | null;
+          const added = Array.from(m.addedNodes) as Element[];
+          if (
+            (target?.closest?.('.ski-idle-addr-row, .ski-idle-addr-suiami')) ||
+            added.some((n) => n.nodeType === 1 && (
+              (n as Element).matches?.('.ski-idle-addr-line, .ski-idle-addr-suiami') ||
+              (n as Element).querySelector?.('.ski-idle-addr-line, .ski-idle-addr-suiami')
+            ))
+          ) {
+            _applyRosterHealthClasses(_lastRosterHealth);
+            return;
+          }
+        }
+      });
+      const _observeRoot = _idleOverlay ?? document.body;
+      _reapplyObserver.observe(_observeRoot, { childList: true, subtree: true });
+      // Lombre Ice Beam — the SUIAMI chip becomes the single scribe-all
+      // button when the record has unpublished chains. One tap →
+      // `buildScribeAllChainsTx` writes every derivable chain in one
+      // PTB, reusing existing caps. Falls back to Rumble only when no
+      // caps exist.
+      let _scribeInFlight = false;
+      const _runScribeAll = async () => {
+        if (_scribeInFlight) return;
+        const ws = getState();
+        if (!ws.address) { showToast('Connect wallet first'); return; }
+        _scribeInFlight = true;
+        showToast('\u{1F58B} Scribing all squids to SUIAMI…');
+        try {
+          const { buildScribeAllChainsTx } = await import('./suins.js');
+          const tx = await buildScribeAllChainsTx(ws.address);
+          if (!tx) {
+            const rumbleBtn = document.getElementById('ski-idle-rumble') as HTMLButtonElement | null;
+            if (rumbleBtn) rumbleBtn.click();
+            else showToast('No dWallet caps — Rumble first to provision');
+            return;
+          }
+          const { digest } = await signAndExecuteTransaction(tx);
+          showToast(`\u{2713} Squids scribed${digest ? ` — ${digest.slice(0, 8)}…` : ''}`);
+          window.dispatchEvent(new CustomEvent('ski:roster-updated'));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/reject|cancel/i.test(msg)) showToast(`Scribe failed: ${msg.slice(0, 120)}`);
+        } finally {
+          _scribeInFlight = false;
+        }
+      };
+      document.addEventListener('click', (ev) => {
+        const t = ev.target as HTMLElement | null;
+        if (!t) return;
+        const chip = t.closest('.ski-idle-addr-suiami.is-incomplete') as HTMLElement | null;
+        if (!chip) return;
+        ev.stopPropagation();
+        ev.preventDefault();
+        void _runScribeAll();
+      }, true);
+      void _syncRosterHealth();
+
+      // Lombre Mega Drain — label status self-heal whips.
+      // Fixes the stale `nsAvail` case where the initial lookup fails
+      // or gets overwritten mid-flight and the status diamond shows
+      // the "unknown" variant indefinitely.
+      const _refreshLabelStatus = () => {
+        const label = (nsLabel || '').trim().toLowerCase();
+        if (label.length < 3) return;
+        void fetchAndShowNsPrice(label, { force: true });
+      };
+      // Click the status diamond to force refresh.
+      if (_idleStatusEl) {
+        _idleStatusEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          _refreshLabelStatus();
+        });
+        (_idleStatusEl as HTMLElement).style.cursor = 'pointer';
+      }
+      // Tab becomes visible or network comes back → force refresh any
+      // typed-but-stale label. Same two listeners the roster health uses
+      // but scoped to the NS label path.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') _refreshLabelStatus();
+      });
+      window.addEventListener('online', _refreshLabelStatus);
+
       const _updateIdleStatus = () => {
         if (!_idleStatusEl || !_idleActionBtn) return;
         _updateNsSweepBanner();
@@ -10978,15 +11249,22 @@ function bindEvents() {
               const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
               const _canAfford = usdVal != null ? (app.usd ?? 0) >= usdVal : false;
               if (_canAfford) {
-                priceText.textContent = usdVal != null ? `$${Math.round(usdVal)}` : `${Math.round(totalSui)} SUI`;
+                priceText.textContent = usdVal != null ? `$${usdVal.toFixed(2)}` : `${totalSui.toFixed(2)} SUI`;
                 priceText.style.color = '';
               } else {
                 priceText.innerHTML = usdVal != null
-                  ? `<span style="color:#ef4444">$</span>${Math.round(usdVal)}`
-                  : `${Math.round(totalSui)} SUI`;
+                  ? `<span style="color:#ef4444">$</span>${usdVal.toFixed(2)}`
+                  : `${totalSui.toFixed(2)} SUI`;
                 priceText.style.color = '';
               }
               priceRow.hidden = false;
+              // Listed-not-owned: forward hover/click to the TRADE action
+              // button instead of doing the owned-state Transfer morph.
+              priceRow.dataset.mode = 'listed';
+              priceRow.style.cursor = 'pointer';
+              priceRow.onmouseenter = () => _idleActionBtn?.classList.add('ski-idle-ns-action--hot');
+              priceRow.onmouseleave = () => _idleActionBtn?.classList.remove('ski-idle-ns-action--hot');
+              priceRow.onclick = (ev) => { ev.stopPropagation(); _idleActionBtn?.click(); };
             }
           } else if (nsAvail === 'available' && nsPriceUsd) {
             priceText.textContent = `$${Math.round(nsPriceUsd)}`;
@@ -11558,6 +11836,10 @@ function bindEvents() {
           _idleNsInput.value = '';
           const clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
           if (clearBtn) clearBtn.style.display = 'none';
+          // Fire 'input' so state (nsLabel, listings, price pill, action
+          // button) resets to the user's primary-name SUIAMI mode instead
+          // of clinging to the previous name's TRADE/orange-triangle state.
+          _idleNsInput.dispatchEvent(new Event('input', { bubbles: true }));
         }
       });
       _idleNsInput?.addEventListener('blur', () => {
@@ -12288,11 +12570,21 @@ function bindEvents() {
               nsAvail = 'owned'; nsTargetAddress = ws.address; nsLastDigest = digest ?? '';
               nsKioskListing = null; nsTradeportListing = null;
               app.suinsName = app.suinsName || domain;
-              // Persist the traded name so a hard refresh lands back on this
-              // card instead of going blank or snapping to the wallet primary.
+              suinsCache[ws.address] = app.suinsName;
+              try { localStorage.setItem(`ski:suins:${ws.address}`, app.suinsName); } catch {}
               try { localStorage.setItem('ski:ns-label', label); } catch {}
+              updateSkiDot('blue-square', app.suinsName);
+              nsOwnedFetchedFor = '';
+              _fetchOwnedDomains();
+              _patchNsStatus();
+              _patchNsRoute();
               showToast(`\u{1F6CD}\u{FE0F} ${domain} traded for ${totalSui.toFixed(2)} SUI (~$${priceUsd.toFixed(2)}) \u2713`);
               _updateIdleStatus();
+              _updateIdleCard(label);
+              _preRumbledNames.add(label.toLowerCase());
+              try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
+              window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
+              try { localStorage.removeItem(`ski:balances:${ws.address}`); } catch {}
               setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
 
               // ── Auto-follow-up: configure records on the newly acquired name ──
@@ -12398,8 +12690,20 @@ function bindEvents() {
             if (infer.purchased?.digest) {
               nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
               app.suinsName = app.suinsName || `${label}.sui`;
+              suinsCache[ws.address] = app.suinsName;
+              try { localStorage.setItem(`ski:suins:${ws.address}`, app.suinsName); } catch {}
+              updateSkiDot('blue-square', app.suinsName);
+              nsOwnedFetchedFor = '';
+              _fetchOwnedDomains();
+              _patchNsStatus();
+              _patchNsRoute();
               showToast(`\u26a1 ${label}.sui acquired via cache`);
               _updateIdleStatus();
+              _updateIdleCard(label);
+              _preRumbledNames.add(label.toLowerCase());
+              try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
+              window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
+              try { localStorage.removeItem(`ski:balances:${ws.address}`); } catch {}
               setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
               return;
             }
@@ -12411,9 +12715,22 @@ function bindEvents() {
               const _isWaaP = /waap/i.test(getState().walletName || '');
             const { digest } = (!_isWaaP && isSponsorActive()) ? await signAndExecuteSponsoredTx(bytes) : await signAndExecuteTransaction(bytes);
               nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
+              nsLastDigest = digest ?? '';
               app.suinsName = app.suinsName || `${label}.sui`;
+              suinsCache[ws.address] = app.suinsName;
+              try { localStorage.setItem(`ski:suins:${ws.address}`, app.suinsName); } catch {}
+              updateSkiDot('blue-square', app.suinsName);
+              nsOwnedFetchedFor = '';
+              _fetchOwnedDomains();
+              _patchNsStatus();
+              _patchNsRoute();
               showToast(`${label}.sui purchased \u2713`);
               _updateIdleStatus();
+              _updateIdleCard(label);
+              _preRumbledNames.add(label.toLowerCase());
+              try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
+              window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
+              try { localStorage.removeItem(`ski:balances:${ws.address}`); } catch {}
               setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
             } else if (infer.nameStatus === 'available' && !infer.listing && label) {
               // Fresh registration — /api/infer doesn't yet build
@@ -12473,15 +12790,60 @@ function bindEvents() {
             if (!raw.toLowerCase().includes('reject')) showToast(raw.slice(0, 150));
           } finally {
             _idleActionBtn!.disabled = false;
-            _idleActionBtn!.textContent = 'TRADE';
+            if (nsAvail !== 'owned') _idleActionBtn!.textContent = 'TRADE';
+            else _updateIdleStatus();
           }
         } else if (btnText === 'MINT') {
-          // Open menu for mint flow
-          if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
-          setTimeout(() => {
-            const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-            if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
-          }, 500);
+          // Mint directly from the idle overlay — no SKI menu pop-open.
+          // Opening the menu mid-mint shoves the balance/identity pills
+          // onto the SKI side of the screen and buries the "Signing…"
+          // feedback under the modal.
+          e.stopPropagation();
+          if (!label) return;
+          const ws = getState();
+          if (!ws.address) { showToast('Connect wallet first'); return; }
+          const domain = label.endsWith('.sui') ? label : `${label}.sui`;
+          const prevText = _idleActionBtn!.textContent || 'MINT';
+          const prevClass = _idleActionBtn!.className;
+          _idleActionBtn!.className = 'ski-idle-ns-action ski-idle-ns-action--signing';
+          _idleActionBtn!.innerHTML = '<span class="ski-signing-text">Signing…</span>';
+          _idleActionBtn!.disabled = true;
+          try {
+            const freshPrice = await fetchSuiPrice() ?? suiPriceCache?.price;
+            const result = await buildRegisterSplashNsTx(ws.address, domain, freshPrice, !app.suinsName, selectedCoinSymbol ?? undefined);
+            const { digest, effects: mintEff } = result.sponsorAddress
+              ? await signAndExecuteSponsoredTx(result.txBytes)
+              : await signAndExecuteTransaction(result.txBytes);
+            nsAvail = 'owned';
+            nsTargetAddress = ws.address;
+            nsLastDigest = digest ?? '';
+            app.suinsName = app.suinsName || domain;
+            suinsCache[ws.address] = app.suinsName;
+            try { localStorage.setItem(`ski:suins:${ws.address}`, app.suinsName); } catch {}
+            updateSkiDot('blue-square', app.suinsName);
+            nsOwnedFetchedFor = '';
+            _fetchOwnedDomains();
+            _patchNsStatus();
+            _patchNsRoute();
+            showMintToast(domain, digest, mintEff);
+            _preRumbledNames.add(label.toLowerCase());
+            try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
+            window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
+            try { localStorage.removeItem(`ski:balances:${ws.address}`); } catch {}
+            refreshPortfolio(true);
+            _updateIdleStatus();
+            _updateIdleCard(label);
+          } catch (err) {
+            const raw = err instanceof Error ? err.message : String(err);
+            if (!raw.toLowerCase().includes('reject')) {
+              const { display, full } = parseNsError(raw);
+              showCopyableToast(display, full);
+            }
+            _idleActionBtn!.className = prevClass;
+            _idleActionBtn!.textContent = prevText;
+          } finally {
+            _idleActionBtn!.disabled = false;
+          }
         } else if (btnText === 'Quest') {
           // Quest Prism — user signs registration PTB upfront.
           // When a t2000 fills (sends NS), ultron submits the pre-signed tx. One signature, walk away.
@@ -14421,7 +14783,7 @@ function bindEvents() {
             nextBtn.addEventListener('click', (ev) => {
               ev.stopPropagation();
               // Rebuild the overlay
-              _idleOverlay?.remove(); _idleOverlay = null;
+              _idleOverlay?.remove(); _idleOverlay = null; document.body.classList.remove('ski-idle-active');
               _showIdleOverlay();
             });
           }
@@ -14429,7 +14791,7 @@ function bindEvents() {
       });
 
       const _dismissIdle = (keepOverlay = false) => {
-        if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; try { localStorage.removeItem('ski:idle-open'); } catch {} }
+        if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; document.body.classList.remove('ski-idle-active'); try { localStorage.removeItem('ski:idle-open'); } catch {} }
         _resetIdle();
       };
       const _triggerSuiami = () => {
@@ -17888,7 +18250,7 @@ function bindEvents() {
 
   // Listen for manual trigger (Lockin button)
   window.addEventListener('ski:show-idle', () => {
-    if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
+    if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.body.classList.remove('ski-idle-active'); document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
     _showIdleOverlay();
   });
 
@@ -18174,7 +18536,7 @@ export function initUI() {
     if (ws.status === 'disconnected') {
       stopPolling();
       // Remove idle overlay so it doesn't float over the closed menu
-      if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
+      if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.body.classList.remove('ski-idle-active'); document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
       try { localStorage.setItem('ski:idle-open', '0'); } catch {}
       app.sui = 0;
       app.usd = null;
@@ -18308,42 +18670,24 @@ export function initUI() {
       if (!wallet || !provider) return;
       // Cache the pick so next page load constrains WaaP to this provider.
       try { localStorage.setItem('ski:waap-preferred-provider', provider); } catch {}
+      // WaaP is now always registered with the full social list, so no
+      // reload is needed when switching providers — connect directly and
+      // the in-iframe picker shows all 4 buttons. We cache the pick so
+      // the UI pre-highlights it next time, but there's no single-button
+      // optimization anymore: a single-entry allowedSocials triggers
+      // WaaP's server-side auto-redirect which breaks the OAuth chain on
+      // Android (x.com↔twitter.com deep-link interception).
       void (async () => {
-        const { getCurrentWaapProvider } = await import('./waap.js');
-        const current = getCurrentWaapProvider();
-        // WaaP's SDK cannot be re-initialized in the same page load — the
-        // iframe's postMessage origin gets stuck. If the registered provider
-        // already matches the user's pick, connect directly (single-button
-        // screen, no reload). Otherwise (first visit with full list, or
-        // returning user switching) we cache an auto-connect flag and
-        // hard-reload the page so WaaP re-initializes constrained to the
-        // chosen provider. The reload is ~1s and the payoff is a single-
-        // button WaaP screen every time.
-        if (current === provider) {
-          closeModal();
-          try { await disconnect(); } catch {}
-          try {
-            for (let i = localStorage.length - 1; i >= 0; i--) {
-              const k = localStorage.key(i);
-              if (k && !k.startsWith('ski:')) localStorage.removeItem(k);
-            }
-          } catch {}
-          try {
-            await connect(wallet, { skipSilent: true });
-          } catch (err) {
-            showToast('Failed to connect: ' + _errMsg(err));
-          }
-          return;
-        }
-        // Provider mismatch → reload with auto-connect flag.
+        closeModal();
+        try { await disconnect(); } catch {}
         try {
-          sessionStorage.setItem('ski:waap-auto-connect', provider);
           for (let i = localStorage.length - 1; i >= 0; i--) {
             const k = localStorage.key(i);
             if (k && !k.startsWith('ski:')) localStorage.removeItem(k);
           }
         } catch {}
-        window.location.reload();
+        try { await connect(wallet, { skipSilent: true }); }
+        catch (err) { showToast('Failed to connect: ' + _errMsg(err)); }
       })();
       return;
     }
@@ -18362,9 +18706,13 @@ export function initUI() {
         })();
       if (wallet) {
         // "+ new WaaP" detail pane → swap content for provider picker.
-        // User picks X / Google / Discord / GitHub, then we re-init WaaP
-        // with allowedSocials=[chosen] so the iframe shows a single button.
-        if (clickedDetailHeader.dataset.detailCreateWaap && clickedDetailHeader.dataset.pickerOpen !== 'true') {
+        // Picker only opens when the user clicks the provider-logo element
+        // (data-waap-open-picker). Clicking elsewhere on the header connects
+        // directly using the cached preferred provider (or falls through to
+        // the picker if none is set yet).
+        const clickedLogo = (e.target as HTMLElement).closest<HTMLElement>('[data-waap-open-picker]');
+        const hasPreferred = (() => { try { return !!localStorage.getItem('ski:waap-preferred-provider'); } catch { return false; } })();
+        if (clickedDetailHeader.dataset.detailCreateWaap && clickedDetailHeader.dataset.pickerOpen !== 'true' && (clickedLogo || !hasPreferred)) {
           clickedDetailHeader.dataset.pickerOpen = 'true';
           const iconX = SOCIAL_ICON_X;
           const iconG = SOCIAL_ICON_GOOGLE;
@@ -18386,7 +18734,36 @@ export function initUI() {
           return;
         }
         if (clickedDetailHeader.dataset.detailCreateWaap) {
-          // Picker already open but user tapped the frame (not a chip) — no-op
+          // Picker already open and tapped the frame (not a chip) — no-op
+          if (clickedDetailHeader.dataset.pickerOpen === 'true') return;
+          // Picker not open and user has a preferred provider → connect with it.
+          const preferred = (() => { try { return localStorage.getItem('ski:waap-preferred-provider') || ''; } catch { return ''; } })() as 'twitter'|'google'|'discord'|'github'|'';
+          if (!preferred) return;
+          void (async () => {
+            const { getCurrentWaapProvider } = await import('./waap.js');
+            const current = getCurrentWaapProvider();
+            if (current === preferred) {
+              closeModal();
+              try { await disconnect(); } catch {}
+              try {
+                for (let i = localStorage.length - 1; i >= 0; i--) {
+                  const k = localStorage.key(i);
+                  if (k && !k.startsWith('ski:')) localStorage.removeItem(k);
+                }
+              } catch {}
+              try { await connect(wallet, { skipSilent: true }); }
+              catch (err) { showToast('Failed to connect: ' + _errMsg(err)); }
+              return;
+            }
+            try {
+              sessionStorage.setItem('ski:waap-auto-connect', preferred);
+              for (let i = localStorage.length - 1; i >= 0; i--) {
+                const k = localStorage.key(i);
+                if (k && !k.startsWith('ski:')) localStorage.removeItem(k);
+              }
+            } catch {}
+            window.location.reload();
+          })();
           return;
         }
         if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
