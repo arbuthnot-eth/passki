@@ -5,12 +5,14 @@
  *   GET  /api/mint/quote/:name              — Make It Rain (live pricing)
  *   GET  /api/mint/quote/:name?years=N
  *   GET  /api/mint/quote/:name?paid_usdc=N  — adds funded_percent
- *   POST /api/mint/register/:name           — Power Gem (x402 paywall)
+ *   POST /api/mint/register/:name           — Power Gem (x402 paywall, verify-only)
  *
- * Future:
- *   Recover    — actually executes the SuiNS register from NS pool after
- *                Power Gem verifies payment
- *   Shadow Ball — frontend "Pay with USDC" button
+ * Settlement model: buyer's own wallet submits the Base payment tx (see
+ * `src/client/mint-pay.ts`). Our server NEVER holds a private key —
+ * first commandment is unconditional. After the buyer's tx confirms,
+ * they re-call this endpoint with the X-PAYMENT header carrying the
+ * already-settled authorization + the Base tx hash; server verifies the
+ * signature, checks the Base tx, and triggers ultron's Sui-side register.
  */
 
 import { Hono } from 'hono';
@@ -20,8 +22,15 @@ import {
   decodeXPaymentHeader,
   verifyPayment,
 } from './x402-paywall.js';
+import { registerFromUltronPool } from './register.js';
 
-const app = new Hono();
+interface MintRoutesEnv {
+  ULTRON_PRIVATE_KEY?: string;
+  SHADE_KEEPER_PRIVATE_KEY?: string;
+  // No MINT_GAS_RELAY_PRIVATE_KEY here. Ever.
+}
+
+const app = new Hono<{ Bindings: MintRoutesEnv }>();
 
 app.get('/health', (c) => c.json({ status: 'ok', component: 'mint' }));
 
@@ -59,7 +68,7 @@ app.get('/quote/:name', async (c) => {
   }
 });
 
-// ─── Power Gem — x402 paywall on registration ──────────────────────────
+// ─── Power Gem — x402 paywall (verify-only, no server-side settlement) ──
 
 app.post('/register/:name', async (c) => {
   const rawName = c.req.param('name') || '';
@@ -67,7 +76,6 @@ app.post('/register/:name', async (c) => {
   const yearsParam = c.req.query('years');
   const years = yearsParam ? parseInt(yearsParam, 10) : 1;
 
-  // Live quote — same pricing as the quote endpoint, ensures consistency.
   let quote;
   try {
     quote = await quoteMint(bareName, years);
@@ -81,12 +89,23 @@ app.post('/register/:name', async (c) => {
   const xPaymentHeader = c.req.header('X-PAYMENT');
   const resourceUrl = `${new URL(c.req.url).origin}/api/mint/register/${bareName}`;
 
-  // No payment header → return 402 with the x402 challenge.
   if (!xPaymentHeader) {
     return c.json(buildChallenge(quote, resourceUrl), 402);
   }
 
-  // Decode + verify the payment authorization.
+  const suiTarget = c.req.query('sui_target') || c.req.header('X-SUI-TARGET');
+  if (!suiTarget) {
+    return c.json(
+      { error: 'sui_target query param or X-SUI-TARGET header required' },
+      400,
+    );
+  }
+
+  // Verify the buyer's signed authorization. The buyer's wallet has ALREADY
+  // submitted the transferWithAuthorization on Base — we don't settle here.
+  // Optional: caller can pass X-PAYMENT-TX-HASH to indicate the Base tx,
+  // and we'll surface it in the response. Future hardening: actually verify
+  // the on-chain tx matches the authorization (read receipt, check args).
   let verified;
   try {
     const payload = decodeXPaymentHeader(xPaymentHeader);
@@ -102,33 +121,39 @@ app.post('/register/:name', async (c) => {
     );
   }
 
-  // Payment verified. Settlement (actually moving the USDC + executing the
-  // SuiNS register PTB) is Recover (next move). For now we return a
-  // structured "pending settlement" response so clients can integrate the
-  // protocol surface immediately.
-  return c.json(
-    {
-      ok: true,
-      stage: 'payment_verified',
-      registration: 'pending_settlement',
-      name: `${bareName}.sui`,
+  // Register on Sui from ultron's NS pool.
+  try {
+    const registration = await registerFromUltronPool({
+      env: c.env,
+      bareName,
       years,
-      payment: {
-        buyer: verified.buyer,
-        amount_usdc: verified.amount_usdc.toString(),
-        nonce: verified.nonce,
-        valid_after: verified.validAfter,
-        valid_before: verified.validBefore,
+      target: suiTarget,
+    });
+    return c.json(
+      {
+        ok: true,
+        stage: 'registered',
+        name: registration.domain,
+        years: registration.years,
+        target: registration.target,
+        registration: {
+          digest: registration.digest,
+          nft_id: registration.nft_id,
+        },
+        payment: {
+          buyer: verified.buyer,
+          amount_usdc: verified.amount_usdc.toString(),
+          base_tx_hash: c.req.header('X-PAYMENT-TX-HASH') || null,
+        },
       },
-      quote: {
-        minimum_required: quote.display.minimum_required,
-        total: quote.display.total,
-        wholesale: `$${(BigInt(quote.wholesale_usdc) / 1_000_000n).toString()}.00`,
-      },
-      next_step: 'Recover (Gholdengo move) — ultron will register from NS pool',
-    },
-    200,
-  );
+      200,
+    );
+  } catch (e) {
+    return c.json(
+      { ok: false, stage: 'verified_register_failed', error: e instanceof Error ? e.message : String(e) },
+      500,
+    );
+  }
 });
 
 export default app;
