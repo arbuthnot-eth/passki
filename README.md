@@ -36,6 +36,11 @@ The 6-7 digits after `$0.01` aren't noise — they're **steganographic intent ta
 
 One number carries the instruction. No metadata leaks.
 
+### Mint — IKA-Native x402 Settlement
+Pay for a SuiNS name with **USDC on Base** through the [x402 protocol](https://www.x402.org/), and ultron settles the on-chain pull using its own **IKA-secp256k1 dWallet** — not a relay key, not a private key on a server, not a third-party facilitator. The buyer's authorization is signed in their wallet; ultron's outer Base transaction is signed by the IKA committee against ultron's dWallet share, then submitted to Base RPC. **Zero private keys on the worker, agent-friendly by default.**
+
+`GET /api/mint/quote/:name` returns live pricing with buffer breakdown + funded% (powered by `src/server/quote/`). `POST /api/mint/register/:name` returns 402 + x402 challenge until a valid `X-PAYMENT` header lands. Browser clients submit Base txs from their own wallet via `src/client/mint-pay.ts`. Headless agents (no EVM wallet) use the IKA path — server constructs the unsigned tx, IKA committee signs, ultron's address pays gas. See `src/server/mint/ika-settle.ts`.
+
 ### What You Can Build With
 - **Tradeport** — SuiNS marketplace listing proxy (`/api/tradeport/listing/:label`)
 - **Walrus** — Seal-encrypted blob storage for Thunder ciphertext, Shade payloads, quilted batch writes

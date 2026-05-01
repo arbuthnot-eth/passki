@@ -23,10 +23,13 @@ import {
   verifyPayment,
 } from './x402-paywall.js';
 import { registerFromUltronPool } from './register.js';
+import { settleViaIka } from './ika-settle.js';
 
 interface MintRoutesEnv {
   ULTRON_PRIVATE_KEY?: string;
   SHADE_KEEPER_PRIVATE_KEY?: string;
+  UltronSigningAgent: DurableObjectNamespace;
+  BASE_RPC_URL?: string;
   // No MINT_GAS_RELAY_PRIVATE_KEY here. Ever.
 }
 
@@ -101,14 +104,11 @@ app.post('/register/:name', async (c) => {
     );
   }
 
-  // Verify the buyer's signed authorization. The buyer's wallet has ALREADY
-  // submitted the transferWithAuthorization on Base — we don't settle here.
-  // Optional: caller can pass X-PAYMENT-TX-HASH to indicate the Base tx,
-  // and we'll surface it in the response. Future hardening: actually verify
-  // the on-chain tx matches the authorization (read receipt, check args).
+  // Verify the buyer's signed authorization.
   let verified;
+  let payload;
   try {
-    const payload = decodeXPaymentHeader(xPaymentHeader);
+    payload = decodeXPaymentHeader(xPaymentHeader);
     verified = await verifyPayment(payload, BigInt(quote.total_usdc));
   } catch (e) {
     return c.json(
@@ -119,6 +119,38 @@ app.post('/register/:name', async (c) => {
       ),
       402,
     );
+  }
+
+  // Settlement mode:
+  //   X-PAYMENT-MODE: browser  (default) — buyer already submitted the Base tx
+  //                                         themselves; pass tx hash in
+  //                                         X-PAYMENT-TX-HASH for record.
+  //   X-PAYMENT-MODE: ika                — server submits via ultron's IKA
+  //                                         secp256k1 dWallet (agent-friendly).
+  const mode = (c.req.header('X-PAYMENT-MODE') || 'browser').toLowerCase();
+  let baseTxHash: string | null = null;
+
+  if (mode === 'ika') {
+    try {
+      const settled = await settleViaIka(c.env, verified, payload.payload.signature);
+      baseTxHash = settled.base_tx_hash;
+    } catch (e) {
+      return c.json(
+        { ok: false, stage: 'ika_settle_failed', error: e instanceof Error ? e.message : String(e) },
+        500,
+      );
+    }
+  } else {
+    // Browser mode — buyer's wallet has already submitted the Base tx.
+    baseTxHash = c.req.header('X-PAYMENT-TX-HASH') || null;
+    if (!baseTxHash) {
+      return c.json(
+        {
+          error: 'X-PAYMENT-TX-HASH required in browser mode (the Base tx your wallet just submitted), or set X-PAYMENT-MODE: ika to have ultron settle via its IKA dWallet',
+        },
+        400,
+      );
+    }
   }
 
   // Register on Sui from ultron's NS pool.
@@ -143,7 +175,8 @@ app.post('/register/:name', async (c) => {
         payment: {
           buyer: verified.buyer,
           amount_usdc: verified.amount_usdc.toString(),
-          base_tx_hash: c.req.header('X-PAYMENT-TX-HASH') || null,
+          base_tx_hash: baseTxHash,
+          settled_via: mode === 'ika' ? 'ika-dwallet-secp256k1' : 'browser-wallet',
         },
       },
       200,
