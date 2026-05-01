@@ -2245,9 +2245,20 @@ console.log('[ski] deployOffchainResolver hook installed — call deployOffchain
 // First commandment: signing happens entirely in Phantom on the user's
 // device, never on a Worker.
 const _deployAndBindWhelmEthOneShot = async () => {
-  const eth = await getPhantomEth();
+  // Try Phantom first (it's where whelm.eth was set up), but fall back to
+  // any EIP-1193 provider on window.ethereum so MetaMask / Rabby / Brave /
+  // Frame all work too — useful if you imported your Phantom seed into
+  // another wallet because Phantom desktop is broken.
+  let eth: EthProvider | null = await getPhantomEth();
   if (!eth) {
-    showToast('Phantom EVM not detected — install/unlock Phantom and try again');
+    const w = window as unknown as { ethereum?: EthProvider };
+    if (w.ethereum) {
+      eth = w.ethereum;
+      console.log('[deployAndBindWhelmEth] Phantom not found, falling back to window.ethereum');
+    }
+  }
+  if (!eth) {
+    showToast('No EVM wallet detected — unlock Phantom, MetaMask, Rabby, or Brave wallet');
     return { error: 'no-wallet' };
   }
   let from: string | undefined;
