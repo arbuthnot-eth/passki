@@ -7234,6 +7234,12 @@ body.ski-idle-active #ski-btn::before {
 .ski-legend-group-head > .ski-legend-row > .ski-legend-shape {
   cursor: pointer;
 }
+/* Indent sub-rows by the same width as the group expand-arrow (16px) so
+   the green-dot / icon / label columns line up between the group head row
+   (which has an arrow) and the rows inside the group (which don't). */
+.ski-legend-group-body .ski-legend-row {
+  padding-left: 24px;
+}
 .ski-legend-group-body {
   display: grid;
   grid-template-rows: 0fr;
