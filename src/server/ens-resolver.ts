@@ -769,6 +769,16 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
         console.log(`[ens-resolver] stealth addr(${bareLabel}.${activeParent}, 784) eph=${ephemeralPubHex}`);
       }
       result = encodeAddrCoinTypeResult(sui ? bytesToHex(new TextEncoder().encode(sui)) : null);
+    } else if (coinType >= 0x80000000n) {
+      // ENSIP-19 EVM chain-specific coinType: 0x80000000 | chainId.
+      // Underpins the new `name@chain` syntax (vitalik.eth@base, etc.)
+      // that ENSv2 + on.eth standardize. Since EVM addresses are
+      // chain-agnostic — the same hex address holds value on every
+      // EVM rollup — we return ultron's canonical ETH address for
+      // ALL EVM chain coinTypes. Wallet sends to that address on
+      // whichever chain it's currently on.
+      const eth = chainKey('eth');
+      result = encodeAddrCoinTypeResult(eth);
     } else {
       result = encodeAddrCoinTypeResult(null);
     }
