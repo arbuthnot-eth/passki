@@ -3,6 +3,8 @@
 ## First Commandment: IKA-Native, Keyless Agents
 - **Every wallet, agent, and cross-chain address MUST be IKA-native**
 - **No private keys on Cloudflare Workers — ever.** Agents sign via IKA dWallet user shares + DWalletCap wrapper
+- **No "relay-only" keys, no "gas-relay" keys, no "$5 of gas at risk" exceptions.** A private key is a private key. If you need a Worker to submit an EVM tx, the user's wallet submits it (browser-side), or an IKA dWallet signs (with re-encrypted user share, NOT a raw keypair), or a third-party paymaster handles it (declared dependency). NEVER add a `*_PRIVATE_KEY` env var to wrangler config or `.dev.vars`.
+- **x402 / EVM settlement pattern:** buyer's own wallet submits the on-chain tx after signing (their gas, their tx). Worker only verifies the signed authorization and triggers downstream Sui actions. Never accepts gas, never relays.
 - Cross-chain addresses (BTC, ETH, SOL) come from IKA dWallet DKG — always
 - No raw keypair re-encoding as cross-chain addresses (e.g. Sui Ed25519 pubkey as Solana base58)
 - brando.sui runs DKG in browser, re-encrypts user share to agent. Either brando OR agent + IKA network = valid signature
