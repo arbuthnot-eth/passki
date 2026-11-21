@@ -26,7 +26,7 @@ Sign in with **X.com, Google, phone, or email**. No API keys. No seed phrases. N
 One button runs IKA DKG and provisions **native Bitcoin, Solana, and EVM dWallet addresses** — all from a single Sui account. Not wrapped. Not bridged. Real cross-chain keys. This is built and live on mainnet today.
 
 ### Anti-Spam — Stables Only
-SKI is inherently anti-spam. Everything is measured in **stables**. You have 8 billion MONKE PENIS coins? SKI checks all exchanges, sees it's worth less than a cent, and filters it out — or auto-swaps it to USD (or Argentine Peso). No more `0.000256 CHODE` in your portfolio.
+SKI is inherently anti-spam. Everything is measured in **stables**. Holding a few billion worthless memecoins? SKI checks all exchanges, sees they're worth less than a cent, and filters them out — or auto-swaps them to USD (or Argentine pesos). No more dust cluttering your portfolio.
 
 ### Subcent Intents
 The 6-7 digits after `$0.01` aren't noise — they're **steganographic intent tags**:
