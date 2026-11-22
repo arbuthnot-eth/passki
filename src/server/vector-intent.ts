@@ -23,6 +23,8 @@
  */
 
 import type { Context } from 'hono';
+import { fromHex } from '@mysten/sui/utils';
+import { hasUltronKey, ultronKeypair } from './ultron-key.js';
 
 export interface VectorIntentBody<TIntent> {
   intent: TIntent;
@@ -136,8 +138,18 @@ export async function verifyVectorIntent<TIntent extends Record<string, unknown>
     return { ok: false, status: 403, error: 'Signature verification failed' };
   }
 
-  // ── Nonce advance via TreasuryAgents DO ─────────────────────────
+  // ── Signer authorization ────────────────────────────────────────
+  // A valid signature only proves the caller holds *some* key. These
+  // intents spend or mint treasury funds, so the key must be one we
+  // trust: ultron's own, or an operator key in VECTOR_INTENT_SIGNERS.
+  // (Before this check, any freshly generated keypair could sign
+  // { recipient: me, amountMist: everything }.)
   const pubKeyHex = toHex(pubBytes);
+  if (!authorizedSigners(c.env).has(pubKeyHex)) {
+    return { ok: false, status: 403, error: 'Signer is not authorized for treasury intents' };
+  }
+
+  // ── Nonce advance via TreasuryAgents DO ─────────────────────────
   const digestHex = toHex(digest);
   try {
     // Lazy-import so this module stays self-contained. The helper needs
@@ -179,4 +191,28 @@ export async function verifyVectorIntent<TIntent extends Record<string, unknown>
     digestHex,
     pubKeyHex,
   };
+}
+
+/**
+ * Hex Ed25519 public keys allowed to sign treasury intents: ultron's own key
+ * plus any listed (hex or base64, comma-separated) in VECTOR_INTENT_SIGNERS.
+ * Empty means nobody, so the routes fail closed.
+ */
+export function authorizedSigners(env: Record<string, unknown>): Set<string> {
+  const out = new Set<string>();
+  try {
+    if (hasUltronKey(env as Parameters<typeof hasUltronKey>[0])) {
+      out.add(toHex(ultronKeypair(env as Parameters<typeof ultronKeypair>[0]).getPublicKey().toRawBytes()));
+    }
+  } catch { /* no usable key */ }
+  const extra = typeof env.VECTOR_INTENT_SIGNERS === 'string' ? env.VECTOR_INTENT_SIGNERS : '';
+  for (const raw of extra.split(',').map((x) => x.trim()).filter(Boolean)) {
+    try {
+      const bytes = /^(0x)?[0-9a-fA-F]{64}$/.test(raw)
+        ? fromHex(raw.replace(/^0x/, ''))
+        : Uint8Array.from(atob(raw), (ch) => ch.charCodeAt(0));
+      if (bytes.length === 32) out.add(toHex(bytes));
+    } catch { /* skip malformed entry */ }
+  }
+  return out;
 }

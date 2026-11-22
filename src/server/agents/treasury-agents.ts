@@ -17,6 +17,7 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { ultronKeypair, internalAuthToken, constantTimeEqual } from '../ultron-key.js';
+import { stripUntrustedCaller } from '../caller-trust.js';
 import { normalizeSuiAddress, toBase64 } from '@mysten/sui/utils';
 import { raceExecuteTransaction, raceJsonRpc, GQL_URL } from '../rpc.js';
 import { createSplMint, mintSplTokens, deriveATA, b58decode, b58encode, type SolanaRpcConfig } from '../solana-spl.js';
@@ -324,6 +325,14 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (!isReadOnly && !isWebSocket && !this.verifyInternalAuth(request)) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 403, headers: { 'content-type': 'application/json' } });
     }
+
+    // ── Caller identity comes from the Worker, never the client ─────
+    // Methods guarded by requireUltronCaller(params.callerAddress) read it
+    // from the JSON body, and many Worker routes forward client bodies
+    // verbatim, so a client could add `callerAddress: <ultron's public
+    // address>` and act as ultron. Drop it unless the Worker vouches for
+    // it with x-ski-as-ultron (the internal token, unknown to clients).
+    request = await stripUntrustedCaller(request, this.env);
 
     // Shade — lock iUSD for grace-period name sniping
     // Shuckle Lv.30 (#117) — manual attest trigger (also fires in tick loop).

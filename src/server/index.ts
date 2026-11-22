@@ -151,7 +151,8 @@ const PUBLIC_CACHE_WRITES = new Set([
   '/api/cache/pre-rumble', '/api/cache/rumble-ultron-seed', '/api/cache/sweep-sol-ultron',
   '/api/cache/whelm-ultron-fungibles', '/api/cache/whelm-ultron-objects',
   '/api/cache/send-iusd-v2', '/api/cache/bam-mint-v2',
-  '/api/cache/debug-mint', '/api/cache/debug-sol-watch', '/api/cache/force-dispatch-sol', '/api/cache/reset-sol-cursor',
+  '/api/cache/debug-mint', '/api/cache/debug-sol-watch', '/api/cache/reset-sol-cursor',
+  // NOT force-dispatch-sol: it trusts a caller-supplied lamports figure (admin-only).
 ]);
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 app.use('/api/*', async (c, next) => {
@@ -259,13 +260,20 @@ function getTreasuryAuth(env: Env): string {
  * Auth-wrapping proxy for the treasury DO stub.
  * Returns an object with a .fetch() that auto-injects x-treasury-auth.
  */
-function authedTreasuryStub(c: { env: Env }) {
+/**
+ * Treasury stub that attaches the internal token. Pass `asUltron` only when
+ * this Worker route itself sets `callerAddress` to ultron; otherwise the DO
+ * discards any `callerAddress` in the body (it may have come from a client).
+ */
+function authedTreasuryStub(c: { env: Env }, opts: { asUltron?: boolean } = {}) {
   const stub = treasuryStub(c);
   const auth = getTreasuryAuth(c.env);
   return {
     fetch(req: Request) {
       const headers = new Headers(req.headers);
       headers.set('x-treasury-auth', auth);
+      headers.delete('x-ski-as-ultron');
+      if (opts.asUltron) headers.set('x-ski-as-ultron', auth);
       if (!headers.has('x-partykit-room')) headers.set('x-partykit-room', 'treasury');
       return stub.fetch(new Request(req.url, {
         method: req.method,
@@ -4197,7 +4205,7 @@ app.post('/api/cache/create-iusd-sol-mint', async (c) => {
     const kp = ultronKeypair(c.env);
     const ultronAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
 
-    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?create-iusd-sol-mint', {
+    const res = await authedTreasuryStub(c, { asUltron: true }).fetch(new Request('https://treasury-do/?create-iusd-sol-mint', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify({ callerAddress: ultronAddress }),
@@ -4215,7 +4223,7 @@ app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
     const body = await c.req.json() as { recipientSolAddress: string; amount: string };
     const kp = ultronKeypair(c.env);
     const callerAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
-    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
+    const res = await authedTreasuryStub(c, { asUltron: true }).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify({ ...body, callerAddress }),
@@ -4262,7 +4270,7 @@ app.post('/api/cache/bam-mint-v2', async (c) => {
     // flow with no ability to alter recipient or amount.
     const kp = ultronKeypair(c.env);
     const callerAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
-    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
+    const res = await authedTreasuryStub(c, { asUltron: true }).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify({

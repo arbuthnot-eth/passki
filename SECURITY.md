@@ -39,6 +39,9 @@ The [Security model](README.md#security-model) section of the README is the curr
 
 | Date | Issue | Severity | Fix |
 |---|---|---|---|
+| 2026-11-22 | Treasury "intents" (`/api/cache/send-iusd-v2`, `/api/cache/bam-mint-v2`) checked the signature against a public key the caller supplied, so any freshly generated keypair could send ultron's iUSD anywhere or mint unlimited iUSD-SPL on Solana | Critical | The signer must be ultron's own key or an operator key listed in `VECTOR_INTENT_SIGNERS` |
+| 2026-11-22 | `/api/cache/force-dispatch-sol` (public) credited a pending deposit intent with a caller-supplied `lamports` amount, so anyone could open an intent and mint iUSD against SOL they never sent | Critical | Admin-only |
+| 2026-11-22 | Worker routes forwarded client JSON to treasury methods that authorize on `body.callerAddress`; adding ultron's public address made the caller ultron (e.g. `/api/cache/pre-rumble` had ultron sign roster identities for any name) | High | The treasury drops `callerAddress` from request bodies unless the Worker vouches with `x-ski-as-ultron` (the internal token) |
 | 2026-11-22 | Admin token (`x-treasury-auth`) was the first 34 characters of ultron's **public** Sui address, so anyone could call admin routes | Critical | Token is now an HMAC of a server secret, compared in constant time (`internalAuthToken`) |
 | 2026-11-22 | Treasury routes such as `/api/cache/migrate`, `/api/cache/send-iusd` and `/api/cache/ultron-transfer-iusd` had no route-level auth. The Worker attached the internal token itself, so the DO's check didn't help | Critical | Default-deny: every non-GET `/api/cache/*` route is admin-only unless explicitly allowlisted |
 | 2026-11-22 | `/api/iusd/swap` paid out SUI/USDC before receiving iUSD, for any caller and amount; `/api/ignite` trusted a client-claimed burn amount | Critical | Both admin-only until they verify the user's payment on-chain first |
