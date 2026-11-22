@@ -15,6 +15,60 @@ passki is a Sui-native identity and messaging stack where SuiNS names are the en
 
 Agents (ultron, chronicoms, t2000s) are Durable Objects that sign via IKA dWallet user shares + DWalletCap wrappers. `brando.sui` runs DKG in the browser and re-encrypts the user share to the agent. Either brando OR agent + IKA network = a valid signature.
 
+## Security model
+
+> **Status:** unaudited, mainnet beta. This section describes how passki works today, including the parts that aren't keyless yet.
+
+### What passki protects
+
+1. **User keys.** These are your Sui account and the Bitcoin, Ethereum and Solana addresses it controls.
+2. **Message contents.** These are Thunder messages and attachments.
+3. **Service operations.** These are what the `ultron.sui` agent does on users' behalf: sponsoring gas, executing Shade orders, and settling x402 mints.
+
+### User keys
+
+| Layer | How it works | Who can sign |
+|---|---|---|
+| **Sign-in** | [WaaP](https://docs.waap.xyz) (Wallet as a Protocol) provides social login. passki talks to it through the Sui Wallet Standard and WaaP's iframe, and never receives your Sui private key. | You, through WaaP. Custody follows WaaP's model. |
+| **Cross-chain addresses** | [IKA](https://docs.ika.xyz) dWallets use 2PC-MPC. A signature needs **your user share** and **the IKA network** (a threshold of validators). | Neither side can sign alone. |
+| **User share** | DKG runs in your browser. Your user secret share is encrypted under a key derived from a 32-byte seed from `crypto.getRandomValues`. The `DWalletCap` is owned by your Sui address. | Only the holder of that seed and the cap. |
+
+### Service-operated keys (current state)
+
+Not everything is keyless yet. The Worker holds these conventional secrets:
+
+| Worker secret | Used for | If compromised | Plan |
+|---|---|---|---|
+| `ULTRON_PRIVATE_KEY` / `SHADE_KEEPER_PRIVATE_KEY` | `ultron.sui`: gas sponsorship, Shade order execution, mint settlement, and deriving the seeds for agent-held dWallets (below) | An attacker can act as `ultron.sui` and control agent-held dWallets. **User-owned dWallets are not affected.** | Move `ultron.sui` to IKA dWallet signing |
+| `ENS_SIGNER_PRIVATE_KEY` | Signs [CCIP-Read (EIP-3668)](https://eips.ethereum.org/EIPS/eip-3668) gateway responses for the offchain ENS resolver | An attacker can forge address records for names under that resolver | Standard CCIP-Read gateway design; rotate via the resolver's signer set |
+
+`scripts/check-no-private-keys.mjs` runs on every build and blocks new key-shaped variables in Worker **config files**. The two `ultron` keys are allowlisted as legacy. Secrets set with `wrangler secret put` live outside the config files, so this check doesn't see them.
+
+### Agent-held dWallets
+
+Some dWallets are deliberately owned by `ultron.sui` so it can act without a user present: "rumble-ultron" agent wallets and Sneasel guest intermediates. These use **deterministic** encryption seeds so the keeper can re-derive them instead of storing them:
+
+- **Agent wallets:** the seed is derived from `SHADE_KEEPER_PRIVATE_KEY`.
+- **Guest intermediates:** the seed is `sha256(domain ‖ parentHash ‖ label ‖ chain)`.
+
+These wallets are exactly as secure as `ultron.sui`'s key and its `DWalletCap` ownership. They are **service wallets, not user custody.**
+
+### What the server can and can't see
+
+- **Thunder messages** use a double envelope. `ultron` can route them, so it sees **who messages whom**, but the inner envelope is encrypted to the recipient and **ultron can't read the contents**. Keys use [Seal](https://seal-docs.wal.app) threshold encryption with 2-of-3 key servers (Overclock, Studio Mirai, H2O Nodes). Ciphertext is stored on Walrus.
+- **Request metadata:** IP addresses are kept only as salted hashes (`CF_IP_SALT`), and session cookies are HMAC-signed (`CF_HMAC_SECRET`).
+- **In the browser:** time-limited Seal session keys, the IKA presign pool and sponsor authorization are cached in `localStorage`. An XSS bug on passki.xyz could expose them, which is why a CSP is enforced (#59).
+
+### Known gaps
+
+- [ ] Move `ultron.sui` from a raw key to IKA dWallet signing, and remove the legacy allowlist.
+- [ ] No third-party audit yet.
+- [ ] Extend the key guard to check `wrangler secret list` as well as config files.
+
+### Reporting a vulnerability
+
+Please report privately through [GitHub Security Advisories](https://github.com/arbuthnot-eth/passki/security/advisories/new). Don't open a public issue.
+
 ## For Hackathon Devs (Frontier Colosseum)
 
 SKI is the best IKA-based Web2 social login experience you can build with today. Here's what you get out of the box:
@@ -37,7 +91,7 @@ The 6-7 digits after `$0.01` aren't noise — they're **steganographic intent ta
 One number carries the instruction. No metadata leaks.
 
 ### Mint — IKA-Native x402 Settlement
-Pay for a SuiNS name with **USDC on Base** through the [x402 protocol](https://www.x402.org/), and ultron settles the on-chain pull using its own **IKA-secp256k1 dWallet** — not a relay key or a third-party facilitator. The buyer's authorization is signed in their wallet; ultron's outer Base transaction is signed by the IKA committee against ultron's dWallet share, then submitted to Base RPC. **Zero user keys on the worker, agent-friendly by default.** The Base leg is pure IKA; the Sui-side registration is signed through ultron's single swappable signer, built to cut over to an IKA dWallet.
+Pay for a SuiNS name with **USDC on Base** through the [x402 protocol](https://www.x402.org/), and ultron settles the on-chain pull using its own **IKA-secp256k1 dWallet** — not a relay key or a third-party facilitator. The buyer's authorization is signed in their wallet; ultron's outer Base transaction is signed by the IKA committee against ultron's dWallet share, then submitted to Base RPC. **Zero user keys on the worker, agent-friendly by default.** The Base leg is pure IKA; the Sui-side registration is signed through ultron's single swappable signer, built to cut over to an IKA dWallet (see [Security model](#security-model)).
 
 `GET /api/mint/quote/:name` returns live pricing with buffer breakdown + funded% (powered by `src/server/quote/`). `POST /api/mint/register/:name` returns 402 + x402 challenge until a valid `X-PAYMENT` header lands. Browser clients submit Base txs from their own wallet via `src/client/mint-pay.ts`. Headless agents (no EVM wallet) use the IKA path — server constructs the unsigned tx, IKA committee signs, ultron's address pays gas. See `src/server/mint/ika-settle.ts`.
 
@@ -74,7 +128,7 @@ Two DKG ceremonies. Two dWallets. Eight chains. One Sui account.
 ## First Commandment: IKA-Native, Keyless Agents
 
 - **Every wallet, agent, and cross-chain address MUST be IKA-native.**
-- **No user keys on Cloudflare Workers — ever.** Agents sign cross-chain via IKA dWallet user shares + DWalletCap wrappers. `ultron.sui`'s one Sui operator key sits behind a single choke point (`ultronKeypair`), so moving it to an IKA dWallet is a single-function swap once imported-key ed25519 DKG ships.
+- **No user keys on Cloudflare Workers — ever.** Agents sign cross-chain via IKA dWallet user shares + DWalletCap wrappers. `ultron.sui`'s one Sui operator key sits behind a single choke point (`ultronKeypair`), so moving it to an IKA dWallet is a single-function swap once imported-key ed25519 DKG ships (see [Security model](#security-model)).
 - Cross-chain addresses (BTC, ETH, SOL) come from IKA dWallet DKG — always. No raw keypair re-encoding as cross-chain addresses.
 - `brando.sui` runs DKG in-browser, re-encrypts user share to the agent. Either brando OR agent + IKA network = valid signature.
 - Batch DKG provisioning for agents = "Rumble your squids."
