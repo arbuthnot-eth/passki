@@ -1,9 +1,10 @@
+import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { ultronKeypair, hasUltronKey, requireUltronSig, internalAuthToken, constantTimeEqual } from './ultron-key.js';
 import { evaluateSponsorTx } from './sponsor-policy.js';
 import { handleSuiJsonRpc, handleSuiJsonRpcBody } from './sui-jsonrpc-shim.js';
-import { reserveSponsorBudget, sponsorSpentToday } from './agents/sponsor-quota.js';
+import { reserveSponsorBudget, sponsorSpentToday, reserveDailyBudgets } from './agents/sponsor-quota.js';
 import { installSuiJsonRpcRedirect } from '../sui-jsonrpc-redirect.js';
 
 // Public Sui JSON-RPC is shut down. Answer JSON-RPC calls aimed at the old
@@ -136,6 +137,9 @@ const ADMIN_ROUTES = [
   // before receiving iUSD; ignite trusts `iusdBurned`). Admin-only until
   // they verify the user's payment on-chain first.
   '/api/iusd/swap', '/api/ignite',
+  // Make ultron's IKA dWallets sign an arbitrary caller-chosen message
+  // (an ETH/SOL tx hash, say) and spend IKA on every call.
+  '/api/ultron/sign', '/api/ultron/accept-share',
 ];
 // Default-deny for treasury writes: every non-GET /api/cache/* route is
 // admin-only unless listed here. These are the browser-facing flows, plus
@@ -804,6 +808,35 @@ const GAS_DRIP_MIN_MIST = 60_000_000n;  // drip only if below 0.06 SUI
 const GAS_DRIP_COOLDOWN_MS = 60 * 1000;
 const _gasDripLog = new Map<string, number>(); // addr → last drip ts
 
+// ── Giveaway budgets ────────────────────────────────────────────────
+// fund-gas, ika/fund and the DKG routes spend ultron's SUI/IKA for free.
+// Fresh addresses cost nothing (and SuiNS subnames almost nothing), so
+// per-address checks alone can't bound spend: every giveaway also counts
+// against a per-IP and a global daily cap in the SponsorQuota DO, and a
+// per-IP rate limit. Fails closed.
+type Giveaway = 'fund-gas' | 'ika-fund' | 'ika-dkg';
+const GIVEAWAY_CAPS: Record<Giveaway, { unit: bigint; perAddress: bigint; perIp: bigint; global: bigint }> = {
+  'fund-gas': { unit: GAS_DRIP_MIST, perAddress: 2n * GAS_DRIP_MIST, perIp: 3n * GAS_DRIP_MIST, global: 30n * GAS_DRIP_MIST },
+  'ika-fund': { unit: 5_000_000_000n, perAddress: 5_000_000_000n, perIp: 10_000_000_000n, global: 100_000_000_000n },
+  'ika-dkg':  { unit: 1n, perAddress: 2n, perIp: 3n, global: 20n },
+};
+
+async function giveawayGuard(c: Context, kind: Giveaway, address: string): Promise<Response | null> {
+  const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+  const limiter = (c.env as any).SPONSOR_RATE_LIMITER as { limit(o: { key: string }): Promise<{ success: boolean }> } | undefined;
+  if (limiter && !(await limiter.limit({ key: `${kind}:${ip}` })).success) {
+    return c.json({ error: 'Too many requests' }, 429);
+  }
+  const cap = GIVEAWAY_CAPS[kind];
+  const r = await reserveDailyBudgets(c.env as any, [
+    { key: `${kind}:addr:${address.toLowerCase()}`, cap: cap.perAddress },
+    { key: `${kind}:ip:${ip}`, cap: cap.perIp },
+    { key: `${kind}:global`, cap: cap.global },
+  ], cap.unit);
+  if (!r.ok) return c.json({ error: r.key === 'unavailable' ? 'Temporarily unavailable' : 'Daily limit reached — try again tomorrow' }, r.key === 'unavailable' ? 503 : 429);
+  return null;
+}
+
 app.post('/api/fund-gas', async (c) => {
   if (!hasUltronKey(c.env)) return c.json({ error: 'Not configured' }, 503);
   try {
@@ -837,6 +870,9 @@ app.post('/api/fund-gas', async (c) => {
     if (userBalance >= GAS_DRIP_MIN_MIST) {
       return c.json({ success: true, skipped: true, reason: 'already has gas', balance: userBalance.toString() });
     }
+
+    const capped = await giveawayGuard(c, 'fund-gas', addrLower);
+    if (capped) return capped;
 
     const keypair = ultronKeypair(c.env);
     const ultronAddress = keypair.toSuiAddress();
@@ -930,6 +966,9 @@ app.post('/api/ika/fund', async (c) => {
     const hasNft = await hasSuinsNft(address);
     if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
 
+    const capped = await giveawayGuard(c, 'ika-fund', address);
+    if (capped) return capped;
+
     const keypair = ultronKeypair(c.env);
     const ultronAddress = keypair.toSuiAddress();
 
@@ -1022,6 +1061,9 @@ app.post('/api/ika/create', async (c) => {
     if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
 
     // TODO: verify authSignature matches address (cryptographic proof of intent)
+
+    const capped = await giveawayGuard(c, 'ika-dkg', address);
+    if (capped) return capped;
 
     const keypair = ultronKeypair(c.env);
     const ultronAddress = keypair.toSuiAddress();
@@ -1182,6 +1224,9 @@ app.post('/api/ika/provision', async (c) => {
     // SuiNS gate
     const hasNft = await hasSuinsNft(address);
     if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
+
+    const capped = await giveawayGuard(c, 'ika-dkg', address);
+    if (capped) return capped;
 
     const keypair = ultronKeypair(c.env);
     const ultronAddress = keypair.toSuiAddress();
@@ -4779,12 +4824,11 @@ app.get('/api/cache/rumble', async (c) => {
 // or event-aware behavior. Separate from /api/sol-webhook, which remains
 // the treasury-specific deposit-detection entry point.
 app.post('/api/helius/webhook', async (c) => {
+  // Fail closed: without a configured secret, nobody can post deposits.
   const secret = c.env.HELIUS_WEBHOOK_SECRET;
-  if (secret) {
-    const auth = c.req.header('Authorization') || '';
-    const expected = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
-    if (expected !== secret) return c.json({ error: 'Unauthorized' }, 401);
-  }
+  const auth = c.req.header('Authorization') || '';
+  const given = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+  if (!secret || !constantTimeEqual(given, secret)) return c.json({ error: 'Unauthorized' }, 401);
   try {
     const payload = await c.req.json().catch(() => []) as Array<Record<string, unknown>>;
     const events = Array.isArray(payload) ? payload : [payload];
@@ -5192,12 +5236,10 @@ app.post('/api/cache/helius-webhook-delete', async (c) => {
 
 // ── Helius webhook: instant SOL deposit detection ──
 app.post('/api/sol-webhook', async (c) => {
+  // Fail closed: without a configured secret, nobody can post deposits.
   const secret = c.env.HELIUS_WEBHOOK_SECRET;
-  if (secret) {
-    const auth = c.req.header('Authorization') || '';
-    if (auth !== `Bearer ${secret}`) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  if (!secret || !constantTimeEqual(c.req.header('Authorization'), `Bearer ${secret}`)) {
+    return c.json({ error: 'Unauthorized' }, 401);
   }
   try {
     const body = await c.req.text();

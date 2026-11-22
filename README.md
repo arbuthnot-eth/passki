@@ -70,6 +70,10 @@ These wallets are exactly as secure as `ultron.sui`'s key and its `DWalletCap` o
 
 `/api/health` reports the sponsor's balance and today's sponsored spend, so an uptime monitor catches an empty or drained sponsor.
 
+### Giveaways
+
+Routes that spend ultron's funds for free (the gas drip, IKA funding, DKG provisioning) count every payout against daily caps per address, per IP and globally, held in the same strictly serialized Durable Object as the sponsorship budget. Fresh addresses are free to create, so a per-address limit alone bounds nothing.
+
 ### Admin and internal routes
 
 Treasury operations (minting, sweeps, migrations, pool management) are admin-only. Every non-GET `/api/cache/*` route is denied unless explicitly allowlisted for browser flows. Admin calls carry an `x-treasury-auth` token: an HMAC of a server secret, compared in constant time, which [`scripts/admin-token.mjs`](scripts/admin-token.mjs) computes locally. Server-only Durable Objects can't be reached over `/agents/*` at all; only the four browser-facing agents are routable. The treasury never takes caller identity from a request body (a client could claim to be ultron, whose address is public), and signed treasury intents are accepted only from ultron's key or operator keys in `VECTOR_INTENT_SIGNERS`. See [SECURITY.md](SECURITY.md) for the fixed-issue history.

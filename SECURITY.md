@@ -39,6 +39,9 @@ The [Security model](README.md#security-model) section of the README is the curr
 
 | Date | Issue | Severity | Fix |
 |---|---|---|---|
+| 2026-11-22 | `/api/ultron/sign` (public) had ultron's IKA dWallets sign any caller-chosen message on either curve, e.g. an ETH or SOL transaction hash, spending IKA each time; `/api/ultron/accept-share` was public too | Critical | Admin-only |
+| 2026-11-22 | Giveaway routes (`/api/fund-gas`, `/api/ika/fund`, `/api/ika/create`, `/api/ika/provision`) were limited per address only (or not at all), so fresh addresses or one SuiNS name could drain ultron's SUI and IKA | High | Strict daily caps per address, per IP and globally (SponsorQuota DO) plus a per-IP rate limit; fails closed |
+| 2026-11-22 | Deposit webhooks accepted any caller if `HELIUS_WEBHOOK_SECRET` was unset | Low | Fail closed; constant-time compare |
 | 2026-11-22 | Treasury "intents" (`/api/cache/send-iusd-v2`, `/api/cache/bam-mint-v2`) checked the signature against a public key the caller supplied, so any freshly generated keypair could send ultron's iUSD anywhere or mint unlimited iUSD-SPL on Solana | Critical | The signer must be ultron's own key or an operator key listed in `VECTOR_INTENT_SIGNERS` |
 | 2026-11-22 | `/api/cache/force-dispatch-sol` (public) credited a pending deposit intent with a caller-supplied `lamports` amount, so anyone could open an intent and mint iUSD against SOL they never sent | Critical | Admin-only |
 | 2026-11-22 | Worker routes forwarded client JSON to treasury methods that authorize on `body.callerAddress`; adding ultron's public address made the caller ultron (e.g. `/api/cache/pre-rumble` had ultron sign roster identities for any name) | High | The treasury drops `callerAddress` from request bodies unless the Worker vouches with `x-ski-as-ultron` (the internal token) |

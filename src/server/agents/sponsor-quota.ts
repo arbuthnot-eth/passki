@@ -99,3 +99,38 @@ export async function sponsorSpentToday(env: QuotaEnv): Promise<{ spentMist: big
   const spent = await ns.get(ns.idFromName('global')).spentToday();
   return { spentMist: BigInt(spent), capMist: capFrom(env.SPONSOR_DAILY_CAP_TOTAL_MIST, DEFAULT_TOTAL_MIST) };
 }
+
+// ── General daily budgets (faucets, IKA funding, DKG) ───────────────────
+//
+// Same Durable Object, different instance names. Each limit is a named
+// counter with a daily cap; a reservation succeeds only if it fits under
+// *every* limit, and partial reservations are rolled back. Units are
+// whatever the caller counts (MIST, IKA base units, or 1 per call).
+
+export interface BudgetLimit { key: string; cap: bigint }
+
+export async function reserveDailyBudgets(
+  env: QuotaEnv,
+  limits: BudgetLimit[],
+  amount: bigint,
+): Promise<{ ok: true } | { ok: false; key: string }> {
+  const ns = env.SPONSOR_QUOTA;
+  if (!ns) return { ok: false, key: 'unavailable' };
+  const done: Array<{ reserve(a: string, c: string): Promise<{ ok: boolean }>; refund(a: string): Promise<void> }> = [];
+  const a = amount.toString();
+  try {
+    for (const l of limits) {
+      const stub = ns.get(ns.idFromName(`budget:${l.key}`));
+      if (!(await stub.reserve(a, l.cap.toString())).ok) {
+        await Promise.all(done.map((d) => d.refund(a)));
+        return { ok: false, key: l.key };
+      }
+      done.push(stub);
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('[budget] error:', err);
+    await Promise.allSettled(done.map((d) => d.refund(a)));
+    return { ok: false, key: 'unavailable' };
+  }
+}

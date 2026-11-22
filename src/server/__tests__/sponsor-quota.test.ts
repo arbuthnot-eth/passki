@@ -36,3 +36,44 @@ describe('sponsor quota', () => {
     expect(utcDay(Date.UTC(2026, 10, 23, 0, 0, 0))).toBe('2026-11-23');
   });
 });
+
+describe('reserveDailyBudgets', () => {
+  // In-memory stand-in for the DO namespace: one counter per instance name.
+  function fakeNs() {
+    const spent = new Map<string, bigint>();
+    return {
+      spent,
+      idFromName: (n: string) => n,
+      get: (n: string) => ({
+        async reserve(a: string, cap: string) {
+          const next = (spent.get(n) ?? 0n) + BigInt(a);
+          if (next > BigInt(cap)) return { ok: false, spentMist: String(spent.get(n) ?? 0n) };
+          spent.set(n, next);
+          return { ok: true, spentMist: String(next) };
+        },
+        async refund(a: string) { spent.set(n, (spent.get(n) ?? 0n) - BigInt(a)); },
+      }),
+    };
+  }
+
+  test('fresh addresses from one IP still hit the per-IP cap, with no leaked reservations', async () => {
+    const { reserveDailyBudgets } = await import('../agents/sponsor-quota.js');
+    const ns = fakeNs();
+    const env = { SPONSOR_QUOTA: ns as any };
+    const limits = (addr: string) => [
+      { key: `fund-gas:addr:${addr}`, cap: 200n },
+      { key: 'fund-gas:ip:1.2.3.4', cap: 300n },
+      { key: 'fund-gas:global', cap: 3000n },
+    ];
+    for (const a of ['a', 'b', 'c']) expect((await reserveDailyBudgets(env, limits(a), 100n)).ok).toBe(true);
+    const r = await reserveDailyBudgets(env, limits('d'), 100n);
+    expect(r).toEqual({ ok: false, key: 'fund-gas:ip:1.2.3.4' });
+    expect(ns.spent.get('budget:fund-gas:addr:d')).toBe(0n);   // rolled back
+    expect(ns.spent.get('budget:fund-gas:global')).toBe(300n);  // the refused request never counted
+  });
+
+  test('fails closed without the DO binding', async () => {
+    const { reserveDailyBudgets } = await import('../agents/sponsor-quota.js');
+    expect(await reserveDailyBudgets({}, [{ key: 'x', cap: 10n }], 1n)).toEqual({ ok: false, key: 'unavailable' });
+  });
+});
