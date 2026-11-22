@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>passki</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&display=swap">
+<style>
+  :root {
+    --bg: #0a0e1c; --panel: #111733; --line: rgba(77, 162, 255, 0.22);
+    --text: #e8eeff; --muted: #8f9bc4; --accent: #4da2ff; --ok: #3ddc97; --bad: #ff6b81;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; padding: 18px 16px; gap: 14px; }
+  header { display: flex; align-items: center; justify-content: space-between; }
+  .wordmark { font-family: "Sora", system-ui, sans-serif; font-weight: 700; letter-spacing: 0.06em; font-size: 20px; }
+  .wordmark span { color: var(--accent); }
+  .close { all: unset; cursor: pointer; color: var(--muted); font-size: 20px; line-height: 1; padding: 4px 6px; border-radius: 6px; }
+  .close:hover, .close:focus-visible { color: var(--text); background: var(--panel); }
+  .tag { color: var(--muted); margin: -8px 0 0; font-size: 13px; }
+  form { display: flex; gap: 8px; }
+  .field { flex: 1; display: flex; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; }
+  .field:focus-within { border-color: var(--accent); }
+  .field input { all: unset; flex: 1; min-width: 0; padding: 10px 0; color: var(--text); }
+  .field .sfx { color: var(--muted); }
+  button.go { all: unset; cursor: pointer; padding: 0 14px; border-radius: 10px; background: var(--accent); color: #04102a; font-weight: 600; }
+  button.go:disabled { opacity: 0.5; cursor: wait; }
+  #result { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; }
+  .msg { color: var(--muted); }
+  .msg.bad { color: var(--bad); }
+  .name { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 16px; }
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
+  .badge.ok { color: var(--ok); } .badge.no { color: var(--muted); }
+  .row { display: grid; grid-template-columns: 52px 1fr auto; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+  .chain { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+  .copy { all: unset; cursor: pointer; font-size: 12px; color: var(--accent); padding: 2px 6px; border-radius: 6px; }
+  .copy:hover, .copy:focus-visible { background: rgba(77, 162, 255, 0.12); }
+  footer { margin-top: auto; display: flex; flex-direction: column; gap: 6px; }
+  .open { all: unset; cursor: pointer; text-align: center; padding: 11px; border-radius: 10px; border: 1px solid var(--accent); color: var(--accent); font-weight: 600; }
+  .open:hover, .open:focus-visible { background: rgba(77, 162, 255, 0.1); }
+  .note { color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="wordmark">PASS<span>KI</span></div>
+    <button class="close" id="close" type="button" aria-label="Close">&times;</button>
+  </header>
+  <p class="tag">Look up any .sui name&rsquo;s verified addresses.</p>
+  <form id="lookup" autocomplete="off">
+    <label class="field">
+      <input id="name" name="name" placeholder="name" spellcheck="false" aria-label="SuiNS name" required>
+      <span class="sfx">.sui</span>
+    </label>
+    <button class="go" id="go" type="submit">Look up</button>
+  </form>
+  <section id="result" aria-live="polite"></section>
+  <footer>
+    <button class="open" id="open" type="button">Open passki &#8599;</button>
+    <div class="note">Sending and signing happen in passki&rsquo;s own window, never inside this page.</div>
+  </footer>
+  <script src="/embed-widget.js"></script>
+</body>
+</html>

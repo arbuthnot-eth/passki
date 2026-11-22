@@ -32,3 +32,6 @@ Cargo.lock.bak
 keys/*.json
 contracts/prism_vault/Cargo.lock
 .ski/
+
+# Built copy of dist/embed.js served at the documented /embed.js URL
+public/embed.js

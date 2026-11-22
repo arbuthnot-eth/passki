@@ -2,23 +2,24 @@
  * SKI Embed Loader — lightweight host-page script (~5KB).
  *
  * Responsibilities:
- * 1. Create a positioned iframe loading sui.ski
+ * 1. Create a positioned iframe loading passki.xyz/embed (read-only widget;
+ *    the full app refuses to be framed by other sites)
  * 2. Discover wallet extensions on the host's window (Wallet Standard)
  * 3. Bridge signing requests between iframe ↔ wallet extensions via postMessage
  * 4. Strict origin validation on all messages
  *
- * Usage: <script src="https://sui.ski/embed.js"></script>
- *    or: <script src="https://sui.ski/embed.js" data-position="bottom-right"></script>
+ * Usage: <script src="https://passki.xyz/embed.js"></script>
+ *    or: <script src="https://passki.xyz/embed.js" data-position="bottom-right"></script>
  *
  * Security model:
- * - iframe is cross-origin (sui.ski) — host page cannot access iframe JS/DOM
+ * - iframe is cross-origin (passki.xyz) — host page cannot access iframe JS/DOM
  * - All postMessage validated against SKI_ORIGIN
  * - Wallet signing happens on the host's window (where extensions live)
  * - Only whitelisted message types are forwarded
  * - No eval, no innerHTML, no dynamic script injection
  */
 
-const SKI_ORIGIN = 'https://sui.ski';
+const SKI_ORIGIN = 'https://passki.xyz';
 const ALLOWED_MESSAGES = new Set([
   'ski:discover-wallets',
   'ski:wallets-discovered',
@@ -61,7 +62,7 @@ wrap.style.transform = config.position.includes('right') ? 'translateX(100%)' : 
 
 const iframe = document.createElement('iframe');
 iframe.id = 'ski-embed-frame';
-iframe.src = `${SKI_ORIGIN}/?embed=1`;
+iframe.src = `${SKI_ORIGIN}/embed${script?.dataset.name ? `?name=${encodeURIComponent(script.dataset.name)}` : ''}`;
 iframe.allow = 'clipboard-write';
 iframe.loading = 'lazy';
 iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0a0a1a';
