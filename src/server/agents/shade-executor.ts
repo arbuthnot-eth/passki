@@ -23,6 +23,10 @@ import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { ultronKeypair, internalAuthToken, constantTimeEqual } from '../ultron-key.js';
 import { verifyOwnerProof, ownerProofFromHeader, OWNER_PROOF_HEADER } from '../owner-proof.js';
+import { checkScheduleClaim, fetchChainOrder } from '../shade-verify.js';
+
+/** Cap on orders one executor tracks; real users have a handful. */
+const MAX_TRACKED_ORDERS = 50;
 // Namespace import: resolved at call time (keeps test stubs of 'agents' linkable).
 import * as agentsSdk from 'agents';
 import { normalizeSuiAddress, fromHex } from '@mysten/sui/utils';
@@ -353,14 +357,26 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       o => !(o.domain === params.domain && (o.status === 'completed' || o.status === 'failed')),
     );
 
+    const check = await this.verifyAgainstChain({ ...params, expectedType: `${SHADE_PACKAGE}::shade::ShadeOrder` }, pruned.length);
+    if (!check.ok) return { success: false, error: check.error };
+
+    // Explicit fields only: spreading params would let callers inject
+    // isStable / coinType / status into a verified order.
     const order: ShadeExecutorOrder = {
-      ...params,
+      objectId: params.objectId,
+      domain: params.domain,
+      executeAfterMs: params.executeAfterMs,
+      targetAddress: params.targetAddress,
+      salt: params.salt,
+      ownerAddress: params.ownerAddress,
+      ...(params.preferredRoute === 'sui-ns' || params.preferredRoute === 'sui-usdc-ns' ? { preferredRoute: params.preferredRoute } : {}),
+      depositMist: check.depositMist, // the chain's figure, not the caller's
       status: 'pending',
       retries: 0,
       createdAt: Date.now(),
     };
 
-    this.setState({ orders: [...pruned, order] });
+    if (!this.commitScheduled(order)) return { success: false, error: `Active order already exists for ${order.domain}` };
     this.scheduleNextAlarm();
     return { success: true };
   }
@@ -405,6 +421,12 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     const pruned = this.state.orders.filter(
       o => !(o.domain === params.domain && (o.status === 'completed' || o.status === 'failed')),
     );
+    const coinType = params.coinType || IUSD_TYPE;
+    const check = await this.verifyAgainstChain({
+      ...params,
+      expectedType: `${STABLE_SHADE_PACKAGE}::shade::StableShadeOrder<${coinType}>`,
+    }, pruned.length);
+    if (!check.ok) return { success: false, error: check.error };
     const order: ShadeExecutorOrder = {
       objectId: params.objectId,
       domain: params.domain,
@@ -412,7 +434,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       targetAddress: params.targetAddress,
       salt: params.salt,
       ownerAddress: params.ownerAddress,
-      depositMist: params.depositMist,
+      depositMist: check.depositMist,
       isStable: true,
       coinType: params.coinType || IUSD_TYPE,
       initialSharedVersion: params.initialSharedVersion,
@@ -420,10 +442,46 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
       retries: 0,
       createdAt: Date.now(),
     };
-    this.setState({ orders: [...pruned, order] });
+    if (!this.commitScheduled(order)) return { success: false, error: `Active order already exists for ${order.domain}` };
     this.scheduleNextAlarm();
     console.log(`[ShadeExecutor] scheduleStable ${params.domain} (${params.objectId.slice(0, 10)}…) fires at ${new Date(params.executeAfterMs).toISOString()}`);
     return { success: true };
+  }
+
+  /**
+   * Scheduling needs no login (the Worker schedules on users' behalf), so
+   * check the order itself: it must exist on-chain with the expected type,
+   * still be funded, and its commitment must match these parameters, the
+   * same check `shade::execute` makes. Bogus orders never reach the keeper,
+   * so they can't make ultron spend gas.
+   */
+  private async verifyAgainstChain(
+    claim: { objectId: string; domain: string; executeAfterMs: number; targetAddress: string; salt: string; expectedType: string; initialSharedVersion?: number },
+    tracked: number,
+  ): Promise<{ ok: true; depositMist: string } | { ok: false; error: string }> {
+    if (tracked >= MAX_TRACKED_ORDERS) return { ok: false, error: 'Too many tracked orders' };
+    const chain = await this.fetchChainOrder(claim.objectId);
+    const result = checkScheduleClaim(claim, chain);
+    if (!result.ok) console.warn(`[ShadeExecutor] refused to schedule ${claim.objectId.slice(0, 10)}…: ${result.error}`);
+    return result.ok ? { ok: true, depositMist: result.depositMist } : result;
+  }
+
+  /**
+   * Add a verified order. Re-reads state, because other calls can land while
+   * we await the chain, and keeps `sweeps` (a bare `{ orders }` dropped them).
+   */
+  private commitScheduled(order: ShadeExecutorOrder): boolean {
+    const orders = this.state.orders;
+    if (orders.some(o => o.objectId === order.objectId)) return true;
+    if (orders.some(o => o.domain === order.domain && (o.status === 'pending' || o.status === 'executing'))) return false;
+    const kept = orders.filter(o => !(o.domain === order.domain && (o.status === 'completed' || o.status === 'failed')));
+    this.setState({ ...this.state, orders: [...kept, order] });
+    return true;
+  }
+
+  /** Overridable for tests. */
+  protected fetchChainOrder(objectId: string) {
+    return fetchChainOrder(objectId, GQL_URL);
   }
 
   // ─── Cancel a scheduled order ───────────────────────────────────────
