@@ -8883,3 +8883,60 @@ body.ski-idle-active #ski-btn::before {
   .ski-demo.open .ski-demo-body { flex-direction: column; }
   .ski-demo.open .ski-demo-player { max-width: 100%; }
 }
+
+/* ─── Modal cleanup (2026-11): readable header, compact layout ─────── */
+.ski-title-passki,
+.ski-title-xyz {
+  font-family: 'Sora', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.ski-modal-header-brand .ski-modal-title {
+  font-size: clamp(1.35rem, 7cqw, 2.1rem);
+}
+.ski-modal-header-brand .ski-modal-tagline,
+.ski-modal-header-left .ski-modal-tagline {
+  font-family: 'Sora', system-ui, -apple-system, 'Segoe UI', sans-serif !important;
+  font-weight: 400;
+  text-transform: lowercase;
+  letter-spacing: 0.22em;
+  font-size: 0.82rem !important;
+  color: rgba(226, 232, 240, 0.72);
+  overflow: visible;
+}
+
+/* Keyed card: smaller name, icon and button */
+#ski-modal-detail .ski-detail-header--keyed { padding: 10px 12px; gap: 8px; }
+.ski-detail-name-big {
+  font-family: 'Sora', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-size: clamp(26px, 9cqw, 32px);
+}
+.ski-detail-left-col { gap: 8px; }
+.ski-detail-logo-stack { width: 56px; }
+.ski-detail-logo-row { gap: 18px; }
+.ski-detail-lockin-btn { padding: 7px 18px; font-size: 13px; }
+
+/* Body: tall enough that the QR row isn't clipped; quiet scrollbar */
+.ski-modal-body {
+  max-height: min(62vh, 440px);
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.ski-modal-body::-webkit-scrollbar-thumb,
+.ski-modal-body::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.18); }
+
+/* QR row: small badges left, QR right */
+.ski-qr-split {
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  padding: 10px 12px;
+  margin: 8px 8px;
+}
+.ski-qr-split-badges { min-height: 0; gap: 8px; }
+.ski-qr-split-badges .ski-detail-provider-badge,
+.ski-qr-split-badges > .ski-key-pfp,
+.ski-qr-split-badges .ski-detail-pfp-overlap .ski-key-pfp {
+  width: 40px; height: 40px; flex: 0 0 40px; border-radius: 10px;
+}
+.ski-qr-split .ski-detail-qr { max-width: 128px; margin: 0 auto; }

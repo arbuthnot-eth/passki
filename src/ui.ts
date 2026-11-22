@@ -148,7 +148,7 @@ const AU_ICON_URI     = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgC
 // and dark-mode extensions. aria-label on the container keeps screen
 // readers and SEO sane: they hear "PASSKI.XYZ" (plain ASCII) while
 // sighted users see the double-struck wordmark.
-const PASSKI_TITLE_HTML = '<span class="ski-title-passki" aria-hidden="true">\u2119\ud835\udd38\ud835\udd4a\ud835\udd4a\ud835\udd42\ud835\udd40</span><span class="ski-title-diamond" aria-hidden="true"><svg viewBox="0 0 47 47" width="1em" height="1em" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;color-scheme:light"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;fill:#000000!important"/></svg></span><span class="ski-title-xyz" aria-hidden="true">\ud835\udd4f\ud835\udd50\u2124</span><span class="sr-only">PASSKI.XYZ</span>';
+const PASSKI_TITLE_HTML = '<span class="ski-title-passki" aria-hidden="true">PASSKI</span><span class="ski-title-diamond" aria-hidden="true"><svg viewBox="0 0 47 47" width="1em" height="1em" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;color-scheme:light"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;fill:#000000!important"/></svg></span><span class="ski-title-xyz" aria-hidden="true">XYZ</span><span class="sr-only">PASSKI.XYZ</span>';
 
 // ─── Social provider icons (inline SVG, ships in the bundle) ─────────
 // Used in legend col-4 to replace wallet logos for social-login wallets.
@@ -1501,6 +1501,19 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
     btn?.classList.toggle('active', !open);
   });
 
+  // Copy button under the QR (split row, outside detailEl). The slot is
+  // re-rendered via innerHTML each time, so listeners don't stack.
+  document.querySelectorAll('#ski-qr-split-slot .ski-copy-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const addr = (document.getElementById('ski-detail-qr') as HTMLElement | null)?.dataset.qrAddr || '';
+      if (addr) navigator.clipboard?.writeText(addr).then(() => {
+        (btn as HTMLElement).textContent = '\u2713';
+        setTimeout(() => { (btn as HTMLElement).textContent = '\u2398'; }, 1500);
+      });
+    });
+  });
+
   // Bind copy buttons
   detailEl.querySelectorAll('.ski-copy-btn').forEach((btn) => {
     btn.addEventListener('click', (e) => {
@@ -1515,7 +1528,8 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   });
 
   // Populate QR code for the active key's receive address
-  const qrEl = detailEl.querySelector('#ski-detail-qr') as HTMLElement | null;
+  // QR lives in #ski-qr-split-slot, outside detailEl — look it up on document.
+  const qrEl = document.getElementById('ski-detail-qr') as HTMLElement | null;
   if (qrEl) {
     const qrAddr = qrEl.dataset.qrAddr;
     if (qrAddr) {
