@@ -462,11 +462,13 @@ app.get('/api/shade/poke/:address', async (c) => {
   const address = c.req.param('address');
   try {
     const shadeStub = c.env.ShadeExecutorAgent.get(c.env.ShadeExecutorAgent.idFromName(address));
+    // The agent decides what to reveal; forward the caller's owner proof.
+    const proof = c.req.header('x-ski-owner-proof');
     const res = await shadeStub.fetch(new Request('https://shade-do/?poke=1', {
-      headers: { 'x-partykit-room': address },
+      headers: { 'x-partykit-room': address, ...(proof ? { 'x-ski-owner-proof': proof } : {}) },
     }));
     const text = await res.text();
-    try { return c.json(JSON.parse(text)); }
+    try { return c.json(JSON.parse(text), res.status as 200); }
     catch { return c.json({ raw: text, status: res.status }); }
   } catch (err) {
     return c.json({ error: String(err) }, 500);
@@ -477,11 +479,13 @@ app.get('/api/shade/status/:address', async (c) => {
   const address = c.req.param('address');
   try {
     const shadeStub = c.env.ShadeExecutorAgent.get(c.env.ShadeExecutorAgent.idFromName(address));
+    // The agent decides what to reveal; forward the caller's owner proof.
+    const proof = c.req.header('x-ski-owner-proof');
     const res = await shadeStub.fetch(new Request('https://shade-do/?status=1', {
-      headers: { 'x-partykit-room': address },
+      headers: { 'x-partykit-room': address, ...(proof ? { 'x-ski-owner-proof': proof } : {}) },
     }));
     const text = await res.text();
-    try { return c.json(JSON.parse(text)); }
+    try { return c.json(JSON.parse(text), res.status as 200); }
     catch { return c.json({ raw: text, status: res.status }); }
   } catch (err) {
     return c.json({ error: String(err) }, 500);

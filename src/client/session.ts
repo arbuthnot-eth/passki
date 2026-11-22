@@ -19,7 +19,7 @@ export function connectSession(
   stateCallback = onStateUpdate ?? null;
 
   client = new AgentClient<SessionState>({
-    host: window.location.hostname === 'localhost' ? window.location.host : 'sui.ski',
+    host: window.location.host, // sui.ski no longer resolves; every passki host is the same Worker
     agent: 'session-agent',
     name: sessionKey,
     onStateUpdate: (state: SessionState) => {

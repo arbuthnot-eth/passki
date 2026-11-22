@@ -12,7 +12,43 @@ let client: AgentClient<ShadeExecutorState> | null = null;
 let stateCallback: ((state: ShadeExecutorState) => void) | null = null;
 let _lastOwnerAddress = '';
 
-const _host = () => window.location.hostname === 'localhost' ? window.location.host : 'sui.ski';
+// Same Worker serves every passki host, so talk to whichever one we're on.
+const _host = () => window.location.host;
+
+// ─── Owner proof ─────────────────────────────────────────────────────
+//
+// The executor only reveals orders (domain + commitment salt) to their
+// owner. Ownership is proved with the `.SKI` sign-in message the wallet
+// already signed at connect time (stored as `ski:session:<address>`), so
+// this never triggers a wallet prompt.
+
+type OwnerProof = { message: string; signature: string };
+
+function ownerProof(address: string): OwnerProof | null {
+  try {
+    const raw = localStorage.getItem(`ski:session:${address}`);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as { signature?: string; bytes?: string; expiresAt?: string };
+    if (!s.signature || !s.bytes) return null;
+    if (s.expiresAt && Date.parse(s.expiresAt) <= Date.now()) return null;
+    const bin = atob(s.bytes);
+    const message = new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+    return { message, signature: s.signature };
+  } catch {
+    return null;
+  }
+}
+
+/** Headers for HTTP calls to the executor: JSON plus the owner proof, if we have one. */
+function _headers(address: string): Record<string, string> {
+  const h: Record<string, string> = { 'content-type': 'application/json' };
+  const proof = ownerProof(address);
+  if (proof) {
+    const bytes = new TextEncoder().encode(JSON.stringify(proof));
+    h['x-ski-owner-proof'] = btoa(String.fromCharCode(...bytes));
+  }
+  return h;
+}
 
 /**
  * Aggressive recall trigger — pokes the server-side iou-sweeper to
@@ -59,7 +95,7 @@ export function connectShadeExecutor(
   _lastOwnerAddress = ownerAddress;
   stateCallback = onStateUpdate ?? null;
 
-  client = new AgentClient<ShadeExecutorState>({
+  const c = new AgentClient<ShadeExecutorState>({
     host: _host(),
     agent: 'shade-executor-agent',
     name: ownerAddress,
@@ -67,7 +103,12 @@ export function connectShadeExecutor(
       if (stateCallback) stateCallback(state);
     },
   });
-
+  // Authenticate on every (re)connect; the server then streams our state.
+  c.addEventListener('open', () => {
+    const proof = ownerProof(ownerAddress);
+    if (proof && client === c) c.call('authenticate', [proof]).catch(() => {});
+  });
+  client = c;
   return client;
 }
 
@@ -89,7 +130,7 @@ async function _scheduleViaHttp(params: {
   const url = `${proto}://${host}/agents/shade-executor-agent/${params.ownerAddress}?schedule`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: _headers(params.ownerAddress),
     body: JSON.stringify(params),
   });
   return res.json() as Promise<{ success: boolean; error?: string }>;
@@ -147,7 +188,7 @@ export async function scheduleStableShadeExecution(params: {
   const url = `${proto}://${host}/agents/shade-executor-agent/${params.ownerAddress}?schedule-stable`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: _headers(params.ownerAddress),
     body: JSON.stringify(params),
   });
   return res.json() as Promise<{ success: boolean; error?: string }>;
@@ -196,7 +237,7 @@ export async function resetFailedShadeOrders(
   const url = `${proto}://${host}/agents/shade-executor-agent/${ownerAddress}?reset-failed`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: _headers(ownerAddress),
     body: JSON.stringify(objectId ? { objectId } : {}),
   });
   return res.json() as Promise<{ reset: number }>;
@@ -215,7 +256,7 @@ export async function reapCancelledShadeOrder(
   const url = `${proto}://${host}/agents/shade-executor-agent/${ownerAddress}?reap-cancelled`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: _headers(ownerAddress),
     body: JSON.stringify({ objectId }),
   });
   return res.json() as Promise<{ success: boolean; digest?: string; error?: string }>;
@@ -238,10 +279,11 @@ export function disconnectShadeExecutor(): void {
 export async function scheduleThunderSweep(ownerAddress: string, nameHash: string, domain: string): Promise<void> {
   try {
     const addr = _lastOwnerAddress || ownerAddress;
-    const url = `${_host()}/agents/shade-executor-agent/${addr}?schedule-sweep`;
+    // Was host-relative without a scheme, so it resolved under the current page path.
+    const url = `${window.location.protocol}//${_host()}/agents/shade-executor-agent/${addr}?schedule-sweep`;
     await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: _headers(addr),
       body: JSON.stringify({ nameHash, domain }),
     });
   } catch { /* non-blocking */ }

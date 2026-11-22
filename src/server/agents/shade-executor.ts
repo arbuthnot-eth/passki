@@ -21,7 +21,10 @@ import { rejectClientStateWrites } from './state-guard.js';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { ultronKeypair } from '../ultron-key.js';
+import { ultronKeypair, internalAuthToken, constantTimeEqual } from '../ultron-key.js';
+import { verifyOwnerProof, ownerProofFromHeader, OWNER_PROOF_HEADER } from '../owner-proof.js';
+// Namespace import: resolved at call time (keeps test stubs of 'agents' linkable).
+import * as agentsSdk from 'agents';
 import { normalizeSuiAddress, fromHex } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 import { raceExecuteTransaction, TxFailureError, GQL_URL } from '../rpc.js';
@@ -102,6 +105,8 @@ export interface ShadeExecutorState {
 
 interface Env {
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
+  ULTRON_PRIVATE_KEY?: string;
+  INTERNAL_AUTH_SECRET?: string;
   SUI_NETWORK?: string; // 'mainnet' | 'testnet' — set by wrangler.jsonc / wrangler.devnet.jsonc
 }
 
@@ -133,6 +138,61 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     rejectClientStateWrites(source);
   }
 
+  // ─── Privacy: orders are visible to their owner only ────────────────
+  //
+  // This instance is named by the owner's (public) address, and its state
+  // holds each order's domain and commitment salt: exactly what a rival
+  // sniper wants. So the SDK's automatic state broadcast is off, and state
+  // goes only to connections that proved control of the owner address
+  // (`authenticate`), or to HTTP calls carrying an owner proof or the
+  // internal token.
+
+  shouldSendProtocolMessages(): boolean {
+    return false;
+  }
+
+  /** The WebSocket the current callable arrived on, if any. */
+  protected currentConnection(): { state: unknown; setState(s: unknown): unknown; send(m: string): void } | undefined {
+    return agentsSdk.getCurrentAgent().connection as any;
+  }
+
+  private connectionIsOwner(conn: { state: unknown } | undefined): boolean {
+    const auth = conn?.state as { owner?: string; until?: number } | null | undefined;
+    return !!auth && auth.owner === normalizeSuiAddress(this.name) && (auth.until ?? 0) > Date.now();
+  }
+
+  private callerIsOwner(): boolean {
+    return this.connectionIsOwner(this.currentConnection());
+  }
+
+  /** HTTP requests: the internal token, or an owner proof in a header. */
+  private async requestIsAuthorized(request: Request): Promise<boolean> {
+    if (constantTimeEqual(request.headers.get('x-treasury-auth'), internalAuthToken(this.env as any))) return true;
+    const proof = ownerProofFromHeader(request.headers.get(OWNER_PROOF_HEADER));
+    return (await verifyOwnerProof(proof, this.name)) !== null;
+  }
+
+  private sendState(conn: { send(m: string): void }): void {
+    conn.send(JSON.stringify({ type: 'cf_agent_state', state: this.state }));
+  }
+
+  onStateChanged(): void {
+    for (const conn of this.getConnections()) {
+      if (this.connectionIsOwner(conn as any)) this.sendState(conn as any);
+    }
+  }
+
+  /** Prove control of the owner address on this WebSocket (reuses the stored `.SKI` sign-in proof). */
+  @callable()
+  async authenticate(params: { message: string; signature: string }): Promise<{ success: boolean }> {
+    const until = await verifyOwnerProof(params, this.name);
+    const conn = this.currentConnection();
+    if (until === null || !conn) return { success: false };
+    conn.setState({ owner: normalizeSuiAddress(this.name), until });
+    this.sendState(conn);
+    return { success: true };
+  }
+
   initialState: ShadeExecutorState = {
     orders: [],
   };
@@ -152,16 +212,19 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   // Handle HTTP requests (poke/status) — called by cron trigger or manual API
   async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname.endsWith('/poke') || url.searchParams.has('poke')) {
-      const result = await this.poke();
-      return new Response(JSON.stringify(result), {
-        headers: { 'content-type': 'application/json' },
-      });
+    const has = (k: string) => url.pathname.endsWith('/' + k) || url.searchParams.has(k);
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    const authorized = await this.requestIsAuthorized(request);
+    if (has('poke')) {
+      const result = this._poke();
+      // Anyone may nudge the alarm; only the owner sees which domains.
+      return json(authorized ? result : { pending: result.pending, nextAlarmMs: result.nextAlarmMs });
     }
-    if (url.pathname.endsWith('/status') || url.searchParams.has('status')) {
-      return new Response(JSON.stringify({ orders: this.state.orders }), {
-        headers: { 'content-type': 'application/json' },
-      });
+    if (has('status')) {
+      return authorized ? json({ orders: this.state.orders }) : json({ error: 'Unauthorized' }, 401);
+    }
+    if (!authorized && ['schedule-sweep', 'reset-failed', 'cancel', 'reap-cancelled'].some(has)) {
+      return json({ error: 'Unauthorized' }, 401);
     }
     if ((url.pathname.endsWith('/schedule') || url.searchParams.has('schedule')) && request.method === 'POST') {
       try {
@@ -192,7 +255,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     if ((url.pathname.endsWith('/schedule-sweep') || url.searchParams.has('schedule-sweep')) && request.method === 'POST') {
       try {
         const params = await request.json() as { nameHash: string; domain: string };
-        const result = await this.scheduleSweep(params);
+        const result = this._scheduleSweep(params);
         return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
@@ -201,7 +264,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     if (url.pathname.endsWith('/reset-failed') || url.searchParams.has('reset-failed')) {
       try {
         const params = request.method === 'POST' ? await request.json() as { objectId?: string } : undefined;
-        const result = await this.resetFailed(params);
+        const result = this._resetFailed(params);
         return new Response(JSON.stringify(result), {
           headers: { 'content-type': 'application/json' },
         });
@@ -215,7 +278,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     if ((url.pathname.endsWith('/cancel') || url.searchParams.has('cancel')) && request.method === 'POST') {
       try {
         const params = await request.json() as { objectId: string };
-        const result = await this.cancel(params);
+        const result = this._cancel(params);
         return new Response(JSON.stringify(result), {
           headers: { 'content-type': 'application/json' },
         });
@@ -229,7 +292,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     if ((url.pathname.endsWith('/reap-cancelled') || url.searchParams.has('reap-cancelled')) && request.method === 'POST') {
       try {
         const params = await request.json() as { objectId: string };
-        const result = await this.reapCancelled(params);
+        const result = await this._reapCancelled(params);
         return new Response(JSON.stringify(result), {
           headers: { 'content-type': 'application/json' },
         });
@@ -367,10 +430,11 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
   @callable()
   async cancel(params: { objectId: string; ownerAddress?: string }): Promise<{ success: boolean }> {
-    // Verify caller owns this DO instance
-    if (params.ownerAddress && params.ownerAddress !== this.name) {
-      return { success: false };
-    }
+    if (!this.callerIsOwner()) return { success: false };
+    return this._cancel(params);
+  }
+
+  private _cancel(params: { objectId: string }): { success: boolean } {
     // Special: "all" purges every order
     if (params.objectId === 'all') {
       this.setState({ orders: [] });
@@ -387,6 +451,11 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
   @callable()
   async reapCancelled(params: { objectId: string }): Promise<{ success: boolean; digest?: string; error?: string }> {
+    if (!this.callerIsOwner()) return { success: false, error: 'Unauthorized' };
+    return this._reapCancelled(params);
+  }
+
+  private async _reapCancelled(params: { objectId: string }): Promise<{ success: boolean; digest?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
       return { success: false, error: 'No ultron private key configured (set SHADE_KEEPER_PRIVATE_KEY secret)' };
     }
@@ -423,12 +492,14 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
   @callable()
   async getOrders(): Promise<{ orders: Array<Omit<ShadeExecutorOrder, 'salt'>> }> {
+    if (!this.callerIsOwner()) return { orders: [] };
     // Sanitize: strip salt from order data (commitment-reveal secret)
     return { orders: this.state.orders.map(({ salt: _, ...o }) => o) };
   }
 
   @callable()
   async getStatus(params: { objectId: string }): Promise<Omit<ShadeExecutorOrder, 'salt'> | null> {
+    if (!this.callerIsOwner()) return null;
     const order = this.state.orders.find(o => o.objectId === params.objectId);
     if (!order) return null;
     const { salt: _, ...safe } = order;
@@ -439,6 +510,11 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
   @callable()
   async resetFailed(params?: { objectId?: string; force?: boolean }): Promise<{ reset: number }> {
+    if (!this.callerIsOwner()) return { reset: 0 };
+    return this._resetFailed(params);
+  }
+
+  private _resetFailed(params?: { objectId?: string; force?: boolean }): { reset: number } {
     let count = 0;
     this.setState({
       orders: this.state.orders.map(o => {
@@ -458,6 +534,11 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
   @callable()
   async scheduleSweep(params: { nameHash: string; domain: string }): Promise<{ success: boolean }> {
+    if (!this.callerIsOwner()) return { success: false };
+    return this._scheduleSweep(params);
+  }
+
+  private _scheduleSweep(params: { nameHash: string; domain: string }): { success: boolean } {
     const sweeps = (this.state.sweeps ?? []).filter(s => s.nameHash !== params.nameHash);
     sweeps.push({
       nameHash: params.nameHash,
@@ -472,6 +553,7 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
 
   @callable()
   async cancelSweep(params: { nameHash: string }): Promise<{ success: boolean }> {
+    if (!this.callerIsOwner()) return { success: false };
     const sweeps = (this.state.sweeps ?? []).filter(s => s.nameHash !== params.nameHash);
     this.setState({ ...this.state, sweeps });
     return { success: true };
@@ -480,7 +562,12 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   // ─── Poke — external trigger to re-check and re-schedule ──────────
 
   @callable()
-  async poke(): Promise<{ pending: number; nextAlarmMs: number | null; orders: Array<{ domain: string; status: string; executeAfterMs: number; retries: number; error?: string }> }> {
+  async poke(): Promise<{ pending: number; nextAlarmMs: number | null; orders?: Array<{ domain: string; status: string; executeAfterMs: number; retries: number; error?: string }> }> {
+    const result = this._poke();
+    return this.callerIsOwner() ? result : { pending: result.pending, nextAlarmMs: result.nextAlarmMs };
+  }
+
+  private _poke(): { pending: number; nextAlarmMs: number | null; orders: Array<{ domain: string; status: string; executeAfterMs: number; retries: number; error?: string }> } {
     const pending = this.state.orders.filter(o => o.status === 'pending');
     const nextAlarmMs = pending.length > 0
       ? Math.max(pending.sort((a, b) => a.executeAfterMs - b.executeAfterMs)[0].executeAfterMs, Date.now() + 1000)

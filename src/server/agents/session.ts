@@ -25,6 +25,13 @@ export class SessionAgent extends Agent<Env, SessionState> {
     rejectClientStateWrites(source);
   }
 
+  /** Scrub signatures that older versions stored in (broadcast) state. */
+  async onStart(): Promise<void> {
+    if (this.state.signature || this.state.message) {
+      this.setState({ ...this.state, signature: '', message: '' });
+    }
+  }
+
   initialState: SessionState = {
     authenticated: false,
     walletAddress: '',
@@ -79,8 +86,10 @@ export class SessionAgent extends Agent<Env, SessionState> {
       walletAddress,
       visitorId,
       confidence,
-      signature,
-      message,
+      // State is broadcast to connected clients, and this signature doubles
+      // as an owner proof elsewhere, so don't keep it.
+      signature: '',
+      message: '',
       createdAt: this.state.createdAt || now,
       lastSeenAt: now,
     });
