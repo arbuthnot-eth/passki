@@ -1,7 +1,7 @@
 {
   "name": "passki",
   "version": "0.1.29",
-  "description": "passki — Sui-native sign-in, once, everywhere.",
+  "description": "passki \u2014 Sui-native sign-in, once, everywhere.",
   "type": "module",
   "main": "public/dist/ski.js",
   "module": "public/dist/ski.js",
@@ -76,10 +76,19 @@
     "@wallet-standard/app": "^1.1.0",
     "aftermath-ts-sdk": "^2.0.0",
     "agents": "^0.10.2",
-    "hono": "^4.12.14",
+    "hono": "^4.12.18",
     "hono-agents": "^3.0.10",
     "qrcode": "^1.5.4",
     "suiami": "2.0.0",
     "viem": "^2.48.1"
+  },
+  "overrides": {
+    "hono": "^4.12.18",
+    "axios": "^1.15.2",
+    "fast-uri": "^3.1.6",
+    "proxy-addr": "^2.0.8",
+    "body-parser": "^2.3.0",
+    "form-data": "^4.0.6",
+    "ip-address": "^10.2.0"
   }
 }
