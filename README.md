@@ -11,7 +11,7 @@ Key in once, everywhere.
 
 ## What passki Is
 
-passki is a Sui-native identity and messaging stack where SuiNS names are the endpoints. A single Sui account controls native Bitcoin, Solana, and Ethereum addresses through IKA dWallets — no bridges, no wrapping, no custodians. Every agent, wallet, and cross-chain address is IKA-native, and no private keys sit on Cloudflare Workers. Send a thunder to `@name` and it lands as a Seal-encrypted storm whose ciphertext lives on Walrus and whose keys live behind threshold decryption. The same rails carry Thunder messages, Thunder IOU transfers, shielded Pedersen commitments, Shade grace-period snipes, and SUIAMI cross-chain identity proofs.
+passki is a Sui-native identity and messaging stack where SuiNS names are the endpoints. A single Sui account controls native Bitcoin, Solana, and Ethereum addresses through IKA dWallets — no bridges, no wrapping, no custodians. Every user wallet and cross-chain address is IKA-native, and user keys never touch Cloudflare Workers. Send a thunder to `@name` and it lands as a Seal-encrypted storm whose ciphertext lives on Walrus and whose keys live behind threshold decryption. The same rails carry Thunder messages, Thunder IOU transfers, shielded Pedersen commitments, Shade grace-period snipes, and SUIAMI cross-chain identity proofs.
 
 Agents (ultron, chronicoms, t2000s) are Durable Objects that sign via IKA dWallet user shares + DWalletCap wrappers. `brando.sui` runs DKG in the browser and re-encrypts the user share to the agent. Either brando OR agent + IKA network = a valid signature.
 
@@ -37,7 +37,7 @@ The 6-7 digits after `$0.01` aren't noise — they're **steganographic intent ta
 One number carries the instruction. No metadata leaks.
 
 ### Mint — IKA-Native x402 Settlement
-Pay for a SuiNS name with **USDC on Base** through the [x402 protocol](https://www.x402.org/), and ultron settles the on-chain pull using its own **IKA-secp256k1 dWallet** — not a relay key, not a private key on a server, not a third-party facilitator. The buyer's authorization is signed in their wallet; ultron's outer Base transaction is signed by the IKA committee against ultron's dWallet share, then submitted to Base RPC. **Zero private keys on the worker, agent-friendly by default.**
+Pay for a SuiNS name with **USDC on Base** through the [x402 protocol](https://www.x402.org/), and ultron settles the on-chain pull using its own **IKA-secp256k1 dWallet** — not a relay key or a third-party facilitator. The buyer's authorization is signed in their wallet; ultron's outer Base transaction is signed by the IKA committee against ultron's dWallet share, then submitted to Base RPC. **The Base signature never touches a raw key on the worker.** (The Sui-side registration is still signed by ultron's legacy operator key.)
 
 `GET /api/mint/quote/:name` returns live pricing with buffer breakdown + funded% (powered by `src/server/quote/`). `POST /api/mint/register/:name` returns 402 + x402 challenge until a valid `X-PAYMENT` header lands. Browser clients submit Base txs from their own wallet via `src/client/mint-pay.ts`. Headless agents (no EVM wallet) use the IKA path — server constructs the unsigned tx, IKA committee signs, ultron's address pays gas. See `src/server/mint/ika-settle.ts`.
 
@@ -74,7 +74,7 @@ Two DKG ceremonies. Two dWallets. Eight chains. One Sui account.
 ## First Commandment: IKA-Native, Keyless Agents
 
 - **Every wallet, agent, and cross-chain address MUST be IKA-native.**
-- **No private keys on Cloudflare Workers — ever.** Agents sign via IKA dWallet user shares + DWalletCap wrapper.
+- **User keys never touch Cloudflare Workers.** Cross-chain agent signing goes through IKA dWallet user shares + DWalletCap wrappers. `ultron.sui`'s legacy Sui operator key is being migrated to a dWallet.
 - Cross-chain addresses (BTC, ETH, SOL) come from IKA dWallet DKG — always. No raw keypair re-encoding as cross-chain addresses.
 - `brando.sui` runs DKG in-browser, re-encrypts user share to the agent. Either brando OR agent + IKA network = valid signature.
 - Batch DKG provisioning for agents = "Rumble your squids."
@@ -102,7 +102,7 @@ Magneton is SKI's sealed messaging layer. One sentence, canonical:
 
 ### The topology: Thunder through ultron
 
-Every thunder is a **double envelope**. The outer envelope is encrypted to ultron and contains only `{ recipient_prismoid, inner_ciphertext }`. The inner envelope is encrypted to the recipient's squid. Ultron routes the inner envelope but **cannot read it** — it is a **keyless blind relay**. It knows who talks to who; it does not know what they say. First commandment holds: no private keys on Cloudflare Workers, ever.
+Every thunder is a **double envelope**. The outer envelope is encrypted to ultron and contains only `{ recipient_prismoid, inner_ciphertext }`. The inner envelope is encrypted to the recipient's squid. Ultron routes the inner envelope but **cannot read it** — it is a **keyless blind relay**. It knows who talks to who; it does not know what they say. Message keys never touch Cloudflare Workers.
 
 Thunder isn't a performance compromise — it's the decision that unlocks everything downstream:
 
@@ -136,7 +136,7 @@ Thunder. Ultron sees who, never what. Everything else falls out for free.
 
 ## Core Principles
 
-- **IKA-native, keyless agents.** Every cross-chain address is IKA dWallet derived. No private keys on workers. Batch DKG = "Rumble your squids."
+- **IKA-native, keyless agents.** Every cross-chain address is IKA dWallet derived. User keys never touch workers. Batch DKG = "Rumble your squids."
 - **Cache, not treasury.** Funds flow through caches — high-performance temporary stores.
 - **Stables, not stablecoins.** iUSD is a stable backed by activity yield.
 - **Encrypt, not encrypted.** Use verb forms — encrypt/decrypt.
@@ -411,7 +411,7 @@ The Pokedex DO is bound as `PokedexAgent` and exposes `/api/pokedex/*` routes. S
 
 The load-bearing primitive. An IKA dWallet owns the `SuinsRegistration` NFT via a Move policy object (`ski::dwallet_subname_policy::SubnamePolicy`). The policy's typed entry functions are the only path to `coordinator::approve_message`, and IKA's `request_sign` refuses to sign without a `MessageApproval`. That makes the `DWalletCap` held inside a shared Move object the canonical signing authority — content-aware signing via the Move object graph, not via an IKA protocol feature.
 
-Owner retains all rights through the `OwnerCap` path. Delegates get a quota- and expiration-bounded `delegate_approve_spike` path. First Commandment holds: no private keys anywhere, no user-wallet custody transfer.
+Owner retains all rights through the `OwnerCap` path. Delegates get a quota- and expiration-bounded `delegate_approve_spike` path. No user-wallet custody transfer.
 
 **Status:** scaffold in `contracts/silvally/`, 9/9 Move unit tests passing, real-IKA signatures pulled from `@ika.xyz/sdk@0.3.1` generated BCS. Runtime-spike on mainnet is the one remaining unknown — publish + Rumble + `delegate_approve_spike` → `request_sign` runbook at `contracts/silvally/PRESS_GO.md`. See `scripts/silvally-press-go.ts` for the one-shot helper (`--publish` / `--rumble` / `--spike`).
 
