@@ -70,6 +70,10 @@ These wallets are exactly as secure as `ultron.sui`'s key and its `DWalletCap` o
 
 `/api/health` reports the sponsor's balance and today's sponsored spend, so an uptime monitor catches an empty or drained sponsor.
 
+### Admin and internal routes
+
+Treasury operations (minting, sweeps, migrations, pool management) are admin-only. Every non-GET `/api/cache/*` route is denied unless explicitly allowlisted for browser flows. Admin calls carry an `x-treasury-auth` token: an HMAC of a server secret, compared in constant time, which [`scripts/admin-token.mjs`](scripts/admin-token.mjs) computes locally. Server-only Durable Objects can't be reached over `/agents/*` at all; only the four browser-facing agents are routable. See [SECURITY.md](SECURITY.md) for the fixed-issue history.
+
 ### Embedding
 
 [`embed.js`](src/embed.ts) adds a passki button to any site. It opens [`/embed`](public/embed.html), a read-only lookup widget and the only page other sites may frame. Anything that needs a signature opens passki in its own top-level window, where the host page can't overlay or script it.
@@ -87,6 +91,7 @@ These wallets are exactly as secure as `ultron.sui`'s key and its `DWalletCap` o
 - [ ] Move `ultron.sui` from a raw key to IKA dWallet signing, and remove the legacy allowlist.
 - [ ] No third-party audit yet.
 - [ ] Extend the key guard to check `wrangler secret list` as well as config files.
+- [ ] `SponsorAgent` callables trust a caller-supplied address; bind auth to the connection after `register()` verifies a signature.
 - [ ] Enforce a full CSP on the static app pages, not just `frame-ancestors`.
 - [ ] Remaining `bun audit` advisories are mostly in dev tooling (wrangler, vite) or need major-version upgrades (`zod` 3→4, `valibot`).
 

@@ -16,6 +16,10 @@ on:
       - '.github/workflows/publish-npm.yml'
   workflow_dispatch:
 
+# Least privilege by default; jobs opt in to what they need.
+permissions:
+  contents: read
+
 jobs:
   publish:
     if: github.actor != 'github-actions[bot]' && github.ref == 'refs/heads/master'

@@ -1,51 +1,56 @@
-# .SKI Security Posture
+# Security Policy
 
-> **Last audit:** 2026-04-06 | **Branch:** `security/hardening-q2-2026`
+passki is **unaudited mainnet beta** software. It moves real funds, so reports are very welcome.
 
-## What this branch fixes
+## Reporting a vulnerability
 
-| # | Fix | Issue | Severity |
-|---|-----|-------|----------|
-| 1 | CSP + security response headers on all Worker routes | #53 | P1 |
-| 2 | Auth guards on SessionAgent mutating callables + sanitized state broadcast | #56 | P0 |
-| 3 | Auth guards on SponsorAgent mutating callables + sanitized state broadcast | #56 | P0 |
-| 4 | Auth guards on **all 13 TreasuryAgents** mutating callables (`requireUltronCaller`) | #56 | P0 |
-| 5 | Internal auth token (`x-treasury-auth`) on all Worker→DO HTTP requests | #56 | P0 |
-| 6 | ShadeExecutorAgent: owner validation on `schedule()`, salt stripped from state | #56 | P0 |
-| 7 | Shell restore XSS sanitization in index.html | #55 | P1 |
-| 8 | Session nonce validation — server checks message expiry | #57 | P1 |
-| 9 | Pass real signed message to `authenticate()` (was empty string) | #57 | P1 |
-| 10 | localStorage cleanup on disconnect (session tokens, IKA addrs, balances) | #54 | P2 |
-| 11 | Per-IP rate limiting on all `/api/*` routes (60/min read, 20/min write) | #58 | P2 |
-| 12 | Admin route auth gate — ultron-only routes require `x-treasury-auth` | #58 | P2 |
+Report privately through [GitHub Security Advisories](https://github.com/arbuthnot-eth/passki/security/advisories/new). Please don't open a public issue or PR for anything exploitable. Machine-readable contact details are at [`/.well-known/security.txt`](https://passki.xyz/.well-known/security.txt).
 
-## Remaining open items
+Please include:
 
-| Issue | Title | Severity | Notes |
-|-------|-------|----------|-------|
-| #53 | Nonce-based CSP (replace `unsafe-inline`) | P1 | Requires Worker to serve index.html (currently static assets) |
-| #54 | localStorage TTL expiry + encrypted sponsor auth | P2 | Encrypt `ski:gas-sponsor` like waap-proof |
-| #55 | QR SVG innerHTML + showToast footgun | P1 | Sanitize SVGs, remove `isHtml` param |
-| #57 | HttpOnly cookie via server `Set-Cookie` | P1 | Requires new Worker endpoint |
-| #58 | DeepBook slippage protection | P2 | Pass `expected * 0.95` as min output |
+- the affected route, agent, or file;
+- steps to reproduce, or a proof of concept;
+- the impact as you understand it (funds at risk, data exposed, and so on).
 
-## Architecture
+What to expect:
 
-### DO authentication (complete)
-- **SessionAgent**: `authenticate()` verifies signature + `.SKI` format + expiry. `getSession()` strips signature/message. `forgetDevice`, `updateSuinsName`, `updateIkaWalletId` require `walletAddress` match.
-- **SponsorAgent**: `register()` verifies signature + `.SKI Splash`. All mutating methods require `callerAddress === sponsorAddress`. `getSponsorState()` strips `authSignature`, `authMessage`, redacts `txBytes`.
-- **TreasuryAgents**: `requireUltronCaller()` on all 13 mutating callables. `verifyInternalAuth()` on all HTTP requests (checks `x-treasury-auth` header). Read-only params exempt.
-- **ShadeExecutorAgent**: `schedule()` validates `ownerAddress === this.name`. `getOrders()`/`getStatus()` strip `salt` (commitment-reveal secret).
-- **SplashDeviceAgent**: Low-risk (boolean state only). No auth change needed.
+| Step | Target |
+|---|---|
+| Acknowledgement | within 3 days |
+| Initial assessment | within 7 days |
+| Fix for critical issues (funds at risk) | as fast as possible, usually within 72 hours of confirmation |
+| Public advisory | after the fix is deployed, crediting you unless you prefer otherwise |
 
-### Worker security layers
-1. **Security headers** — CSP, X-Content-Type-Options, X-Frame-Options, Referrer-Policy on all responses
-2. **Rate limiting** — per-IP sliding window, 60/min GET, 20/min POST
-3. **Admin route gate** — `/api/cache/*`, `/api/iusd/attest`, `/api/iusd/mint`, pool/lending/migration routes require `x-treasury-auth`
-4. **Internal DO auth** — `authedTreasuryStub()` injects `x-treasury-auth` on all 35 Worker→TreasuryAgents fetch calls
+## Scope
 
-### Client-side storage
-- `ski:session:{address}` — cleared on disconnect
-- `ski:waap-proof` — AES-256-GCM encrypted, device-fingerprint-bound
-- `ski:gas-sponsor` — plaintext (TODO: encrypt like waap-proof)
-- `ski:shell` — sanitized on restore (strips script tags, event handlers, javascript: URIs)
+In scope: the passki.xyz Worker (`src/server`), the browser app (`src/`), the Move contracts in `contracts/`, and the `passki` and `suiami` npm packages.
+
+Out of scope: third-party services passki builds on (WaaP, IKA, Seal, Walrus, SuiNS, Sui itself). Please report those upstream. Volumetric DoS and findings that need a compromised device or wallet are also out of scope.
+
+## Safe harbor
+
+Good-faith research that follows this policy is welcome, and we won't pursue it. Please don't access other users' data or funds, degrade the service for others, or move mainnet funds beyond what's needed to demonstrate an issue. Use your own accounts and the smallest possible amounts.
+
+## How passki is secured
+
+The [Security model](README.md#security-model) section of the README is the current, maintained description. It covers user-key custody (WaaP plus IKA 2PC-MPC), the service keys the Worker still holds, gas-sponsorship protections, embedding, and the supply-chain controls in CI.
+
+## Fixed issues
+
+| Date | Issue | Severity | Fix |
+|---|---|---|---|
+| 2026-11-22 | Admin token (`x-treasury-auth`) was the first 34 characters of ultron's **public** Sui address, so anyone could call admin routes | Critical | Token is now an HMAC of a server secret, compared in constant time (`internalAuthToken`) |
+| 2026-11-22 | Treasury routes such as `/api/cache/migrate`, `/api/cache/send-iusd` and `/api/cache/ultron-transfer-iusd` had no route-level auth. The Worker attached the internal token itself, so the DO's check didn't help | Critical | Default-deny: every non-GET `/api/cache/*` route is admin-only unless explicitly allowlisted |
+| 2026-11-22 | `/api/iusd/swap` paid out SUI/USDC before receiving iUSD, for any caller and amount; `/api/ignite` trusted a client-claimed burn amount | Critical | Both admin-only until they verify the user's payment on-chain first |
+| 2026-11-22 | Server-only Durable Objects (TreasuryAgents and others) were reachable over public WebSockets at `/agents/*`, and `requireUltronCaller` accepted ultron's public address as proof of identity | Critical | Only browser-facing agents are routable; `requireUltronCaller` also refuses calls arriving over a client connection |
+| 2026-11-22 | `/api/sponsor-gas` signed arbitrary transactions as the gas owner | Critical | Transaction policy, fuzz-tested, plus strict per-address and global daily budgets |
+| 2026-11-22 | Rate limiters were configured with the old `unsafe` binding syntax, and the `/api/*` limiter counted per Worker instance, so neither limited much | Medium | Moved to first-class `ratelimits` bindings; dedicated limits for RPC and sponsorship |
+| 2026-11-22 | App pages could be framed by any site (clickjacking) | Medium | `frame-ancestors` on every page; only the read-only `/embed` widget is frameable |
+| 2026-04-06 | Missing auth on several Durable Object callables, CSP on Worker routes, session nonce validation, admin route gate (#53–#58) | High | See those issues |
+
+## Known open issues
+
+- **`SponsorAgent` trusts a caller-supplied address.** Its mutating callables check `callerAddress === sponsorAddress`, but addresses are public. Impact is bounded by the sponsor-gas policy and daily quotas. Fix: bind authentication to the connection after `register()` verifies a signature.
+- **No full CSP on static pages yet.** Only `frame-ancestors` is enforced there. A nonce-based CSP needs the Worker to serve `index.html` (#53).
+- **Shell-cache restore in `index.html` uses a regex HTML sanitizer.** It should use a DOM-based sanitizer or stop caching HTML (#55).
+- **`ULTRON_PRIVATE_KEY` is still a raw key** on the Worker. The plan is IKA dWallet signing (see README).
