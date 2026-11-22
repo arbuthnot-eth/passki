@@ -184,6 +184,25 @@ try {
 } catch { /* non-browser / storage disabled */ }
 
 let _sessionKeyPromise: Promise<SessionKey> | null = null;
+// Expiry of the key _sessionKeyPromise resolved to; 0 while it's in flight.
+// Without this the in-memory key was reused forever, so after 30 minutes
+// decrypts kept failing with an expired key until a reload.
+let _sessionKeyExpiresAt = 0;
+
+function _expiryOf(key: SessionKey): number {
+  try {
+    const raw = key.export() as unknown as { creationTimeMs?: number; ttlMin?: number };
+    if (typeof raw.creationTimeMs === 'number' && typeof raw.ttlMin === 'number') return raw.creationTimeMs + raw.ttlMin * 60_000;
+  } catch { /* fall through */ }
+  return 0;
+}
+
+function _trackSessionKey(p: Promise<SessionKey>): void {
+  _sessionKeyExpiresAt = 0;
+  p.then((k) => {
+    if (_sessionKeyPromise === p) _sessionKeyExpiresAt = _expiryOf(k) || Date.now() + SESSION_KEY_TTL_MIN * 60_000;
+  }, () => { /* failures are cleared by the caller */ });
+}
 
 // Sticky rejection cooldown — when the user cancels a Seal session-key
 // sign, any subsequent storm-open / decrypt attempt would otherwise
@@ -317,7 +336,14 @@ async function _mintSessionKey(opts: ThunderClientOptions): Promise<SessionKey> 
 }
 
 async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<SessionKey> {
-  if (_sessionKeyPromise) return _sessionKeyPromise;
+  if (_sessionKeyPromise) {
+    const inFlight = _sessionKeyExpiresAt === 0;
+    if (inFlight || Date.now() < _sessionKeyExpiresAt - 60_000) return _sessionKeyPromise;
+    // Expired (or about to): drop it. The restore path below picks up a key
+    // renewed in another tab; otherwise this mints a fresh one.
+    console.log('[thunder] in-memory Seal session key expired, reloading');
+    _sessionKeyPromise = null;
+  }
   // Sticky rejection gate — fast-throw without prompting if the user
   // cancelled within the cooldown window. Throws a recognizable error
   // so callers can show "decryption cancelled" UI without spawning
@@ -357,6 +383,7 @@ async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<Sessio
     return _mintSessionKey(opts);
   })();
   // On failure, drop the in-flight promise so the next caller retries cleanly.
+  _trackSessionKey(_sessionKeyPromise);
   _sessionKeyPromise.catch(() => { _sessionKeyPromise = null; });
   return _sessionKeyPromise;
 }
@@ -436,6 +463,7 @@ export async function warmThunderSession(opts?: { address?: string }): Promise<v
     const restored = SessionKey.import(exported, _client as never);
     if (restored.isExpired()) return;
     _sessionKeyPromise = Promise.resolve(restored);
+    _trackSessionKey(_sessionKeyPromise);
     console.log('[thunder] warmed Seal session key from cache, expires in', Math.round((expiresAtMs - Date.now()) / 60_000), 'min');
   } catch (e) {
     console.warn('[thunder] warm session restore failed (silent, will mint lazily on next op):', e instanceof Error ? e.message : e);
@@ -470,6 +498,7 @@ export async function refreshSealSession(): Promise<boolean> {
   try {
     const key = await _mintSessionKey(_opts);
     _sessionKeyPromise = Promise.resolve(key);
+    _trackSessionKey(_sessionKeyPromise);
     _sealRefreshError = '';
     return true;
   } catch (err) {

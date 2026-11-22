@@ -17995,8 +17995,10 @@ function bindEvents() {
       _sessionClock.className = 'ski-idle-session-clock ski-idle-session-clock--empty';
       _sessionClock.textContent = '\u{1F991}';
       _sessionClock.title = 'Click to sign a SUIAMI session';
-      _sessionClock.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
+      // Renew the session: one wallet signature → a fresh 30-minute key.
+      // The current key stays valid until the new one is signed, so a
+      // cancelled prompt never logs the user out early.
+      const _renewSession = async () => {
         if (_sessionClock.classList.contains('ski-idle-session-clock--busy')) return;
         _sessionClock.classList.add('ski-idle-session-clock--busy');
         const prevText = _sessionClock.textContent;
@@ -18004,42 +18006,42 @@ function bindEvents() {
         try {
           const { refreshSealSession, getLastSealRefreshError } = await import('./client/thunder-stack.js');
           const ok = await refreshSealSession();
-          if (!ok) {
+          if (ok) {
+            showToast('Session renewed \u2014 30 minutes');
+          } else {
             _sessionClock.textContent = prevText ?? '\u{1F991}';
             showToast(`Session not renewed \u2014 ${getLastSealRefreshError() || 'signature failed'}`);
           }
         } catch {
           _sessionClock.textContent = prevText ?? '\u{1F991}';
+          showToast('Session not renewed \u2014 signature failed');
         } finally {
           _sessionClock.classList.remove('ski-idle-session-clock--busy');
           _tickSessionClock();
         }
+      };
+      _sessionClock.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        void _renewSession();
       });
       _idleOverlay?.appendChild(_sessionClock);
       // The "30-minute signature" users see is the Seal session key that
       // gates Thunder/SUIAMI decrypt, minted via wallet-signed personal
       // message and cached at `ski:seal-sk:v4:<addr>` with a fixed 30-min
-      // TTL. Expiry = creationTimeMs + ttlMin * 60_000. Pick the longest
-      // remaining across all addresses in case the user has multiple
-      // cached session keys (rare but cheap to handle).
+      // TTL. Expiry = creationTimeMs + ttlMin * 60_000. Only the connected
+      // address counts — other cached accounts' sessions don't apply.
       const _readSessionExpiry = (): number => {
-        let best = 0;
         try {
-          for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            if (!k || !k.startsWith('ski:seal-sk:v4:')) continue;
-            try {
-              const raw = localStorage.getItem(k);
-              if (!raw) continue;
-              const v = JSON.parse(raw) as { creationTimeMs?: number; ttlMin?: number };
-              if (typeof v?.creationTimeMs === 'number' && typeof v?.ttlMin === 'number') {
-                const exp = v.creationTimeMs + v.ttlMin * 60_000;
-                if (exp > best) best = exp;
-              }
-            } catch { /* skip malformed entry */ }
+          const addr = getState().address;
+          if (!addr) return 0;
+          const raw = localStorage.getItem(`ski:seal-sk:v4:${addr.toLowerCase()}`);
+          if (!raw) return 0;
+          const v = JSON.parse(raw) as { creationTimeMs?: number; ttlMin?: number };
+          if (typeof v?.creationTimeMs === 'number' && typeof v?.ttlMin === 'number') {
+            return v.creationTimeMs + v.ttlMin * 60_000;
           }
-        } catch { /* storage unavailable */ }
-        return best;
+        } catch { /* storage unavailable or malformed */ }
+        return 0;
       };
       const _fmtSessionLeft = (ms: number): string => {
         if (ms <= 0) return '0:00';
@@ -18053,28 +18055,40 @@ function bindEvents() {
         if (hr < 24) return `${hr}h ${Math.floor((sec % 3600) / 60)}m`;
         return `${Math.floor(hr / 24)}d ${hr % 24}h`;
       };
+      // One "about to expire" nudge per session key, with a Renew button.
+      let _nudgedForExpiry = 0;
+      const SESSION_NUDGE_MS = 2 * 60 * 1000;
       const _tickSessionClock = () => {
+        if (_sessionClock.classList.contains('ski-idle-session-clock--busy')) return;
         const expiresAt = _readSessionExpiry();
         const ms = expiresAt ? expiresAt - Date.now() : 0;
         // Always keep the bubble visible (ski-clock motif). If no session or
-        // expired, show dashes so the element still reads as a clock.
+        // expired, show the squid so the element still reads as a clock.
         _sessionClock.hidden = false;
         if (ms > 0) {
+          const until = new Date(expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
           _sessionClock.textContent = _fmtSessionLeft(ms);
-          _sessionClock.title = `.SKI session expires ${new Date(expiresAt).toLocaleString()}`;
+          _sessionClock.title = `Session active until ${until} \u2014 click to renew for 30 minutes`;
           _sessionClock.classList.remove('ski-idle-session-clock--empty');
           const isWarn = ms < 10 * 60 * 1000;
           _sessionClock.classList.toggle('ski-idle-session-clock--fresh', !isWarn);
           _sessionClock.classList.toggle('ski-idle-session-clock--warn', isWarn);
           _sessionClock.classList.toggle('ski-idle-session-clock--crit', ms < 5 * 60 * 1000);
+          if (ms < SESSION_NUDGE_MS && _nudgedForExpiry !== expiresAt && document.visibilityState === 'visible') {
+            _nudgedForExpiry = expiresAt;
+            showToastWithRetry('Your session expires in under 2 minutes', 'Renew', () => { void _renewSession(); });
+          }
         } else {
           _sessionClock.textContent = '\u{1F991}';
-          _sessionClock.title = 'No active SUIAMI session \u2014 click to sign';
+          _sessionClock.title = getState().address
+            ? 'No active session \u2014 click to sign in for 30 minutes'
+            : 'Connect a wallet to start a session';
           _sessionClock.classList.add('ski-idle-session-clock--empty');
           _sessionClock.classList.remove('ski-idle-session-clock--fresh');
           _sessionClock.classList.remove('ski-idle-session-clock--warn');
           _sessionClock.classList.remove('ski-idle-session-clock--crit');
         }
+        _sessionClock.setAttribute('aria-label', _sessionClock.title);
       };
       _tickSessionClock();
       setInterval(_tickSessionClock, 1000);
