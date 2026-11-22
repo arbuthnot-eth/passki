@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { ultronKeypair, hasUltronKey, requireUltronSig } from './ultron-key.js';
 import { evaluateSponsorTx } from './sponsor-policy.js';
-import { handleSuiJsonRpcBody } from './sui-jsonrpc-shim.js';
+import { handleSuiJsonRpc, handleSuiJsonRpcBody } from './sui-jsonrpc-shim.js';
 import { installSuiJsonRpcRedirect } from '../sui-jsonrpc-redirect.js';
 
 // Public Sui JSON-RPC is shut down. Answer JSON-RPC calls aimed at the old
@@ -270,7 +270,39 @@ app.use('*', async (c, next) => {
 app.use('/agents/*', agentsMiddleware());
 
 // Health check
-app.get('/api/health', (c) => c.json({ status: 'ok', version: '2.0.0' }));
+// Real dependency checks so an uptime monitor catches outages like the
+// Sui JSON-RPC shutdown, a dead gRPC backend, or an empty gas sponsor.
+// 200 = all good, 503 = degraded (body says which check failed).
+const SPONSOR_LOW_SUI = 0.5;
+app.get('/api/health', async (c) => {
+  const blocked = await rpcRateCheck(c, 'rpc');
+  if (blocked) return blocked;
+  const checks: Record<string, { ok: boolean; detail: string; ms: number }> = {};
+  const run = async (name: string, fn: () => Promise<string>) => {
+    const t = Date.now();
+    try { checks[name] = { ok: true, detail: await fn(), ms: Date.now() - t }; }
+    catch (err) { checks[name] = { ok: false, detail: (err instanceof Error ? err.message : String(err)).slice(0, 160), ms: Date.now() - t }; }
+  };
+  await Promise.all([
+    run('sui_grpc', async () => `reference gas price ${await handleSuiJsonRpc('suix_getReferenceGasPrice', [])}`),
+    run('sui_graphql', async () => {
+      const cp = await handleSuiJsonRpc('sui_getCheckpoint', ['0']) as { digest?: string };
+      if (!cp?.digest) throw new Error('no checkpoint');
+      return 'reachable';
+    }),
+    run('sponsor_balance', async () => {
+      if (!hasUltronKey(c.env)) throw new Error('sponsor key not configured');
+      const addr = ultronKeypair(c.env).toSuiAddress();
+      const b = await handleSuiJsonRpc('suix_getBalance', [addr, '0x2::sui::SUI']) as { totalBalance: string };
+      const sui = Number(b.totalBalance) / 1e9;
+      if (sui < SPONSOR_LOW_SUI) throw new Error(`low: ${sui.toFixed(4)} SUI (min ${SPONSOR_LOW_SUI})`);
+      return `${sui.toFixed(3)} SUI`;
+    }),
+  ]);
+  const ok = Object.values(checks).every(x => x.ok);
+  c.header('Cache-Control', 'no-store');
+  return c.json({ status: ok ? 'ok' : 'degraded', version: '2.0.0', checks }, ok ? 200 : 503);
+});
 
 // Credential Management — well-known change-password endpoint.
 // Browsers + password managers probe `/.well-known/change-password`

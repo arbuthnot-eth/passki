@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      # Includes scripts/check-no-private-keys.mjs, so a key-shaped variable
+      # added to Worker config fails CI too.
+      - name: Build
+        run: bun run build
+
+      # Non-blocking for now: the codebase has a backlog of type errors.
+      # Reported so the count is visible and can be ratcheted down.
+      - name: Typecheck (report only)
+        continue-on-error: true
+        run: |
+          set +e
+          npx tsc --noEmit -p . > tsc.log 2>&1
+          COUNT=$(grep -c 'error TS' tsc.log)
+          echo "TypeScript errors: $COUNT"
+          echo "### TypeScript errors: $COUNT" >> "$GITHUB_STEP_SUMMARY"
+          exit 0

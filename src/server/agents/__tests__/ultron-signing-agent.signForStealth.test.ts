@@ -11,7 +11,19 @@
  * _pollSignCompleted) so no network or WASM runs.
  */
 
-import { describe, test, expect, mock } from 'bun:test';
+import { describe, test, expect, mock, afterAll } from 'bun:test';
+
+// bun's mock.module is process-wide and outlives this file, so the stubs
+// below leaked into later test files (ultron-postal's handleTransfer got a
+// fake Transaction and failed in full-suite runs). Snapshot the real
+// modules first and put them back when this file is done.
+const _realModules: Record<string, unknown> = {};
+for (const spec of ['@mysten/sui/transactions', '@mysten/sui/keypairs/ed25519', '@mysten/sui/utils', '@mysten/sui/graphql', '@ika.xyz/sdk']) {
+  try { _realModules[spec] = { ...(await import(spec)) }; } catch { /* not loadable in tests — nothing to restore */ }
+}
+afterAll(() => {
+  for (const [spec, real] of Object.entries(_realModules)) mock.module(spec, () => real as Record<string, unknown>);
+});
 
 // Module stubs are installed at import time (NOT inside beforeAll) so the
 // dynamic import() below sees them. bun:test's `mock.module` is sync and
