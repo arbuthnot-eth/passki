@@ -31,7 +31,7 @@ Agents (ultron, chronicoms, t2000s) are Durable Objects that sign via IKA dWalle
 |---|---|---|
 | **Sign-in** | [WaaP](https://docs.waap.xyz) (Wallet as a Protocol) provides social login. passki talks to it through the Sui Wallet Standard and WaaP's iframe, and never receives your Sui private key. | You, through WaaP. Custody follows WaaP's model. |
 | **Cross-chain addresses** | [IKA](https://docs.ika.xyz) dWallets use 2PC-MPC. A signature needs **your user share** and **the IKA network** (a threshold of validators). | Neither side can sign alone. |
-| **User share** | DKG runs in your browser. Your user secret share is encrypted under a key derived from a 32-byte seed from `crypto.getRandomValues`. The `DWalletCap` is owned by your Sui address. | Only the holder of that seed and the cap. |
+| **User share** | DKG runs in your browser. Your user secret share is encrypted under keys derived from a seed that is re-created from your wallet's signature on a fixed passki message, so nothing is stored. passki checks that your wallet signs deterministically before creating a dWallet, then accepts the share in your browser. The `DWalletCap` is owned by your Sui address. | You: that signature plus the cap. The signature alone can decrypt your share but can't sign without the IKA network, which only acts on approvals from the cap. |
 
 ### Service-operated keys (current state)
 
