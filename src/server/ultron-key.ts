@@ -11,6 +11,9 @@
 // migration has exactly one line to change.
 
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { hmac } from '@noble/hashes/hmac.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 
 export interface UltronEnv {
     /**
@@ -18,6 +21,8 @@ export interface UltronEnv {
      * Use this for new deploys and future rotations.
      */
     ULTRON_PRIVATE_KEY?: string;
+    /** Optional dedicated secret for Worker→DO / admin-route auth. */
+    INTERNAL_AUTH_SECRET?: string;
     /**
      * Legacy name — ultron originally shipped as the Shade keeper only.
      * Still accepted for backwards compatibility during the rename
@@ -93,4 +98,32 @@ export async function requireUltronSig(
         return c.json({ error: 'Auth failed' }, 403);
     }
     return null;
+}
+
+/**
+ * Shared secret for admin routes and Worker→Durable Object calls
+ * (`x-treasury-auth`).
+ *
+ * This used to be the first 34 characters of ultron's Sui address, which
+ * is public (on-chain, and returned by /api/sponsor-info), so anyone could
+ * compute it. It's now an HMAC of a real secret: INTERNAL_AUTH_SECRET if
+ * set (so the token survives ultron moving to IKA signing), otherwise
+ * ultron's private key. Returns '' when neither is configured, which
+ * callers must treat as "deny".
+ */
+export function internalAuthToken(env: UltronEnv): string {
+    const secret = env.INTERNAL_AUTH_SECRET ?? resolveUltronSecret(env);
+    if (!secret) return '';
+    return bytesToHex(hmac(sha256, utf8ToBytes(secret), utf8ToBytes('passki-internal-auth:v1')));
+}
+
+/** Constant-time string comparison, so response timing can't leak how much of a token matched. */
+export function constantTimeEqual(a: string | null | undefined, b: string | null | undefined): boolean {
+    if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) return false;
+    // Compare fixed-length digests so the length of `a` isn't leaked either.
+    const x = sha256(utf8ToBytes(a));
+    const y = sha256(utf8ToBytes(b));
+    let diff = 0;
+    for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+    return diff === 0;
 }

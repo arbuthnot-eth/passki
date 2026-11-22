@@ -148,15 +148,9 @@ export async function verifyVectorIntent<TIntent extends Record<string, unknown>
       SHADE_KEEPER_PRIVATE_KEY?: string;
     };
     const stub = env.TreasuryAgents.get(env.TreasuryAgents.idFromName('treasury'));
-    // Derive the same x-treasury-auth token `authedTreasuryStub` uses
-    // (first 34 chars of ultron's normalized Sui address).
-    let auth = '';
-    if (env.SHADE_KEEPER_PRIVATE_KEY) {
-      const { normalizeSuiAddress } = await import('@mysten/sui/utils');
-      const { ultronKeypair } = await import('./ultron-key.js');
-      const kp = ultronKeypair(env);
-      auth = normalizeSuiAddress(kp.getPublicKey().toSuiAddress()).slice(0, 34);
-    }
+    // Same x-treasury-auth token `authedTreasuryStub` uses.
+    const { internalAuthToken } = await import('./ultron-key.js');
+    const auth = internalAuthToken(env as Parameters<typeof internalAuthToken>[0]);
     const nonceRes = await stub.fetch(new Request('https://treasury-do/?magnemite-nonce', {
       method: 'POST',
       headers: {

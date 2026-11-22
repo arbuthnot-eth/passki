@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
-import { ultronKeypair, hasUltronKey, requireUltronSig } from './ultron-key.js';
+import { ultronKeypair, hasUltronKey, requireUltronSig, internalAuthToken, constantTimeEqual } from './ultron-key.js';
 import { evaluateSponsorTx } from './sponsor-policy.js';
 import { handleSuiJsonRpc, handleSuiJsonRpcBody } from './sui-jsonrpc-shim.js';
 import { reserveSponsorBudget, sponsorSpentToday } from './agents/sponsor-quota.js';
@@ -132,13 +132,35 @@ const ADMIN_ROUTES = [
   '/api/create-iusd-pool', '/api/seed-iusd-pool',
   '/api/create-iusd-sol-mint', '/api/bam-mint-iusd-sol',
   '/api/lend-usdc', '/api/kamino-deposit', '/api/kamino-deposit-usdc', '/api/migrate',
+  // Pay out from ultron on client-claimed amounts (swap pre-sends SUI/USDC
+  // before receiving iUSD; ignite trusts `iusdBurned`). Admin-only until
+  // they verify the user's payment on-chain first.
+  '/api/iusd/swap', '/api/ignite',
 ];
+// Default-deny for treasury writes: every non-GET /api/cache/* route is
+// admin-only unless listed here. These are the browser-facing flows, plus
+// routes that authenticate themselves (requireUltronSig, or a signed
+// Vector intent). Several treasury routes (migrate, send-iusd,
+// ultron-transfer-iusd, ...) were previously reachable by anyone, because
+// authedTreasuryStub attaches the internal token server-side.
+const PUBLIC_CACHE_WRITES = new Set([
+  // browser flows
+  '/api/cache/deposit-intent', '/api/cache/initiate', '/api/cache/quest-bounty',
+  '/api/cache/shade-cancel', '/api/cache/shade-cancel-stable',
+  // self-authenticating (signature / signed intent checked in the handler)
+  '/api/cache/pre-rumble', '/api/cache/rumble-ultron-seed', '/api/cache/sweep-sol-ultron',
+  '/api/cache/whelm-ultron-fungibles', '/api/cache/whelm-ultron-objects',
+  '/api/cache/send-iusd-v2', '/api/cache/bam-mint-v2',
+  '/api/cache/debug-mint', '/api/cache/debug-sol-watch', '/api/cache/force-dispatch-sol', '/api/cache/reset-sol-cursor',
+]);
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 app.use('/api/*', async (c, next) => {
   const path = new URL(c.req.url).pathname;
-  if (ADMIN_ROUTES.includes(path)) {
+  const isCacheWrite = path.startsWith('/api/cache/') && !READ_METHODS.has(c.req.method);
+  if (ADMIN_ROUTES.includes(path) || (isCacheWrite && !PUBLIC_CACHE_WRITES.has(path))) {
     const auth = c.req.header('x-treasury-auth') || c.req.header('authorization')?.replace('Bearer ', '');
     const expected = getTreasuryAuth(c.env);
-    if (!expected || auth !== expected) {
+    if (!expected || !constantTimeEqual(auth, expected)) {
       return c.json({ error: 'Unauthorized — admin route requires x-treasury-auth' }, 403);
     }
   }
@@ -229,8 +251,7 @@ let _treasuryAuthCache: string | null = null;
 function getTreasuryAuth(env: Env): string {
   if (_treasuryAuthCache !== null) return _treasuryAuthCache;
   if (!hasUltronKey(env)) { _treasuryAuthCache = ''; return ''; }
-  const kp = ultronKeypair(env);
-  _treasuryAuthCache = normalizeSuiAddress(kp.getPublicKey().toSuiAddress()).slice(0, 34);
+  _treasuryAuthCache = internalAuthToken(env);
   return _treasuryAuthCache;
 }
 
@@ -267,6 +288,17 @@ app.use('*', async (c, next) => {
   return next();
 });
 
+// Only browser-facing agents are reachable from the internet. Every other
+// Durable Object (treasury, signing, watchers, ...) is server-internal:
+// the Worker talks to it through its binding, never through /agents/*.
+// Without this, anyone could open a WebSocket to e.g. TreasuryAgents and
+// invoke its @callable methods directly.
+const PUBLIC_AGENTS = new Set(['session-agent', 'splash-device-agent', 'shade-executor-agent', 'sponsor-agent']);
+app.use('/agents/*', async (c, next) => {
+  const name = new URL(c.req.url).pathname.split('/')[2] ?? '';
+  if (!PUBLIC_AGENTS.has(name)) return c.json({ error: 'Not found' }, 404);
+  return next();
+});
 // Agents middleware handles WebSocket upgrades and RPC to /agents/*
 app.use('/agents/*', agentsMiddleware());
 
@@ -399,8 +431,11 @@ const SUI_RPC_URLS = [
 // Shared rate limit gate for the generic RPC proxies. Reuses
 // ENS_RATE_LIMITER (60 req/min) with a `rpc:` key prefix so an abusive
 // client can't spend our whole budget by alternating between endpoints.
+// RPC proxies get their own, roomier limiter: the browser routes all Sui
+// JSON-RPC through /api/rpc, and building one transaction can take a burst
+// of calls. ENS_RATE_LIMITER is the fallback if RPC_RATE_LIMITER isn't bound.
 async function rpcRateCheck(c: Context, scope: string): Promise<Response | null> {
-  const rl = (c.env as any).ENS_RATE_LIMITER as
+  const rl = ((c.env as any).RPC_RATE_LIMITER ?? (c.env as any).ENS_RATE_LIMITER) as
     | { limit: (opts: { key: string }) => Promise<{ success: boolean }> }
     | undefined;
   if (!rl) return null;

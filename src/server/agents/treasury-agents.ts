@@ -12,11 +12,11 @@
  * Signed by ultron.sui — the autonomous agent wallet (SHADE_KEEPER_PRIVATE_KEY).
  */
 
-import { Agent, callable } from 'agents';
+import { Agent, callable, getCurrentAgent } from 'agents';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { ultronKeypair } from '../ultron-key.js';
+import { ultronKeypair, internalAuthToken, constantTimeEqual } from '../ultron-key.js';
 import { normalizeSuiAddress, toBase64 } from '@mysten/sui/utils';
 import { raceExecuteTransaction, raceJsonRpc, GQL_URL } from '../rpc.js';
 import { createSplMint, mintSplTokens, deriveATA, b58decode, b58encode, type SolanaRpcConfig } from '../solana-spl.js';
@@ -279,14 +279,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   /**
    * Verify internal auth token on HTTP requests from the Worker.
-   * Token = first 34 chars of ultron's Sui address (0x + 32 hex).
-   * Only the Worker has access to SHADE_KEEPER_PRIVATE_KEY to derive this.
+   * Token = HMAC of a server secret (see internalAuthToken), compared in
+   * constant time.
    */
   private verifyInternalAuth(request: Request): boolean {
-    const token = request.headers.get('x-treasury-auth');
-    const ultron = this.getUltronAddress();
-    if (!ultron || !token) return false;
-    return token === ultron.slice(0, 34);
+    return constantTimeEqual(request.headers.get('x-treasury-auth'), internalAuthToken(this.env));
   }
 
   /**
@@ -297,6 +294,10 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private requireUltronCaller(callerAddress?: string): string | null {
     const ultron = this.getUltronAddress();
     if (!ultron) return 'No ultron key configured';
+    // ultron's address is public, so it can't authenticate anyone by
+    // itself. Legitimate callers are this DO and the Worker (via its
+    // binding); a call arriving over a client WebSocket never is.
+    if (getCurrentAgent().connection) return 'Unauthorized';
     if (callerAddress !== ultron) return 'Unauthorized';
     return null; // authorized
   }
