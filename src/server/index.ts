@@ -264,12 +264,18 @@ function getTreasuryAuth(env: Env): string {
  * Auth-wrapping proxy for the treasury DO stub.
  * Returns an object with a .fetch() that auto-injects x-treasury-auth.
  */
+/** Per-user treasury actions: pass the caller's owner proof, and whether they're an admin. */
+function userTreasuryStub(c: Context) {
+  const isAdmin = constantTimeEqual(c.req.header('x-treasury-auth'), getTreasuryAuth(c.env as Env));
+  return authedTreasuryStub(c as any, { asAdmin: isAdmin, ownerProof: c.req.header('x-ski-owner-proof') });
+}
+
 /**
  * Treasury stub that attaches the internal token. Pass `asUltron` only when
  * this Worker route itself sets `callerAddress` to ultron; otherwise the DO
  * discards any `callerAddress` in the body (it may have come from a client).
  */
-function authedTreasuryStub(c: { env: Env }, opts: { asUltron?: boolean } = {}) {
+function authedTreasuryStub(c: { env: Env }, opts: { asUltron?: boolean; asAdmin?: boolean; ownerProof?: string } = {}) {
   const stub = treasuryStub(c);
   const auth = getTreasuryAuth(c.env);
   return {
@@ -277,7 +283,12 @@ function authedTreasuryStub(c: { env: Env }, opts: { asUltron?: boolean } = {}) 
       const headers = new Headers(req.headers);
       headers.set('x-treasury-auth', auth);
       headers.delete('x-ski-as-ultron');
+      headers.delete('x-ski-as-admin');
+      headers.delete('x-ski-owner-proof');
       if (opts.asUltron) headers.set('x-ski-as-ultron', auth);
+      // The DO trusts these only because only this Worker can set them.
+      if (opts.asAdmin) headers.set('x-ski-as-admin', auth);
+      if (opts.ownerProof) headers.set('x-ski-owner-proof', opts.ownerProof);
       if (!headers.has('x-partykit-room')) headers.set('x-partykit-room', 'treasury');
       return stub.fetch(new Request(req.url, {
         method: req.method,
@@ -4184,7 +4195,7 @@ app.post('/api/cache/quest-bounty', async (c) => {
 app.post('/api/cache/shade-cancel-stable', async (c) => {
   try {
     const body = await c.req.json() as { objectId: string; noForward?: boolean; forwardToAddress?: string };
-    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-cancel-stable', {
+    const res = await userTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-cancel-stable', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),
@@ -4696,7 +4707,7 @@ app.post('/api/cache/unwind-ssui', async (c) => {
 app.post('/api/cache/shade-cancel', async (c) => {
   try {
     const body = await c.req.json() as { domain: string; holder: string };
-    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-cancel', {
+    const res = await userTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-cancel', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
       body: JSON.stringify(body),

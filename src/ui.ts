@@ -45,7 +45,7 @@ import {
   resolveNameToAddress,
 } from './sponsor.js';
 import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildCreateStableShadeOrderTx, buildCreateStableShadeOrderAutoTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildCancelStableShadeOrderTx, buildCancelRefundStableShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, buildIusdBurnAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, findCreatedStableShadeOrderRef, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
-import { connectShadeExecutor, scheduleShadeExecution, scheduleStableShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, pokeIouSweeper, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
+import { connectShadeExecutor, scheduleShadeExecution, scheduleStableShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, pokeIouSweeper, ownerProofHeaders, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import { ethToTron } from './client/chains.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
@@ -9597,7 +9597,7 @@ function renderSkiMenu() {
             // Server-side ultron cancel + forward path
             const res = await fetch('/api/cache/shade-cancel-stable', {
               method: 'POST',
-              headers: { 'content-type': 'application/json' },
+              headers: ownerProofHeaders(address), // server checks we're the holder
               body: JSON.stringify({ objectId: o.objectId, forwardToAddress: address }),
             });
             const j = await res.json() as { digest?: string; forwardDigest?: string; error?: string };
@@ -15829,7 +15829,7 @@ function bindEvents() {
             // Cancel on-chain + in Treasury DO shade-list
             const cancelRes = await fetch('/api/cache/shade-cancel', {
               method: 'POST',
-              headers: { 'content-type': 'application/json' },
+              headers: ownerProofHeaders(ws.address), // server checks we're the holder
               body: JSON.stringify({ domain: label, holder: ws.address }),
             });
             const cancelData = await cancelRes.json().catch(() => ({})) as { ok?: boolean; cancelDigest?: string; iusdRecovered?: string; bamMintSig?: string };

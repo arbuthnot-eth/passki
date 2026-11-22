@@ -39,6 +39,11 @@ function ownerProof(address: string): OwnerProof | null {
   }
 }
 
+/** JSON headers plus the owner proof for `address`, if we have one (shade executor and treasury cancel routes). */
+export function ownerProofHeaders(address: string): Record<string, string> {
+  return _headers(address);
+}
+
 /** Headers for HTTP calls to the executor: JSON plus the owner proof, if we have one. */
 function _headers(address: string): Record<string, string> {
   const h: Record<string, string> = { 'content-type': 'application/json' };

@@ -39,6 +39,7 @@ The [Security model](README.md#security-model) section of the README is the curr
 
 | Date | Issue | Severity | Fix |
 |---|---|---|---|
+| 2026-11-22 | `/api/cache/shade-cancel-stable` let anyone have ultron cancel any ultron-owned shade order and forward the refund to a caller-chosen `forwardToAddress`; `/api/cache/shade-cancel` let anyone cancel any user's shade from its public domain + holder | Critical | The holder recorded at create time must prove control (stored `.SKI` sign-in proof); refunds always go to that holder; other destinations, `noForward`, and orders without a recorded holder are admin-only |
 | 2026-11-22 | `/api/ultron/sign` (public) had ultron's IKA dWallets sign any caller-chosen message on either curve, e.g. an ETH or SOL transaction hash, spending IKA each time; `/api/ultron/accept-share` was public too | Critical | Admin-only |
 | 2026-11-22 | Giveaway routes (`/api/fund-gas`, `/api/ika/fund`, `/api/ika/create`, `/api/ika/provision`) were limited per address only (or not at all), so fresh addresses or one SuiNS name could drain ultron's SUI and IKA | High | Strict daily caps per address, per IP and globally (SponsorQuota DO) plus a per-IP rate limit; fails closed |
 | 2026-11-22 | Deposit webhooks accepted any caller if `HELIUS_WEBHOOK_SECRET` was unset | Low | Fail closed; constant-time compare |

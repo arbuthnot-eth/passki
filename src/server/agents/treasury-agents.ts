@@ -12,12 +12,15 @@
  * Signed by ultron.sui — the autonomous agent wallet (SHADE_KEEPER_PRIVATE_KEY).
  */
 
-import { Agent, callable, getCurrentAgent } from 'agents';
+import { Agent, callable } from 'agents';
+// Namespace import: resolved at call time (keeps test stubs of 'agents' linkable).
+import * as agentsSdk from 'agents';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { ultronKeypair, internalAuthToken, constantTimeEqual } from '../ultron-key.js';
 import { stripUntrustedCaller } from '../caller-trust.js';
+import { verifyOwnerProof, ownerProofFromHeader } from '../owner-proof.js';
 import { normalizeSuiAddress, toBase64 } from '@mysten/sui/utils';
 import { raceExecuteTransaction, raceJsonRpc, GQL_URL } from '../rpc.js';
 import { createSplMint, mintSplTokens, deriveATA, b58decode, b58encode, type SolanaRpcConfig } from '../solana-spl.js';
@@ -292,13 +295,25 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    * Since only the keeper key holder can derive this address, it proves authorization.
    * All mutating callables that use the keeper key must call this.
    */
+  /** The Worker vouched that the original caller presented the admin token. */
+  private isAdminRequest(request: Request): boolean {
+    return constantTimeEqual(request.headers.get('x-ski-as-admin'), internalAuthToken(this.env));
+  }
+
+  /** Admin, or the caller proved control of `holder` (the stored .SKI sign-in proof). */
+  private async isHolderOrAdmin(request: Request, holder: string | undefined): Promise<boolean> {
+    if (this.isAdminRequest(request)) return true;
+    if (!holder) return false;
+    return (await verifyOwnerProof(ownerProofFromHeader(request.headers.get('x-ski-owner-proof')), holder)) !== null;
+  }
+
   private requireUltronCaller(callerAddress?: string): string | null {
     const ultron = this.getUltronAddress();
     if (!ultron) return 'No ultron key configured';
     // ultron's address is public, so it can't authenticate anyone by
     // itself. Legitimate callers are this DO and the Worker (via its
     // binding); a call arriving over a client WebSocket never is.
-    if (getCurrentAgent().connection) return 'Unauthorized';
+    if (agentsSdk.getCurrentAgent?.()?.connection) return 'Unauthorized';
     if (callerAddress !== ultron) return 'Unauthorized';
     return null; // authorized
   }
@@ -639,6 +654,10 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if ((url.pathname.endsWith('/shade-cancel') || url.searchParams.has('shade-cancel')) && request.method === 'POST') {
       try {
         const body = await request.json() as { domain: string; holder: string };
+        // Only the holder (or an admin) may cancel: domain + holder are public.
+        if (!(await this.isHolderOrAdmin(request, body.holder))) {
+          return new Response(JSON.stringify({ ok: false, error: 'Unauthorized — sign in as the shade holder' }), { status: 403, headers: { 'content-type': 'application/json' } });
+        }
         const shades = ((this.state as any).shades ?? []) as ShadeOrder[];
         const idx = shades.findIndex(s => s.domain === body.domain && s.holder === body.holder && s.status === 'active');
         if (idx < 0) {
@@ -821,12 +840,22 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         // captured in treasury state at create time.
         const shadesNow = ((this.state as any).shades ?? []) as Array<Record<string, any>>;
         const shadeRow = shadesNow.find((s) => s.objectId === body.objectId);
-        // Forward destination — caller-supplied override beats DO state.
-        // Legacy shade-proxy orders pre-date the `holder` field in state,
-        // so they need an override or the iUSD lands stuck on ultron.
-        const holderAddr = body.forwardToAddress
-          ? normalizeSuiAddress(body.forwardToAddress)
-          : (shadeRow?.holder ? normalizeSuiAddress(String(shadeRow.holder)) : '');
+        const recordedHolder = shadeRow?.holder ? normalizeSuiAddress(String(shadeRow.holder)) : '';
+        // ultron owns these orders on-chain, so anyone could ask ultron to
+        // cancel one and (via forwardToAddress) take the refund. Now:
+        //   - the holder recorded at create time must prove it's them, and
+        //     the refund always goes back to that holder;
+        //   - choosing another destination, keeping funds on ultron
+        //     (noForward), or orders with no recorded holder: admin only.
+        const isAdmin = this.isAdminRequest(request);
+        if (!isAdmin) {
+          const forbidden = (msg: string) => new Response(JSON.stringify({ error: msg }), { status: 403, headers: { 'content-type': 'application/json' } });
+          if (!recordedHolder) return forbidden('No recorded holder for this order — admin only');
+          if (body.noForward) return forbidden('noForward is admin only');
+          if (body.forwardToAddress && normalizeSuiAddress(body.forwardToAddress) !== recordedHolder) return forbidden('Refunds go to the shade holder');
+          if (!(await this.isHolderOrAdmin(request, recordedHolder))) return forbidden('Unauthorized — sign in as the shade holder');
+        }
+        const holderAddr = isAdmin && body.forwardToAddress ? normalizeSuiAddress(body.forwardToAddress) : recordedHolder;
         // Deposit amount: prefer DO state, fall back to the on-chain
         // `deposit` value embedded in the order's contents.json. Without
         // this fallback, legacy orders that lack a state row would skip
