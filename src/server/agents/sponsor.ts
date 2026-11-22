@@ -15,6 +15,7 @@ import { Agent, callable } from 'agents';
 import { verifyPersonalMessageSignature } from '@mysten/sui/verify';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { ultronKeypair } from '../ultron-key.js';
+import { evaluateSponsorTx } from '../sponsor-policy.js';
 
 export interface GasCoin {
   objectId: string;
@@ -223,6 +224,14 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     try {
       const keypair = ultronKeypair(this.env);
       const txBytes = Uint8Array.from(atob(req.txBytes), c => c.charCodeAt(0));
+      const decision = evaluateSponsorTx(txBytes, keypair.toSuiAddress(), req.senderAddress);
+      if (!decision.ok) {
+        console.warn('[SponsorAgent] refused to sign:', decision.reason);
+        const requests = [...this.state.pendingRequests];
+        requests[idx] = { ...req, status: 'failed' };
+        this.setState({ ...this.state, pendingRequests: requests });
+        return;
+      }
       const { signature: sponsorSig } = await keypair.signTransaction(txBytes);
 
       const updated: SponsorRequest = {

@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { ultronKeypair, hasUltronKey, requireUltronSig } from './ultron-key.js';
+import { evaluateSponsorTx } from './sponsor-policy.js';
 import { requireUltronAdmin, todayUtc } from './ultron-policy.js';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
@@ -587,14 +588,22 @@ app.post('/api/sponsor-gas', async (c) => {
     const { txBytes, senderAddress } = await c.req.json<{ txBytes: string; senderAddress?: string }>();
     if (!txBytes) return c.json({ error: 'Missing txBytes' }, 400);
 
-    // SuiNS gate: require sender to own a SuiNS registration NFT
-    if (senderAddress) {
-      const hasNft = await hasSuinsNft(senderAddress);
+    const keypair = ultronKeypair(c.env);
+    const bytes = Uint8Array.from(atob(txBytes), ch => ch.charCodeAt(0));
+
+    // Decode and police the tx before signing — see sponsor-policy.ts.
+    const decision = evaluateSponsorTx(bytes, keypair.toSuiAddress(), senderAddress);
+    if (!decision.ok) {
+      console.warn('[sponsor-gas] refused:', decision.reason, 'sender:', senderAddress ?? '(none)');
+      return c.json({ error: `Sponsorship refused: ${decision.reason}` }, 403);
+    }
+
+    // SuiNS gate: the (verified) tx sender must own a SuiNS registration NFT.
+    if (decision.gated) {
+      const hasNft = await hasSuinsNft(decision.sender);
       if (!hasNft) return c.json({ error: 'SuiNS name required for gas sponsorship' }, 403);
     }
 
-    const keypair = ultronKeypair(c.env);
-    const bytes = Uint8Array.from(atob(txBytes), ch => ch.charCodeAt(0));
     const { signature } = await keypair.signTransaction(bytes);
 
     return c.json({ sponsorSig: signature, sponsorAddress: keypair.toSuiAddress() });
