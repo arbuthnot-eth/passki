@@ -13,6 +13,7 @@ import {
   UserShareEncryptionKeys, createRandomSessionIdentifier, prepareDKG, prepareDKGAsync,
 } from '@ika.xyz/sdk';
 export { Curve } from '@ika.xyz/sdk';
+import { deriveUserEncryptionSeed } from './ika-user-seed.js';
 
 // ─── Timing constants ────────────────────────────────────────────────
 const TX_INDEX_WAIT_MS = 2_000;
@@ -304,6 +305,10 @@ export interface ProvisionCallbacks {
    *  encryption keys can be re-derived later by a party that knows the
    *  seed (e.g. server-side keeper). Required for autonomous target signing. */
   encryptionSeed?: Uint8Array;
+  /** Sign a personal message as the user. Used to derive the user's
+   *  recoverable share-encryption seed when no `encryptionSeed` is given.
+   *  Defaults to the connected wallet's signPersonalMessage. */
+  signPersonalMessage?: (message: Uint8Array) => Promise<{ signature: string }>;
 }
 
 /**
@@ -336,12 +341,12 @@ export async function provisionDWallet(
   log('Checking existing...');
   const checkAddr = callbacks.targetOwner ?? userAddress;
   const existing = await getCrossChainStatus(checkAddr);
-  if (curve === Curve.SECP256K1 && existing.btcAddress) {
+  if (curve === Curve.SECP256K1 && existing.btcAddress && !loadPendingAccept(checkAddr, curve)) {
     console.log(`[ika:dkg] ${checkAddr.slice(0, 10)}… already has secp256k1 dWallet, skipping DKG`);
     log('Already active!');
     return existing;
   }
-  if (curve === Curve.ED25519 && existing.solAddress) {
+  if (curve === Curve.ED25519 && existing.solAddress && !loadPendingAccept(checkAddr, curve)) {
     console.log(`[ika:dkg] ${checkAddr.slice(0, 10)}… already has ed25519 dWallet, skipping DKG`);
     log('Already active!');
     return existing;
@@ -378,17 +383,38 @@ export async function provisionDWallet(
   const client = await withTimeout(getClient(), 60_000, 'IKA client init');
   console.log('[ika:dkg] Step 2a: client ready');
 
-  // Seed: deterministic when caller passes one (so a keeper can re-derive
-  // the encryption keys and sign autonomously later), otherwise random.
+  // Seed: caller-supplied (keeper / guest flows re-derive it server-side),
+  // otherwise derived from a deterministic wallet signature so the user can
+  // re-create it later. NEVER random: a random seed that isn't stored makes
+  // the user share undecryptable and the dWallet permanently unable to sign.
   let seedBytes: Uint8Array;
+  const selfOwned = !callbacks.targetOwner || callbacks.targetOwner === userAddress;
   if (callbacks.encryptionSeed && callbacks.encryptionSeed.length === 32) {
     seedBytes = callbacks.encryptionSeed;
     console.log('[ika:dkg] using caller-supplied deterministic encryption seed');
+  } else if (selfOwned) {
+    log('Unlocking key...');
+    seedBytes = await deriveUserEncryptionSeed(
+      userAddress,
+      callbacks.signPersonalMessage ?? (await import('../wallet.js')).signPersonalMessage,
+      { verify: true },
+    );
+    console.log('[ika:dkg] using wallet-signature-derived user seed');
   } else {
-    seedBytes = new Uint8Array(32);
-    crypto.getRandomValues(seedBytes);
+    throw new Error('provisionDWallet: a DWalletCap for another owner needs a caller-supplied encryptionSeed, or nobody could ever decrypt its share');
   }
   const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seedBytes, curve);
+  const keyOwner = callbacks.targetOwner ?? userAddress;
+
+  // Resume: an earlier run created this dWallet but didn't finish accepting
+  // the share. Same seed → same keys, so finish the accept instead of DKG.
+  const pending = loadPendingAccept(keyOwner, curve);
+  if (pending && selfOwned) {
+    log('Finishing activation...');
+    await acceptUserShare({ client, keys: userShareEncryptionKeys, userAddress, digest: pending, callbacks, log });
+    clearPendingAccept(keyOwner, curve);
+    return getCrossChainStatus(keyOwner);
+  }
   const sessionIdentifier = createRandomSessionIdentifier();
 
   // Skip SDK's getProtocolPublicParameters — it hangs with GraphQL/gRPC (pagination bug)
@@ -476,7 +502,9 @@ export async function provisionDWallet(
     // we skip to avoid the collision.
     let skipRegisterEncryptionKey = false;
     try {
-      await client.getActiveEncryptionKey(userAddress);
+      // Encryption keys are indexed by the seed-derived signer address,
+      // not the user's Sui address.
+      await client.getActiveEncryptionKey(userShareEncryptionKeys.getSuiAddress());
       skipRegisterEncryptionKey = true;
       console.log('[ika:dkg] encryption key already registered for', userAddress.slice(0, 10), '— skipping registerEncryptionKey');
     } catch {
@@ -514,6 +542,10 @@ export async function provisionDWallet(
     if (!digest) {
       console.error('[ika:dkg] DKG tx failed — no digest');
       throw new Error('DKG transaction failed — no digest returned');
+    }
+
+    if (selfOwned) {
+      await finishUserDkg({ client, keys: userShareEncryptionKeys, userAddress, digest, curve, userPublicOutput: dkgInput.userPublicOutput, callbacks, log });
     }
 
     log('Activating...');
@@ -644,6 +676,10 @@ export async function provisionDWallet(
     throw new Error('DKG transaction failed — no digest returned');
   }
 
+  if (selfOwned) {
+    await finishUserDkg({ client, keys: userShareEncryptionKeys, userAddress, digest, curve, userPublicOutput: dkgInput.userPublicOutput, callbacks, log });
+  }
+
   log('Activating...');
 
   // Step 6: Poll for dWallet to become active
@@ -660,6 +696,199 @@ export async function provisionDWallet(
 
   // Return whatever we have even if not fully active yet
   return getCrossChainStatus(userAddress);
+}
+
+// ── User share acceptance ───────────────────────────────────────────
+//
+// After DKG the dWallet sits in AwaitingKeyHolderSignature until the key
+// holder signs the public output with the same share-encryption keys used
+// during DKG. Until then it cannot sign. The server does this for ultron
+// (`_acceptUltronShare`); this is the user-side equivalent.
+//
+// If acceptance can't finish in-session, the DKG digest (public data) is
+// kept in localStorage so the next provision call resumes instead of
+// running a second DKG.
+
+const PENDING_ACCEPT_PREFIX = 'ski:ika-pending-accept:';
+
+function pendingKey(owner: string, curve: string): string {
+  return `${PENDING_ACCEPT_PREFIX}${owner.toLowerCase()}:${curve}`;
+}
+function loadPendingAccept(owner: string, curve: string): string | null {
+  try { return localStorage.getItem(pendingKey(owner, curve)); } catch { return null; }
+}
+function savePendingAccept(owner: string, curve: string, digest: string): void {
+  try { localStorage.setItem(pendingKey(owner, curve), digest); } catch { /* best-effort */ }
+}
+function clearPendingAccept(owner: string, curve: string): void {
+  try { localStorage.removeItem(pendingKey(owner, curve)); } catch { /* best-effort */ }
+}
+
+/** Depth-first search for a field in a parsed Move event (enum shapes vary by RPC). */
+function findField(obj: unknown, field: string): unknown {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const rec = obj as Record<string, unknown>;
+  if (field in rec) return rec[field];
+  for (const v of Object.values(rec)) {
+    const hit = findField(v, field);
+    if (hit !== undefined) return hit;
+  }
+  return undefined;
+}
+
+async function findDkgShareIds(digest: string): Promise<{
+  dwalletId: string;
+  encryptedShareId: string;
+  userPublicOutput?: Uint8Array;
+}> {
+  const rpc = getLocalJsonRpc();
+  for (let i = 0; i < 10; i++) {
+    try {
+      const tx = await rpc.getTransactionBlock({ digest, options: { showEvents: true } }) as any;
+      const ev = (tx?.events ?? []).find((e: any) => String(e?.type ?? '').includes('DWalletDKGRequestEvent'));
+      if (ev) {
+        const dwalletId = findField(ev.parsedJson, 'dwallet_id');
+        const encryptedShareId = findField(ev.parsedJson, 'encrypted_user_secret_key_share_id');
+        const upo = findField(ev.parsedJson, 'user_public_output');
+        if (typeof dwalletId === 'string' && typeof encryptedShareId === 'string') {
+          return {
+            dwalletId,
+            encryptedShareId,
+            userPublicOutput: Array.isArray(upo) ? new Uint8Array(upo as number[]) : undefined,
+          };
+        }
+        throw new Error(`DKG event in ${digest} has no encrypted user share (public-share dWallet?)`);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('DKG event')) throw err;
+    }
+    await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
+  }
+  throw new Error(`DWalletDKGRequestEvent not found for ${digest}`);
+}
+
+/** Submit a user-sender tx: WaaP executes itself; others are keeper-sponsored. */
+async function submitUserTx(
+  tx: Transaction,
+  userAddress: string,
+  callbacks: ProvisionCallbacks,
+): Promise<string> {
+  if (callbacks.isWaap) {
+    let txBytes: Uint8Array;
+    try { txBytes = await tx.build({ client: grpcClient as never }); }
+    catch { txBytes = await tx.build({ client: gqlClient as never }); }
+    const { digest } = await callbacks.signAndExecuteTransaction(txBytes);
+    if (!digest) throw new Error('Accept transaction returned no digest');
+    return digest;
+  }
+  const prov = await fetch('/api/ika/provision', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ address: userAddress }),
+  });
+  if (!prov.ok) throw new Error('Could not get gas sponsor for activation');
+  const { keeperAddress, suiCoins } = await prov.json() as {
+    keeperAddress: string;
+    suiCoins: Array<{ objectId: string; version: string; digest: string }>;
+  };
+  tx.setGasOwner(keeperAddress);
+  tx.setGasPayment(suiCoins.slice(0, 1));
+  const txBytes = await tx.build({ client: grpcClient as never });
+  const b64 = btoa(String.fromCharCode(...txBytes));
+  const sponsorRes = await fetch('/api/sponsor-gas', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ txBytes: b64, senderAddress: userAddress }),
+  });
+  if (!sponsorRes.ok) throw new Error('Gas sponsorship failed for activation');
+  const { sponsorSig } = await sponsorRes.json() as { sponsorSig: string };
+  const { signature: userSig } = await callbacks.signTransaction(txBytes);
+  const res = await getLocalJsonRpc().executeTransactionBlock({
+    transactionBlock: b64,
+    signature: [userSig, sponsorSig],
+    options: { showEffects: true },
+    requestType: 'WaitForLocalExecution',
+  }) as any;
+  if (res?.effects?.status?.status !== 'success') {
+    throw new Error(`Accept transaction failed: ${res?.effects?.status?.error ?? 'unknown'}`);
+  }
+  return res.digest as string;
+}
+
+async function acceptUserShare(params: {
+  client: IkaClient;
+  keys: UserShareEncryptionKeys;
+  userAddress: string;
+  digest: string;
+  userPublicOutput?: Uint8Array;
+  callbacks: ProvisionCallbacks;
+  log: (msg: string) => void;
+}): Promise<void> {
+  const { client, keys, userAddress, digest, callbacks, log } = params;
+  const ids = await findDkgShareIds(digest);
+  const userPublicOutput = params.userPublicOutput ?? ids.userPublicOutput;
+  if (!userPublicOutput) throw new Error('User public output not found for DKG ' + digest);
+
+  log('Waiting for network...');
+  const current = await client.getDWallet(ids.dwalletId) as any;
+  if (current?.state?.$kind === 'Active' || current?.state?.Active) {
+    console.log('[ika:accept] dWallet already Active:', ids.dwalletId);
+    return;
+  }
+  const dWallet = await client.getDWalletInParticularState(ids.dwalletId, 'AwaitingKeyHolderSignature', {
+    timeout: 180_000, interval: 3_000, maxInterval: 10_000,
+  });
+  await client.getEncryptedUserSecretKeyShareInParticularState(ids.encryptedShareId, 'NetworkVerificationCompleted', {
+    timeout: 180_000, interval: 3_000, maxInterval: 10_000,
+  });
+
+  log('Accepting share...');
+  const tx = new Transaction();
+  tx.setSender(userAddress);
+  const ikaTx = new IkaTransaction({ ikaClient: client, transaction: tx as never, userShareEncryptionKeys: keys });
+  await ikaTx.acceptEncryptedUserShare({
+    dWallet: dWallet as never,
+    userPublicOutput,
+    encryptedUserSecretKeyShareId: ids.encryptedShareId,
+  });
+  const acceptDigest = await submitUserTx(tx, userAddress, callbacks);
+  console.log('[ika:accept] accepted user share for', ids.dwalletId, 'digest:', acceptDigest);
+}
+
+/** Accept right after DKG; on failure, remember the digest so the next call resumes. */
+async function finishUserDkg(params: {
+  client: IkaClient;
+  keys: UserShareEncryptionKeys;
+  userAddress: string;
+  digest: string;
+  curve: string;
+  userPublicOutput: Uint8Array;
+  callbacks: ProvisionCallbacks;
+  log: (msg: string) => void;
+}): Promise<void> {
+  savePendingAccept(params.userAddress, params.curve, params.digest);
+  try {
+    await acceptUserShare(params);
+    clearPendingAccept(params.userAddress, params.curve);
+  } catch (err) {
+    console.error('[ika:accept] share acceptance failed — will resume on next provision:', err);
+    throw new Error(`dWallet created but not activated yet (${err instanceof Error ? err.message : String(err)}). Try again to finish activation.`);
+  }
+}
+
+/**
+ * Re-create the user's share-encryption keys for signing. Needs one
+ * personal-message signature per session (cached in memory after that).
+ * Only works for dWallets created with the wallet-derived seed.
+ */
+export async function loadUserShareEncryptionKeys(
+  userAddress: string,
+  curve: typeof Curve.SECP256K1 | typeof Curve.ED25519,
+  signPersonalMessage?: (message: Uint8Array) => Promise<{ signature: string }>,
+): Promise<UserShareEncryptionKeys> {
+  const sign = signPersonalMessage ?? (await import('../wallet.js')).signPersonalMessage;
+  const seed = await deriveUserEncryptionSeed(userAddress, sign, { verify: false });
+  return UserShareEncryptionKeys.fromRootSeedKey(seed, curve);
 }
 
 export async function getCrossChainStatus(address: string): Promise<CrossChainStatus> {
