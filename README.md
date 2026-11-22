@@ -37,7 +37,7 @@ The 6-7 digits after `$0.01` aren't noise — they're **steganographic intent ta
 One number carries the instruction. No metadata leaks.
 
 ### Mint — IKA-Native x402 Settlement
-Pay for a SuiNS name with **USDC on Base** through the [x402 protocol](https://www.x402.org/), and ultron settles the on-chain pull using its own **IKA-secp256k1 dWallet** — not a relay key or a third-party facilitator. The buyer's authorization is signed in their wallet; ultron's outer Base transaction is signed by the IKA committee against ultron's dWallet share, then submitted to Base RPC. **The Base signature never touches a raw key on the worker.** (The Sui-side registration is still signed by ultron's legacy operator key.)
+Pay for a SuiNS name with **USDC on Base** through the [x402 protocol](https://www.x402.org/), and ultron settles the on-chain pull using its own **IKA-secp256k1 dWallet** — not a relay key or a third-party facilitator. The buyer's authorization is signed in their wallet; ultron's outer Base transaction is signed by the IKA committee against ultron's dWallet share, then submitted to Base RPC. **Zero user keys on the worker, agent-friendly by default.** The Base leg is pure IKA; the Sui-side registration is signed through ultron's single swappable signer, built to cut over to an IKA dWallet.
 
 `GET /api/mint/quote/:name` returns live pricing with buffer breakdown + funded% (powered by `src/server/quote/`). `POST /api/mint/register/:name` returns 402 + x402 challenge until a valid `X-PAYMENT` header lands. Browser clients submit Base txs from their own wallet via `src/client/mint-pay.ts`. Headless agents (no EVM wallet) use the IKA path — server constructs the unsigned tx, IKA committee signs, ultron's address pays gas. See `src/server/mint/ika-settle.ts`.
 
@@ -74,7 +74,7 @@ Two DKG ceremonies. Two dWallets. Eight chains. One Sui account.
 ## First Commandment: IKA-Native, Keyless Agents
 
 - **Every wallet, agent, and cross-chain address MUST be IKA-native.**
-- **User keys never touch Cloudflare Workers.** Cross-chain agent signing goes through IKA dWallet user shares + DWalletCap wrappers. `ultron.sui`'s legacy Sui operator key is being migrated to a dWallet.
+- **No user keys on Cloudflare Workers — ever.** Agents sign cross-chain via IKA dWallet user shares + DWalletCap wrappers. `ultron.sui`'s one Sui operator key sits behind a single choke point (`ultronKeypair`), so moving it to an IKA dWallet is a single-function swap once imported-key ed25519 DKG ships.
 - Cross-chain addresses (BTC, ETH, SOL) come from IKA dWallet DKG — always. No raw keypair re-encoding as cross-chain addresses.
 - `brando.sui` runs DKG in-browser, re-encrypts user share to the agent. Either brando OR agent + IKA network = valid signature.
 - Batch DKG provisioning for agents = "Rumble your squids."
