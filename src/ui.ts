@@ -14018,7 +14018,7 @@ function bindEvents() {
           const step = document.createElement('div');
           step.className = 'ski-idle-rumble-step';
           step.style.cssText = `color:${colors[status]};font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:0.7rem;font-weight:600;padding:3px 6px;display:flex;align-items:center;gap:6px`;
-          step.innerHTML = `<span style="font-size:0.8rem">${icons[status]}</span> ${label}`;
+          step.innerHTML = `<span style="font-size:0.8rem">${icons[status]}</span> ${esc(label)}`;
           step.dataset.status = status;
           panel.appendChild(step);
           if (convoEl) convoEl.scrollTop = convoEl.scrollHeight;
@@ -14618,7 +14618,7 @@ function bindEvents() {
         const list = loadRecent();
         if (list.length === 0) { recentEl.innerHTML = ''; return; }
         recentEl.innerHTML = list
-          .map(n => `<button class="ski-send-recent-pill" type="button" data-name="${n}">${n}</button>`)
+          .map(n => `<button class="ski-send-recent-pill" type="button" data-name="${esc(n)}">${esc(n)}</button>`)
           .join('');
         recentEl.querySelectorAll<HTMLButtonElement>('.ski-send-recent-pill').forEach(pill => {
           pill.addEventListener('click', () => {

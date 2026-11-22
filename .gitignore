@@ -35,3 +35,6 @@ contracts/prism_vault/Cargo.lock
 
 # Built copy of dist/embed.js served at the documented /embed.js URL
 public/embed.js
+
+# Claude Code agent worktrees (local only; a committed gitlink broke CI checkouts)
+.claude/worktrees/
