@@ -12,7 +12,13 @@
  */
 
 import { Agent, callable } from 'agents';
-import { verifyPersonalMessageSignature } from '@mysten/sui/verify';
+// Namespace import: resolved at call time (keeps test stubs of 'agents' linkable).
+import * as agentsSdk from 'agents';
+import { verifyPersonalMessageSignature, verifyTransactionSignature } from '@mysten/sui/verify';
+import { TransactionDataBuilder } from '@mysten/sui/transactions';
+import { normalizeSuiAddress, fromBase64 } from '@mysten/sui/utils';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
+import { rejectClientStateWrites } from './state-guard.js';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { ultronKeypair } from '../ultron-key.js';
 import { evaluateSponsorTx } from '../sponsor-policy.js';
@@ -80,6 +86,24 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     ultronAddress: '',
   };
 
+  // ─── State hygiene ───────────────────────────────────────────────────
+
+  /** Clients may only change state through the callables below. */
+  validateStateChange(_next: SponsorState, source: unknown): void {
+    rejectClientStateWrites(source);
+  }
+
+  /**
+   * Agent state is broadcast to every connected client, so it must never hold
+   * the sponsor's auth signature: anyone who saw it could replay `register`
+   * and act as the sponsor. Older instances stored it; scrub it on wake.
+   */
+  async onStart(): Promise<void> {
+    if (this.state.authSignature || this.state.authMessage) {
+      this.setState({ ...this.state, authSignature: '', authMessage: '' });
+    }
+  }
+
   // ─── Sponsor Registration ────────────────────────────────────────────
 
   @callable()
@@ -88,27 +112,44 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     authSignature: string;
     authMessage: string;
   }): Promise<{ success: boolean; expiresAt?: number; error?: string }> {
-    const { sponsorAddress, authSignature, authMessage } = params;
+    const { authSignature, authMessage } = params;
+    let sponsorAddress: string;
+    try { sponsorAddress = normalizeSuiAddress(params.sponsorAddress); }
+    catch { return { success: false, error: 'Invalid address' }; }
+
+    // One DO per sponsor: you can only register as the address this instance is named after.
+    if (normalizeSuiAddress(this.name) !== sponsorAddress) {
+      return { success: false, error: 'Sponsor address does not match this agent' };
+    }
+
+    if (typeof authMessage !== 'string' || !/^\.SKI .*Splash/.test(authMessage)) {
+      return { success: false, error: 'Invalid sponsor authorization message' };
+    }
 
     try {
       const messageBytes = new TextEncoder().encode(authMessage);
-      await verifyPersonalMessageSignature(messageBytes, authSignature, { address: sponsorAddress });
+      await verifyPersonalMessageSignature(messageBytes, authSignature, { address: sponsorAddress, client: verifierClient() });
     } catch {
       return { success: false, error: 'Invalid signature' };
     }
 
-    if (!authMessage.includes('.SKI Splash')) {
-      return { success: false, error: 'Invalid sponsor authorization message' };
-    }
-
+    // Honour the expiry the wallet owner actually signed, capped at TTL.
     const now = Date.now();
-    const expiresAt = now + TTL_MS;
+    const signedExpiry = parseSignedExpiry(authMessage);
+    if (signedExpiry !== null && signedExpiry <= now) {
+      return { success: false, error: 'Sponsor authorization expired' };
+    }
+    const expiresAt = Math.min(signedExpiry ?? Infinity, now + TTL_MS);
+
+    // Bind sponsor rights to *this* WebSocket. Later mutations are authorized
+    // by the connection that proved key ownership, not by a claimed address.
+    this.currentConnection()?.setState({ sponsor: sponsorAddress, until: expiresAt });
 
     this.setState({
       ...this.state,
       sponsorAddress,
-      authSignature,
-      authMessage,
+      authSignature: '',
+      authMessage: '',
       registeredAt: now,
       expiresAt,
       active: true,
@@ -117,9 +158,20 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
     return { success: true, expiresAt };
   }
 
-  /** Guard: only the registered sponsor can mutate state. */
-  private requireSponsor(callerAddress: string): boolean {
-    return this.state.active && callerAddress === this.state.sponsorAddress;
+  /** The WebSocket the current callable arrived on, if any. */
+  protected currentConnection(): { state: unknown; setState(s: unknown): unknown } | undefined {
+    return agentsSdk.getCurrentAgent().connection as any;
+  }
+
+  /**
+   * Guard: only a connection that completed `register` for the current
+   * sponsor may mutate sponsor settings. The caller-supplied address is
+   * ignored (addresses are public, so it proves nothing).
+   */
+  private requireSponsor(_callerAddress?: string): boolean {
+    if (!this.state.active || Date.now() > this.state.expiresAt) return false;
+    const auth = this.currentConnection()?.state as { sponsor?: string; until?: number } | null | undefined;
+    return !!auth && auth.sponsor === this.state.sponsorAddress && (auth.until ?? 0) > Date.now();
   }
 
   @callable()
@@ -260,7 +312,8 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
 
   @callable()
   async refreshGasCoins(params: { coins: GasCoin[] }): Promise<{ success: boolean }> {
-    if (!this.state.active) return { success: false };
+    if (!this.requireSponsor()) return { success: false };
+    if (!Array.isArray(params.coins) || params.coins.length > 50) return { success: false };
     this.setState({
       ...this.state,
       gasCoins: params.coins,
@@ -352,6 +405,10 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
 
     const req = this.state.pendingRequests[idx];
     if (req.userSig) return { success: false, error: 'User sig already submitted' };
+    // Verify, so nobody else can squat the slot with a junk signature.
+    if (!(await signs(req.txBytes, params.userSig, req.senderAddress))) {
+      return { success: false, error: 'Invalid user signature' };
+    }
 
     const updated: SponsorRequest = {
       ...req,
@@ -374,6 +431,9 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
 
     const req = this.state.pendingRequests[idx];
     if (req.sponsorSig) return { success: false, error: 'Sponsor sig already submitted' };
+    if (!(await signs(req.txBytes, params.sponsorSig, this.state.sponsorAddress))) {
+      return { success: false, error: 'Invalid sponsor signature' };
+    }
 
     const updated: SponsorRequest = {
       ...req,
@@ -390,9 +450,15 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
   async markSubmitted(params: { requestId: string; digest: string }): Promise<{ success: boolean }> {
     const idx = this.state.pendingRequests.findIndex(r => r.id === params.requestId);
     if (idx === -1) return { success: false };
+    const req = this.state.pendingRequests[idx];
+    if (req.status !== 'ready') return { success: false };
+    // The digest is a hash of the tx bytes, so a wrong one is provably wrong.
+    try {
+      if (TransactionDataBuilder.getDigestFromBytes(fromBase64(req.txBytes)) !== params.digest) return { success: false };
+    } catch { return { success: false }; }
 
     const requests = [...this.state.pendingRequests];
-    requests[idx] = { ...requests[idx], status: 'submitted', digest: params.digest };
+    requests[idx] = { ...req, status: 'submitted', digest: params.digest };
     this.setState({
       ...this.state,
       pendingRequests: requests,
@@ -411,5 +477,29 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
       txBytes: r.status === 'ready' ? r.txBytes : '[redacted]',
     }));
     return { ...safe, pendingRequests: sanitizedRequests };
+  }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────
+
+/** Parse the `Expires At: <ISO date>` line the wallet owner signed, if any. */
+export function parseSignedExpiry(message: string): number | null {
+  const m = /^Expires At: (.+)$/m.exec(message);
+  if (!m) return null;
+  const t = Date.parse(m[1].trim());
+  return Number.isFinite(t) ? t : null;
+}
+
+let _verifier: SuiGraphQLClient | null = null;
+const verifierClient = () => (_verifier ??= new SuiGraphQLClient({ url: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' }));
+
+/** True if `signature` is a valid signature by `address` over the base64 tx bytes. */
+async function signs(txBytesB64: string, signature: string, address: string): Promise<boolean> {
+  try {
+    // The client is only consulted for zkLogin signatures.
+    await verifyTransactionSignature(fromBase64(txBytesB64), signature, { address, client: verifierClient() });
+    return true;
+  } catch {
+    return false;
   }
 }

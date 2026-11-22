@@ -1,4 +1,5 @@
 import { Agent, callable } from 'agents';
+import { rejectClientStateWrites } from './state-guard.js';
 
 export interface SplashDeviceState {
   isSplashSponsor: boolean;
@@ -9,6 +10,11 @@ export interface SplashDeviceState {
 interface Env {}
 
 export class SplashDeviceAgent extends Agent<Env, SplashDeviceState> {
+  /** Public agent: clients change state only via callables. */
+  validateStateChange(_next: SplashDeviceState, source: unknown): void {
+    rejectClientStateWrites(source);
+  }
+
   initialState: SplashDeviceState = {
     isSplashSponsor: false,
     activatedAt: 0,

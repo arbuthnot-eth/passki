@@ -44,13 +44,15 @@ The [Security model](README.md#security-model) section of the README is the curr
 | 2026-11-22 | `/api/iusd/swap` paid out SUI/USDC before receiving iUSD, for any caller and amount; `/api/ignite` trusted a client-claimed burn amount | Critical | Both admin-only until they verify the user's payment on-chain first |
 | 2026-11-22 | Server-only Durable Objects (TreasuryAgents and others) were reachable over public WebSockets at `/agents/*`, and `requireUltronCaller` accepted ultron's public address as proof of identity | Critical | Only browser-facing agents are routable; `requireUltronCaller` also refuses calls arriving over a client connection |
 | 2026-11-22 | `/api/sponsor-gas` signed arbitrary transactions as the gas owner | Critical | Transaction policy, fuzz-tested, plus strict per-address and global daily budgets |
+| 2026-11-22 | Any WebSocket client could overwrite a public agent's entire state (the agents SDK accepts client `cf_agent_state` writes by default), e.g. switching a SponsorAgent into ultron-paid mode or wiping someone's shade orders | Critical | Public agents reject every non-server state change (`rejectClientStateWrites`) |
+| 2026-11-22 | `SponsorAgent` mutations trusted a caller-supplied address, and the sponsor's auth signature was broadcast in agent state (replayable) | High | Sponsor rights are bound to the WebSocket that verified the signature; the signature is no longer stored; user/sponsor signatures and submitted digests are verified cryptographically |
 | 2026-11-22 | Rate limiters were configured with the old `unsafe` binding syntax, and the `/api/*` limiter counted per Worker instance, so neither limited much | Medium | Moved to first-class `ratelimits` bindings; dedicated limits for RPC and sponsorship |
 | 2026-11-22 | App pages could be framed by any site (clickjacking) | Medium | `frame-ancestors` on every page; only the read-only `/embed` widget is frameable |
 | 2026-04-06 | Missing auth on several Durable Object callables, CSP on Worker routes, session nonce validation, admin route gate (#53–#58) | High | See those issues |
 
 ## Known open issues
 
-- **`SponsorAgent` trusts a caller-supplied address.** Its mutating callables check `callerAddress === sponsorAddress`, but addresses are public. Impact is bounded by the sponsor-gas policy and daily quotas. Fix: bind authentication to the connection after `register()` verifies a signature.
+- **Public agent state is visible to anyone who knows the instance name.** The SDK broadcasts state to every connection. ShadeExecutorAgent is named by owner address, so pending shade orders (domain, salt) are readable. Fix: serve state only through authorized callables (`shouldSendProtocolMessages`).
 - **No full CSP on static pages yet.** Only `frame-ancestors` is enforced there. A nonce-based CSP needs the Worker to serve `index.html` (#53).
 - **Shell-cache restore in `index.html` uses a regex HTML sanitizer.** It should use a DOM-based sanitizer or stop caching HTML (#55).
 - **`ULTRON_PRIVATE_KEY` is still a raw key** on the Worker. The plan is IKA dWallet signing (see README).

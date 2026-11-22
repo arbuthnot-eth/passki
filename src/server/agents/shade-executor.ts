@@ -17,6 +17,7 @@
  */
 
 import { Agent, callable } from 'agents';
+import { rejectClientStateWrites } from './state-guard.js';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
@@ -127,6 +128,11 @@ function uint8ToBase64(bytes: Uint8Array): string {
 // ─── Agent ──────────────────────────────────────────────────────────────
 
 export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
+  /** Public agent: clients change state only via callables. */
+  validateStateChange(_next: ShadeExecutorState, source: unknown): void {
+    rejectClientStateWrites(source);
+  }
+
   initialState: ShadeExecutorState = {
     orders: [],
   };

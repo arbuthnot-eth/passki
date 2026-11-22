@@ -1,4 +1,5 @@
 import { Agent, callable } from 'agents';
+import { rejectClientStateWrites } from './state-guard.js';
 import { verifyPersonalMessageSignature } from '@mysten/sui/verify';
 
 export interface SessionState {
@@ -19,6 +20,11 @@ interface Env {
 }
 
 export class SessionAgent extends Agent<Env, SessionState> {
+  /** Public agent: clients change state only via callables. */
+  validateStateChange(_next: SessionState, source: unknown): void {
+    rejectClientStateWrites(source);
+  }
+
   initialState: SessionState = {
     authenticated: false,
     walletAddress: '',

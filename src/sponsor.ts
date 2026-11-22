@@ -687,17 +687,17 @@ export async function initSplashDO(
   if (!auth?.authMessage) return;
 
   try {
-    const { connectToSponsor, startAutoSigning } = await import('./client/sponsor.js');
+    const { connectToSponsor, registerConnection, startAutoSigning } = await import('./client/sponsor.js');
 
     // Connect to this address's DO instance
-    const doClient = connectToSponsor(account.address);
+    connectToSponsor(account.address);
 
     // Register using the existing local auth (no re-signing required)
-    await doClient.call('register', [{
+    await registerConnection({
       sponsorAddress: account.address,
       authSignature: auth.authSig,
       authMessage: auth.authMessage,
-    }]);
+    });
 
     // Auto-sign pending cross-device requests every 5 seconds
     startAutoSigning(async (txBytes: Uint8Array) => {

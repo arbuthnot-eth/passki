@@ -27,23 +27,43 @@ import type { SponsorState, SponsorRequest, GasCoin } from '../server/agents/spo
 
 let client: AgentClient<SponsorState> | null = null;
 
+type Registration = { sponsorAddress: string; authSignature: string; authMessage: string };
+/** Kept so we can re-register after a reconnect: the server binds sponsor rights to the WebSocket. */
+let lastRegistration: Registration | null = null;
+
 export function connectToSponsor(
   sponsorAddress: string,
   onUpdate?: (state: SponsorState) => void,
 ): AgentClient<SponsorState> {
   client?.close();
-  client = new AgentClient<SponsorState>({
+  lastRegistration = null;
+  const c = new AgentClient<SponsorState>({
     host: window.location.host,
     agent: 'sponsor-agent',
     name: sponsorAddress,
     onStateUpdate: (s) => onUpdate?.(s),
   });
+  let opened = false;
+  c.addEventListener('open', () => {
+    if (opened && lastRegistration && client === c) c.call('register', [lastRegistration]).catch(() => {});
+    opened = true;
+  });
+  client = c;
   return client;
+}
+
+/** Prove sponsor key ownership on the current connection (and again on any reconnect). */
+export async function registerConnection(reg: Registration): Promise<{ success: boolean; expiresAt?: number; error?: string }> {
+  if (!client) throw new Error('Not connected to sponsor agent');
+  const result = await client.call<{ success: boolean; expiresAt?: number; error?: string }>('register', [reg]);
+  lastRegistration = result.success ? reg : null;
+  return result;
 }
 
 export function disconnectSponsor(): void {
   client?.close();
   client = null;
+  lastRegistration = null;
 }
 
 // ─── Authorization message ────────────────────────────────────────────
@@ -119,10 +139,7 @@ export async function registerAsSponsor(params: {
   const messageBytes = new TextEncoder().encode(message);
   const { signature } = await params.signMessage(messageBytes);
 
-  const result = await client.call<{ success: boolean; expiresAt?: number; error?: string }>(
-    'register',
-    [{ sponsorAddress: params.sponsorAddress, authSignature: signature, authMessage: message }],
-  );
+  const result = await registerConnection({ sponsorAddress: params.sponsorAddress, authSignature: signature, authMessage: message });
 
   if (result.success) {
     await refreshSponsorGasCoins(params.sponsorAddress, params.grpcClient);
