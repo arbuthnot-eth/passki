@@ -18002,9 +18002,12 @@ function bindEvents() {
         const prevText = _sessionClock.textContent;
         _sessionClock.textContent = '...';
         try {
-          const { refreshSealSession } = await import('./client/thunder-stack.js');
+          const { refreshSealSession, getLastSealRefreshError } = await import('./client/thunder-stack.js');
           const ok = await refreshSealSession();
-          if (!ok) _sessionClock.textContent = prevText ?? '\u{1F991}';
+          if (!ok) {
+            _sessionClock.textContent = prevText ?? '\u{1F991}';
+            showToast(`Session not renewed \u2014 ${getLastSealRefreshError() || 'signature failed'}`);
+          }
         } catch {
           _sessionClock.textContent = prevText ?? '\u{1F991}';
         } finally {

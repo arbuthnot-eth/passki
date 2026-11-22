@@ -217,6 +217,105 @@ export function isSealRejected(address: string): boolean {
   return true;
 }
 
+/**
+ * Mint a brand-new Seal session key (one wallet prompt) and persist it.
+ * Does not touch the current key until the new one is signed.
+ */
+async function _mintSessionKey(opts: ThunderClientOptions): Promise<SessionKey> {
+  if (!_client) throw new Error('Thunder client not yet initialized');
+  // Mint fresh — prompts the wallet once.
+  console.log('[thunder] minting fresh Seal session key (will prompt wallet)');
+  const key = await SessionKey.create({
+    address: opts.address,
+    packageId: MAINNET_SUI_STACK_MESSAGING_PACKAGE_CONFIG.originalPackageId,
+    ttlMin: SESSION_KEY_TTL_MIN,
+    suiClient: _client as never,
+  });
+  const personalMsg = key.getPersonalMessage();
+  // opts.signPersonalMessage is actually a (msg: Uint8Array) => ... function
+  // at runtime despite the SignPersonalMessageFn type declaring an object
+  // arg — the caller in ui.ts passes bytes directly. Match the real runtime
+  // shape or the wallet signs garbage and Seal servers reject the cert.
+  //
+  // WaaP's Silk Protector microservice intermittently returns 400 on
+  // /get-policy and /v2/handle-request, surfacing as
+  //   "Backend error (400): Failed to generate signature due to unknown server error"
+  // Sometimes the rejection propagates back to us and our wallet.ts
+  // retry handles it; sometimes WaaP shows its own toast and our
+  // promise hangs until the timeout. Either way, a Seal session key
+  // mint is special enough to deserve its own call-site retry loop:
+  // 3 attempts with reinit between, then surface a clean error.
+  const signFn = opts.signPersonalMessage as unknown as (msg: Uint8Array) => Promise<{ signature: string }>;
+  let signed: { signature: string } | undefined;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      signed = await signFn(personalMsg);
+      if (signed?.signature) break;
+      throw new Error('signPersonalMessage returned no signature');
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      // Rejection → terminal. Set the sticky cooldown so subsequent
+      // storm opens DON'T re-prompt the user. They explicitly
+      // cancelled and we should respect that until they reset.
+      const isRejection = /reject/i.test(msg)
+        || /cancel/i.test(msg)
+        || /denied/i.test(msg)
+        || /user closed/i.test(msg)
+        || /action[_\s]*cancel/i.test(msg);
+      if (isRejection) {
+        _sealRejectionAt = Date.now();
+        _sealRejectionAddr = opts.address;
+        console.warn('[thunder] Seal session-key sign cancelled by user — cooldown set for 5 min');
+        throw new Error('Seal session-key sign was cancelled — click retry to prompt again');
+      }
+      const isBackend400 = /backend error\s*\(400\)/i.test(msg)
+        || /failed to generate signature/i.test(msg)
+        || /unknown server error/i.test(msg)
+        || /timed out/i.test(msg);
+      console.warn(`[thunder] Seal session-key sign attempt ${attempt}/3 failed:`, msg);
+      if (attempt < 3 && isBackend400) {
+        // Reinit WaaP iframe between attempts — recovers from stuck
+        // postMessage channels and stale Silk Protector sessions.
+        try {
+          const { reinitWaaP } = await import('../waap.js');
+          await reinitWaaP();
+        } catch { /* best-effort */ }
+        // Small backoff so Silk has a chance to recover if it's a
+        // transient infra blip on their end.
+        await new Promise(r => setTimeout(r, 1500));
+        continue;
+      }
+      throw err;
+    }
+  }
+  if (!signed) throw lastErr ?? new Error('Seal session-key sign failed');
+  await key.setPersonalMessageSignature(signed.signature);
+
+  // Persist for restoration on next page load. The SDK's `export()` returns
+  // an object with a booby-trapped `toJSON` property that throws if you call
+  // JSON.stringify on it directly — intended to force IndexedDB usage. Pluck
+  // the fields into a plain object ourselves so localStorage works.
+  try {
+    const raw = key.export() as ExportedSessionKey & { sessionKey: string };
+    const serializable = {
+      address: raw.address,
+      packageId: raw.packageId,
+      mvrName: raw.mvrName,
+      creationTimeMs: raw.creationTimeMs,
+      ttlMin: raw.ttlMin,
+      personalMessageSignature: raw.personalMessageSignature,
+      sessionKey: raw.sessionKey,
+    };
+    localStorage.setItem(SK_STORAGE_KEY(opts.address), JSON.stringify(serializable));
+    console.log('[thunder] cached Seal session key for', SESSION_KEY_TTL_MIN, 'min');
+  } catch (e) {
+    console.warn('[thunder] failed to persist Seal session key:', e instanceof Error ? e.message : e);
+  }
+  return key;
+}
+
 async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<SessionKey> {
   if (_sessionKeyPromise) return _sessionKeyPromise;
   // Sticky rejection gate — fast-throw without prompting if the user
@@ -255,97 +354,7 @@ async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<Sessio
       }
     } catch { /* fall through to mint */ }
 
-    // Mint fresh — prompts the wallet once.
-    console.log('[thunder] minting fresh Seal session key (will prompt wallet)');
-    const key = await SessionKey.create({
-      address: opts.address,
-      packageId: MAINNET_SUI_STACK_MESSAGING_PACKAGE_CONFIG.originalPackageId,
-      ttlMin: SESSION_KEY_TTL_MIN,
-      suiClient: _client as never,
-    });
-    const personalMsg = key.getPersonalMessage();
-    // opts.signPersonalMessage is actually a (msg: Uint8Array) => ... function
-    // at runtime despite the SignPersonalMessageFn type declaring an object
-    // arg — the caller in ui.ts passes bytes directly. Match the real runtime
-    // shape or the wallet signs garbage and Seal servers reject the cert.
-    //
-    // WaaP's Silk Protector microservice intermittently returns 400 on
-    // /get-policy and /v2/handle-request, surfacing as
-    //   "Backend error (400): Failed to generate signature due to unknown server error"
-    // Sometimes the rejection propagates back to us and our wallet.ts
-    // retry handles it; sometimes WaaP shows its own toast and our
-    // promise hangs until the timeout. Either way, a Seal session key
-    // mint is special enough to deserve its own call-site retry loop:
-    // 3 attempts with reinit between, then surface a clean error.
-    const signFn = opts.signPersonalMessage as unknown as (msg: Uint8Array) => Promise<{ signature: string }>;
-    let signed: { signature: string } | undefined;
-    let lastErr: unknown;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        signed = await signFn(personalMsg);
-        if (signed?.signature) break;
-        throw new Error('signPersonalMessage returned no signature');
-      } catch (err) {
-        lastErr = err;
-        const msg = err instanceof Error ? err.message : String(err);
-        // Rejection → terminal. Set the sticky cooldown so subsequent
-        // storm opens DON'T re-prompt the user. They explicitly
-        // cancelled and we should respect that until they reset.
-        const isRejection = /reject/i.test(msg)
-          || /cancel/i.test(msg)
-          || /denied/i.test(msg)
-          || /user closed/i.test(msg)
-          || /action[_\s]*cancel/i.test(msg);
-        if (isRejection) {
-          _sealRejectionAt = Date.now();
-          _sealRejectionAddr = opts.address;
-          console.warn('[thunder] Seal session-key sign cancelled by user — cooldown set for 5 min');
-          throw new Error('Seal session-key sign was cancelled — click retry to prompt again');
-        }
-        const isBackend400 = /backend error\s*\(400\)/i.test(msg)
-          || /failed to generate signature/i.test(msg)
-          || /unknown server error/i.test(msg)
-          || /timed out/i.test(msg);
-        console.warn(`[thunder] Seal session-key sign attempt ${attempt}/3 failed:`, msg);
-        if (attempt < 3 && isBackend400) {
-          // Reinit WaaP iframe between attempts — recovers from stuck
-          // postMessage channels and stale Silk Protector sessions.
-          try {
-            const { reinitWaaP } = await import('../waap.js');
-            await reinitWaaP();
-          } catch { /* best-effort */ }
-          // Small backoff so Silk has a chance to recover if it's a
-          // transient infra blip on their end.
-          await new Promise(r => setTimeout(r, 1500));
-          continue;
-        }
-        throw err;
-      }
-    }
-    if (!signed) throw lastErr ?? new Error('Seal session-key sign failed');
-    await key.setPersonalMessageSignature(signed.signature);
-
-    // Persist for restoration on next page load. The SDK's `export()` returns
-    // an object with a booby-trapped `toJSON` property that throws if you call
-    // JSON.stringify on it directly — intended to force IndexedDB usage. Pluck
-    // the fields into a plain object ourselves so localStorage works.
-    try {
-      const raw = key.export() as ExportedSessionKey & { sessionKey: string };
-      const serializable = {
-        address: raw.address,
-        packageId: raw.packageId,
-        mvrName: raw.mvrName,
-        creationTimeMs: raw.creationTimeMs,
-        ttlMin: raw.ttlMin,
-        personalMessageSignature: raw.personalMessageSignature,
-        sessionKey: raw.sessionKey,
-      };
-      localStorage.setItem(SK_STORAGE_KEY(opts.address), JSON.stringify(serializable));
-      console.log('[thunder] cached Seal session key for', SESSION_KEY_TTL_MIN, 'min');
-    } catch (e) {
-      console.warn('[thunder] failed to persist Seal session key:', e instanceof Error ? e.message : e);
-    }
-    return key;
+    return _mintSessionKey(opts);
   })();
   // On failure, drop the in-flight promise so the next caller retries cleanly.
   _sessionKeyPromise.catch(() => { _sessionKeyPromise = null; });
@@ -368,6 +377,7 @@ export function initThunderClient(opts: ThunderClientOptions) {
 
   const gqlClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
+  _opts = opts;
   _warmer = () => _loadOrMintSessionKey(opts);
   // Explicit <void> generic so SuiStackMessagingClient's TApproveContext
   // resolves as void — without this TS infers `unknown` and every method
@@ -403,6 +413,7 @@ export function getThunderClient(): MessagingClient {
 }
 
 let _warmer: (() => Promise<SessionKey>) | null = null;
+let _opts: ThunderClientOptions | null = null;
 
 /**
  * Best-effort restore of a cached Seal session key. Does NOT mint a
@@ -441,15 +452,29 @@ export async function warmThunderSession(opts?: { address?: string }): Promise<v
  * having to open a storm first. The clock auto-detects the new expiry
  * via its localStorage poll once _loadOrMintSessionKey writes the key.
  */
+let _sealRefreshError = '';
+/** Why the last refreshSealSession() failed ('' if it succeeded). */
+export function getLastSealRefreshError(): string { return _sealRefreshError; }
+
+/**
+ * Renew the Seal session key (the 30-min ".SKI session") on demand.
+ * Mints and persists a fresh key first and only then swaps it in, so a
+ * cancelled or failed signature leaves the current session untouched.
+ */
 export async function refreshSealSession(): Promise<boolean> {
-  if (!_warmer || !_address) return false;
-  try { localStorage.removeItem(SK_STORAGE_KEY(_address)); } catch {}
-  _sessionKeyPromise = null;
+  if (!_opts || !_client) {
+    _sealRefreshError = 'Wallet not connected yet';
+    return false;
+  }
   clearSealRejection(); // fresh click = intentional retry, clear cooldown
   try {
-    await _warmer();
+    const key = await _mintSessionKey(_opts);
+    _sessionKeyPromise = Promise.resolve(key);
+    _sealRefreshError = '';
     return true;
-  } catch {
+  } catch (err) {
+    _sealRefreshError = err instanceof Error ? err.message : String(err);
+    console.warn('[thunder] session refresh failed, keeping current key:', _sealRefreshError);
     return false;
   }
 }
@@ -462,6 +487,7 @@ export function resetThunderClient() {
   _signer = null;
   _address = '';
   _warmer = null;
+  _opts = null;
   _sessionKeyPromise = null;
   // Clear the Seal rejection cooldown — disconnecting is an explicit
   // user action and signals a fresh start. The next wallet connect
