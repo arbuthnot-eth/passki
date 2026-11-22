@@ -594,7 +594,7 @@ app.post('/api/sponsor-gas', async (c) => {
     // Decode and police the tx before signing — see sponsor-policy.ts.
     const decision = evaluateSponsorTx(bytes, keypair.toSuiAddress(), senderAddress);
     if (!decision.ok) {
-      console.warn('[sponsor-gas] refused:', decision.reason, 'sender:', senderAddress ?? '(none)');
+      console.warn('[sponsor-gas] refused:', decision.reason);
       return c.json({ error: `Sponsorship refused: ${decision.reason}` }, 403);
     }
 
