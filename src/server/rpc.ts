@@ -1,18 +1,17 @@
 /**
  * Server-side Sui RPC — JSON-RPC fan-out for Cloudflare Workers/DOs.
  *
- * gRPC does NOT work in CF Workers (no HTTP/2 bidirectional streaming).
+ * Native gRPC doesn't work in Workers, but gRPC-Web (SuiGrpcClient) does.
  * This module provides Promise.any racing across JSON-RPC endpoints.
  */
 
 // ─── Backend URLs ─────────────────────────────────────────────────────
 
+// Public Sui JSON-RPC is shut down. One entry on purpose: requests to it are
+// answered in-process by the JSON-RPC shim (sui-jsonrpc-shim.ts, installed
+// in index.ts), so racing several URLs would just run each call N times.
 export const JSONRPC_BACKENDS: string[] = [
   'https://fullnode.mainnet.sui.io:443',
-  'https://sui-rpc.publicnode.com',
-  'https://sui-mainnet-endpoint.blockvision.org',
-  'https://rpc.ankr.com/sui',
-  'https://rpc-mainnet.suiscan.xyz:443',
 ];
 
 /** GraphQL endpoint for read-only queries in DOs */

@@ -2,6 +2,15 @@ import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { ultronKeypair, hasUltronKey, requireUltronSig } from './ultron-key.js';
 import { evaluateSponsorTx } from './sponsor-policy.js';
+import { handleSuiJsonRpcBody } from './sui-jsonrpc-shim.js';
+import { installSuiJsonRpcRedirect } from '../sui-jsonrpc-redirect.js';
+
+// Public Sui JSON-RPC is shut down. Answer JSON-RPC calls aimed at the old
+// endpoints in-process via gRPC-Web + GraphQL (see sui-jsonrpc-shim.ts).
+installSuiJsonRpcRedirect(async (body) => new Response(
+  JSON.stringify(await handleSuiJsonRpcBody(JSON.parse(body))),
+  { headers: { 'content-type': 'application/json' } },
+));
 import { requireUltronAdmin, todayUtc } from './ultron-policy.js';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
@@ -197,7 +206,7 @@ app.use('*', async (c, next) => {
     "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
     "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
-    `connect-src 'self' https://*.sui.io https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://*.h2o-nodes.com ${WAAP_CONNECT}`,
+    `connect-src 'self' https://*.sui.io https://rpc-mainnet.suiscan.xyz https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://*.h2o-nodes.com ${WAAP_CONNECT}`,
     `frame-src 'self' ${WAAP_FRAME}`,
     "frame-ancestors 'self' https://*.sui.ski https://*.passki.xyz",
     "base-uri 'self'",
@@ -352,22 +361,10 @@ async function rpcRateCheck(c: Context, scope: string): Promise<Response | null>
 app.post('/api/rpc', async (c) => {
   const blocked = await rpcRateCheck(c, 'rpc');
   if (blocked) return blocked;
-  const body = await c.req.text();
-  for (const url of SUI_RPC_URLS) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body,
-      });
-      // Accept any response that has JSON content (even non-200)
-      const json = await res.text();
-      if (json && json.startsWith('{')) {
-        return c.text(json, 200, { 'content-type': 'application/json' });
-      }
-    } catch {}
-  }
-  return c.json({ error: 'All RPC endpoints failed' }, 502);
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }, 400); }
+  // Public Sui JSON-RPC is gone — translate to gRPC-Web + GraphQL.
+  return c.json(await handleSuiJsonRpcBody(body));
 });
 
 // ── Shade monitoring & manual poke ──────────────────────────────────

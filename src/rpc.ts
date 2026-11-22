@@ -9,6 +9,18 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { detectNetwork } from './network.js';
+import { installSuiJsonRpcRedirect } from './sui-jsonrpc-redirect.js';
+
+// Public Sui JSON-RPC is shut down. In the browser, send JSON-RPC calls aimed
+// at the old endpoints to passki's /api/rpc shim (gRPC-Web + GraphQL).
+if (typeof window !== 'undefined') {
+  const nativeFetch = globalThis.fetch.bind(globalThis);
+  installSuiJsonRpcRedirect((body) => nativeFetch('/api/rpc', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body,
+  }));
+}
 
 // ─── Backend URLs ─────────────────────────────────────────────────────
 
@@ -18,7 +30,8 @@ import { detectNetwork } from './network.js';
  * (L1 in-memory + L2 KV) that hedges requests across upstream fullnodes.
  */
 const GRPC_BACKENDS_MAINNET: string[] = [
-  'https://hb.sui.ski',
+  // hb.sui.ski (Hayabusa) no longer resolves in DNS — removed 2026-11.
+  'https://fullnode.mainnet.sui.io:443',
   'https://rpc-mainnet.suiscan.xyz:443',
 ];
 
