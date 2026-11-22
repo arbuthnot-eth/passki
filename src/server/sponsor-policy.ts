@@ -28,7 +28,7 @@ const THUNDER_IOU_PACKAGE = normalizeSuiAddress('0x5a80b9753d6ccce11dc1f9a5039d9
 const UNGATED_IOU_FUNCTIONS = new Set(['claim', 'recall']);
 
 export type SponsorDecision =
-  | { ok: true; sender: string; gated: boolean }
+  | { ok: true; sender: string; gated: boolean; budgetMist: bigint }
   | { ok: false; reason: string };
 
 type Arg = { $kind: string; Input?: number; Result?: number; NestedResult?: [number, number] };
@@ -126,11 +126,11 @@ export function evaluateSponsorTx(
       && only.module === 'iou'
       && UNGATED_IOU_FUNCTIONS.has(only.function);
     if (!allowed) return { ok: false, reason: 'senderAddress required for this transaction' };
-    return { ok: true, sender, gated: false };
+    return { ok: true, sender, gated: false, budgetMist: budget };
   }
 
   if (normalizeSuiAddress(claimedSender) !== sender) {
     return { ok: false, reason: 'senderAddress does not match transaction sender' };
   }
-  return { ok: true, sender, gated: true };
+  return { ok: true, sender, gated: true, budgetMist: budget };
 }

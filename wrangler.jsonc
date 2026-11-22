@@ -45,6 +45,10 @@
         "class_name": "SessionAgent"
       },
       {
+        "name": "SPONSOR_QUOTA",
+        "class_name": "SponsorQuota"
+      },
+      {
         "name": "SponsorAgent",
         "class_name": "SponsorAgent"
       },
@@ -187,6 +191,10 @@
     {
       "tag": "v18",
       "new_sqlite_classes": ["IntentRegistry"]
+    },
+    {
+      "tag": "v19",
+      "new_sqlite_classes": ["SponsorQuota"]
     }
   ],
 
@@ -217,14 +225,18 @@
   // Sui quota, while leaving plenty of headroom for legitimate
   // fintech resolvers (PayPal et al. batch requests, but not at this
   // rate from one IP).
-  "unsafe": {
-    "bindings": [
-      {
-        "name": "ENS_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1001",
-        "simple": { "limit": 60, "period": 60 }
-      }
-    ]
-  }
+  "ratelimits": [
+    {
+      "name": "ENS_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 60, "period": 60 }
+    },
+    // Gas sponsorship spends ultron's SUI, so it gets a much tighter
+    // budget, applied per source IP and per verified tx sender.
+    {
+      "name": "SPONSOR_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 10, "period": 60 }
+    }
+  ]
 }

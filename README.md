@@ -57,13 +57,38 @@ These wallets are exactly as secure as `ultron.sui`'s key and its `DWalletCap` o
 
 - **Thunder messages** use a double envelope. `ultron` can route them, so it sees **who messages whom**, but the inner envelope is encrypted to the recipient and **ultron can't read the contents**. Keys use [Seal](https://seal-docs.wal.app) threshold encryption with 2-of-3 key servers (Overclock, Studio Mirai, H2O Nodes). Ciphertext is stored on Walrus.
 - **Request metadata:** IP addresses are kept only as salted hashes (`CF_IP_SALT`), and session cookies are HMAC-signed (`CF_HMAC_SECRET`).
-- **In the browser:** time-limited Seal session keys, the IKA presign pool and sponsor authorization are cached in `localStorage`. An XSS bug on passki.xyz could expose them, which is why a CSP is enforced (#59).
+- **In the browser:** time-limited Seal session keys, the IKA presign pool and sponsor authorization are cached in `localStorage`. An XSS bug on passki.xyz could expose them. API responses carry a full CSP (#59), and every page sends `frame-ancestors` so other sites can't frame the app for clickjacking.
+
+### Gas sponsorship
+
+`ultron.sui` pays gas for users, so `/api/sponsor-gas` is a money-spending endpoint open to the internet. Before signing, it applies four layers:
+
+1. **Transaction policy** ([`sponsor-policy.ts`](src/server/sponsor-policy.ts)). The server decodes the transaction bytes and refuses unless the sponsor only pays gas: the sender isn't the sponsor, the budget is at most 0.5 SUI, and the gas coin is never transferred, merged, passed to Move or put in a vector. At most 0.001 SUI may be split from it, as literal amounts only. The sender is read from the bytes, never from the request.
+2. **Property-based fuzzing** ([`sponsor-policy.fuzz.test.ts`](src/server/__tests__/sponsor-policy.fuzz.test.ts)). Thousands of random transactions and corrupted byte strings run through the policy on every CI run. An independent decoder re-checks every approval against those rules. Deliberately weakened copies of the policy are caught within a few hundred cases.
+3. **Strict daily budgets** ([`sponsor-quota.ts`](src/server/agents/sponsor-quota.ts)). A Durable Object per sender address, plus a global one, reserves each transaction's full gas budget before signing: 1 SUI per address and 10 SUI in total per UTC day. Requests are processed one at a time per object, so parallel requests can't race past the cap. If the store is unavailable, sponsorship fails closed.
+4. **Rate limiting** by IP and by sender, to slow down floods before they reach the budget.
+
+`/api/health` reports the sponsor's balance and today's sponsored spend, so an uptime monitor catches an empty or drained sponsor.
+
+### Embedding
+
+[`embed.js`](src/embed.ts) adds a passki button to any site. It opens [`/embed`](public/embed.html), a read-only lookup widget and the only page other sites may frame. Anything that needs a signature opens passki in its own top-level window, where the host page can't overlay or script it.
+
+### Supply chain and CI
+
+- Every push runs the tests (including the fuzzer), the build, the private-key guard, and a `bun audit` gate that fails on critical advisories.
+- CodeQL (`security-extended` queries) and OpenSSF Scorecard run on every push and weekly. Dependabot opens grouped update PRs.
+- Third-party GitHub Actions are pinned to commit SHAs, and the Bun version is pinned, including in the npm publish workflows that hold the publish token.
+- Vulnerable transitive dependencies are patched with same-major `overrides` in `package.json`.
+- [`/.well-known/security.txt`](https://passki.xyz/.well-known/security.txt) (RFC 9116) points to private reporting.
 
 ### Known gaps
 
 - [ ] Move `ultron.sui` from a raw key to IKA dWallet signing, and remove the legacy allowlist.
 - [ ] No third-party audit yet.
 - [ ] Extend the key guard to check `wrangler secret list` as well as config files.
+- [ ] Enforce a full CSP on the static app pages, not just `frame-ancestors`.
+- [ ] Remaining `bun audit` advisories are mostly in dev tooling (wrangler, vite) or need major-version upgrades (`zod` 3→4, `valibot`).
 
 ### Reporting a vulnerability
 

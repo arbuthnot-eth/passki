@@ -16,6 +16,7 @@ import { verifyPersonalMessageSignature } from '@mysten/sui/verify';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { ultronKeypair } from '../ultron-key.js';
 import { evaluateSponsorTx } from '../sponsor-policy.js';
+import { reserveSponsorBudget } from './sponsor-quota.js';
 
 export interface GasCoin {
   objectId: string;
@@ -227,6 +228,14 @@ export class SponsorAgent extends Agent<Env, SponsorState> {
       const decision = evaluateSponsorTx(txBytes, keypair.toSuiAddress(), req.senderAddress);
       if (!decision.ok) {
         console.warn('[SponsorAgent] refused to sign:', decision.reason);
+        const requests = [...this.state.pendingRequests];
+        requests[idx] = { ...req, status: 'failed' };
+        this.setState({ ...this.state, pendingRequests: requests });
+        return;
+      }
+      const quota = await reserveSponsorBudget(this.env as any, decision.sender, decision.budgetMist);
+      if (!quota.ok) {
+        console.warn('[SponsorAgent] quota refused:', quota.reason);
         const requests = [...this.state.pendingRequests];
         requests[idx] = { ...req, status: 'failed' };
         this.setState({ ...this.state, pendingRequests: requests });

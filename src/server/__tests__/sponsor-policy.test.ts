@@ -59,7 +59,7 @@ describe('evaluateSponsorTx — allows', () => {
       const [c] = tx.splitCoins(tx.objectRef(ref('3')), [tx.pure.u64(100_000_000)]);
       tx.transferObjects([c], USER);
     });
-    expect(evaluateSponsorTx(b, SPONSOR, USER)).toEqual({ ok: true, sender: USER, gated: true });
+    expect(evaluateSponsorTx(b, SPONSOR, USER)).toEqual({ ok: true, sender: USER, gated: true, budgetMist: 50_000_000n });
   });
   test('a tiny literal split from gas (Pyth oracle fee)', async () => {
     const b = await bytes(tx => {
@@ -72,6 +72,6 @@ describe('evaluateSponsorTx — allows', () => {
     const b = await bytes(tx => {
       tx.moveCall({ target: `${IOU_PKG}::iou::claim`, arguments: [tx.sharedObjectRef({ objectId: ref('4').objectId, initialSharedVersion: 1, mutable: true }), tx.object.clock()] });
     });
-    expect(evaluateSponsorTx(b, SPONSOR)).toEqual({ ok: true, sender: USER, gated: false });
+    expect(evaluateSponsorTx(b, SPONSOR)).toEqual({ ok: true, sender: USER, gated: false, budgetMist: 50_000_000n });
   });
 });

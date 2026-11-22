@@ -3,6 +3,7 @@ import { agentsMiddleware } from 'hono-agents';
 import { ultronKeypair, hasUltronKey, requireUltronSig } from './ultron-key.js';
 import { evaluateSponsorTx } from './sponsor-policy.js';
 import { handleSuiJsonRpc, handleSuiJsonRpcBody } from './sui-jsonrpc-shim.js';
+import { reserveSponsorBudget, sponsorSpentToday } from './agents/sponsor-quota.js';
 import { installSuiJsonRpcRedirect } from '../sui-jsonrpc-redirect.js';
 
 // Public Sui JSON-RPC is shut down. Answer JSON-RPC calls aimed at the old
@@ -298,6 +299,11 @@ app.get('/api/health', async (c) => {
       if (sui < SPONSOR_LOW_SUI) throw new Error(`low: ${sui.toFixed(4)} SUI (min ${SPONSOR_LOW_SUI})`);
       return `${sui.toFixed(3)} SUI`;
     }),
+    run('sponsor_quota', async () => {
+      const q = await sponsorSpentToday(c.env as any);
+      if (!q) throw new Error('quota store not bound');
+      return `${(Number(q.spentMist) / 1e9).toFixed(3)} / ${(Number(q.capMist) / 1e9).toFixed(1)} SUI sponsored today`;
+    }),
   ]);
   const ok = Object.values(checks).every(x => x.ok);
   c.header('Cache-Control', 'no-store');
@@ -310,6 +316,22 @@ app.get('/api/health', async (c) => {
 // credential. For a WebAuthn/passkey-first site, we redirect to the
 // SKI idle overlay where the user can rotate their passkey. Spec:
 // https://w3c.github.io/webappsec-change-password-url/
+// RFC 9116 vulnerability disclosure. Expires is computed so it never
+// goes stale (the RFC requires a date under a year out).
+app.get('/.well-known/security.txt', (c) => {
+  const expires = new Date(Date.now() + 180 * 86400_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const origin = new URL(c.req.url).origin;
+  c.header('Cache-Control', 'public, max-age=86400');
+  return c.text([
+    'Contact: https://github.com/arbuthnot-eth/passki/security/advisories/new',
+    `Expires: ${expires}`,
+    'Preferred-Languages: en',
+    `Canonical: ${origin}/.well-known/security.txt`,
+    'Policy: https://github.com/arbuthnot-eth/passki/blob/master/SECURITY.md',
+    '',
+  ].join('\n'));
+});
+
 app.get('/.well-known/change-password', (c) => c.redirect('/#settings', 303));
 
 // ENS CCIP-read gateway — Beldum Iron Defense (#167). Serves
@@ -613,6 +635,13 @@ app.post('/api/sui-rpc', async (c) => {
 app.post('/api/sponsor-gas', async (c) => {
   if (!hasUltronKey(c.env)) return c.json({ error: 'Gas sponsorship not configured' }, 503);
 
+  const sponsorLimiter = (c.env as any).SPONSOR_RATE_LIMITER as
+    | { limit: (opts: { key: string }) => Promise<{ success: boolean }> }
+    | undefined;
+  const overBudget = async (key: string) => !!sponsorLimiter && !(await sponsorLimiter.limit({ key })).success;
+  const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+  if (await overBudget(`ip:${ip}`)) return c.json({ error: 'Too many sponsorship requests — try again in a minute' }, 429);
+
   try {
     const { txBytes, senderAddress } = await c.req.json<{ txBytes: string; senderAddress?: string }>();
     if (!txBytes) return c.json({ error: 'Missing txBytes' }, 400);
@@ -627,17 +656,28 @@ app.post('/api/sponsor-gas', async (c) => {
       return c.json({ error: `Sponsorship refused: ${decision.reason}` }, 403);
     }
 
+    // Per-sender budget, keyed on the sender decoded from the tx bytes (not
+    // the client's claim), so rotating IPs doesn't buy more sponsored gas.
+    if (await overBudget(`sender:${decision.sender}`)) {
+      return c.json({ error: 'Too many sponsorship requests for this address — try again in a minute' }, 429);
+    }
+
     // SuiNS gate: the (verified) tx sender must own a SuiNS registration NFT.
     if (decision.gated) {
       const hasNft = await hasSuinsNft(decision.sender);
       if (!hasNft) return c.json({ error: 'SuiNS name required for gas sponsorship' }, 403);
     }
 
+    // Strict daily budget (per address + global), reserved before signing.
+    const quota = await reserveSponsorBudget(c.env as any, decision.sender, decision.budgetMist);
+    if (!quota.ok) return c.json({ error: quota.reason }, 429);
+
     const { signature } = await keypair.signTransaction(bytes);
 
     return c.json({ sponsorSig: signature, sponsorAddress: keypair.toSuiAddress() });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    console.error('[sponsor-gas] error:', err);
+    return c.json({ error: 'Sponsorship failed' }, 500);
   }
 });
 
@@ -5186,6 +5226,7 @@ export { TimestreamAgent } from './agents/timestream.js';
 export { NameIndex } from './agents/name-index.js';
 export { Pokedex } from './agents/pokedex.js';
 export { UltronSigningAgent } from './agents/ultron-signing-agent.js';
+export { SponsorQuota } from './agents/sponsor-quota.js';
 export { Aegislash } from './agents/aegislash.js';
 export { SneaselWatcherAgent } from './agents/sneasel-watcher.js';
 export { WeavileScannerAgent } from './agents/weavile-scanner.js';
